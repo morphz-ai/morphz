@@ -1,0 +1,47 @@
+{
+  "policy_version": "minimal-intervention-v1",
+  "package": {
+    "id": "terminal-task-dialectical-practice",
+    "version": "0.1.0",
+    "source_sha256": "b05d8883928a50be19bb2075761596e97bab19784258a293a30d5c8f0df4ec3a"
+  },
+  "status": "candidate",
+  "units": [
+    {
+      "source_scope": "scope",
+      "classification": "capability-description",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "It limits the package to a philosophical lens and leaves user and Runtime authority controlling."
+    },
+    {
+      "source_scope": "optional-working-state",
+      "classification": "optional-state",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "It exposes state objects derived from the two source texts without prescribing a fixed procedure."
+    },
+    {
+      "source_scope": "mind",
+      "classification": "optional-state",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "The Mind Frame is a concise conceptual synthesis from the complete original texts, not a terminal-task recipe."
+    },
+    {
+      "source_scope": "infer",
+      "classification": "capability-description",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "The neutral entry leaves concrete analysis, actions, verification and delivery under the Agent's judgment."
+    }
+  ]
+}

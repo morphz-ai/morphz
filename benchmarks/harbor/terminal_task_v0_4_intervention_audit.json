@@ -1,0 +1,119 @@
+{
+  "policy_version": "minimal-intervention-v1",
+  "package": {
+    "id": "terminal-task",
+    "version": "0.4.0",
+    "source_sha256": "1c150f5ec72ee1e66d722b17ad418aaf87e7ece4514d98497d6fddf982da88a6"
+  },
+  "status": "closed-rejected",
+  "units": [
+    {
+      "source_scope": "identity",
+      "classification": "capability-description",
+      "owner": "harness",
+      "disposition": "compress",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": true,
+      "rationale": "The authority boundary is sound, but most of the identity text repeats the base Agent and Runtime contract."
+    },
+    {
+      "source_scope": "task-contract",
+      "classification": "method-directive",
+      "owner": "agent",
+      "disposition": "remove",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": true,
+      "rationale": "Determining deliverables and constraints is part of ordinary Agent reasoning and should not become a second mandatory workflow."
+    },
+    {
+      "source_scope": "acceptance-ledger",
+      "classification": "method-directive",
+      "owner": "agent",
+      "disposition": "redesign-as-optional-state",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "Acceptance evidence may be useful as addressable state, but the Harness should not require a ledger or prescribe completion classes."
+    },
+    {
+      "source_scope": "convergence-contract",
+      "classification": "workflow-constraint",
+      "owner": "agent",
+      "disposition": "remove",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": true,
+      "rationale": "It directs how every substantial action is selected and when branches must close, competing with the model's native planning."
+    },
+    {
+      "source_scope": "closure-protocol",
+      "classification": "workflow-constraint",
+      "owner": "agent",
+      "disposition": "remove",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "The repeated only, before and immediately rules impose a rigid control policy; the raman case did not show that this improves delivery."
+    },
+    {
+      "source_scope": "epistemic-discipline",
+      "classification": "method-directive",
+      "owner": "agent",
+      "disposition": "remove",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": true,
+      "rationale": "These are useful general habits but largely repeat capabilities already present in the base Agent."
+    },
+    {
+      "source_scope": "execution-discipline",
+      "classification": "method-directive",
+      "owner": "agent",
+      "disposition": "remove",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": true,
+      "rationale": "Environment inspection, preserving user work and minimal changes already belong to the base coding Agent instructions."
+    },
+    {
+      "source_scope": "verification-discipline",
+      "classification": "method-directive",
+      "owner": "agent",
+      "disposition": "move-to-skill",
+      "task_or_domain_specific": true,
+      "duplicates_base_agent": true,
+      "rationale": "Verification guidance depends on the task domain and is better supplied by a selected skill or evaluator than a universal Harness."
+    },
+    {
+      "source_scope": "domain-guards",
+      "classification": "domain-policy",
+      "owner": "evaluator",
+      "disposition": "move-to-skill",
+      "task_or_domain_specific": true,
+      "duplicates_base_agent": false,
+      "rationale": "Research, daemon, recovery and software rules are domain adapters disguised as a universal cognitive procedure."
+    },
+    {
+      "source_scope": "final-readiness",
+      "classification": "terminal-constraint",
+      "owner": "runtime",
+      "disposition": "move-to-runtime",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "Progress versus terminal delivery and required artifact existence are I/O protocol properties, not prose that the model must remember."
+    },
+    {
+      "source_scope": "mind",
+      "classification": "method-directive",
+      "owner": "agent",
+      "disposition": "redesign-as-optional-state",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "The cognitive frame should expose optional state affordances rather than summarize a mandatory end-to-end workflow."
+    },
+    {
+      "source_scope": "infer",
+      "classification": "workflow-constraint",
+      "owner": "agent",
+      "disposition": "replace-with-neutral-entry",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": true,
+      "rationale": "The entry task repeats and strengthens the whole procedure, so it directly competes with native task reasoning on every evaluation."
+    }
+  ]
+}

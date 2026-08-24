@@ -50,12 +50,32 @@
   },
   "harness": {
     "id": "terminal-task",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "path": "morphz-evals/harnesses/terminal-task.hns",
-    "source_sha256": "1c150f5ec72ee1e66d722b17ad418aaf87e7ece4514d98497d6fddf982da88a6",
-    "artifact_hash": "sha256:b6063a4a970362888f6194fdfa498421b417bb032f4b58bf96e0bf5a0571aae2",
+    "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f",
+    "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
     "evaluation_owner": "model",
-    "status": "candidate"
+    "status": "frozen-development-comparison"
+  },
+  "harness_profiles": {
+    "minimal-v0.5": {
+      "id": "terminal-task",
+      "version": "0.5.0",
+      "path": "morphz-evals/harnesses/terminal-task.hns",
+      "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f",
+      "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+      "evaluation_owner": "model",
+      "status": "frozen-development-comparison"
+    },
+    "dialectical-practice-v0.1": {
+      "id": "terminal-task-dialectical-practice",
+      "version": "0.1.0",
+      "path": "morphz-evals/harnesses/terminal-task-dialectical-practice.hns",
+      "source_sha256": "b05d8883928a50be19bb2075761596e97bab19784258a293a30d5c8f0df4ec3a",
+      "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+      "evaluation_owner": "model",
+      "status": "frozen-exploratory-comparison"
+    }
   },
   "permissions": {
     "mode": "full_access",

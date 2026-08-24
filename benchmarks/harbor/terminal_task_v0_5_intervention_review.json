@@ -1,0 +1,47 @@
+{
+  "policy_version": "minimal-intervention-v1",
+  "package": {
+    "id": "terminal-task",
+    "version": "0.5.0",
+    "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f"
+  },
+  "status": "candidate",
+  "units": [
+    {
+      "source_scope": "scope",
+      "classification": "capability-description",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "It declares that user and Runtime authority remain controlling and limits the Harness role."
+    },
+    {
+      "source_scope": "optional-working-state",
+      "classification": "optional-state",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "It exposes a small set of optional cognitive objects without ordering them or making them completion gates."
+    },
+    {
+      "source_scope": "mind",
+      "classification": "optional-state",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "The Mind Frame makes optional state addressable while leaving creation, revision and omission to the Agent."
+    },
+    {
+      "source_scope": "infer",
+      "classification": "capability-description",
+      "owner": "harness",
+      "disposition": "retain",
+      "task_or_domain_specific": false,
+      "duplicates_base_agent": false,
+      "rationale": "The neutral entry delegates concrete reasoning, tools, validation and delivery to the Agent."
+    }
+  ]
+}

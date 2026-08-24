@@ -15,8 +15,10 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
 - Morphz `paper-eval-runtime-v4`;
-- exact model-owned Harness `terminal-task@0.4.0`, installed from the checked-in
-  `.hns` package and bound to the first real Evaluation of every trial;
+- exact model-owned Harness profiles are selected from the checked-in `.hns`
+  packages and bound to the first real Evaluation of every Harness-enabled
+  trial; the current profiles are `terminal-task@0.5.0` and the separate
+  exploratory `terminal-task-dialectical-practice@0.1.0`;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
 - the frozen overseas artifact uses the official Rustup distribution endpoint
@@ -269,3 +271,22 @@ ended with a progress statement after 24 ATIF steps and 1,004,381 input tokens.
 It did not demonstrate convergence improvement; v0.4 is closed and must not be
 retried or expanded. The result and public evidence are recorded in
 [`terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md).
+
+`terminal-task@0.5.0` is a deliberately minimal successor. It removes the
+v0.4 task contract, mandatory ledgers, convergence/closure workflow,
+verification discipline and domain guards. It exposes only optional cognitive
+objects for deliverable, evidence, uncertainty, checkpoint and next-action
+value. The original v0.4 source remains checked in as historical evidence. A
+static intervention gate rejects strong directive language, unreviewed scopes,
+domain specialization and duplicated base-Agent responsibilities before a
+candidate can enter a model run.
+
+The separate exploratory profile
+`terminal-task-dialectical-practice@0.1.0` was synthesized after a complete
+reading of the Chinese originals of *On Practice* and *On Contradiction*. It is
+not part of v0.5 and is tested as its own arm. Provenance, source snapshot
+hashes, conceptual mapping and the frozen four-arm protocol are recorded in:
+
+- [`terminal_harness_minimal_intervention_design_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_harness_minimal_intervention_design_2026_08_24.md)
+- [`dialectical_practice_mind_frame_provenance_2026_08_24.md`](../../docs/research/paper_evaluation/dialectical_practice_mind_frame_provenance_2026_08_24.md)
+- [`terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)

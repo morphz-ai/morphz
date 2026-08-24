@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 {preflight|install-only|smoke|full|failed-five|harness-torch|harness-raman-v04|compare-raman-morphz|compare-raman-codex}" >&2
+  echo "usage: $0 {preflight|install-only|smoke|full|failed-five|compare-raman-morphz|compare-raman-codex|four-arm-smoke|four-arm-overnight}" >&2
   exit 2
 }
 
@@ -13,7 +13,7 @@ fi
 
 mode=$1
 case "$mode" in
-  preflight | install-only | smoke | full | failed-five | harness-torch | harness-raman-v04 | compare-raman-morphz | compare-raman-codex) ;;
+  preflight | install-only | smoke | full | failed-five | compare-raman-morphz | compare-raman-codex | four-arm-smoke | four-arm-overnight) ;;
   *) usage ;;
 esac
 
@@ -55,7 +55,24 @@ export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$repo_root"
 if [[ "$mode" == "compare-raman-codex" ]]; then
-  exec "$harbor_root/bin/python" benchmarks/harbor/run_codex_comparison.py full
+  exec "$harbor_root/bin/python" -m benchmarks.harbor.run_codex_comparison full \
+    --task raman-fitting \
+    --concurrency 1 \
+    --expect-trials 1
+fi
+
+if [[ "$mode" == "four-arm-smoke" ]]; then
+  output_root=${MORPHZ_FOUR_ARM_OUTPUT_ROOT:-/opt/morphz-benchmark/four-arm-runs/first-40-v1-smoke}
+  exec "$harbor_root/bin/python" -m benchmarks.harbor.run_four_arm_comparison smoke \
+    --output-root "$output_root" \
+    --concurrency-per-arm 1
+fi
+
+if [[ "$mode" == "four-arm-overnight" ]]; then
+  output_root=${MORPHZ_FOUR_ARM_OUTPUT_ROOT:-/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824}
+  exec "$harbor_root/bin/python" -m benchmarks.harbor.run_four_arm_comparison overnight \
+    --output-root "$output_root" \
+    --concurrency-per-arm 1
 fi
 
 if [[ "$mode" == "compare-raman-morphz" ]]; then
@@ -65,22 +82,6 @@ if [[ "$mode" == "compare-raman-morphz" ]]; then
     --concurrency 1 \
     --expect-trials 1 \
     --harness-mode none
-fi
-
-if [[ "$mode" == "harness-raman-v04" ]]; then
-  exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
-    --task raman-fitting \
-    --attempts 1 \
-    --concurrency 1 \
-    --expect-trials 1
-fi
-
-if [[ "$mode" == "harness-torch" ]]; then
-  exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
-    --task torch-pipeline-parallelism \
-    --attempts 1 \
-    --concurrency 1 \
-    --expect-trials 1
 fi
 
 if [[ "$mode" == "failed-five" ]]; then

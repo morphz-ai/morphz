@@ -23,6 +23,9 @@
 - [Terminal-Bench 2.1 Harness v0.4 单题回归协议](./terminal_bench_2_1_harness_trial_protocol_v0_4.md)：用 `raman-fitting` 定向验证最佳有效产物与 proof-to-final 收口协议，不计入未见题成绩；
 - [Terminal-Bench 2.1 Harness v0.4 单题回归结果](./terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md)：0 分、无任务产物、24 步和 100.4 万输入 Token；证明纯文本收口建议不足，v0.4 已关闭；
 - [`raman-fitting` 三种 Agent 方式归因对照](./raman_agent_comparison_result_2026_08_24.md)：同一题、模型和环境下，原生 Morphz 1 分、v0.4 Harness 0 分、官方 Codex 0 分；区分未交付、正确交付和错误拟合，并给出通用方法论与终态协议方向；
+- [Terminal Harness 最小干预设计与 v0.5](./terminal_harness_minimal_intervention_design_2026_08_24.md)：逐项拆解 v0.4、冻结可选认知状态边界和静态干预门禁；
+- [《实践论》《矛盾论》Mind Frame 原文通读与来源](./dialectical_practice_mind_frame_provenance_2026_08_24.md)：记录两篇完整原文读取、快照哈希、概念综合和最终哲学 Frame 的取舍；
+- [Terminal-Bench 2.1 既有前 40 题四臂对照协议](./terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)：原生 Morphz、极简 v0.5、官方 Codex、辩证实践 Mind Frame 四臂各 40×1 的冻结比较边界；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

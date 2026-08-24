@@ -1,0 +1,52 @@
+{
+  "task_set_id": "terminal-bench-2.1-prior-first-40-v1",
+  "dataset": "terminal-bench/terminal-bench-2-1",
+  "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+  "status": "previously-observed-development-set",
+  "cohorts": {
+    "prior_first_20": [
+      "caffe-cifar-10",
+      "circuit-fibsqrt",
+      "dna-assembly",
+      "kv-store-grpc",
+      "llm-inference-batching-scheduler",
+      "log-summary-date-ranges",
+      "merge-diff-arc-agi-task",
+      "model-extraction-relu-logits",
+      "mteb-leaderboard",
+      "openssl-selfsigned-cert",
+      "path-tracing",
+      "pypi-server",
+      "pytorch-model-recovery",
+      "qemu-alpine-ssh",
+      "regex-chess",
+      "regex-log",
+      "schemelike-metacircular-eval",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "write-compressor"
+    ],
+    "prior_second_20": [
+      "adaptive-rejection-sampler",
+      "build-cython-ext",
+      "build-pov-ray",
+      "cobol-modernization",
+      "compile-compcert",
+      "configure-git-webserver",
+      "dna-insert",
+      "extract-elf",
+      "filter-js-from-html",
+      "fix-ocaml-gc",
+      "gcode-to-text",
+      "gpt2-codegolf",
+      "make-doom-for-mips",
+      "mcmc-sampling-stan",
+      "mteb-retrieve",
+      "nginx-request-logging",
+      "raman-fitting",
+      "sam-cell-seg",
+      "train-fasttext",
+      "vulnerable-secret"
+    ]
+  }
+}

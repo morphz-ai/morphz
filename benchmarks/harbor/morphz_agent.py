@@ -31,7 +31,7 @@ DEFAULT_HARNESS_PATH = (
     / "harnesses"
     / "terminal-task.hns"
 )
-DEFAULT_HARNESS_REF = "terminal-task@0.4.0"
+DEFAULT_HARNESS_REF = "terminal-task@0.5.0"
 HARNESS_MODE_BOUND = "bound"
 HARNESS_MODE_NONE = "none"
 
@@ -88,10 +88,10 @@ class MorphzAgent(BaseAgent):
                     f"expected {expected_harness_sha256}, got {actual_harness_sha256}"
                 )
             harness_ref = self._setting("MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF)
-            if harness_ref != DEFAULT_HARNESS_REF:
+            if "@" not in harness_ref:
                 raise ValueError(
-                    "The candidate Terminal-Bench profile requires "
-                    f"MORPHZ_HARNESS_REF={DEFAULT_HARNESS_REF}"
+                    "MORPHZ_HARNESS_REF must identify an exact installed package "
+                    "as id@version"
                 )
 
         protocol = self._setting("MORPHZ_PROVIDER_PROTOCOL", "openai-responses")

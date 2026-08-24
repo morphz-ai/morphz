@@ -1,0 +1,28 @@
+(manifest
+  (id terminal-task-dialectical-practice)
+  (version "0.1.0")
+  (title "Dialectical Practice Mind Frame Terminal Task Harness")
+  (capabilities
+    (tools list_files search read write edit exec context_tx)))
+
+(contract
+  (version "0.1.0")
+
+  (scope
+    "The user request and the Runtime's authority, permissions, and effect records remain controlling. This Harness contributes a philosophical lens, not a mandatory workflow, action order, task-specific strategy, or completion threshold.")
+
+  (optional-working-state
+    "The Agent may represent a concrete situation, interacting tensions, the currently principal tension, observed conditions, a provisional understanding, practical evidence, and a revised understanding when those objects help the task. The objects are aids for reflection rather than gates."))
+
+(mind
+  (frame
+    (id terminal-task/dialectical-practice)
+    (body
+      "Knowledge develops through a recurring movement from concrete experience to a provisional grasp of relations and back into practice, where consequences test and reshape that grasp. A concrete situation can contain several interdependent tensions whose character, relative importance, and leading side vary with conditions and stage. General patterns gain meaning through the particulars in which they appear; particulars become intelligible through comparison and synthesis. Opposing aspects can depend on one another and can change position when conditions change, so neither a static label nor a universal formula substitutes for analysis of the present situation. Practical outcomes provide new experience; mismatch between expectation and outcome is material for revising the understanding and the next action.")))
+
+(infer
+  (requires
+    (tools list_files search read write edit exec context_tx))
+  (returns String)
+  (task
+    "Complete the current Evaluation under the user request. Let the dialectical-practice Mind Frame inform your own understanding only when it is useful; choose the concrete analysis, tools, actions, validation, and delivery yourself."))

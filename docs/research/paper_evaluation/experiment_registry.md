@@ -60,6 +60,21 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 冻结 `terminal-task@0.5.0` 极简候选：将 v0.4 的任务合同、收敛命令、验证纪律和领域
+  守则移出 Harness，只保留 deliverable/evidence/uncertainty/checkpoint/next-action-value
+  五类可选认知对象；新增最小干预静态门禁，v0.5 为 4 个作用域、995 字符、0 强命令命中，
+  v0.4 原包保留为关闭的历史证据。设计见
+  [`terminal_harness_minimal_intervention_design_2026_08_24.md`](./terminal_harness_minimal_intervention_design_2026_08_24.md)；
+- 按用户要求完整通读《实践论》《矛盾论》中文原文及注释，记录 93/330 行 Jina 快照、长度
+  和 SHA-256；从全文的实践—认识循环、具体分析、主要矛盾/主要方面、条件和转化关系中
+  形成独立 `terminal-task-dialectical-practice@0.1.0` Mind Frame。该包不复制长篇原文、
+  不含固定任务流程，作为探索性第四 Arm；来源见
+  [`dialectical_practice_mind_frame_provenance_2026_08_24.md`](./dialectical_practice_mind_frame_provenance_2026_08_24.md)；
+- 新增 `terminal-bench-four-arm-prior-40-v1` 协议：在此前已经观察过的两个 20 题 cohort
+  上，分别运行原生 Morphz、Morphz+v0.5、官方 Codex CLI 和 Morphz+辩证实践 Mind
+  Frame，各 40×1、零重试；四臂同时各并发 1，总并发 4。该实验用于开发归因，不是未见
+  题或公开榜分；协议见
+  [`terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md`](./terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)；
 - 完成 `raman-fitting` 三种 Agent 方式的同题单次归因对照：原生 Morphz（明确无
   Harness）raw/strict reward 1.0，18 次模型求值并正常写入结果；v0.4 Harness 继续为
   0 分且无结果文件；官方 Codex CLI 0.149.1 正常创建、校验并提交结果，但因 2D 拟合

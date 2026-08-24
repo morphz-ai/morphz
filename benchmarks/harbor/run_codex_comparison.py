@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the fixed official-Codex arm of the raman-fitting attribution trial."""
+"""Run a fixed official-Codex comparison arm with shared integrity policy."""
 
 from __future__ import annotations
 
@@ -21,10 +21,16 @@ from benchmarks.harbor.run_benchmark import (
 
 
 CODEX_CLI_VERSION = "0.149.1"
-TASK = "raman-fitting"
+DEFAULT_TASK = "raman-fitting"
 
 
-def command(jobs_dir: Path, *, install_only: bool) -> list[str]:
+def command(
+    jobs_dir: Path,
+    *,
+    tasks: list[str],
+    concurrency: int,
+    install_only: bool,
+) -> list[str]:
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     result = [
         "harbor",
@@ -43,16 +49,16 @@ def command(jobs_dir: Path, *, install_only: bool) -> list[str]:
         str(jobs_dir),
         "--dataset",
         f"{lock['terminal_bench']['dataset']}@{lock['terminal_bench']['registry_ref']}",
-        "--include-task-name",
-        f"terminal-bench/{TASK}",
         "--n-attempts",
         "1",
         "--n-concurrent",
-        "1",
+        str(concurrency),
         "--max-retries",
         "0",
         "--yes",
     ]
+    for task in tasks:
+        result.extend(["--include-task-name", f"terminal-bench/{task}"])
     if install_only:
         result.append("--install-only")
     return result
@@ -70,7 +76,19 @@ def main() -> int:
     parser.add_argument(
         "--jobs-dir", type=Path, default=REPO_ROOT / "jobs-codex-comparison"
     )
+    parser.add_argument("--task", action="append")
+    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--expect-trials", type=int)
     args = parser.parse_args()
+    tasks = list(dict.fromkeys(args.task or [DEFAULT_TASK]))
+    if args.concurrency <= 0:
+        parser.error("--concurrency must be positive")
+    if args.mode == "full" and args.expect_trials is None:
+        parser.error("full mode requires --expect-trials")
+    if args.expect_trials is not None and args.expect_trials != len(tasks):
+        parser.error(
+            f"--expect-trials={args.expect_trials} does not match {len(tasks)} tasks"
+        )
 
     base_url, protocol, credential = runtime_provider_config()
     if protocol != "openai-responses":
@@ -89,7 +107,12 @@ def main() -> int:
     )
     before = _job_dirs(args.jobs_dir)
     return_code = subprocess.run(
-        command(args.jobs_dir, install_only=args.mode == "install-only"),
+        command(
+            args.jobs_dir,
+            tasks=tasks,
+            concurrency=args.concurrency,
+            install_only=args.mode == "install-only",
+        ),
         cwd=REPO_ROOT,
         env=environment,
         check=False,
@@ -104,7 +127,7 @@ def main() -> int:
     run_identity = infrastructure_identity()
     run_identity.update(
         {
-            "comparison_protocol": "raman-agent-attribution-v1",
+            "comparison_protocol": "fixed-task-agent-comparison-v2",
             "agent": "official-codex-cli",
             "codex_cli_version": CODEX_CLI_VERSION,
             "model": "gpt-5.6-sol",
@@ -116,17 +139,17 @@ def main() -> int:
             "permission_mode": "dangerously-bypass-approvals-and-sandbox",
             "dataset": lock["terminal_bench"]["dataset"],
             "dataset_registry_ref": lock["terminal_bench"]["registry_ref"],
-            "task_filters": [TASK],
+            "task_filters": sorted(tasks),
             "attempts": 1,
-            "concurrency": 1,
+            "concurrency": args.concurrency,
             "max_retries": 0,
             "integrity_policy": POLICY_VERSION,
         }
     )
     audit = audit_job(
         new_jobs[0],
-        expected_trial_count=1,
-        expected_tasks={TASK},
+        expected_trial_count=len(tasks),
+        expected_tasks=set(tasks),
         attempts_per_task=1,
         run_identity=run_identity,
     )

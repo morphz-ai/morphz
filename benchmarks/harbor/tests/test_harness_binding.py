@@ -39,7 +39,11 @@ class HarnessBindingSetupTest(unittest.TestCase):
         lock_path = Path(__file__).parents[1] / "toolchain.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         self.assertEqual(lock["harness"]["id"], "terminal-task")
-        self.assertEqual(lock["harness"]["version"], "0.4.0")
+        self.assertEqual(lock["harness"]["version"], "0.5.0")
+        self.assertEqual(
+            set(lock["harness_profiles"]),
+            {"minimal-v0.5", "dialectical-practice-v0.1"},
+        )
         self.assertEqual(
             hashlib.sha256(DEFAULT_HARNESS_PATH.read_bytes()).hexdigest(),
             lock["harness"]["source_sha256"],
@@ -65,10 +69,6 @@ class HarnessBindingSetupTest(unittest.TestCase):
         wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
         source = wrapper.read_text(encoding="utf-8")
         self.assertIn('if [[ "$mode" == "failed-five" ]]', source)
-        self.assertEqual(
-            source.count('exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py'),
-            5,
-        )
         self.assertNotIn("exec /usr/bin/python3", source)
         failed_five = source.split(
             'if [[ "$mode" == "failed-five" ]]', maxsplit=1
@@ -85,41 +85,15 @@ class HarnessBindingSetupTest(unittest.TestCase):
         ):
             self.assertEqual(failed_five.count(f"--task {task}"), 1)
 
-    def test_cloud_harness_torch_mode_runs_only_one_trial(self) -> None:
+    def test_cloud_four_arm_overnight_uses_the_bounded_launcher(self) -> None:
         wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
         source = wrapper.read_text(encoding="utf-8")
-        harness_torch = source.split(
-            'if [[ "$mode" == "harness-torch" ]]', maxsplit=1
+        section = source.split(
+            'if [[ "$mode" == "four-arm-overnight" ]]', maxsplit=1
         )[1].split("\nfi", maxsplit=1)[0]
-        self.assertEqual(harness_torch.count("--task torch-pipeline-parallelism"), 1)
-        self.assertIn("--attempts 1", harness_torch)
-        self.assertIn("--concurrency 1", harness_torch)
-        self.assertIn("--expect-trials 1", harness_torch)
-        for unrelated in (
-            "dna-assembly",
-            "mteb-leaderboard",
-            "pypi-server",
-            "pytorch-model-recovery",
-        ):
-            self.assertNotIn(unrelated, harness_torch)
-
-    def test_cloud_harness_v04_raman_mode_runs_only_one_trial(self) -> None:
-        wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
-        source = wrapper.read_text(encoding="utf-8")
-        harness_raman = source.split(
-            'if [[ "$mode" == "harness-raman-v04" ]]', maxsplit=1
-        )[1].split("\nfi", maxsplit=1)[0]
-        self.assertEqual(harness_raman.count("--task raman-fitting"), 1)
-        self.assertIn("--attempts 1", harness_raman)
-        self.assertIn("--concurrency 1", harness_raman)
-        self.assertIn("--expect-trials 1", harness_raman)
-        for unrelated in (
-            "adaptive-rejection-sampler",
-            "make-doom-for-mips",
-            "train-fasttext",
-            "vulnerable-secret",
-        ):
-            self.assertNotIn(unrelated, harness_raman)
+        self.assertIn("benchmarks.harbor.run_four_arm_comparison overnight", section)
+        self.assertIn("--concurrency-per-arm 1", section)
+        self.assertNotIn("run_benchmark.py", section)
 
     def test_cloud_native_morphz_comparison_is_one_unharnessed_trial(self) -> None:
         wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
