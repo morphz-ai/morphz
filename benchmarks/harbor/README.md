@@ -15,7 +15,7 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
 - Morphz `paper-eval-runtime-v4`;
-- exact model-owned Harness `terminal-task@0.3.0`, installed from the checked-in
+- exact model-owned Harness `terminal-task@0.4.0`, installed from the checked-in
   `.hns` package and bound to the first real Evaluation of every trial;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
@@ -256,3 +256,11 @@ v0.3 expansion is permitted. Protocol and result:
 
 - [`terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md)
 - [`terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md)
+
+`terminal-task@0.4.0` is a post-hoc convergence candidate. It adds only a
+domain-neutral best-valid-checkpoint and proof-to-final closure protocol after
+v0.3 showed that GPT-5.6 Sol could continue optional exploration after a viable
+artifact or sufficient evidence existed. Its only permitted first regression
+is one attempt of `raman-fitting`; it is not an unseen or reportable benchmark
+sample. The frozen protocol is
+[`terminal_bench_2_1_harness_trial_protocol_v0_4.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_4.md).

@@ -38,7 +38,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         lock_path = Path(__file__).parents[1] / "toolchain.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         self.assertEqual(lock["harness"]["id"], "terminal-task")
-        self.assertEqual(lock["harness"]["version"], "0.3.0")
+        self.assertEqual(lock["harness"]["version"], "0.4.0")
         self.assertEqual(
             hashlib.sha256(DEFAULT_HARNESS_PATH.read_bytes()).hexdigest(),
             lock["harness"]["source_sha256"],
@@ -59,7 +59,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         self.assertIn('if [[ "$mode" == "failed-five" ]]', source)
         self.assertEqual(
             source.count('exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py'),
-            3,
+            4,
         )
         self.assertNotIn("exec /usr/bin/python3", source)
         failed_five = source.split(
@@ -94,6 +94,24 @@ class HarnessBindingSetupTest(unittest.TestCase):
             "pytorch-model-recovery",
         ):
             self.assertNotIn(unrelated, harness_torch)
+
+    def test_cloud_harness_v04_raman_mode_runs_only_one_trial(self) -> None:
+        wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
+        source = wrapper.read_text(encoding="utf-8")
+        harness_raman = source.split(
+            'if [[ "$mode" == "harness-raman-v04" ]]', maxsplit=1
+        )[1].split("\nfi", maxsplit=1)[0]
+        self.assertEqual(harness_raman.count("--task raman-fitting"), 1)
+        self.assertIn("--attempts 1", harness_raman)
+        self.assertIn("--concurrency 1", harness_raman)
+        self.assertIn("--expect-trials 1", harness_raman)
+        for unrelated in (
+            "adaptive-rejection-sampler",
+            "make-doom-for-mips",
+            "train-fasttext",
+            "vulnerable-secret",
+        ):
+            self.assertNotIn(unrelated, harness_raman)
 
     def test_setup_uploads_the_digest_locked_terminal_task_harness(self) -> None:
         async def scenario(root: Path) -> None:

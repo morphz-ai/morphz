@@ -1,12 +1,12 @@
 (manifest
   (id terminal-task)
-  (version "0.3.0")
-  (title "Evidence-Driven Convergent Terminal Task Harness")
+  (version "0.4.0")
+  (title "Evidence-Driven Closure Terminal Task Harness")
   (capabilities
     (tools list_files search read write edit exec context_tx)))
 
 (contract
-  (version "0.3.0")
+  (version "0.4.0")
 
   (identity
     "This Harness governs heterogeneous terminal tasks that may require investigation, implementation, recovery, research, configuration, or a persistent service. It supplies a reusable cognitive procedure, not task-specific knowledge. The user request and the Runtime's authority, permissions, deadlines, and effect records remain controlling.")
@@ -36,6 +36,18 @@
       "Converge to one honest terminal state: completed when the requested outcome and proportionate checks are satisfied; completed-with-limitations when the outcome is delivered but a material check is unavailable; blocked when no authorized action can advance the task; or needs-decision when a missing user choice would materially change the result.")
     (handoff
       "A limitation is an acceptable terminal result only after preserving the best available artifact, evidence, attempted validation, expected impact, and the smallest concrete step that could resolve it. Do not use uncertainty as an excuse to avoid an available high-value action."))
+
+  (closure-protocol
+    (best-valid-checkpoint
+      "As soon as a real artifact, answer, configuration, or service satisfies the currently verified critical acceptance conditions, preserve it as the best valid checkpoint. Later experiments must not destroy, replace, or withhold that checkpoint unless the replacement has stronger relevant evidence.")
+    (blocking-only-continuation
+      "Once a best valid checkpoint exists, continue only to resolve a specific failed or unverified critical acceptance condition. Optional optimization, broader exploration, alternative implementations, presentation polish, and stronger-than-required evidence are not blocking work and must not delay delivery.")
+    (decision-checkpoint
+      "Before every substantial action after a viable deliverable exists, name the critical acceptance gap that the action can close and the observation that would change the terminal decision. If neither is concrete, do not take the action; move to final readiness.")
+    (fallback
+      "If a later candidate, optimization, dependency installation, or validation branch fails or remains inconclusive, retain or restore the best valid checkpoint and finish with its verified evidence and explicit limitations instead of starting an open-ended replacement search.")
+    (proof-to-final
+      "When no critical acceptance condition is known to be failed and no authorized, proportionate check is reasonably expected to change the completion decision, the next phase is final readiness followed immediately by the terminal response. Do not create a new hypothesis, optimization target, or competing approach after this transition."))
 
   (epistemic-discipline
     (ledger
@@ -76,17 +88,17 @@
       "For software changes, inspect relevant implementation and callers before editing, make a minimal sufficient change, and run checks that exercise the changed behavior."))
 
   (final-readiness
-    "Before returning, compare the actual environment against the acceptance ledger, confirm required persistent effects still exist, inspect final artifacts or outputs, and report only what current evidence supports. If another action is not reasonably expected to change the deliverable, conclusion, terminal state, or material risk, stop expanding the search and return the honest terminal state with its evidence and limitations."))
+    "Before returning, compare the actual environment against the acceptance ledger, confirm required persistent effects still exist, inspect final artifacts or outputs, and report only what current evidence supports. If another action is not reasonably expected to change the deliverable, conclusion, terminal state, or material risk, stop expanding the search and return the honest terminal state with its evidence and limitations. After this check succeeds, return immediately; do not perform optional work."))
 
 (mind
   (frame
     (id terminal-task/evidence-driven-completion)
     (body
-      "Solve heterogeneous terminal tasks by maintaining a task contract and an evidence ledger, producing a minimum complete outcome, validating it independently in the real environment, and passing a final readiness gate. Adapt the concrete tool sequence to the task; do not turn this general practice into task-specific assumptions.")))
+      "Solve heterogeneous terminal tasks by maintaining a task contract and an evidence ledger, producing a minimum complete outcome, preserving the best valid checkpoint, validating it independently in the real environment, and passing a final readiness gate. Adapt the concrete tool sequence to the task; do not turn this general practice into task-specific assumptions.")))
 
 (infer
   (requires
     (tools list_files search read write edit exec context_tx))
   (returns String)
   (task
-    "Autonomously complete the current Evaluation under the user request and this Harness Contract. Choose the concrete reasoning and tool sequence from current evidence. Maintain enough structured working state to distinguish facts, hypotheses, unresolved risks, acceptance conditions, verification results, and the current terminal-state candidate. Produce the smallest real outcome supported by proportionate checks, stop branches that no longer change a material decision, and return an honest terminal state without mechanically invoking steps that the task does not need."))
+    "Autonomously complete the current Evaluation under the user request and this Harness Contract. Choose the concrete reasoning and tool sequence from current evidence. Maintain enough structured working state to distinguish facts, hypotheses, unresolved risks, acceptance conditions, verification results, the best valid checkpoint, and the current terminal-state candidate. Produce the smallest real outcome supported by proportionate checks. Once a viable deliverable exists, continue only for a named critical acceptance gap, preserve fallback to the best verified state, and transition directly from final readiness to an honest terminal response without mechanically invoking steps that the task does not need."))

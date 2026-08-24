@@ -12,10 +12,10 @@ fn terminal_task_harness_is_a_model_owned_portable_package() {
         HarnessPackage::from_source("terminal-task.hns", TERMINAL_TASK_HARNESS_SOURCE).unwrap();
 
     assert_eq!(package.manifest.id, "terminal-task");
-    assert_eq!(package.manifest.version, "0.3.0");
+    assert_eq!(package.manifest.version, "0.4.0");
     assert_eq!(
         package.artifact_hash,
-        "sha256:ba35a184e8d40f5cad925d66a4c125cfec28dfd9cc94ab06148e563aa5692e4e"
+        "sha256:b6063a4a970362888f6194fdfa498421b417bb032f4b58bf96e0bf5a0571aae2"
     );
     assert_eq!(package.entry.owner, EvaluationOwner::Model);
     assert_eq!(
@@ -39,6 +39,19 @@ fn terminal_task_harness_is_a_model_owned_portable_package() {
     assert!(package.contract.to_string().contains("candidate universe"));
     assert!(package.contract.to_string().contains("executable evidence"));
     assert!(package.contract.to_string().contains("convergence-contract"));
+    assert!(package.contract.to_string().contains("closure-protocol"));
+    assert!(package
+        .contract
+        .to_string()
+        .contains("best valid checkpoint"));
+    assert!(package
+        .contract
+        .to_string()
+        .contains("proof-to-final"));
+    assert!(package
+        .contract
+        .to_string()
+        .contains("return immediately"));
     assert!(package
         .contract
         .to_string()

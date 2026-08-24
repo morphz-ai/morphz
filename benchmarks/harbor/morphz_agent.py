@@ -31,7 +31,7 @@ DEFAULT_HARNESS_PATH = (
     / "harnesses"
     / "terminal-task.hns"
 )
-DEFAULT_HARNESS_REF = "terminal-task@0.3.0"
+DEFAULT_HARNESS_REF = "terminal-task@0.4.0"
 
 
 class MorphzAgent(BaseAgent):
