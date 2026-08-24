@@ -1,0 +1,26 @@
+[llm]
+provider = "harbor"
+model = 'gpt-5.6-sol'
+reasoning_effort = 'max'
+
+[providers.harbor]
+protocol = 'openai-responses'
+base_url = 'http://172.17.0.1:8317/v1'
+credential = "harbor"
+
+[credentials.harbor]
+source = "env"
+name = 'MORPHZ_PROVIDER_API_KEY'
+
+[orchestrator]
+model_provider_max_in_flight = 8
+context_soft_token_limit = 196608
+context_hard_token_limit = 262144
+context_maintenance_reserve_tokens = 32768
+
+[orchestrator.activation_admission]
+max_in_flight = 16
+
+[permissions]
+mode = "full_access"
+shell_environment_policy = "remove_sensitive"

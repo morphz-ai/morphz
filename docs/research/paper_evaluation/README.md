@@ -21,6 +21,7 @@
 - [Terminal-Bench 2.1 Harness v0.3 未见 20 题验证协议](./terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md)：固定 registry 顺序第 21–40 题、20×1、并发 5、零重试与独立结果边界；
 - [Terminal-Bench 2.1 Harness v0.3 未见 20 题结果](./terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md)：20/20 完成、11/20 严格通过、Token、超时与 Provider/Runtime/模型分层归因；
 - [Terminal-Bench 2.1 Harness v0.4 单题回归协议](./terminal_bench_2_1_harness_trial_protocol_v0_4.md)：用 `raman-fitting` 定向验证最佳有效产物与 proof-to-final 收口协议，不计入未见题成绩；
+- [Terminal-Bench 2.1 Harness v0.4 单题回归结果](./terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md)：0 分、无任务产物、24 步和 100.4 万输入 Token；证明纯文本收口建议不足，v0.4 已关闭；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

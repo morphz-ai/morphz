@@ -1,6 +1,6 @@
 # Terminal-Bench 2.1 Harness Trial Protocol v0.4
 
-> Status: frozen before model run; one post-hoc convergence regression permitted
+> Status: completed-failed / closed; the one permitted regression has run and no retry is allowed
 >
 > Date: 2026-08-24
 >
@@ -79,3 +79,12 @@ open-ended exploration. Official verifier reward remains the strongest product o
 failure is retained and analyzed without another v0.4 retry.
 
 No second task, retry, larger batch or v0.4 mutation is authorized by this protocol.
+
+## 6. Closed result
+
+The single `raman-fitting` run completed with reward `0.0`. It produced no
+`/app/results.json` and returned a progress message about performing another diagnostic instead of
+the requested result. Harbor recorded no exception because the Agent process returned before the
+900-second deadline, but the task was not complete. v0.4 is closed and must not be rerun or expanded.
+The evidence, descriptive v0.3 comparison and engineering implications are recorded in
+[`terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md`](./terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md).

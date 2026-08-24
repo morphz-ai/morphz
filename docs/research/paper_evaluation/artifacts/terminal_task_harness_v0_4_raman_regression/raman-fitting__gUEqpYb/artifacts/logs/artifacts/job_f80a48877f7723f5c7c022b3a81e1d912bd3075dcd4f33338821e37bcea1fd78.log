@@ -1,0 +1,5 @@
+pip 25.2 from /usr/local/lib/python3.13/site-packages/pip (python 3.13)
+scipy missing ModuleNotFoundError
+pandas missing ModuleNotFoundError
+matplotlib missing ModuleNotFoundError
+lmfit missing ModuleNotFoundError

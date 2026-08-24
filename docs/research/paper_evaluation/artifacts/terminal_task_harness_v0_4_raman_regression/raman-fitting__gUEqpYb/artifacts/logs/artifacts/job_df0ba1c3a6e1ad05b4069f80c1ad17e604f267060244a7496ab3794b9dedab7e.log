@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/fits.py'
+python: can't open file '/tmp/fits.py': [Errno 2] No such file or directory

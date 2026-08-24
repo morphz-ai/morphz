@@ -264,3 +264,8 @@ artifact or sufficient evidence existed. Its only permitted first regression
 is one attempt of `raman-fitting`; it is not an unseen or reportable benchmark
 sample. The frozen protocol is
 [`terminal_bench_2_1_harness_trial_protocol_v0_4.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_4.md).
+That regression returned reward zero, wrote no requested `results.json`, and
+ended with a progress statement after 24 ATIF steps and 1,004,381 input tokens.
+It did not demonstrate convergence improvement; v0.4 is closed and must not be
+retried or expanded. The result and public evidence are recorded in
+[`terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md).

@@ -60,6 +60,14 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 完成 `terminal-task@0.4.0` 唯一允许的 `raman-fitting` 事后收口回归：raw/strict
+  reward 均为 0，未创建 `/app/results.json`；Agent 在约第 869 秒返回“还要生成可视化后
+  再写最终 JSON”的进度说明，Harbor 因进程正常返回而未记 `AgentTimeoutError`，但任务
+  实际未交付。ATIF 为 24 steps、24 次模型求值、1,004,381 input Token；相比 v0.3
+  同题单次轨迹的 18 steps / 612,131 input Token 没有改善，不能作因果比较，但足以否定
+  v0.4 已解决收口问题。下一方向必须区分 progress/terminal delivery，并对显式任务产物
+  建立可执行终态合同；v0.4 已关闭且不得重试。完整结果见
+  [`terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md`](./terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md)；
 - 完成 `terminal-task@0.3.0` 固定 registry 顺序第 21–40 题 × 1 次未见开发验证：
   20/20 完成、官方与严格 verifier 均为 11/20（55%），5 个
   `AgentTimeoutError`，输入 16,323,279 Token；其中 `vulnerable-secret` 被

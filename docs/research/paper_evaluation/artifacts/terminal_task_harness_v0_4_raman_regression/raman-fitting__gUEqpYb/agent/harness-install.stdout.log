@@ -1,0 +1,5 @@
+[2m2026-08-24T09:51:20.618+00:00[0m [32m INFO[0m [2mmorphz::memory::sqlite[0m[2m:[0m SQLite WAL Storage enabled [3msqlite_version[0m[2m=[0m3.53.3 [3mmax_connections[0m[2m=[0m8 [3mautomatic_connection_retirement[0m[2m=[0mfalse [3mevent_code[0m[2m=[0m"memory.sqlite.wal_storage.enabled"
+[2m2026-08-24T09:51:20.908+00:00[0m [34mDEBUG[0m [2mmorphz::runtime[0m[2m:[0m Bounded transient storage retention completed [3mresolved_signal_outbox_deleted[0m[2m=[0m0 [3mexpired_pairing_codes_deleted[0m[2m=[0m0 [3mexpired_challenges_deleted[0m[2m=[0m0 [3mevent_code[0m[2m=[0m"runtime.storage.transient_retention_completed"
+[2m2026-08-24T09:51:20.952+00:00[0m [33m WARN[0m [2mmorphz::runtime[0m[2m:[0m Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries [3mevent_code[0m[2m=[0m"runtime.permissions.full_access_enabled"
+已安装 Harness terminal-task@0.4.0
+artifact=sha256:b6063a4a970362888f6194fdfa498421b417bb032f4b58bf96e0bf5a0571aae2

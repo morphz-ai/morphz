@@ -1,0 +1,17 @@
+{
+    "task": {
+        "name": "terminal-bench/raman-fitting",
+        "ref": "sha256:97ca4025332b20739da553cab0658f2ead925d1b5b3b9b7664dc9eb5e7fbeab7",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "raman-fitting__gUEqpYb",
+    "trials_dir": "/opt/morphz-benchmark/source/jobs/2026-08-24__17-51-18",
+    "agent": {
+        "name": "benchmarks.harbor.morphz_agent:MorphzAgent",
+        "model_name": "custom/gpt-5.6-sol",
+        "kwargs": {
+            "reasoning_effort": "max"
+        }
+    },
+    "job_id": "ac2c8c04-619d-4f50-9137-25177dd75ed5"
+}
