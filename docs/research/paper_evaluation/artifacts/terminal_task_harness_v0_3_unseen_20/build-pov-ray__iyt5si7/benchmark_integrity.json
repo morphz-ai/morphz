@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/build-pov-ray",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "62fb27fcf27d1833ca0ec70a688c319b002d31bf2140677460e9f9cfbfaf8227"
+}

@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/mteb-retrieve",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "8e95a527a8381c811f43c090bbaf4a9af22d0b68012f36a6f2fd1bff801345ac"
+}

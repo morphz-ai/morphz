@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/configure-git-webserver",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "1080109a09fc5260304caaa00bb593defb20dfae983e31f4a448d63a6039e03a"
+}

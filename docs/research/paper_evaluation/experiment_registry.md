@@ -60,6 +60,14 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 完成 `terminal-task@0.3.0` 固定 registry 顺序第 21–40 题 × 1 次未见开发验证：
+  20/20 完成、官方与严格 verifier 均为 11/20（55%），5 个
+  `AgentTimeoutError`，输入 16,323,279 Token；其中 `vulnerable-secret` 被
+  Provider `cyber_policy` 拒绝并因 Runtime 错分为 `server_unavailable` 循环至超时，
+  同时暴露 public Gate 漏检该错误；另有一次 Provider stream 悬挂、三次长程不收敛
+  （其中 `train-fasttext` 超时但通过）及五个正常结束的方案错误。当前禁止继续第 41–60
+  题，先修复永久错误分类、Gate 覆盖和调用悬挂诊断；完整结果见
+  [`terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md`](./terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md)；
 - 用户在查看 `terminal-task@0.3.0` 单题结果后决定不再围绕已观察的
   `torch-pipeline-parallelism` 调试，改为保持 v0.3 与 Runtime v4 不变，验证固定 registry
   顺序第 21–40 题；新批次为 20×1、并发 5、零重试、无上传，不与使用不同 Agent/Harness

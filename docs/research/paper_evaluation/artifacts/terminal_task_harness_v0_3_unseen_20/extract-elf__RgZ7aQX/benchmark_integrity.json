@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/extract-elf",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "475fc6f674cec92ec44de4146060153dc891cd5d59a73794b342dbb6df52c756"
+}

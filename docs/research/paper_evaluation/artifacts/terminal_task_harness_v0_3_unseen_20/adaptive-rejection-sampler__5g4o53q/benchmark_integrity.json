@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/adaptive-rejection-sampler",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "e2db4bfe7710be570930b444ca6ac86b6f64c3d5bad880ca3f77bae0ad08b493"
+}

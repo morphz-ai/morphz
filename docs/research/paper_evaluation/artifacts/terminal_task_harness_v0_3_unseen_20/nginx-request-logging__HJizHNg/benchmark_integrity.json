@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/nginx-request-logging",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "3ffebcc04fff0d5763ddec0bb7f752df4fa1dd5eaba01fb8c15055e68f9019c5"
+}

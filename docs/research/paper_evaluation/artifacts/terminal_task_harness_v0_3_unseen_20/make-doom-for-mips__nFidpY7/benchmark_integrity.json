@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/make-doom-for-mips",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "2c253d8aa1d1ff63aeb96273450dce8e94c89436f97c126c7601bef1861f37e4"
+}

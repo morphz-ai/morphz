@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/cobol-modernization",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "522ced21dd6c91b8f3a5689a09bedef4315a31b97ff2cef2bfb232318c80323b"
+}

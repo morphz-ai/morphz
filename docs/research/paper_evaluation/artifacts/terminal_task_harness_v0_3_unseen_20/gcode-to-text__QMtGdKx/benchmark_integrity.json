@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/gcode-to-text",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "069bb7ad227ccd1092a61b08da80f30a3c01177074a7bb34fc4fa5adee1c0769"
+}

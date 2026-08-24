@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/filter-js-from-html",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "b823335cc9ea48c616202234f0c20cc6dc5b2e0af3e6ab9f0d2f61d6ea778e16"
+}

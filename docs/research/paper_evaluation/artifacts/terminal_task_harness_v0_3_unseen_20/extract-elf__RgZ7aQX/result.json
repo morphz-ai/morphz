@@ -1,0 +1,129 @@
+{
+    "id": "b8d2930d-876f-4525-8712-5d24ac537922",
+    "task_name": "terminal-bench/extract-elf",
+    "trial_name": "extract-elf__RgZ7aQX",
+    "trial_uri": "file:///opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22/extract-elf__RgZ7aQX",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "extract-elf",
+        "ref": "sha256:1ef31d566be4fe3459d5368621ae7ef7a31b23ef675737e473bbc43c8c7b3fce"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "642b0321f77002c7c9a70acb825b31295d0a6baf07a5c3880ca5b30461fbbdcb",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/extract-elf",
+            "ref": "sha256:1ef31d566be4fe3459d5368621ae7ef7a31b23ef675737e473bbc43c8c7b3fce",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "extract-elf__RgZ7aQX",
+        "trials_dir": "/opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "benchmarks.harbor.morphz_agent:MorphzAgent",
+            "import_path": null,
+            "model_name": "custom/gpt-5.6-sol",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": "ad6b4458-ddab-41ff-923c-2cacfd59e23e",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "morphz",
+        "version": "paper-eval-runtime-v4@5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+        "model_info": {
+            "name": "gpt-5.6-sol",
+            "provider": "custom"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 241183,
+        "n_cache_tokens": 6656,
+        "n_output_tokens": 12907,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": {
+            "benchmark_integrity": {
+                "policy_version": "terminal-bench-integrity-v2",
+                "task_name": "extract-elf",
+                "audit_complete": true,
+                "disqualified": false,
+                "finding_count": 0,
+                "findings": [],
+                "trajectory_sha256": "475fc6f674cec92ec44de4146060153dc891cd5d59a73794b342dbb6df52c756"
+            }
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-08-24T06:18:19.224311Z",
+    "finished_at": "2026-08-24T06:25:45.224112Z",
+    "environment_setup": {
+        "started_at": "2026-08-24T06:18:19.225148Z",
+        "finished_at": "2026-08-24T06:18:20.205658Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-24T06:18:20.205684Z",
+        "finished_at": "2026-08-24T06:18:20.496657Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-24T06:18:20.496727Z",
+        "finished_at": "2026-08-24T06:25:26.553417Z"
+    },
+    "verifier": {
+        "started_at": "2026-08-24T06:25:26.777109Z",
+        "finished_at": "2026-08-24T06:25:34.537993Z"
+    },
+    "step_results": null
+}

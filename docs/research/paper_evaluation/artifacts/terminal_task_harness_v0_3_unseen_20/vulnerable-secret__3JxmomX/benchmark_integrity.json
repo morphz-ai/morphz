@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/vulnerable-secret",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "d218ab786b7d5cde5ae5d1b1748aadfbb3b2d5213a5fa6bed184741f2bd622fd"
+}

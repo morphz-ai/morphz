@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/compile-compcert",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "eb7d06647b98cf4c9e6f0386eb3ada184750ab7e5e92a79e17169f7d83990a09"
+}

@@ -1,0 +1,243 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22",
+  "run_identity": {
+    "infrastructure_git_commit": "72fd308ab2471362d667106aa7a0fe04810383d4",
+    "infrastructure_git_tags": [],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "paper-eval-runtime-v4",
+    "runtime_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness": {
+      "id": "terminal-task",
+      "version": "0.3.0",
+      "artifact_hash": "sha256:ba35a184e8d40f5cad925d66a4c125cfec28dfd9cc94ab06148e563aa5692e4e",
+      "source_sha256": "7e9fb42a80c08280da7c4c6c09126d76ce1ea2ec92eea6518f27917d504b8c11"
+    },
+    "attempts": 1,
+    "concurrency": 5,
+    "max_retries": 0,
+    "task_filters": [
+      "adaptive-rejection-sampler",
+      "build-cython-ext",
+      "build-pov-ray",
+      "cobol-modernization",
+      "compile-compcert",
+      "configure-git-webserver",
+      "dna-insert",
+      "extract-elf",
+      "filter-js-from-html",
+      "fix-ocaml-gc",
+      "gcode-to-text",
+      "gpt2-codegolf",
+      "make-doom-for-mips",
+      "mcmc-sampling-stan",
+      "mteb-retrieve",
+      "nginx-request-logging",
+      "raman-fitting",
+      "sam-cell-seg",
+      "train-fasttext",
+      "vulnerable-secret"
+    ]
+  },
+  "trial_count": 20,
+  "expected_trial_count": 20,
+  "trial_count_matches": true,
+  "missing_expected_tasks": {},
+  "unexpected_tasks": [],
+  "audit_complete": true,
+  "disqualified_trials": 0,
+  "integrity_gate_passed": true,
+  "raw_mean_reward": 0.55,
+  "strict_mean_reward": 0.55,
+  "trials": [
+    {
+      "trial": "adaptive-rejection-sampler__5g4o53q",
+      "task_name": "terminal-bench/adaptive-rejection-sampler",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-cython-ext__jMPA89L",
+      "task_name": "terminal-bench/build-cython-ext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-pov-ray__iyt5si7",
+      "task_name": "terminal-bench/build-pov-ray",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "cobol-modernization__9sqKrHx",
+      "task_name": "terminal-bench/cobol-modernization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "compile-compcert__mWhhBCA",
+      "task_name": "terminal-bench/compile-compcert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "configure-git-webserver__S4Ue9RL",
+      "task_name": "terminal-bench/configure-git-webserver",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "dna-insert__ZQYx4sp",
+      "task_name": "terminal-bench/dna-insert",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-elf__RgZ7aQX",
+      "task_name": "terminal-bench/extract-elf",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "filter-js-from-html__LeUfGan",
+      "task_name": "terminal-bench/filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-ocaml-gc__KuDiowv",
+      "task_name": "terminal-bench/fix-ocaml-gc",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gcode-to-text__QMtGdKx",
+      "task_name": "terminal-bench/gcode-to-text",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gpt2-codegolf__bK2q47o",
+      "task_name": "terminal-bench/gpt2-codegolf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "make-doom-for-mips__nFidpY7",
+      "task_name": "terminal-bench/make-doom-for-mips",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mcmc-sampling-stan__q7s9PUh",
+      "task_name": "terminal-bench/mcmc-sampling-stan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mteb-retrieve__KiXBxJX",
+      "task_name": "terminal-bench/mteb-retrieve",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "nginx-request-logging__HJizHNg",
+      "task_name": "terminal-bench/nginx-request-logging",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "raman-fitting__gTfsgXW",
+      "task_name": "terminal-bench/raman-fitting",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sam-cell-seg__4EdFjvK",
+      "task_name": "terminal-bench/sam-cell-seg",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "train-fasttext__MMVEVMM",
+      "task_name": "terminal-bench/train-fasttext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "vulnerable-secret__3JxmomX",
+      "task_name": "terminal-bench/vulnerable-secret",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    }
+  ]
+}

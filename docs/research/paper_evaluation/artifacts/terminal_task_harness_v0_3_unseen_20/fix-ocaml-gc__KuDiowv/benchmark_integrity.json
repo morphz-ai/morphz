@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/fix-ocaml-gc",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "871431b25596c568e24cb01614c1b1ad1938dc90384787ff12196d952ccf0cfd"
+}

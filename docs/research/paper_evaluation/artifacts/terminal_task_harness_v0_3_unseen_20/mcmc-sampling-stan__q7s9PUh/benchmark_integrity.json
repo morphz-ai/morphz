@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/mcmc-sampling-stan",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "241e2362fb2869c27e2f84be6ceb900f431c2dc6d5a7485d265a1a1792c8cc32"
+}

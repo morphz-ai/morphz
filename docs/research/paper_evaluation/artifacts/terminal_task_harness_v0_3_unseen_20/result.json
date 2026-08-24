@@ -1,0 +1,68 @@
+{
+    "id": "ad6b4458-ddab-41ff-923c-2cacfd59e23e",
+    "started_at": "2026-08-24T13:59:23.748581",
+    "updated_at": "2026-08-24T15:30:34.370677",
+    "finished_at": "2026-08-24T15:30:34.370677",
+    "n_total_trials": 20,
+    "stats": {
+        "n_completed_trials": 20,
+        "n_errored_trials": 5,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "morphz__gpt-5.6-sol__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 20,
+                "n_errors": 5,
+                "metrics": [
+                    {
+                        "mean": 0.55
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "build-pov-ray__iyt5si7",
+                            "gpt2-codegolf__bK2q47o",
+                            "filter-js-from-html__LeUfGan",
+                            "adaptive-rejection-sampler__5g4o53q",
+                            "vulnerable-secret__3JxmomX",
+                            "make-doom-for-mips__nFidpY7",
+                            "gcode-to-text__QMtGdKx",
+                            "dna-insert__ZQYx4sp",
+                            "raman-fitting__gTfsgXW"
+                        ],
+                        "1.0": [
+                            "cobol-modernization__9sqKrHx",
+                            "mcmc-sampling-stan__q7s9PUh",
+                            "sam-cell-seg__4EdFjvK",
+                            "mteb-retrieve__KiXBxJX",
+                            "extract-elf__RgZ7aQX",
+                            "nginx-request-logging__HJizHNg",
+                            "configure-git-webserver__S4Ue9RL",
+                            "build-cython-ext__jMPA89L",
+                            "train-fasttext__MMVEVMM",
+                            "compile-compcert__mWhhBCA",
+                            "fix-ocaml-gc__KuDiowv"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "adaptive-rejection-sampler__5g4o53q",
+                        "vulnerable-secret__3JxmomX",
+                        "make-doom-for-mips__nFidpY7",
+                        "train-fasttext__MMVEVMM",
+                        "raman-fitting__gTfsgXW"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 16323279,
+        "n_cache_tokens": 1438720,
+        "n_output_tokens": 360425,
+        "cost_usd": null
+    }
+}

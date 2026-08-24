@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/train-fasttext",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "c557f5f75d76a3dc9e596a0059ee2184f97fcf650994bc05786485b4307a3aaf"
+}

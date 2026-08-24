@@ -244,3 +244,15 @@ That run obtained stronger executable evidence but still ended in
 Agent reply. v0.3 is closed; no larger v0.3 run is permitted. The recorded
 result is in
 [`terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md).
+
+After reviewing that closed diagnostic, the user made a separate, explicit
+product-validation decision to keep v0.3 unchanged and run registry tasks 21–40
+once each. That later authorization is recorded independently rather than
+retroactively changing the original diagnostic. The batch completed 20/20 with
+11/20 raw and strict passes and five `AgentTimeoutError` cases. It also exposed
+a Provider `cyber_policy` rejection that the Runtime misclassified as temporary
+unavailability and that the then-current public Gate failed to count. No further
+v0.3 expansion is permitted. Protocol and result:
+
+- [`terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md)
+- [`terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md)

@@ -1,0 +1,129 @@
+{
+    "id": "af81b450-6245-4514-8cdd-7190b36a53eb",
+    "task_name": "terminal-bench/gpt2-codegolf",
+    "trial_name": "gpt2-codegolf__bK2q47o",
+    "trial_uri": "file:///opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22/gpt2-codegolf__bK2q47o",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "gpt2-codegolf",
+        "ref": "sha256:fe42af8e9c5aa927c3b680acd08e43032c84088fa9d770b03ce63dbc66fea4e7"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "d3ac734dba0344c290f521377e65f68e5005a96d6c76c2ca49a9f06ffa8ed0d5",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/gpt2-codegolf",
+            "ref": "sha256:fe42af8e9c5aa927c3b680acd08e43032c84088fa9d770b03ce63dbc66fea4e7",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "gpt2-codegolf__bK2q47o",
+        "trials_dir": "/opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "benchmarks.harbor.morphz_agent:MorphzAgent",
+            "import_path": null,
+            "model_name": "custom/gpt-5.6-sol",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": "ad6b4458-ddab-41ff-923c-2cacfd59e23e",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "morphz",
+        "version": "paper-eval-runtime-v4@5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+        "model_info": {
+            "name": "gpt-5.6-sol",
+            "provider": "custom"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 223984,
+        "n_cache_tokens": 6656,
+        "n_output_tokens": 11572,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": {
+            "benchmark_integrity": {
+                "policy_version": "terminal-bench-integrity-v2",
+                "task_name": "gpt2-codegolf",
+                "audit_complete": true,
+                "disqualified": false,
+                "finding_count": 0,
+                "findings": [],
+                "trajectory_sha256": "45ef61239faf97a6f9e8c58ec2d46d9299bdb6acf11cd0cb951fa24f7b772fc1"
+            }
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-08-24T05:59:23.875427Z",
+    "finished_at": "2026-08-24T06:07:08.791698Z",
+    "environment_setup": {
+        "started_at": "2026-08-24T05:59:23.890844Z",
+        "finished_at": "2026-08-24T05:59:24.869863Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-24T05:59:24.869918Z",
+        "finished_at": "2026-08-24T05:59:25.123686Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-24T05:59:25.123801Z",
+        "finished_at": "2026-08-24T06:06:48.177720Z"
+    },
+    "verifier": {
+        "started_at": "2026-08-24T06:06:48.387720Z",
+        "finished_at": "2026-08-24T06:06:58.188621Z"
+    },
+    "step_results": null
+}

@@ -1,8 +1,11 @@
 # Terminal-Bench 2.1 Harness v0.3 未见 20 题验证协议（2026-08-24）
 
-> 状态：`frozen / user-directed product validation / model run permitted after no-model Gate`
+> 状态：`completed / user-directed product validation`
 >
 > 性质：开发验证，不是完整 89 题成绩，不上传，不与历史批次拼接
+>
+> 结果：20/20 完成，11/20 通过，raw = strict = 55%；详见
+> [`terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md`](./terminal_bench_2_1_harness_v0_3_unseen_20_result_2026_08_24.md)
 
 ## 1. 决策背景
 

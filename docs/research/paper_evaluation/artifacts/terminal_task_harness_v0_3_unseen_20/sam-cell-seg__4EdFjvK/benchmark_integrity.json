@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/sam-cell-seg",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "545b8f2321ef9b37b00e5b884c003daf92473e190caf890162e7010ba4d03150"
+}

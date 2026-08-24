@@ -1,0 +1,134 @@
+{
+    "id": "68d3f28a-404a-45c9-98ad-76a2b860ad65",
+    "task_name": "terminal-bench/train-fasttext",
+    "trial_name": "train-fasttext__MMVEVMM",
+    "trial_uri": "file:///opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22/train-fasttext__MMVEVMM",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "train-fasttext",
+        "ref": "sha256:460fc0818971ec83545a76805267b65459128fad52e68c26a199a0d74022badb"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "f521c0d2f312c54d2ba22574c94cfe2e646969cc744974ab9faf68aead2bc1b2",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/train-fasttext",
+            "ref": "sha256:460fc0818971ec83545a76805267b65459128fad52e68c26a199a0d74022badb",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "train-fasttext__MMVEVMM",
+        "trials_dir": "/opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "benchmarks.harbor.morphz_agent:MorphzAgent",
+            "import_path": null,
+            "model_name": "custom/gpt-5.6-sol",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": "ad6b4458-ddab-41ff-923c-2cacfd59e23e",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "morphz",
+        "version": "paper-eval-runtime-v4@5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+        "model_info": {
+            "name": "gpt-5.6-sol",
+            "provider": "custom"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 1446748,
+        "n_cache_tokens": 253952,
+        "n_output_tokens": 35507,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": {
+            "benchmark_integrity": {
+                "policy_version": "terminal-bench-integrity-v2",
+                "task_name": "train-fasttext",
+                "audit_complete": true,
+                "disqualified": false,
+                "finding_count": 0,
+                "findings": [],
+                "trajectory_sha256": "c557f5f75d76a3dc9e596a0059ee2184f97fcf650994bc05786485b4307a3aaf"
+            }
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": {
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 3600.0 seconds",
+        "exception_traceback": "Traceback (most recent call last):\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py\", line 520, in wait_for\n    return await fut\n           ^^^^^^^^^\n  File \"/opt/morphz-benchmark/source/benchmarks/harbor/morphz_agent.py\", line 182, in run\n    result = await environment.exec(\n             ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 1096, in exec\n    return await self._compose_exec(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 1173, in _compose_exec\n    return await self._run_docker_compose_command(\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 649, in _run_docker_compose_command\n    result = await self._collect_buffered_output(\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/environments/docker/docker.py\", line 679, in _collect_buffered_output\n    stdout_bytes, stderr_bytes = await process.communicate(input=stdin_data)\n                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/subprocess.py\", line 201, in communicate\n    stdin, stdout, stderr = await tasks.gather(stdin, stdout, stderr)\n                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/subprocess.py\", line 181, in _read_stream\n    output = await stream.read()\n             ^^^^^^^^^^^^^^^^^^^\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/streams.py\", line 706, in read\n    block = await self.read(self._limit)\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/streams.py\", line 713, in read\n    await self._wait_for_data('read')\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/streams.py\", line 545, in _wait_for_data\n    await self._waiter\nasyncio.exceptions.CancelledError\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 480, in _run_agent_phase\n    await asyncio.wait_for(\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py\", line 519, in wait_for\n    async with timeouts.timeout(timeout):\n               ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/timeouts.py\", line 115, in __aexit__\n    raise TimeoutError from exc_val\nTimeoutError\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/single_step.py\", line 77, in _run_agent\n    await self._run_agent_phase(\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 489, in _run_agent_phase\n    raise AgentTimeoutError(\nharbor.trial.errors.AgentTimeoutError: Agent execution timed out after 3600.0 seconds\n",
+        "occurred_at": "2026-08-24T07:29:41.825266Z"
+    },
+    "started_at": "2026-08-24T06:29:34.466553Z",
+    "finished_at": "2026-08-24T07:30:34.368436Z",
+    "environment_setup": {
+        "started_at": "2026-08-24T06:29:34.476019Z",
+        "finished_at": "2026-08-24T06:29:35.392488Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-24T06:29:35.392515Z",
+        "finished_at": "2026-08-24T06:29:35.653948Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-24T06:29:35.654020Z",
+        "finished_at": "2026-08-24T07:29:41.824674Z"
+    },
+    "verifier": {
+        "started_at": "2026-08-24T07:29:42.034459Z",
+        "finished_at": "2026-08-24T07:30:23.418601Z"
+    },
+    "step_results": null
+}

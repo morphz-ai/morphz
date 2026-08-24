@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/build-cython-ext",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "9178bf3c2e76cc9396d8fd2f0b6d158f6b4922633bbb34f86dc239b3397fcaeb"
+}

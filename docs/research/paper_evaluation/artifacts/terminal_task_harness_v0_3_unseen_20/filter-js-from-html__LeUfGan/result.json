@@ -1,0 +1,129 @@
+{
+    "id": "30eba304-4815-4d15-b9fc-e83c194888d3",
+    "task_name": "terminal-bench/filter-js-from-html",
+    "trial_name": "filter-js-from-html__LeUfGan",
+    "trial_uri": "file:///opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22/filter-js-from-html__LeUfGan",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "filter-js-from-html",
+        "ref": "sha256:2d1496b6fc62adeccdba7a56f4bc24e5ef265840434d2011234ed20b6c240759"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "53d156752f8706d9e88c598e0e562ddacf52ab478c7655352e939b8f44a5d13b",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/filter-js-from-html",
+            "ref": "sha256:2d1496b6fc62adeccdba7a56f4bc24e5ef265840434d2011234ed20b6c240759",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "filter-js-from-html__LeUfGan",
+        "trials_dir": "/opt/morphz-benchmark/diagnostic-jobs/unseen-20-v03-r1/2026-08-24__13-59-22",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "benchmarks.harbor.morphz_agent:MorphzAgent",
+            "import_path": null,
+            "model_name": "custom/gpt-5.6-sol",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": "ad6b4458-ddab-41ff-923c-2cacfd59e23e",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "morphz",
+        "version": "paper-eval-runtime-v4@5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+        "model_info": {
+            "name": "gpt-5.6-sol",
+            "provider": "custom"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 375576,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 30218,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": {
+            "benchmark_integrity": {
+                "policy_version": "terminal-bench-integrity-v2",
+                "task_name": "filter-js-from-html",
+                "audit_complete": true,
+                "disqualified": false,
+                "finding_count": 0,
+                "findings": [],
+                "trajectory_sha256": "b823335cc9ea48c616202234f0c20cc6dc5b2e0af3e6ab9f0d2f61d6ea778e16"
+            }
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-08-24T05:59:24.006540Z",
+    "finished_at": "2026-08-24T06:19:15.328766Z",
+    "environment_setup": {
+        "started_at": "2026-08-24T05:59:24.007870Z",
+        "finished_at": "2026-08-24T05:59:25.474610Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-24T05:59:25.474629Z",
+        "finished_at": "2026-08-24T05:59:25.755908Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-24T05:59:25.755967Z",
+        "finished_at": "2026-08-24T06:15:50.591002Z"
+    },
+    "verifier": {
+        "started_at": "2026-08-24T06:15:50.811443Z",
+        "finished_at": "2026-08-24T06:19:03.602769Z"
+    },
+    "step_results": null
+}
