@@ -60,6 +60,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 完成通用 `terminal-task@0.3.0` 收敛合同及唯一预注册单题诊断：
+  `torch-pipeline-parallelism` 仍因 `AgentTimeoutError` 得 0 分，但相比 v0.2 将
+  ATIF steps 从 21 降至 17、tool calls 从 35 降至 26，并取得 world size 1/2
+  forward、backward 与 parameter-gradient 零误差的调用侧实测；最后一个验证成功后
+  没有生成最终答复，问题收敛为缺少可靠的 proof-to-final transition；v0.3 已关闭，
+  不再补跑或扩大；详见
+  [`terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md`](./terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md)；
 - 按用户缩小后的停止条件完成 Terminal-Bench 2.1 官方固定顺序前 20 题 × 1 次诊断：
   20/20 完成、官方 verifier 15/20（75%）、0 Runtime/Harness error、0 Provider
   429/503；输入 9,181,663 Token，证明在扩大到 89×1 前必须先分析轨迹和控制成本；

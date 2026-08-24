@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "torch-pipeline-parallelism",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "6ddd83f1f9a61cf53bb181801291e0750828de0bb677c4201877333f2fbc8ce9"
+}

@@ -239,3 +239,8 @@ evidence ledger but permits honest `completed-with-limitations`, `blocked`, and
 expected value. Its first and only precommitted diagnostic is one attempt of
 `torch-pipeline-parallelism`, as defined by
 [`terminal_bench_2_1_harness_trial_protocol_v0_3.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_3.md).
+That run obtained stronger executable evidence but still ended in
+`AgentTimeoutError` with reward zero after the final successful test produced no
+Agent reply. v0.3 is closed; no larger v0.3 run is permitted. The recorded
+result is in
+[`terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md).

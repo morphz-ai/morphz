@@ -1,6 +1,6 @@
 # Terminal-Bench 2.1 Harness Trial Protocol v0.3
 
-> Status: frozen candidate; one precommitted model run permitted after the no-model Gate
+> Status: closed after the single precommitted model run; reward 0.0 / `AgentTimeoutError`; no further v0.3 run permitted
 >
 > Date: 2026-08-24
 >
@@ -85,3 +85,14 @@ After the one run, compare v0.3 with the frozen v0.2 trajectory:
 A pass with a materially shorter and honest path supports retaining v0.3 for later representative
 evaluation. A zero reward or evidence regression closes this round for trajectory review; it does
 not authorize silent Harness mutation or another model run.
+
+## 6. Recorded outcome
+
+The single permitted run completed on 2026-08-24 with raw and strict reward `0.0` and public
+exception `AgentTimeoutError`. The trajectory obtained exact caller-side world-size 1 and 2
+forward, backward and parameter-gradient equivalence evidence, but no final Agent reply followed
+the last successful test before the Agent deadline. Provider, integrity, binding and isolation
+Gates passed. See
+[`terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md`](./terminal_bench_2_1_harness_v0_3_torch_result_2026_08_24.md).
+
+No other task, retry or larger matrix is permitted under `terminal-task@0.3.0`.

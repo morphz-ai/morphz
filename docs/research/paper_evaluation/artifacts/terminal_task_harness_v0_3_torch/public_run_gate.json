@@ -1,0 +1,97 @@
+{
+  "gate_version": "terminal-bench-public-run-gate-v2",
+  "integrity_policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/source/jobs/2026-08-24__08-43-34",
+  "expected_trials": 1,
+  "run_identity": {
+    "infrastructure_git_commit": "1638f8b7feffe05f566928d1785e3f0f26469d74",
+    "infrastructure_git_tags": [],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "paper-eval-runtime-v4",
+    "runtime_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness": {
+      "id": "terminal-task",
+      "version": "0.3.0",
+      "artifact_hash": "sha256:ba35a184e8d40f5cad925d66a4c125cfec28dfd9cc94ab06148e563aa5692e4e",
+      "source_sha256": "7e9fb42a80c08280da7c4c6c09126d76ce1ea2ec92eea6518f27917d504b8c11"
+    },
+    "attempts": 1,
+    "concurrency": 1,
+    "max_retries": 0,
+    "task_filters": [
+      "torch-pipeline-parallelism"
+    ]
+  },
+  "checks": {
+    "strict_integrity_gate": true,
+    "trial_count": true,
+    "all_trial_gates": true,
+    "isolation": true,
+    "provider_clean": true,
+    "credential_scan_complete": true,
+    "credential_not_persisted": true
+  },
+  "required_checks": [
+    "strict_integrity_gate",
+    "trial_count",
+    "all_trial_gates",
+    "isolation",
+    "credential_scan_complete",
+    "credential_not_persisted"
+  ],
+  "isolation": {
+    "unique_contexts": true,
+    "unique_sessions": true,
+    "unique_databases": true
+  },
+  "provider_errors": {
+    "usage_limit_reached": 0,
+    "auth_unavailable": 0,
+    "http_429": 0,
+    "http_503": 0,
+    "provider_request_failed": 0
+  },
+  "credential_hit_paths": [],
+  "trials": [
+    {
+      "trial": "torch-pipeline-parallelism__XSu9XxL",
+      "task_name": "terminal-bench/torch-pipeline-parallelism",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "27da7d95-fb32-4594-ae5a-5a8125e40cff",
+      "session_id": "torch-pipeline-parallelism__XSu9XxL__agent",
+      "database_sha256": "b6f08e0a00d4b1570c4c649c36c790d2042621ca2c24e2cea346819065a9c510",
+      "trajectory_sha256": "6ddd83f1f9a61cf53bb181801291e0750828de0bb677c4201877333f2fbc8ce9",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.3.0",
+        "artifact_hash": "sha256:ba35a184e8d40f5cad925d66a4c125cfec28dfd9cc94ab06148e563aa5692e4e",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.3.0",
+            "artifact_hash": "sha256:ba35a184e8d40f5cad925d66a4c125cfec28dfd9cc94ab06148e563aa5692e4e",
+            "evaluation_id": "msg_1787532217940564599_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_a511cb6068b2a6ac7cd89f9a6c3a513f0128d1173753c21e616a4c34d87aa0ce"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "gate_passed": true
+}
