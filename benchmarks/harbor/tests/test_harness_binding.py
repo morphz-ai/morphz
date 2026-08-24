@@ -49,7 +49,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         runner = Path(__file__).parents[1] / "run_morphz_harbor.sh"
         source = runner.read_text(encoding="utf-8")
         install = source.index("harness install /tmp/terminal-task.hns")
-        binding = source.index('--harness="${MORPHZ_HARNESS_REF')
+        binding = source.index('harness_args+=("--harness=${MORPHZ_HARNESS_REF')
         send = source.index("cat /tmp/morphz-instruction.md")
         self.assertLess(install, binding)
         self.assertLess(binding, send)
@@ -67,7 +67,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         self.assertIn('if [[ "$mode" == "failed-five" ]]', source)
         self.assertEqual(
             source.count('exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py'),
-            4,
+            5,
         )
         self.assertNotIn("exec /usr/bin/python3", source)
         failed_five = source.split(
