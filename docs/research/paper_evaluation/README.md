@@ -18,6 +18,7 @@
 - [Terminal-Bench 2.1 正式批次 v1 结果与审计](./terminal_bench_2_1_formal_v1_result_2026_08_21.md)：89 题 × 5 次正式运行、严格 reward-hacking 审计、Token、时延、异常与优化建议；
 - [Terminal-Bench 2.1 误启动 89×5 批次停止记录](./terminal_bench_2_1_aborted_89x5_run_2026_08_24.md)：记录违反“先 89×1 诊断”顺序的误启动、立即停止、产物封存和后续禁止拼接规则；
 - [Terminal-Bench 2.1 前 20 题单次诊断](./terminal_bench_2_1_diagnostic_20x1_result_2026_08_24.md)：固定顺序前 20 题 × 1 次、成本、失败归因、审计更正与定向修复计划；
+- [Terminal-Bench 2.1 Harness v0.3 未见 20 题验证协议](./terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md)：固定 registry 顺序第 21–40 题、20×1、并发 5、零重试与独立结果边界；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

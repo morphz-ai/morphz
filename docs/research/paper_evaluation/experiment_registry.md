@@ -60,6 +60,11 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 用户在查看 `terminal-task@0.3.0` 单题结果后决定不再围绕已观察的
+  `torch-pipeline-parallelism` 调试，改为保持 v0.3 与 Runtime v4 不变，验证固定 registry
+  顺序第 21–40 题；新批次为 20×1、并发 5、零重试、无上传，不与使用不同 Agent/Harness
+  身份的前 20 题拼接；协议见
+  [`terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md`](./terminal_bench_2_1_harness_v0_3_unseen_20_protocol_2026_08_24.md)；
 - 完成通用 `terminal-task@0.3.0` 收敛合同及唯一预注册单题诊断：
   `torch-pipeline-parallelism` 仍因 `AgentTimeoutError` 得 0 分，但相比 v0.2 将
   ATIF steps 从 21 降至 17、tool calls 从 35 降至 26，并取得 world size 1/2
