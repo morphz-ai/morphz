@@ -60,6 +60,14 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-24
 
+- 完成 `raman-fitting` 三种 Agent 方式的同题单次归因对照：原生 Morphz（明确无
+  Harness）raw/strict reward 1.0，18 次模型求值并正常写入结果；v0.4 Harness 继续为
+  0 分且无结果文件；官方 Codex CLI 0.149.1 正常创建、校验并提交结果，但因 2D 拟合
+  窗口和参数选择得 0 分。该案例排除了“Sol 本身做不了”和“Morphz 必然弱于 Codex”的
+  简单判断，也显示 v0.4 的命令式收口文本不应继续加强。后续应提供交付物状态、假设、
+  验收证据、下一步价值和终态决定的方法论，由 Runtime 只实现 progress/terminal 与
+  产物存在性的通用协议；不得围绕本题继续调 Prompt。结果见
+  [`raman_agent_comparison_result_2026_08_24.md`](./raman_agent_comparison_result_2026_08_24.md)；
 - 完成 `terminal-task@0.4.0` 唯一允许的 `raman-fitting` 事后收口回归：raw/strict
   reward 均为 0，未创建 `/app/results.json`；Agent 在约第 869 秒返回“还要生成可视化后
   再写最终 JSON”的进度说明，Harbor 因进程正常返回而未记 `AgentTimeoutError`，但任务

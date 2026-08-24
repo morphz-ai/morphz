@@ -1,0 +1,18 @@
+{
+    "task": {
+        "name": "terminal-bench/raman-fitting",
+        "ref": "sha256:97ca4025332b20739da553cab0658f2ead925d1b5b3b9b7664dc9eb5e7fbeab7",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "raman-fitting__JsGJtTy",
+    "trials_dir": "/opt/morphz-benchmark/source/jobs-codex-comparison/2026-08-24__20-48-51",
+    "agent": {
+        "name": "benchmarks.harbor.codex_comparison_agent:IntegrityCodex",
+        "model_name": "openai/gpt-5.6-sol",
+        "kwargs": {
+            "version": "0.149.1",
+            "reasoning_effort": "max"
+        }
+    },
+    "job_id": "8ec3bf3c-8512-4938-951d-80c70b905da9"
+}

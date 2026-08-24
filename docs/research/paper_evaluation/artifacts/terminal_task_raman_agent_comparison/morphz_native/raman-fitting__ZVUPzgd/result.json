@@ -1,0 +1,129 @@
+{
+    "id": "5341c41a-8d10-406c-a076-9330123392d6",
+    "task_name": "terminal-bench/raman-fitting",
+    "trial_name": "raman-fitting__ZVUPzgd",
+    "trial_uri": "file:///opt/morphz-benchmark/source/jobs/2026-08-24__20-35-05/raman-fitting__ZVUPzgd",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "raman-fitting",
+        "ref": "sha256:97ca4025332b20739da553cab0658f2ead925d1b5b3b9b7664dc9eb5e7fbeab7"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "73157911d2f6196d30097f9b7e3388771a0a843500ad23ea31b66ca9ae5b5118",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/raman-fitting",
+            "ref": "sha256:97ca4025332b20739da553cab0658f2ead925d1b5b3b9b7664dc9eb5e7fbeab7",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "raman-fitting__ZVUPzgd",
+        "trials_dir": "/opt/morphz-benchmark/source/jobs/2026-08-24__20-35-05",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "benchmarks.harbor.morphz_agent:MorphzAgent",
+            "import_path": null,
+            "model_name": "custom/gpt-5.6-sol",
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": "58933fb7-ef58-4ac0-9879-41cb3910c266",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "morphz",
+        "version": "paper-eval-runtime-v4@5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+        "model_info": {
+            "name": "gpt-5.6-sol",
+            "provider": "custom"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 753063,
+        "n_cache_tokens": 53760,
+        "n_output_tokens": 27396,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": {
+            "benchmark_integrity": {
+                "policy_version": "terminal-bench-integrity-v2",
+                "task_name": "raman-fitting",
+                "audit_complete": true,
+                "disqualified": false,
+                "finding_count": 0,
+                "findings": [],
+                "trajectory_sha256": "543e0a7c7f0c49505134c16b6ce4f1c9e4247cb81dfff02d08d586d7857a3f8e"
+            }
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-08-24T12:35:07.251104Z",
+    "finished_at": "2026-08-24T12:47:43.807569Z",
+    "environment_setup": {
+        "started_at": "2026-08-24T12:35:07.265134Z",
+        "finished_at": "2026-08-24T12:35:08.167068Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-24T12:35:08.167121Z",
+        "finished_at": "2026-08-24T12:35:08.382876Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-24T12:35:08.383001Z",
+        "finished_at": "2026-08-24T12:47:28.269252Z"
+    },
+    "verifier": {
+        "started_at": "2026-08-24T12:47:28.470224Z",
+        "finished_at": "2026-08-24T12:47:33.157207Z"
+    },
+    "step_results": null
+}

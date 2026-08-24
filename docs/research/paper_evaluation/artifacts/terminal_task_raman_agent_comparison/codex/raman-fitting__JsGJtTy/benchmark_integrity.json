@@ -1,0 +1,9 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "task_name": "terminal-bench/raman-fitting",
+  "audit_complete": true,
+  "disqualified": false,
+  "finding_count": 0,
+  "findings": [],
+  "trajectory_sha256": "b7b438d06d4dec8024043383d5b2c7d1f9a02c6bb7925a9aa4e80c3fd5c2e852"
+}
