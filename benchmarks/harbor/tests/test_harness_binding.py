@@ -10,6 +10,7 @@ from pathlib import Path
 from benchmarks.harbor.morphz_agent import (
     DEFAULT_HARNESS_PATH,
     DEFAULT_HARNESS_REF,
+    HARNESS_MODE_NONE,
     MorphzAgent,
 )
 
@@ -52,6 +53,13 @@ class HarnessBindingSetupTest(unittest.TestCase):
         send = source.index("cat /tmp/morphz-instruction.md")
         self.assertLess(install, binding)
         self.assertLess(binding, send)
+
+    def test_runner_has_an_explicit_no_harness_control_arm(self) -> None:
+        runner = Path(__file__).parents[1] / "run_morphz_harbor.sh"
+        source = runner.read_text(encoding="utf-8")
+        self.assertIn("harness_mode=${MORPHZ_HARNESS_MODE:-bound}", source)
+        self.assertIn("none)", source)
+        self.assertIn('"${harness_args[@]}"', source)
 
     def test_cloud_failed_five_mode_is_an_exact_guarded_selection(self) -> None:
         wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
@@ -112,6 +120,18 @@ class HarnessBindingSetupTest(unittest.TestCase):
             "vulnerable-secret",
         ):
             self.assertNotIn(unrelated, harness_raman)
+
+    def test_cloud_native_morphz_comparison_is_one_unharnessed_trial(self) -> None:
+        wrapper = Path(__file__).parents[1] / "run_cloud_job.sh"
+        source = wrapper.read_text(encoding="utf-8")
+        section = source.split(
+            'if [[ "$mode" == "compare-raman-morphz" ]]', maxsplit=1
+        )[1].split("\nfi", maxsplit=1)[0]
+        self.assertEqual(section.count("--task raman-fitting"), 1)
+        self.assertIn("--attempts 1", section)
+        self.assertIn("--concurrency 1", section)
+        self.assertIn("--expect-trials 1", section)
+        self.assertIn("--harness-mode none", section)
 
     def test_setup_uploads_the_digest_locked_terminal_task_harness(self) -> None:
         async def scenario(root: Path) -> None:
@@ -181,6 +201,34 @@ class HarnessBindingSetupTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "digest mismatch"):
                 await agent.setup(_SetupEnvironment())
+
+        with tempfile.TemporaryDirectory() as raw_dir:
+            asyncio.run(scenario(Path(raw_dir)))
+
+    def test_setup_no_harness_requires_no_package_or_digest(self) -> None:
+        async def scenario(root: Path) -> None:
+            (root / "logs").mkdir()
+            binary = root / "morphz"
+            watcher = root / "morphz-harbor-wait"
+            binary.write_text("binary", encoding="utf-8")
+            watcher.write_text("watcher", encoding="utf-8")
+            environment = _SetupEnvironment()
+            agent = MorphzAgent(
+                logs_dir=root / "logs",
+                model_name="custom/gpt-5.6-sol",
+                extra_env={
+                    "MORPHZ_HARBOR_BINARY": str(binary),
+                    "MORPHZ_HARBOR_WATCHER": str(watcher),
+                    "MORPHZ_HARNESS_MODE": HARNESS_MODE_NONE,
+                    "MORPHZ_PROVIDER_BASE_URL": "http://127.0.0.1:8317/v1",
+                },
+            )
+
+            await agent.setup(environment)
+
+            destinations = {destination for _, destination in environment.uploads}
+            self.assertNotIn("/tmp/terminal-task.hns", destinations)
+            self.assertIn("/tmp/run-morphz-harbor.sh", destinations)
 
         with tempfile.TemporaryDirectory() as raw_dir:
             asyncio.run(scenario(Path(raw_dir)))

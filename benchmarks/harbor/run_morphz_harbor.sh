@@ -57,17 +57,32 @@ if [[ -e "${MORPHZ_STORAGE_SQLITE_PATH}" ]]; then
   exit 2
 fi
 
-# Registration validates the exact package and persists its content-addressed
-# identity before the model can see it. Installation does not activate the
-# Harness or grant capabilities; the explicit --harness binding below governs
-# only the first real Evaluation created by this fresh benchmark trial.
-/tmp/morphz --config-file /tmp/morphz-harbor.toml \
-  harness install /tmp/terminal-task.hns \
-  > /logs/agent/harness-install.stdout.log \
-  2> /logs/agent/harness-install.stderr.log
+harness_mode=${MORPHZ_HARNESS_MODE:-bound}
+harness_args=()
+case "$harness_mode" in
+  bound)
+    # Registration validates the exact package and persists its
+    # content-addressed identity before the model can see it. Installation does
+    # not activate the Harness or grant capabilities; the explicit binding
+    # below governs only the first real Evaluation in this fresh trial.
+    /tmp/morphz --config-file /tmp/morphz-harbor.toml \
+      harness install /tmp/terminal-task.hns \
+      > /logs/agent/harness-install.stdout.log \
+      2> /logs/agent/harness-install.stderr.log
+    harness_args+=("--harness=${MORPHZ_HARNESS_REF:?MORPHZ_HARNESS_REF is required}")
+    ;;
+  none)
+    # Explicitly omit both installation and Evaluation binding. This is the
+    # native-Morphz control arm, not an empty or malformed Harness binding.
+    ;;
+  *)
+    printf 'invalid MORPHZ_HARNESS_MODE: %s\n' "$harness_mode" >&2
+    exit 2
+    ;;
+esac
 
 /tmp/morphz --config-file /tmp/morphz-harbor.toml --plain \
-  --harness="${MORPHZ_HARNESS_REF:?MORPHZ_HARNESS_REF is required}" \
+  "${harness_args[@]}" \
   <"$fifo" > /logs/agent/morphz.stdout.log 2> /logs/agent/morphz.stderr.log &
 morphz_pid=$!
 printf '%s\n' "$morphz_pid" >"$runtime_pid_file"

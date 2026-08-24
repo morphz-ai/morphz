@@ -176,9 +176,7 @@ def audit_gate(
             errors.append("unmatched_tool_observation")
         errors.extend(model_errors)
         harness = trajectory.get("agent", {}).get("extra", {}).get("harness") or {}
-        if not expected_harness:
-            errors.append("run_identity_harness_missing")
-        else:
+        if expected_harness:
             for actual_key, expected_key in (
                 ("id", "id"),
                 ("version", "version"),
@@ -186,10 +184,12 @@ def audit_gate(
             ):
                 if harness.get(actual_key) != expected_harness.get(expected_key):
                     errors.append(f"harness_{actual_key}")
-        if harness.get("binding_count", 0) < 1:
-            errors.append("harness_binding_missing")
-        if harness.get("package_identity_count") != 1:
-            errors.append("harness_package_identity_count")
+            if harness.get("binding_count", 0) < 1:
+                errors.append("harness_binding_missing")
+            if harness.get("package_identity_count") != 1:
+                errors.append("harness_package_identity_count")
+        elif harness:
+            errors.append("unexpected_harness_binding")
 
         context_ids.append(context_id)
         session_ids.append(session_id)

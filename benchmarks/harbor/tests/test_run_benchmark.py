@@ -210,6 +210,7 @@ class HarborCommandTest(unittest.TestCase):
         args = argparse.Namespace(
             attempts=1,
             concurrency=5,
+            harness_mode="bound",
             task=["db-wal-recovery", "git-multibranch"],
         )
         lock = {
@@ -253,6 +254,54 @@ class HarborCommandTest(unittest.TestCase):
         self.assertEqual(
             identity["task_filters"], ["db-wal-recovery", "git-multibranch"]
         )
+
+    @patch(
+        "benchmarks.harbor.run_benchmark.infrastructure_identity",
+        return_value={
+            "infrastructure_git_commit": "infra123",
+            "infrastructure_git_tags": [],
+            "infrastructure_tracked_clean": True,
+        },
+    )
+    def test_native_control_identity_records_no_harness(
+        self, _identity: object
+    ) -> None:
+        args = argparse.Namespace(
+            attempts=1,
+            concurrency=1,
+            harness_mode="none",
+            task=["raman-fitting"],
+        )
+        lock = {
+            "runtime": {
+                "git_tag": "paper-eval-runtime-v4",
+                "git_commit": "runtime123",
+                "binary_sha256": "binary-sha",
+                "watcher_sha256": "watcher-sha",
+            },
+            "terminal_bench": {
+                "dataset": "terminal-bench/terminal-bench-2-1",
+                "registry_ref": "sha256:dataset",
+                "source_commit": "dataset123",
+            },
+            "model": {
+                "physical_model": "gpt-5.6-sol",
+                "reasoning_effort": "max",
+                "fallback": False,
+            },
+            "permissions": {"mode": "full_access"},
+            "harness": {
+                "id": "terminal-task",
+                "version": "0.4.0",
+                "artifact_hash": "sha256:harness",
+                "source_sha256": "sha256:source",
+            },
+        }
+
+        identity = frozen_run_identity(args, lock)
+
+        self.assertEqual(identity["harness_mode"], "none")
+        self.assertIsNone(identity["harness"])
 
 
 if __name__ == "__main__":

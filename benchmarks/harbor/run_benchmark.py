@@ -418,6 +418,7 @@ def frozen_run_identity(
     model = lock["model"]
     permissions = lock["permissions"]
     harness = lock["harness"]
+    harness_mode = getattr(args, "harness_mode", "bound")
     identity.update(
         {
             "runtime_tag": runtime["git_tag"],
@@ -431,12 +432,17 @@ def frozen_run_identity(
             "reasoning_effort": model["reasoning_effort"],
             "fallback": model["fallback"],
             "permission_mode": permissions["mode"],
-            "harness": {
-                "id": harness["id"],
-                "version": harness["version"],
-                "artifact_hash": harness["artifact_hash"],
-                "source_sha256": harness["source_sha256"],
-            },
+            "harness_mode": harness_mode,
+            "harness": (
+                {
+                    "id": harness["id"],
+                    "version": harness["version"],
+                    "artifact_hash": harness["artifact_hash"],
+                    "source_sha256": harness["source_sha256"],
+                }
+                if harness_mode == "bound"
+                else None
+            ),
             "attempts": args.attempts,
             "concurrency": args.concurrency,
             "max_retries": 0,
@@ -471,6 +477,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--attempts", type=int)
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument(
+        "--harness-mode",
+        choices=("bound", "none"),
+        default="bound",
+        help="Bind the frozen Harness or run the native Morphz control arm.",
+    )
     parser.add_argument(
         "--expect-trials",
         type=int,
@@ -617,6 +629,7 @@ def main() -> int:
             "MORPHZ_PROVIDER_MODEL": "gpt-5.6-sol",
             "MORPHZ_PROVIDER_API_KEY": credential,
             "MORPHZ_REASONING_EFFORT": "max",
+            "MORPHZ_HARNESS_MODE": args.harness_mode,
             "DOCKER_DEFAULT_PLATFORM": "linux/amd64",
         }
     )

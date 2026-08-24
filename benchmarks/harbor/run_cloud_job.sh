@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 {preflight|install-only|smoke|full|failed-five|harness-torch|harness-raman-v04}" >&2
+  echo "usage: $0 {preflight|install-only|smoke|full|failed-five|harness-torch|harness-raman-v04|compare-raman-morphz|compare-raman-codex}" >&2
   exit 2
 }
 
@@ -13,7 +13,7 @@ fi
 
 mode=$1
 case "$mode" in
-  preflight | install-only | smoke | full | failed-five | harness-torch | harness-raman-v04) ;;
+  preflight | install-only | smoke | full | failed-five | harness-torch | harness-raman-v04 | compare-raman-morphz | compare-raman-codex) ;;
   *) usage ;;
 esac
 
@@ -54,6 +54,19 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$repo_root"
+if [[ "$mode" == "compare-raman-codex" ]]; then
+  exec "$harbor_root/bin/python" benchmarks/harbor/run_codex_comparison.py full
+fi
+
+if [[ "$mode" == "compare-raman-morphz" ]]; then
+  exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
+    --task raman-fitting \
+    --attempts 1 \
+    --concurrency 1 \
+    --expect-trials 1 \
+    --harness-mode none
+fi
+
 if [[ "$mode" == "harness-raman-v04" ]]; then
   exec "$harbor_root/bin/python" benchmarks/harbor/run_benchmark.py full \
     --task raman-fitting \

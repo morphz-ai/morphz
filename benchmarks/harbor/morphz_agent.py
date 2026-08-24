@@ -32,6 +32,8 @@ DEFAULT_HARNESS_PATH = (
     / "terminal-task.hns"
 )
 DEFAULT_HARNESS_REF = "terminal-task@0.4.0"
+HARNESS_MODE_BOUND = "bound"
+HARNESS_MODE_NONE = "none"
 
 
 class MorphzAgent(BaseAgent):
@@ -63,24 +65,34 @@ class MorphzAgent(BaseAgent):
         ).expanduser().resolve()
         if not watcher.is_file():
             raise FileNotFoundError(f"MORPHZ_HARBOR_WATCHER does not exist: {watcher}")
-        harness = Path(
-            self._setting("MORPHZ_HARBOR_HARNESS", str(DEFAULT_HARNESS_PATH))
-        ).expanduser().resolve()
-        if not harness.is_file():
-            raise FileNotFoundError(f"MORPHZ_HARBOR_HARNESS does not exist: {harness}")
-        expected_harness_sha256 = self._setting("MORPHZ_HARNESS_SOURCE_SHA256")
-        actual_harness_sha256 = hashlib.sha256(harness.read_bytes()).hexdigest()
-        if actual_harness_sha256 != expected_harness_sha256:
+        harness_mode = self._setting("MORPHZ_HARNESS_MODE", HARNESS_MODE_BOUND)
+        if harness_mode not in {HARNESS_MODE_BOUND, HARNESS_MODE_NONE}:
             raise ValueError(
-                "Terminal-Bench Harness source digest mismatch: "
-                f"expected {expected_harness_sha256}, got {actual_harness_sha256}"
+                "MORPHZ_HARNESS_MODE must be `bound` or `none`, got "
+                f"{harness_mode!r}"
             )
-        harness_ref = self._setting("MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF)
-        if harness_ref != DEFAULT_HARNESS_REF:
-            raise ValueError(
-                "The candidate Terminal-Bench profile requires "
-                f"MORPHZ_HARNESS_REF={DEFAULT_HARNESS_REF}"
-            )
+        harness: Path | None = None
+        if harness_mode == HARNESS_MODE_BOUND:
+            harness = Path(
+                self._setting("MORPHZ_HARBOR_HARNESS", str(DEFAULT_HARNESS_PATH))
+            ).expanduser().resolve()
+            if not harness.is_file():
+                raise FileNotFoundError(
+                    f"MORPHZ_HARBOR_HARNESS does not exist: {harness}"
+                )
+            expected_harness_sha256 = self._setting("MORPHZ_HARNESS_SOURCE_SHA256")
+            actual_harness_sha256 = hashlib.sha256(harness.read_bytes()).hexdigest()
+            if actual_harness_sha256 != expected_harness_sha256:
+                raise ValueError(
+                    "Terminal-Bench Harness source digest mismatch: "
+                    f"expected {expected_harness_sha256}, got {actual_harness_sha256}"
+                )
+            harness_ref = self._setting("MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF)
+            if harness_ref != DEFAULT_HARNESS_REF:
+                raise ValueError(
+                    "The candidate Terminal-Bench profile requires "
+                    f"MORPHZ_HARNESS_REF={DEFAULT_HARNESS_REF}"
+                )
 
         protocol = self._setting("MORPHZ_PROVIDER_PROTOCOL", "openai-responses")
         base_url = self._setting("MORPHZ_PROVIDER_BASE_URL")
@@ -136,7 +148,8 @@ class MorphzAgent(BaseAgent):
         runner = Path(__file__).with_name("run_morphz_harbor.sh")
         await environment.upload_file(binary, "/tmp/morphz")
         await environment.upload_file(watcher, "/tmp/morphz-harbor-wait")
-        await environment.upload_file(harness, "/tmp/terminal-task.hns")
+        if harness is not None:
+            await environment.upload_file(harness, "/tmp/terminal-task.hns")
         await environment.upload_file(config, "/tmp/morphz-harbor.toml")
         await environment.upload_file(runner, "/tmp/run-morphz-harbor.sh")
         result = await environment.exec(
@@ -171,13 +184,17 @@ class MorphzAgent(BaseAgent):
             "MORPHZ_STORAGE_SQLITE_PATH": "/logs/agent/morphz.db",
             "MORPHZ_CODING_EVAL_MODE": "true",
             "MORPHZ_PERMISSION_MODE": "full_access",
-            "MORPHZ_HARNESS_REF": self._setting(
-                "MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF
+            "MORPHZ_HARNESS_MODE": self._setting(
+                "MORPHZ_HARNESS_MODE", HARNESS_MODE_BOUND
             ),
             "MORPHZ_HARBOR_TIMEOUT_SECS": self._setting(
                 "MORPHZ_HARBOR_TIMEOUT_SECS", "21600"
             ),
         }
+        if env["MORPHZ_HARNESS_MODE"] == HARNESS_MODE_BOUND:
+            env["MORPHZ_HARNESS_REF"] = self._setting(
+                "MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF
+            )
         try:
             result = await environment.exec(
                 command="/tmp/run-morphz-harbor.sh",
