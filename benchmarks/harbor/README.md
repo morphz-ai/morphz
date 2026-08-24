@@ -15,7 +15,7 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
 - Morphz `paper-eval-runtime-v4`;
-- exact model-owned Harness `terminal-task@0.2.0`, installed from the checked-in
+- exact model-owned Harness `terminal-task@0.3.0`, installed from the checked-in
   `.hns` package and bound to the first real Evaluation of every trial;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
@@ -232,3 +232,10 @@ attempt of `torch-pipeline-parallelism`, as defined by
 [`terminal_bench_2_1_harness_trial_protocol_v0_2.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_2.md).
 It improved evidence acquisition but timed out with reward zero; no larger v0.2
 run is permitted.
+
+`terminal-task@0.3.0` adds a domain-neutral convergence contract. It keeps the
+evidence ledger but permits honest `completed-with-limitations`, `blocked`, and
+`needs-decision` terminal states when further work has no decision-relevant
+expected value. Its first and only precommitted diagnostic is one attempt of
+`torch-pipeline-parallelism`, as defined by
+[`terminal_bench_2_1_harness_trial_protocol_v0_3.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_trial_protocol_v0_3.md).

@@ -38,7 +38,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         lock_path = Path(__file__).parents[1] / "toolchain.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         self.assertEqual(lock["harness"]["id"], "terminal-task")
-        self.assertEqual(lock["harness"]["version"], "0.2.0")
+        self.assertEqual(lock["harness"]["version"], "0.3.0")
         self.assertEqual(
             hashlib.sha256(DEFAULT_HARNESS_PATH.read_bytes()).hexdigest(),
             lock["harness"]["source_sha256"],
