@@ -2,8 +2,8 @@ use chrono::Utc;
 use morphz::config::AppConfig;
 use morphz::event::Event;
 use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
-use morphz::memory::{NewSession, QueryFilter, SessionMountKind};
-use morphz::runtime::{MorphzRuntime, RuntimeToolPolicy};
+use morphz::memory::{NewCognitiveContext, NewSession, QueryFilter, SessionMountKind};
+use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::process::Command;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -40,6 +41,15 @@ impl Me01Arm {
             Self::AppendOnly => "append_only",
             Self::StructuredNoDirectReentry => "structured_no_direct_reentry",
             Self::FullMorphz => "full_morphz",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DynError> {
+        match value {
+            "append_only" => Ok(Self::AppendOnly),
+            "structured_no_direct_reentry" => Ok(Self::StructuredNoDirectReentry),
+            "full_morphz" => Ok(Self::FullMorphz),
+            _ => Err(format!("unknown ME-01 arm: {value}").into()),
         }
     }
 }
@@ -185,6 +195,87 @@ pub struct Me01EmbeddedRuntimeGateSummary {
     pub all_passed: bool,
     pub real_model_called: bool,
     pub ready_for_real_model_smoke: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Me01ProbePhase {
+    BeforeRestart,
+    AfterRestart,
+}
+
+impl Me01ProbePhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeRestart => "before_restart",
+            Self::AfterRestart => "after_restart",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DynError> {
+        match value {
+            "before_restart" => Ok(Self::BeforeRestart),
+            "after_restart" => Ok(Self::AfterRestart),
+            _ => Err(format!("unknown ME-01 probe phase: {value}").into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Me01ProcessPhaseReport {
+    pub protocol_id: String,
+    pub fixture_id: String,
+    pub arm: Me01Arm,
+    pub phase: Me01ProbePhase,
+    pub process_id: u32,
+    pub database_path: PathBuf,
+    pub context_ids: Vec<String>,
+    pub session_mounts: BTreeMap<String, String>,
+    pub fake_provider_calls: usize,
+    pub context_tx_tool_seen_by_provider: bool,
+    pub context_tx_attempts: usize,
+    pub context_tx_commits: usize,
+    pub committed_frame_visible_in_act_request: bool,
+    pub committed_frame_visible_in_primary_context: bool,
+    pub foreign_value_absent_from_primary_context: bool,
+    pub structured_context_snapshot_sha256: String,
+    pub final_response: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Me01StandaloneEpisodeGate {
+    pub fixture_id: String,
+    pub arm: Me01Arm,
+    pub observed_episode_path: PathBuf,
+    pub score_path: PathBuf,
+    pub before_restart_process_id: Option<u32>,
+    pub after_restart_process_id: Option<u32>,
+    pub process_restart_proven: bool,
+    pub independent_database_proven: bool,
+    pub score_replay_byte_identical: bool,
+    pub strict_success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Me01StandaloneGateSummary {
+    pub protocol_id: String,
+    pub created_at: String,
+    pub output_root: PathBuf,
+    pub fixture_count: usize,
+    pub episode_count: usize,
+    pub strict_passes: usize,
+    pub process_restart_checks: usize,
+    pub process_restart_passes: usize,
+    pub isolated_database_count: usize,
+    pub score_replay_checks: usize,
+    pub score_replay_passes: usize,
+    pub cross_session_mount_passed: bool,
+    pub context_isolation_passed: bool,
+    pub all_passed: bool,
+    pub real_model_called: bool,
+    pub standalone_process_arm_adapters_complete: bool,
+    pub ready_for_real_model_smoke: bool,
+    pub episodes: Vec<Me01StandaloneEpisodeGate>,
 }
 
 pub fn load_me01_fixtures() -> Result<Vec<Me01FixturePair>, DynError> {
@@ -400,6 +491,339 @@ pub async fn run_me01_embedded_runtime_gate(
     Ok(summary)
 }
 
+pub async fn run_me01_process_probe_phase(
+    episode_root: &Path,
+    fixture_id: &str,
+    arm: Me01Arm,
+    phase: Me01ProbePhase,
+) -> Result<Me01ProcessPhaseReport, DynError> {
+    if arm == Me01Arm::AppendOnly {
+        return Err("append-only does not use the production Runtime probe".into());
+    }
+    let fixture = load_me01_fixtures()?
+        .into_iter()
+        .find(|fixture| fixture.visible.id == fixture_id)
+        .ok_or_else(|| format!("unknown ME-01 fixture: {fixture_id}"))?;
+    std::fs::create_dir_all(episode_root)?;
+    let workspace_root = episode_root.join("workspace");
+    let artifact_root = episode_root.join("artifacts");
+    std::fs::create_dir_all(&workspace_root)?;
+    std::fs::create_dir_all(&artifact_root)?;
+    let database_path = episode_root.join("morphz.db");
+    let frame_id = fixture_frame_id(&fixture.visible.id);
+    let client = Arc::new(ProcessProbeFakeClient {
+        expected_action: fixture.hidden.expected.clone(),
+        frame_id: frame_id.clone(),
+        calls: AtomicUsize::new(0),
+        context_tx_tool_seen: AtomicBool::new(false),
+        frame_seen_in_act: AtomicBool::new(false),
+    });
+    let mut config = AppConfig::default();
+    config.permissions.workspace_root = workspace_root.to_string_lossy().to_string();
+    config.background_task.artifact_dir = artifact_root.to_string_lossy().to_string();
+    config.orchestrator.context_transactions_enabled = arm == Me01Arm::FullMorphz;
+    let primary_context_id = actual_context_id(&fixture.visible.id, "primary");
+    let identity = RuntimeIdentity {
+        agent_id: format!("me01-agent-{}", filesystem_component(&fixture.visible.id)),
+        context_id: primary_context_id.clone(),
+        principal_id: format!(
+            "me01-principal-{}",
+            filesystem_component(&fixture.visible.id)
+        ),
+    };
+    let runtime = MorphzRuntime::builder(config, Arc::clone(&client) as Arc<dyn Client>)
+        .identity(identity.clone())
+        .database_path(database_path.to_string_lossy())
+        .tool_policy(RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        })
+        .build()
+        .await?;
+    let mut replies = runtime.subscribe("chat/reply", 32);
+    runtime.start().await?;
+
+    let context_ids = fixture_context_ids_actual(&fixture.visible);
+    for context_id in &context_ids {
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: context_id.clone(),
+                agent_id: identity.agent_id.clone(),
+                title: format!("ME-01 context {context_id}"),
+            })
+            .await?;
+    }
+    let session_mounts = fixture_session_mounts_actual(&fixture.visible);
+    for (session_id, context_id) in &session_mounts {
+        runtime
+            .ensure_session(NewSession {
+                id: session_id.clone(),
+                agent_id: identity.agent_id.clone(),
+                context_id: context_id.clone(),
+                parent_session_id: None,
+                title: format!("ME-01 session {session_id}"),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await?;
+    }
+
+    let stages = fixture.visible.stages.iter().filter(|stage| match phase {
+        Me01ProbePhase::BeforeRestart => stage.id != "act",
+        Me01ProbePhase::AfterRestart => stage.id == "act",
+    });
+    let mut final_response = String::new();
+    for stage in stages {
+        let session_id = actual_session_id(&fixture.visible.id, &stage.session_key);
+        runtime
+            .session(session_id.clone())
+            .send(
+                render_stage_prompt(stage)?,
+                "ME-01-Fixture",
+                Some(format!(
+                    "me01-{}-{}-{}",
+                    arm.as_str(),
+                    phase.as_str(),
+                    stage.id
+                )),
+            )
+            .await?;
+        let reply = wait_for_session_reply(&mut replies, &session_id).await?;
+        if stage.id == "act" {
+            final_response = reply;
+        }
+    }
+
+    let events = runtime.query_events(QueryFilter::default()).await?;
+    let context_tx_attempts = count_context_tx_attempts(&events);
+    let context_tx_commits = events
+        .iter()
+        .filter(|event| event.topic == "chat/context_tx_committed")
+        .count();
+    let mut snapshots = BTreeMap::new();
+    for context_id in &context_ids {
+        let session_id = session_mounts
+            .iter()
+            .find_map(|(session_id, mounted)| (mounted == context_id).then_some(session_id))
+            .ok_or_else(|| format!("ME-01 context {context_id} has no mounted session"))?;
+        let encoding = runtime.context_encoding(context_id, session_id).await?;
+        snapshots.insert(context_id.clone(), encoding.sexpr);
+    }
+    let primary_context = snapshots
+        .get(&primary_context_id)
+        .ok_or("ME-01 primary Context snapshot is missing")?;
+    let committed_frame_visible_in_primary_context = primary_context.contains(&frame_id);
+    let foreign_value_absent_from_primary_context = fixture
+        .hidden
+        .foreign_values
+        .iter()
+        .all(|value| !primary_context.contains(value));
+    let structured_context_snapshot_sha256 = sha256(&serde_json::to_vec(&snapshots)?);
+    let report = Me01ProcessPhaseReport {
+        protocol_id: ME01_PROTOCOL_ID.to_string(),
+        fixture_id: fixture.visible.id,
+        arm,
+        phase,
+        process_id: std::process::id(),
+        database_path,
+        context_ids,
+        session_mounts,
+        fake_provider_calls: client.calls.load(Ordering::SeqCst),
+        context_tx_tool_seen_by_provider: client.context_tx_tool_seen.load(Ordering::SeqCst),
+        context_tx_attempts,
+        context_tx_commits,
+        committed_frame_visible_in_act_request: client.frame_seen_in_act.load(Ordering::SeqCst),
+        committed_frame_visible_in_primary_context,
+        foreign_value_absent_from_primary_context,
+        structured_context_snapshot_sha256,
+        final_response,
+    };
+    write_json(
+        &episode_root.join(format!("{}.json", phase.as_str())),
+        &report,
+    )?;
+    Ok(report)
+}
+
+pub async fn run_me01_standalone_process_gate(
+    executable: &Path,
+    base_dir: Option<&Path>,
+) -> Result<Me01StandaloneGateSummary, DynError> {
+    let executable = std::fs::canonicalize(executable)?;
+    let fixtures = load_me01_fixtures()?;
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-me01-process-gates"));
+    std::fs::create_dir_all(&base)?;
+    let output_root = base.join(format!(
+        "ME-01-standalone-process-gate-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&output_root)?;
+
+    let mut episodes = Vec::new();
+    let mut database_paths = BTreeSet::new();
+    let mut cross_session_mount_passed = false;
+    let mut context_isolation_passed = false;
+    for fixture in &fixtures {
+        episodes.push(run_append_only_gate(&output_root, fixture)?);
+        for arm in [Me01Arm::StructuredNoDirectReentry, Me01Arm::FullMorphz] {
+            let episode_root = output_root
+                .join(fixture.visible.id.as_str())
+                .join(arm.as_str());
+            std::fs::create_dir_all(&episode_root)?;
+            let before = spawn_process_probe(
+                &executable,
+                &episode_root,
+                &fixture.visible.id,
+                arm,
+                Me01ProbePhase::BeforeRestart,
+            )
+            .await?;
+            let after = spawn_process_probe(
+                &executable,
+                &episode_root,
+                &fixture.visible.id,
+                arm,
+                Me01ProbePhase::AfterRestart,
+            )
+            .await?;
+            if before.database_path != after.database_path {
+                return Err(format!(
+                    "ME-01 process phases used different databases for {} / {}",
+                    fixture.visible.id,
+                    arm.as_str()
+                )
+                .into());
+            }
+            database_paths.insert(after.database_path.clone());
+            let frame_id = fixture_frame_id(&fixture.visible.id);
+            let runtime = Me01RuntimeEvidence {
+                adapter_kind: match arm {
+                    Me01Arm::StructuredNoDirectReentry => {
+                        "production_morphz_read_only_context".to_string()
+                    }
+                    Me01Arm::FullMorphz => "production_morphz_full_context".to_string(),
+                    Me01Arm::AppendOnly => unreachable!(),
+                },
+                production_morphz_runtime: true,
+                database_path: Some(after.database_path.clone()),
+                context_ids: after.context_ids.clone(),
+                session_mounts: after.session_mounts.clone(),
+                context_tx_tool_exposed: before.context_tx_tool_seen_by_provider
+                    || after.context_tx_tool_seen_by_provider,
+                context_tx_attempts: after.context_tx_attempts,
+                context_tx_commits: after.context_tx_commits,
+                committed_frame_ids: (arm == Me01Arm::FullMorphz
+                    && after.committed_frame_visible_in_primary_context)
+                    .then_some(frame_id.clone())
+                    .into_iter()
+                    .collect(),
+                act_projection_frame_ids: (arm == Me01Arm::FullMorphz
+                    && after.committed_frame_visible_in_act_request)
+                    .then_some(frame_id)
+                    .into_iter()
+                    .collect(),
+                structured_context_snapshot_sha256: Some(
+                    after.structured_context_snapshot_sha256.clone(),
+                ),
+                message_transcript_sha256: None,
+            };
+            let observed = Me01ObservedEpisode {
+                protocol_id: ME01_PROTOCOL_ID.to_string(),
+                fixture_id: fixture.visible.id.clone(),
+                arm,
+                visible_input_sha256: fixture.canonical_semantic_sha256.clone(),
+                final_response: after.final_response.clone(),
+                runtime,
+            };
+            let score = score_me01_episode(&observed, fixture);
+            let observed_episode_path = episode_root.join("observed_episode.json");
+            let score_path = episode_root.join("score.json");
+            write_json(&observed_episode_path, &observed)?;
+            write_json(&score_path, &score)?;
+            let replayed_observed: Me01ObservedEpisode =
+                serde_json::from_slice(&std::fs::read(&observed_episode_path)?)?;
+            let replayed_score = score_me01_episode(&replayed_observed, fixture);
+            let score_replay_byte_identical =
+                serde_json::to_vec_pretty(&score)? == serde_json::to_vec_pretty(&replayed_score)?;
+            let process_restart_proven = before.process_id != after.process_id;
+            if fixture.visible.family == "cross_session_continuity" {
+                let session_a = actual_session_id(&fixture.visible.id, "session-a");
+                let session_b = actual_session_id(&fixture.visible.id, "session-b");
+                cross_session_mount_passed = after.session_mounts.contains_key(&session_a)
+                    && after.session_mounts.get(&session_a) == after.session_mounts.get(&session_b);
+            }
+            if fixture.visible.family == "context_isolation" {
+                let foreign = actual_session_id(&fixture.visible.id, "session-foreign");
+                let primary = actual_session_id(&fixture.visible.id, "session-primary");
+                context_isolation_passed = after.session_mounts.contains_key(&foreign)
+                    && after.session_mounts.contains_key(&primary)
+                    && after.session_mounts.get(&foreign) != after.session_mounts.get(&primary)
+                    && after.foreign_value_absent_from_primary_context;
+            }
+            episodes.push(Me01StandaloneEpisodeGate {
+                fixture_id: fixture.visible.id.clone(),
+                arm,
+                observed_episode_path,
+                score_path,
+                before_restart_process_id: Some(before.process_id),
+                after_restart_process_id: Some(after.process_id),
+                process_restart_proven,
+                independent_database_proven: true,
+                score_replay_byte_identical,
+                strict_success: score.strict_success,
+            });
+        }
+    }
+
+    let strict_passes = episodes
+        .iter()
+        .filter(|episode| episode.strict_success)
+        .count();
+    let process_episodes = episodes
+        .iter()
+        .filter(|episode| episode.arm != Me01Arm::AppendOnly)
+        .collect::<Vec<_>>();
+    let process_restart_passes = process_episodes
+        .iter()
+        .filter(|episode| episode.process_restart_proven)
+        .count();
+    let score_replay_passes = episodes
+        .iter()
+        .filter(|episode| episode.score_replay_byte_identical)
+        .count();
+    let all_passed = strict_passes == episodes.len()
+        && process_restart_passes == process_episodes.len()
+        && database_paths.len() == process_episodes.len()
+        && score_replay_passes == episodes.len()
+        && cross_session_mount_passed
+        && context_isolation_passed;
+    let summary = Me01StandaloneGateSummary {
+        protocol_id: ME01_PROTOCOL_ID.to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        output_root: output_root.clone(),
+        fixture_count: fixtures.len(),
+        episode_count: episodes.len(),
+        strict_passes,
+        process_restart_checks: process_episodes.len(),
+        process_restart_passes,
+        isolated_database_count: database_paths.len(),
+        score_replay_checks: episodes.len(),
+        score_replay_passes,
+        cross_session_mount_passed,
+        context_isolation_passed,
+        all_passed,
+        real_model_called: false,
+        standalone_process_arm_adapters_complete: all_passed,
+        ready_for_real_model_smoke: false,
+        episodes,
+    };
+    write_json(&output_root.join("summary.json"), &summary)?;
+    write_checksums(&output_root)?;
+    Ok(summary)
+}
+
 fn validate_fixture_pair(
     visible: &Me01VisibleFixture,
     hidden: &Me01HiddenFixture,
@@ -448,6 +872,73 @@ struct EmbeddedRuntimeFakeClient {
     calls: AtomicUsize,
     context_tx_tool_seen: AtomicBool,
     frame_seen_in_act: AtomicBool,
+}
+
+struct ProcessProbeFakeClient {
+    expected_action: Me01Action,
+    frame_id: String,
+    calls: AtomicUsize,
+    context_tx_tool_seen: AtomicBool,
+    frame_seen_in_act: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Client for ProcessProbeFakeClient {
+    async fn create_completion(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<Response, DynError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let prompt = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context_tx_exposed = tools.iter().any(|tool| tool.name == "context_tx");
+        self.context_tx_tool_seen
+            .fetch_or(context_tx_exposed, Ordering::SeqCst);
+
+        if prompt.contains("Return only the strict four-field JSON action contract") {
+            self.frame_seen_in_act
+                .fetch_or(prompt.contains(&self.frame_id), Ordering::SeqCst);
+            return Ok(Response {
+                content: serde_json::to_string(&self.expected_action)?,
+                tool_calls: Vec::new(),
+            });
+        }
+
+        if context_tx_exposed
+            && prompt.contains(&self.expected_action.evidence_id)
+            && !prompt.contains(&self.frame_id)
+        {
+            let source_ref =
+                observation_ref_before(&prompt, &self.expected_action.evidence_id).unwrap_or("@e1");
+            let version = kernel_context_version(&prompt).unwrap_or(0);
+            let transaction = format!(
+                "(context-tx (base-version {version}) (reason \"ME-01 deterministic standalone-process gate\") (derive {} (from {source_ref}) (state (action \"{}\") (object-id \"{}\") (value \"{}\") (authoritative-evidence \"{}\"))))",
+                self.frame_id,
+                sexpr_string(&self.expected_action.action),
+                sexpr_string(&self.expected_action.object_id),
+                sexpr_string(&self.expected_action.value),
+                sexpr_string(&self.expected_action.evidence_id),
+            );
+            return Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("me01-context-tx-{}", self.calls.load(Ordering::SeqCst)),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: serde_json::json!({"transaction": transaction}).to_string(),
+                }],
+            });
+        }
+
+        Ok(Response {
+            content: "ME-01 stage state accepted.".to_string(),
+            tool_calls: Vec::new(),
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -623,6 +1114,208 @@ async fn run_embedded_runtime_arm(
         serde_json::to_vec_pretty(&report)?,
     )?;
     Ok(report)
+}
+
+async fn spawn_process_probe(
+    executable: &Path,
+    episode_root: &Path,
+    fixture_id: &str,
+    arm: Me01Arm,
+    phase: Me01ProbePhase,
+) -> Result<Me01ProcessPhaseReport, DynError> {
+    let output = Command::new(executable)
+        .arg("runtime-probe-phase")
+        .arg(episode_root)
+        .arg(fixture_id)
+        .arg(arm.as_str())
+        .arg(phase.as_str())
+        .output()
+        .await?;
+    std::fs::write(
+        episode_root.join(format!("{}.stdout.log", phase.as_str())),
+        &output.stdout,
+    )?;
+    std::fs::write(
+        episode_root.join(format!("{}.stderr.log", phase.as_str())),
+        &output.stderr,
+    )?;
+    if !output.status.success() {
+        return Err(format!(
+            "ME-01 process probe failed for {fixture_id} / {} / {}: {}",
+            arm.as_str(),
+            phase.as_str(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let report_path = episode_root.join(format!("{}.json", phase.as_str()));
+    let report: Me01ProcessPhaseReport = serde_json::from_slice(&std::fs::read(&report_path)?)?;
+    if report.fixture_id != fixture_id || report.arm != arm || report.phase != phase {
+        return Err(format!(
+            "ME-01 process probe identity mismatch for {fixture_id} / {} / {}",
+            arm.as_str(),
+            phase.as_str()
+        )
+        .into());
+    }
+    Ok(report)
+}
+
+fn run_append_only_gate(
+    output_root: &Path,
+    fixture: &Me01FixturePair,
+) -> Result<Me01StandaloneEpisodeGate, DynError> {
+    let episode_root = output_root
+        .join(fixture.visible.id.as_str())
+        .join(Me01Arm::AppendOnly.as_str());
+    std::fs::create_dir_all(&episode_root)?;
+    let mut transcript = Vec::new();
+    for stage in &fixture.visible.stages {
+        transcript.push(serde_json::json!({
+            "role": "user",
+            "context_key": stage.context_key,
+            "session_key": stage.session_key,
+            "stage_id": stage.id,
+            "content": render_stage_prompt(stage)?,
+        }));
+        transcript.push(serde_json::json!({
+            "role": "assistant",
+            "context_key": stage.context_key,
+            "session_key": stage.session_key,
+            "stage_id": stage.id,
+            "content": if stage.id == "act" {
+                serde_json::to_string(&fixture.hidden.expected)?
+            } else {
+                "ME-01 stage state accepted.".to_string()
+            },
+        }));
+    }
+    let transcript_bytes = serde_json::to_vec_pretty(&transcript)?;
+    std::fs::write(
+        episode_root.join("message_transcript.json"),
+        &transcript_bytes,
+    )?;
+    let observed = Me01ObservedEpisode {
+        protocol_id: ME01_PROTOCOL_ID.to_string(),
+        fixture_id: fixture.visible.id.clone(),
+        arm: Me01Arm::AppendOnly,
+        visible_input_sha256: fixture.canonical_semantic_sha256.clone(),
+        final_response: serde_json::to_string(&fixture.hidden.expected)?,
+        runtime: Me01RuntimeEvidence {
+            adapter_kind: "append_only_messages".to_string(),
+            message_transcript_sha256: Some(sha256(&transcript_bytes)),
+            ..Me01RuntimeEvidence::default()
+        },
+    };
+    let score = score_me01_episode(&observed, fixture);
+    let observed_episode_path = episode_root.join("observed_episode.json");
+    let score_path = episode_root.join("score.json");
+    write_json(&observed_episode_path, &observed)?;
+    write_json(&score_path, &score)?;
+    let replayed_observed: Me01ObservedEpisode =
+        serde_json::from_slice(&std::fs::read(&observed_episode_path)?)?;
+    let replayed_score = score_me01_episode(&replayed_observed, fixture);
+    let score_replay_byte_identical =
+        serde_json::to_vec_pretty(&score)? == serde_json::to_vec_pretty(&replayed_score)?;
+    Ok(Me01StandaloneEpisodeGate {
+        fixture_id: fixture.visible.id.clone(),
+        arm: Me01Arm::AppendOnly,
+        observed_episode_path,
+        score_path,
+        before_restart_process_id: None,
+        after_restart_process_id: None,
+        process_restart_proven: false,
+        independent_database_proven: false,
+        score_replay_byte_identical,
+        strict_success: score.strict_success,
+    })
+}
+
+fn fixture_frame_id(fixture_id: &str) -> String {
+    format!("{}-current-state", filesystem_component(fixture_id))
+}
+
+fn actual_context_id(fixture_id: &str, context_key: &str) -> String {
+    format!(
+        "me01-{}-context-{}",
+        filesystem_component(fixture_id),
+        filesystem_component(context_key)
+    )
+}
+
+fn actual_session_id(fixture_id: &str, session_key: &str) -> String {
+    format!(
+        "me01-{}-{}",
+        filesystem_component(fixture_id),
+        filesystem_component(session_key)
+    )
+}
+
+fn fixture_context_ids_actual(fixture: &Me01VisibleFixture) -> Vec<String> {
+    fixture
+        .stages
+        .iter()
+        .map(|stage| actual_context_id(&fixture.id, &stage.context_key))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn fixture_session_mounts_actual(fixture: &Me01VisibleFixture) -> BTreeMap<String, String> {
+    fixture
+        .stages
+        .iter()
+        .map(|stage| {
+            (
+                actual_session_id(&fixture.id, &stage.session_key),
+                actual_context_id(&fixture.id, &stage.context_key),
+            )
+        })
+        .collect()
+}
+
+fn filesystem_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn sexpr_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn write_json(path: &Path, value: &impl Serialize) -> Result<(), DynError> {
+    std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    Ok(())
+}
+
+fn write_checksums(root: &Path) -> Result<(), DynError> {
+    let checksum_path = root.join("checksums.sha256");
+    let mut entries = walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && entry.path() != checksum_path)
+        .map(|entry| entry.path().to_path_buf())
+        .collect::<Vec<_>>();
+    entries.sort();
+    let mut output = String::new();
+    for path in entries {
+        let relative = path.strip_prefix(root)?;
+        output.push_str(&format!(
+            "{}  {}\n",
+            sha256(&std::fs::read(&path)?),
+            relative.display()
+        ));
+    }
+    std::fs::write(checksum_path, output)?;
+    Ok(())
 }
 
 fn render_stage_prompt(stage: &Me01Stage) -> Result<String, DynError> {

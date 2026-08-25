@@ -1,5 +1,6 @@
 use morphz_evals::me01_context_reentry_eval::{
     load_me01_fixtures, run_me01_embedded_runtime_gate, run_me01_fake_gate,
+    run_me01_process_probe_phase, run_me01_standalone_process_gate, Me01Arm, Me01ProbePhase,
 };
 use std::path::Path;
 
@@ -27,8 +28,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let summary = run_me01_embedded_runtime_gate(Some(Path::new(base))).await?;
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        [command] if command == "standalone-process-gate" => {
+            let executable = std::env::current_exe()?;
+            let summary = run_me01_standalone_process_gate(&executable, None).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        [command, base] if command == "standalone-process-gate" => {
+            let executable = std::env::current_exe()?;
+            let summary =
+                run_me01_standalone_process_gate(&executable, Some(Path::new(base))).await?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        [command, episode_root, fixture_id, arm, phase] if command == "runtime-probe-phase" => {
+            let report = run_me01_process_probe_phase(
+                Path::new(episode_root),
+                fixture_id,
+                Me01Arm::parse(arm)?,
+                Me01ProbePhase::parse(phase)?,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         _ => {
-            return Err("usage:\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- audit-fixtures\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- fake-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- embedded-runtime-gate [BASE_DIR]".into());
+            return Err("usage:\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- audit-fixtures\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- fake-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- embedded-runtime-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- standalone-process-gate [BASE_DIR]\n  me01_context_reentry_eval runtime-probe-phase EPISODE_ROOT FIXTURE_ID ARM PHASE".into());
         }
     }
     Ok(())
