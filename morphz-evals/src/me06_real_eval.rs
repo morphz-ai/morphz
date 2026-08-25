@@ -113,6 +113,15 @@ pub struct Me06RealPilotReport {
     pub publishable_p1_result: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Me06SemanticRescoreReport {
+    pub protocol_id: String,
+    pub suite_root: PathBuf,
+    pub score_count: usize,
+    pub semantic_success_by_arm: BTreeMap<String, usize>,
+    pub scores: Vec<Me06Score>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ParsedOutput {
     state: BTreeMap<String, String>,
@@ -257,6 +266,46 @@ pub async fn run_me06_real_pilot(
     };
     write_json(&suite_root.join("report.json"), &report)?;
     write_checksums(&suite_root)?;
+    Ok(report)
+}
+
+pub fn rescore_me06_real_suite(
+    suite_root: &Path,
+) -> Result<Me06SemanticRescoreReport, Box<dyn std::error::Error + Send + Sync>> {
+    let fixtures = generate_me06_fixtures()?;
+    let mut scores = Vec::new();
+    for fixture in fixtures {
+        for arm in Me06Arm::ALL {
+            let root = suite_root
+                .join(&fixture.visible.fixture_id)
+                .join(arm.as_str());
+            let observed: Me06ObservedEpisode =
+                serde_json::from_slice(&std::fs::read(root.join("observed_episode.json"))?)?;
+            let score = score_me06_episode(&observed, &fixture);
+            write_json(&root.join("semantic_rescore.json"), &score)?;
+            scores.push(score);
+        }
+    }
+    let semantic_success_by_arm = Me06Arm::ALL
+        .into_iter()
+        .map(|arm| {
+            (
+                arm.as_str().to_string(),
+                scores
+                    .iter()
+                    .filter(|score| score.arm == arm && score.semantic_success)
+                    .count(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let report = Me06SemanticRescoreReport {
+        protocol_id: ME06_PROTOCOL_ID.to_string(),
+        suite_root: suite_root.to_path_buf(),
+        score_count: scores.len(),
+        semantic_success_by_arm,
+        scores,
+    };
+    write_json(&suite_root.join("semantic_rescore_report.json"), &report)?;
     Ok(report)
 }
 

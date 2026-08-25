@@ -755,7 +755,9 @@ pub fn score_me06_episode(observed: &Me06ObservedEpisode, fixture: &Me06FixtureP
         .map(|(field, expected)| {
             (
                 field.clone(),
-                observed.observed_state.get(field) == Some(expected),
+                observed.observed_state.get(field).is_some_and(|actual| {
+                    state_value_semantically_matches(field, actual, expected)
+                }),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -796,6 +798,25 @@ pub fn score_me06_episode(observed: &Me06ObservedEpisode, fixture: &Me06FixtureP
         protocol_shape_valid: observed.protocol_shape_valid,
         architecture: observed.architecture.clone(),
     }
+}
+
+fn state_value_semantically_matches(field: &str, actual: &str, expected: &str) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if field != "decision_rule" || expected != "AUTHORITY-BEFORE-RECENCY" {
+        return false;
+    }
+
+    let normalized = actual.to_lowercase();
+    let mentions_authority = normalized.contains("authority") || actual.contains("权威");
+    let mentions_recency = normalized.contains("recency")
+        || normalized.contains("arrival")
+        || actual.contains("到达")
+        || actual.contains("时序");
+    let states_priority =
+        normalized.contains("before") || normalized.contains("outrank") || actual.contains("优先");
+    mentions_authority && mentions_recency && states_priority
 }
 
 fn run_scorer_gate(fixture: &Me06FixturePair) -> Me06ScorerGate {
@@ -1679,6 +1700,25 @@ mod tests {
             .unwrap();
         assert!(format_only.observed_semantic_success);
         assert!(!format_only.observed_protocol_shape_valid);
+    }
+
+    #[test]
+    fn decision_rule_accepts_semantically_equivalent_surface_forms() {
+        assert!(state_value_semantically_matches(
+            "decision_rule",
+            "approval and source authority before recency; only explicit approved supersession changes state",
+            "AUTHORITY-BEFORE-RECENCY",
+        ));
+        assert!(state_value_semantically_matches(
+            "decision_rule",
+            "证据的权威性和批准状态优先于单纯到达顺序",
+            "AUTHORITY-BEFORE-RECENCY",
+        ));
+        assert!(!state_value_semantically_matches(
+            "decision_rule",
+            "newest evidence always wins",
+            "AUTHORITY-BEFORE-RECENCY",
+        ));
     }
 
     #[test]

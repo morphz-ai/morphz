@@ -1,7 +1,7 @@
 use morphz_evals::me06_long_horizon_eval::{
     generate_me06_fixtures, run_me06_fake_adapter_gate, run_me06_no_model_gate,
 };
-use morphz_evals::me06_real_eval::run_me06_real_pilot;
+use morphz_evals::me06_real_eval::{rescore_me06_real_suite, run_me06_real_pilot};
 use std::path::Path;
 
 #[tokio::main]
@@ -34,9 +34,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let report = run_me06_real_pilot(Path::new(base), Path::new(binary)).await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        [command, suite] if command == "rescore-real-suite" => {
+            let report = rescore_me06_real_suite(Path::new(suite))?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         _ => {
             return Err(
-                "usage:\n  me06_long_horizon_eval fixtures\n  me06_long_horizon_eval no-model-gate [BASE_DIR]\n  me06_long_horizon_eval fake-adapter-gate [BASE_DIR]\n  me06_long_horizon_eval real-pilot BASE_DIR RUNTIME_BINARY"
+                "usage:\n  me06_long_horizon_eval fixtures\n  me06_long_horizon_eval no-model-gate [BASE_DIR]\n  me06_long_horizon_eval fake-adapter-gate [BASE_DIR]\n  me06_long_horizon_eval real-pilot BASE_DIR RUNTIME_BINARY\n  me06_long_horizon_eval rescore-real-suite SUITE_DIR"
                     .into(),
             );
         }
