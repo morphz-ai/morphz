@@ -12,9 +12,9 @@
 
 ## 1. 结论
 
-本轮最好的 Arm 是**原生 Morphz，无 Harness，严格得分 75.0%（30/40）**。它高于官方
-Codex 的保守严格得分 67.5%（27/40），也明显高于 v0.5 极简 Harness 的 57.5%（23/40）
-和《实践论》《矛盾论》原文派生 Mind Frame 的 60.0%（24/40）。
+以 Harbor/Terminal-Bench 官方评分器为准，本轮最好的 Arm 是**原生 Morphz，无 Harness，
+75.0%（30/40）**。它高于官方 Codex 的 70.0%（28/40），也明显高于 v0.5 极简 Harness
+的 57.5%（23/40）和《实践论》《矛盾论》原文派生 Mind Frame 的 60.0%（24/40）。
 
 本轮不支持“给 Morphz 增加通用 Harness 就会提高 Terminal-Bench 完成率”：v0.5 相对原生
 Morphz 下降 17.5 个百分点；配对不一致题中 v0.5 赢 3 题、原生赢 10 题，双侧 exact
@@ -25,29 +25,30 @@ binomial p=0.0923。差异未达到 0.05 显著性阈值，但方向和幅度足
 证明它稳定改善任务能力，也没有证据证明抽象哲学框架完全无效。它只是在相同 Harness
 注入范式下略微恢复了一题，仍显著落后于原生 Morphz。
 
-## 2. 四臂严格结果
+## 2. 官方评分器结果与附加审计
 
-| Arm | Raw | Strict | 严格通过 | 完整性 Gate |
+| Arm | 官方得分 | 官方通过 | 本地严格审计 | 本地完整性 Gate |
 | --- | ---: | ---: | ---: | --- |
-| A 原生 Morphz | 75.0% | **75.0%** | **30/40** | 通过 |
-| B Morphz + `terminal-task@0.5.0` | 57.5% | 57.5% | 23/40 | 通过 |
-| D Morphz + 辩证实践 Mind Frame | 60.0% | 60.0% | 24/40 | 通过 |
-| C 官方 Codex CLI 0.149.1 | 70.0% | 67.5% | 27/40 | 未通过：1 个 trial 被保守取消资格 |
+| A 原生 Morphz | **75.0%** | **30/40** | 75.0% | 通过 |
+| B Morphz + `terminal-task@0.5.0` | 57.5% | 23/40 | 57.5% | 通过 |
+| D Morphz + 辩证实践 Mind Frame | 60.0% | 24/40 | 60.0% | 通过 |
+| C 官方 Codex CLI 0.149.1 | 70.0% | 28/40 | 67.5% | 未通过：1 个 trial 被本地扫描器取消资格 |
 
-官方 Codex 的 `dna-insert` 实际 verifier reward 为 1，但完整性扫描器看到命令文本中出现
-`/tests` 后取消资格。该命令实际使用的是 `find / -path /tests -prune ...`，即明确剪枝、
-不进入该目录。这很像静态扫描器的保守误报，但它是冻结评分政策产生的结果，因此本报告
-不在看到成绩后修改规则或恢复该分数：正式比较使用 67.5%，同时透明报告 raw 70.0%。
+官方 Codex 的 `dna-insert` 获得 verifier reward 1，计入官方成绩。我们自行增加的完整性
+扫描器因为命令文本出现 `/tests` 而取消了该题资格；但原命令是
+`find / -path /tests -prune ...`，语义是明确跳过而非读取该目录，因此属于本地静态规则的
+保守误报。对外成绩和主要比较一律采用官方评分器的 70.0%；本地 67.5% 只作为冻结审计
+历史保留，不取代官方结果，也不在看到结果后改写原始审计文件。
 
 ## 3. 预注册配对比较
 
 “第一 Arm 胜/第二 Arm 胜”只统计同一任务结果不一致的配对。
 
-| 比较 | 第一胜 | 第二胜 | 同过 | 同败 | Strict 差值 | 双侧 exact p |
+| 比较 | 第一胜 | 第二胜 | 同过 | 同败 | 官方得分差值 | 双侧 exact p |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | B v0.5 − A 原生 | 3 | 10 | 20 | 7 | −17.5pp | 0.0923 |
 | D 哲学 − B v0.5 | 5 | 4 | 19 | 12 | +2.5pp | 1.0000 |
-| C Codex − A 原生 | 4 | 7 | 23 | 6 | −7.5pp | 0.5488 |
+| C Codex − A 原生 | 5 | 7 | 23 | 5 | −5.0pp | 0.7744 |
 
 每题只有一次，统计功效有限。尤其 C−A 的结果只能说本轮没有发现官方 Codex 优于原生
 Morphz；不能据此声称原生 Morphz 已在总体上显著胜过 Codex。
@@ -67,10 +68,10 @@ Morphz；不能据此声称原生 Morphz 已在总体上显著胜过 Codex。
 `mcmc-sampling-stan` 在已完成大量工作后遭遇连续 429 并达到重试上限。两者都按预注册
 协议计为该路线的实际失败，不剔除。
 
-三个 Morphz Arm 的 public run Gate 均通过，包括严格审计、40 个独立 Context、Session、
-SQLite 数据库、凭据未落盘以及 Harness 身份绑定。官方 Codex 的 launcher 返回 3、最终
-systemd 单元为 failed，原因是上述 1 个完整性取消资格，而不是 trial 缺失：四个 Arm 都有
-40/40 个结果。
+三个 Morphz Arm 的 public run Gate 均通过，包括附加完整性审计、40 个独立 Context、
+Session、SQLite 数据库、凭据未落盘以及 Harness 身份绑定。官方 Codex 的 launcher 返回
+3、最终 systemd 单元为 failed，仅源于上述本地扫描器取消资格，不影响 Harbor 官方成绩；
+四个 Arm 都完整产生了 40/40 个官方评分结果。
 
 ## 5. Token 与时间
 
@@ -101,6 +102,6 @@ systemd 单元为 failed，原因是上述 1 个完整性取消资格，而不�
 
 ## 7. 证据
 
-原始严格结果、Harbor job 汇总、三个 Morphz public Gate、smoke 汇总、launcher 结果及
-Codex 取消资格记录均保存在本目录。逐题四臂矩阵在四份 `*_strict_result.json` 中，未做
-人工改写。
+Harbor 官方 reward、本地附加审计结果、三个 Morphz public Gate、smoke 汇总、launcher
+结果及 Codex 误报记录均保存在本目录。逐题四臂矩阵在四份 `*_strict_result.json` 中；其中
+`raw_reward` 是官方评分依据，`strict_reward` 是本地附加审计值，均未人工改写。
