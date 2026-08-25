@@ -24,6 +24,8 @@
 
 - 剩余任务：官方 89 题减去 `first_40_tasks_v1.json` 的精确集合差，共 49 题；
 - task manifest：`benchmarks/harbor/remaining_49_tasks_v1.json`；
+- 云端入口：`benchmarks/harbor/run_me08_cloud.sh`；入口只在进程内读取受管 CLIProxyAPI
+  配置，不把代理 Key 写入参数、manifest、任务容器镜像或仓库；
 - Harbor `0.21.0`；Terminal-Bench 2.1 registry digest
   `sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a`；
 - Morphz Runtime：`paper-eval-runtime-v4@5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；
