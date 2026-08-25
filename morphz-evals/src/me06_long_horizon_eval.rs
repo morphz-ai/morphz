@@ -766,8 +766,9 @@ pub fn score_me06_episode(observed: &Me06ObservedEpisode, fixture: &Me06FixtureP
         .filter(|passed| **passed)
         .count();
     let state_fields_total = state_field_results.len();
-    let unique_final_action_success =
-        observed.observed_action.as_ref() == Some(&fixture.hidden.expected_action);
+    let unique_final_action_success = observed.observed_action.as_ref().is_some_and(|actual| {
+        action_semantically_matches(actual, &fixture.hidden.expected_action, fixture)
+    });
     let context_isolation_success = observed.forbidden_values_observed.is_empty()
         && fixture
             .hidden
@@ -817,6 +818,24 @@ fn state_value_semantically_matches(field: &str, actual: &str, expected: &str) -
     let states_priority =
         normalized.contains("before") || normalized.contains("outrank") || actual.contains("优先");
     mentions_authority && mentions_recency && states_priority
+}
+
+fn action_semantically_matches(
+    actual: &Me06Action,
+    expected: &Me06Action,
+    fixture: &Me06FixturePair,
+) -> bool {
+    if actual.name != expected.name || actual.target != expected.target {
+        return false;
+    }
+    if actual.evidence_id == expected.evidence_id {
+        return true;
+    }
+    fixture
+        .visible
+        .events
+        .iter()
+        .any(|event| event.source_id == expected.evidence_id && event.id == actual.evidence_id)
 }
 
 fn run_scorer_gate(fixture: &Me06FixturePair) -> Me06ScorerGate {
@@ -1719,6 +1738,25 @@ mod tests {
             "newest evidence always wins",
             "AUTHORITY-BEFORE-RECENCY",
         ));
+    }
+
+    #[test]
+    fn final_action_accepts_source_or_concrete_event_identifier() {
+        let fixture = generate_me06_fixtures().unwrap().remove(0);
+        let expected = &fixture.hidden.expected_action;
+        assert!(action_semantically_matches(expected, expected, &fixture));
+        let concrete_event = fixture
+            .visible
+            .events
+            .iter()
+            .find(|event| event.source_id == expected.evidence_id)
+            .unwrap();
+        let actual = Me06Action {
+            name: expected.name.clone(),
+            target: expected.target.clone(),
+            evidence_id: concrete_event.id.clone(),
+        };
+        assert!(action_semantically_matches(&actual, expected, &fixture));
     }
 
     #[test]
