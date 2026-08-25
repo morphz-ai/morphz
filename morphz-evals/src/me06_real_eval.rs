@@ -146,9 +146,11 @@ pub async fn run_me06_real_pilot(
     );
     let suite_root = base.join(&suite_id);
     std::fs::create_dir_all(&suite_root)?;
+    let provider_control_root = suite_root.join("provider-control");
+    std::fs::create_dir_all(&provider_control_root)?;
     let target = EvalModelTarget::from_environment(PROFILE, PROVIDER, MODEL)?;
     let (client, _runtime_guard, binding) = build_exact_model_client(
-        &suite_root.join("provider-control"),
+        &provider_control_root,
         &target,
         "me06-provider-preflight",
         MAX_OUTPUT_TOKENS,
