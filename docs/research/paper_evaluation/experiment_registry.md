@@ -26,7 +26,7 @@
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（开放 12/12；Context shift 6/6；闭合严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
-| ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
+| ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 无模型 Gate + 九条零 completion 精确绑定通过 | `protocol-frozen` | [`p1 frozen`](./me_05_nine_model_generality_protocol_p1.md) | 从干净冻结 commit 运行 Stage A 45 cells |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
 | ME-07 | 公开 Benchmark 外部验证（A: Terminal-Bench；B: Mem2ActBench） | 外部效度 | P1 | Terminal-Bench 前 40 题四臂 `P` | `pilot-complete` | [`ME-07A 结果`](./artifacts/terminal_bench_four_arm_prior_40_20260825/RESULT.md) | 保留 40 题为系统能力 Pilot；ME-07B 完成许可/环境/适配范围审计 |
 | ME-08 | 第二公开 Benchmark | RQ5/RQ6 | P2 | 无 | `planned` | — | ME-07 后选择 |
@@ -60,6 +60,20 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- 建立 ME-05 p1 candidate：固定九个模型全部经 `mini-m4.local` CLIProxyAPI、单候选、
+  `fallback=false` 和 `reasoning=max`；使用 ME-02 的四个 S-expression 程序求值任务与
+  ME-03 的三个非确定性认知求值任务族，不重新发明题目。Stage A 的每模型 5 个 smoke
+  cell 只有在协议和运行器不变且完整性 Gate 全过时才计入最终 144-cell 矩阵，避免重复
+  消耗。每个 `model × stage × ME` 使用独立 SQLite/Context；Kimi K3 逐请求记录 usage，
+  不设置人为 100 元截断线，只在异常消耗或线路故障时暂停审计。协议见
+  [`me_05_nine_model_generality_protocol_p1.md`](./me_05_nine_model_generality_protocol_p1.md)；
+- ME-05 p1 Gate 关闭：ME-02/ME-03 的全部确定性正负 scorer Gate 通过；九条 route 的逻辑
+  模型、物理模型、custom Provider、CLIProxyAPI endpoint、精确协议、max 请求和零 completion
+  均核对通过。Claude 经同一 CLIProxyAPI 绑定为 `anthropic-messages`，其余八个为
+  `openai-responses`，没有直接订阅线路。矩阵 runner 的 144-cell 数量、协议替换、错误数量、
+  独立数据库和目录复用负例 6/6 通过；完整 `morphz-evals` 93 个库测试和 3 个 Harness 测试
+  通过，Clippy `-D warnings` 与 diff-check 通过。审计见
+  [`me_05_no_model_and_binding_gate_2026_08_25.md`](./me_05_no_model_and_binding_gate_2026_08_25.md)；
 - ME-03 p1.1 真实 Pilot 完成：开放条件 12/12 严格满足类型、候选、数量、Context 依据和
   语义约束；六个 Base/Intervention 配对 6/6 发生符合预注册合法集合的变化。闭合条件严格
   11/12；唯一失败选择了正确 `canary`，但把数组 `basis` 输出成字符串，按冻结 scorer
@@ -67,8 +81,9 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   支持“契约允许多值、Context 约束选择”，不支持随机性或高熵输出主张。报告见
   [`artifacts/me03_real_pilot_p1_20260825/RESULT.md`](./artifacts/me03_real_pilot_p1_20260825/RESULT.md)；
 - Terminal-Bench 前 40 题四臂结果正式登记为 ME-07A 外部系统能力 Pilot，而不是 ME-05。
-  官方 scorer 下原生 Morphz 30/40、同模型 Codex 28/40；每题单次且为此前已观察任务，不能
-  当作公开榜单或显著优越性结论。ME-05 继续只承担核心机制跨模型验证；ME-07B 保留
+  官方 scorer 下原生 Morphz 30/40、同模型 Codex 28/40；每题单次，任务虽已被用户和实验
+  统筹观察，但各 trial 的 Agent 使用独立空 Context、没有题目记忆。该结果仍不能当作公开
+  榜单或显著优越性结论。ME-05 继续只承担核心机制跨模型验证；ME-07B 保留
   Mem2ActBench 作为与跨 Session 记忆更贴近的外部验证；
 - ME-03 p1.1 协议冻结：三个任务的 Base/Intervention 开放合法集合分别为 6/5、3/3、
   4/5，所有干预前后集合不相交；每个任务的闭合分数最大值唯一。scorer 对全部合法集合
@@ -204,10 +219,10 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   形成独立 `terminal-task-dialectical-practice@0.1.0` Mind Frame。该包不复制长篇原文、
   不含固定任务流程，作为探索性第四 Arm；来源见
   [`dialectical_practice_mind_frame_provenance_2026_08_24.md`](./dialectical_practice_mind_frame_provenance_2026_08_24.md)；
-- 新增 `terminal-bench-four-arm-prior-40-v1` 协议：在此前已经观察过的两个 20 题 cohort
-  上，分别运行原生 Morphz、Morphz+v0.5、官方 Codex CLI 和 Morphz+辩证实践 Mind
-  Frame，各 40×1、零重试；四臂同时各并发 1，总并发 4。该实验用于开发归因，不是未见
-  题或公开榜分；协议见
+- 新增 `terminal-bench-four-arm-prior-40-v1` 协议：在用户和实验统筹已经观察过、但每个
+  Agent trial 均以独立空 Context 启动的两个 20 题 cohort 上，分别运行原生 Morphz、
+  Morphz+v0.5、官方 Codex CLI 和 Morphz+辩证实践 Mind Frame，各 40×1、零重试；四臂
+  同时各并发 1，总并发 4。该实验用于开发归因，不是公开榜分；协议见
   [`terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md`](./terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)；
 - 完成 `raman-fitting` 三种 Agent 方式的同题单次归因对照：原生 Morphz（明确无
   Harness）raw/strict reward 1.0，18 次模型求值并正常写入结果；v0.4 Harness 继续为

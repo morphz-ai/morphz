@@ -1,11 +1,9 @@
+use crate::me05_model_target::{build_exact_model_client, EvalModelTarget};
 use chrono::Utc;
-use morphz::config;
 use morphz::llm::{
-    Client, Message, ModelAttemptBinding, ModelRequestContext, ModelRequestOptions,
-    ModelStreamEvent, ModelUsage, ReasoningEffort,
+    Client, Message, ModelAttemptBinding, ModelRequestOptions, ModelStreamEvent, ModelUsage,
+    ReasoningEffort,
 };
-use morphz::provider::build_configured_client;
-use morphz::runtime::MorphzRuntime;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -20,9 +18,9 @@ const PROVIDER: &str = "custom";
 const MODEL: &str = "gpt-5.6-sol";
 const SYSTEM_CONTRACT: &str = r#"You are the model-owned evaluator at a typed cognitive boundary.
 
-For BOUNDED_OPEN, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.
+For NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.
 
-For CLOSED, apply the declared deterministic rule exactly. Context preferences that are relevant only to the open judgment do not override the closed rule.
+For DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.
 
 Nondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."#;
 
@@ -297,12 +295,13 @@ pub async fn run_binding_preflight(output_base: &Path) -> Result<BindingPrefligh
     let id = run_id("ME-03-binding-preflight-p1");
     let output_dir = output_base.join(&id);
     std::fs::create_dir_all(&output_dir)?;
-    let (_client, _runtime_guard, binding) = exact_model_client(&output_dir).await?;
+    let target = eval_model_target()?;
+    let (_client, _runtime_guard, binding) = exact_model_client(&output_dir, &target).await?;
     let report = BindingPreflightReport {
         id,
         created_at: Utc::now().to_rfc3339(),
-        profile: PROFILE.to_string(),
-        requested_reasoning_effort: ReasoningEffort::Max.as_str().to_string(),
+        profile: target.profile.clone().unwrap_or_else(|| "none".to_string()),
+        requested_reasoning_effort: target.reasoning_effort.as_str().to_string(),
         binding,
         completion_calls: 0,
         passed: true,
@@ -324,8 +323,9 @@ pub async fn run_real_pilot(
     let id = run_id("ME-03-pilot-p1");
     let output_dir = output_base.join(&id);
     std::fs::create_dir_all(&output_dir)?;
-    let (client, _runtime_guard, binding) = exact_model_client(&output_dir).await?;
-    let task_set = tasks();
+    let target = eval_model_target()?;
+    let (client, _runtime_guard, binding) = exact_model_client(&output_dir, &target).await?;
+    let task_set = selected_tasks()?;
     std::fs::write(
         output_dir.join("prompt_bundle.json"),
         serde_json::to_vec_pretty(&prompt_bundle(&task_set)?)?,
@@ -336,8 +336,15 @@ pub async fn run_real_pilot(
             let rotation = (task_index + repetition - 1) % Condition::ALL.len();
             for offset in 0..Condition::ALL.len() {
                 let condition = Condition::ALL[(rotation + offset) % Condition::ALL.len()];
-                let episode =
-                    run_episode(client.as_ref(), &binding, repetition, task, condition).await?;
+                let episode = run_episode(
+                    client.as_ref(),
+                    &binding,
+                    target.reasoning_effort,
+                    repetition,
+                    task,
+                    condition,
+                )
+                .await?;
                 std::fs::write(
                     output_dir.join(format!(
                         "episode-{:02}-{}-{}.json",
@@ -358,13 +365,16 @@ pub async fn run_real_pilot(
         provider: binding.provider_instance_id.clone(),
         protocol: binding.protocol.clone(),
         immutable_binding: binding,
-        reasoning_effort: "requested=max; client=max; per-request-options=max".to_string(),
+        reasoning_effort: format!(
+            "requested={0}; client={0}; per-request-options={0}",
+            target.reasoning_effort.as_str()
+        ),
         repetitions,
         output_dir: output_dir.clone(),
         summaries: summarize(&episodes),
         task_analysis: analyze_tasks(&task_set, &episodes, repetitions),
         episodes,
-        conclusion_boundary: "ME-03 p1 tests bounded-open contract validity, Context intervention sensitivity and closed-operator invariance. Diversity is descriptive and is not induced through temperature. This Pilot does not establish cross-model generality, S-expression superiority, long-context advantage or Runtime authority guarantees.".to_string(),
+        conclusion_boundary: "ME-03 p1 tests nondeterministic cognitive evaluation contract validity, Context intervention sensitivity and deterministic-control invariance. Diversity is descriptive and is not induced through temperature. This Pilot does not establish cross-model generality, S-expression superiority, long-context advantage or Runtime authority guarantees.".to_string(),
     };
     std::fs::write(
         output_dir.join("report.json"),
@@ -376,6 +386,7 @@ pub async fn run_real_pilot(
 async fn run_episode(
     client: &dyn Client,
     binding: &ModelAttemptBinding,
+    reasoning_effort: ReasoningEffort,
     repetition: usize,
     task: &EvalTask,
     condition: Condition,
@@ -398,7 +409,7 @@ async fn run_episode(
             measurement.clone(),
             stream_sender,
             ModelRequestOptions {
-                reasoning_effort: Some(Some(ReasoningEffort::Max)),
+                reasoning_effort: Some(Some(reasoning_effort)),
             },
         )
         .await;
@@ -450,78 +461,30 @@ async fn run_episode(
     })
 }
 
+fn eval_model_target() -> Result<EvalModelTarget, DynError> {
+    EvalModelTarget::from_environment(PROFILE, PROVIDER, MODEL)
+}
+
 async fn exact_model_client(
     run_root: &Path,
-) -> Result<(Arc<dyn Client>, MorphzRuntime, ModelAttemptBinding), DynError> {
-    if let Some(path) = config::host_env_path() {
-        if let Err(error) = config::load_env(&path.to_string_lossy()) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!("failed to load Morphz host environment: {error}").into());
-            }
-        }
-    }
-    let cwd = std::env::current_dir()?;
-    let mut resolved = config::resolve_config(&cwd, None, Some(PROFILE))?;
-    resolved.config.apply_runtime_env_overrides()?;
-    let route = resolved
-        .config
-        .model_routes
-        .get(MODEL)
-        .ok_or("ME-03 exact gpt-5.6-sol route is not configured")?;
-    if route.fallback || route.candidates.len() != 1 {
-        return Err("ME-03 requires one gpt-5.6-sol candidate and fallback=false".into());
-    }
-    let candidate = &route.candidates[0];
-    if candidate.provider != PROVIDER || candidate.model != MODEL {
-        return Err("ME-03 profile is not bound to custom/gpt-5.6-sol".into());
-    }
-    resolved.config.llm.model = MODEL.to_string();
-    resolved.config.llm.reasoning_effort = Some(ReasoningEffort::Max);
-    resolved.config.llm.max_output_tokens = Some(1_024);
-    let (client, selected) = build_configured_client(&resolved.config, None, Some(MODEL))?;
-    if selected.id != PROVIDER || selected.model != MODEL {
-        return Err("ME-03 configured client selected a different model/provider".into());
-    }
-    client.set_reasoning_effort(Some(ReasoningEffort::Max))?;
-    if client.reasoning_effort() != Some(ReasoningEffort::Max) {
-        return Err("ME-03 client did not retain reasoning=max".into());
-    }
-    let runtime = MorphzRuntime::builder(resolved.config, Arc::clone(&client))
-        .database_path(run_root.join("provider-control.db").to_string_lossy())
-        .build()
-        .await?;
-    let binding = client
-        .bind_model_attempt(&ModelRequestContext {
-            context_id: "me03-provider-preflight".to_string(),
-            session_id: "me03-provider-preflight".to_string(),
-            attempt_id: "me03-provider-preflight".to_string(),
-            objective_id: None,
-            required_capabilities: Vec::new(),
-        })
-        .await?;
-    if binding.requested_alias != MODEL
-        || binding.physical_model != MODEL
-        || binding.provider_instance_id != PROVIDER
-        || binding.protocol != "openai-responses"
-    {
-        return Err(format!(
-            "ME-03 exact binding mismatch: alias={}, provider={}, physical={}, protocol={}",
-            binding.requested_alias,
-            binding.provider_instance_id,
-            binding.physical_model,
-            binding.protocol
-        )
-        .into());
-    }
-    Ok((client, runtime, binding))
+    target: &EvalModelTarget,
+) -> Result<
+    (
+        Arc<dyn Client>,
+        morphz::runtime::MorphzRuntime,
+        ModelAttemptBinding,
+    ),
+    DynError,
+> {
+    build_exact_model_client(run_root, target, "me03-provider-preflight", 1_024).await
 }
 
 fn render_prompt(task: &EvalTask, condition: Condition) -> Result<String, DynError> {
     let context = context_for(task, condition);
     let kind = if condition.is_open() {
-        "BOUNDED_OPEN"
+        "NONDETERMINISTIC"
     } else {
-        "CLOSED"
+        "DETERMINISTIC_CONTROL"
     };
     let rule = if condition.is_open() {
         json!({
@@ -558,7 +521,7 @@ fn render_prompt(task: &EvalTask, condition: Condition) -> Result<String, DynErr
         "rule": rule,
         "returns": {
             "selected": "array of candidate ids",
-            "basis": "non-empty array containing the current context id for BOUNDED_OPEN, or closed-score-rule for CLOSED",
+            "basis": "non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL",
             "explanation": "non-empty short string"
         }
     });
@@ -920,6 +883,30 @@ fn context(
 
 fn tasks() -> Vec<EvalTask> {
     vec![incident_response(), release_strategy(), research_strategy()]
+}
+
+fn selected_tasks() -> Result<Vec<EvalTask>, DynError> {
+    let all = tasks();
+    let Ok(raw) = std::env::var("MORPHZ_ME03_TASKS") else {
+        return Ok(all);
+    };
+    let requested = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Err("MORPHZ_ME03_TASKS selected no tasks".into());
+    }
+    for id in &requested {
+        if !all.iter().any(|task| task.id == *id) {
+            return Err(format!("unknown ME-03 task: {id}").into());
+        }
+    }
+    Ok(all
+        .into_iter()
+        .filter(|task| requested.contains(&task.id))
+        .collect())
 }
 
 fn incident_response() -> EvalTask {

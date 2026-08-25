@@ -1,12 +1,9 @@
+use crate::me05_model_target::{build_exact_model_client, EvalModelTarget};
 use chrono::Utc;
-use morphz::config;
 use morphz::llm::{
     provider_continuation_message, Client, FunctionCall, Message, ModelAttemptBinding,
-    ModelRequestContext, ModelRequestOptions, ModelStreamEvent, ModelUsage, ReasoningEffort,
-    ToolCall, ToolDefinition,
+    ModelRequestOptions, ModelStreamEvent, ModelUsage, ReasoningEffort, ToolCall, ToolDefinition,
 };
-use morphz::provider::build_configured_client;
-use morphz::runtime::MorphzRuntime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -290,12 +287,13 @@ pub async fn run_binding_preflight(output_base: &Path) -> Result<BindingPrefligh
     );
     let output_dir = output_base.join(&id);
     std::fs::create_dir_all(&output_dir)?;
-    let (_client, _runtime_guard, binding) = exact_model_client(&output_dir).await?;
+    let target = eval_model_target()?;
+    let (_client, _runtime_guard, binding) = exact_model_client(&output_dir, &target).await?;
     let report = BindingPreflightReport {
         id,
         created_at: Utc::now().to_rfc3339(),
-        profile: PROFILE.to_string(),
-        requested_reasoning_effort: ReasoningEffort::Max.as_str().to_string(),
+        profile: target.profile.clone().unwrap_or_else(|| "none".to_string()),
+        requested_reasoning_effort: target.reasoning_effort.as_str().to_string(),
         binding,
         completion_calls: 0,
         passed: true,
@@ -321,20 +319,30 @@ pub async fn run_real_pilot(
     );
     let output_dir = output_base.join(&id);
     std::fs::create_dir_all(&output_dir)?;
-    let (client, _runtime_guard, binding) = exact_model_client(&output_dir).await?;
-    let task_set = tasks();
+    let target = eval_model_target()?;
+    let (client, _runtime_guard, binding) = exact_model_client(&output_dir, &target).await?;
+    let task_set = selected_tasks()?;
+    let arms = selected_arms()?;
     std::fs::write(
         output_dir.join("prompt_bundle.json"),
-        serde_json::to_vec_pretty(&prompt_bundle(&task_set)?)?,
+        serde_json::to_vec_pretty(&prompt_bundle_for_arms(&task_set, &arms)?)?,
     )?;
 
     let mut episodes = Vec::new();
     for repetition in 1..=repetitions {
         for (task_index, task) in task_set.iter().enumerate() {
-            let rotation = (task_index + repetition - 1) % Arm::ALL.len();
-            for offset in 0..Arm::ALL.len() {
-                let arm = Arm::ALL[(rotation + offset) % Arm::ALL.len()];
-                let episode = run_episode(client.as_ref(), &binding, repetition, arm, task).await?;
+            let rotation = (task_index + repetition - 1) % arms.len();
+            for offset in 0..arms.len() {
+                let arm = arms[(rotation + offset) % arms.len()];
+                let episode = run_episode(
+                    client.as_ref(),
+                    &binding,
+                    target.reasoning_effort,
+                    repetition,
+                    arm,
+                    task,
+                )
+                .await?;
                 std::fs::write(
                     output_dir.join(format!(
                         "episode-{:02}-{}-{}.json",
@@ -356,7 +364,10 @@ pub async fn run_real_pilot(
         provider: binding.provider_instance_id.clone(),
         protocol: binding.protocol.clone(),
         immutable_binding: binding,
-        reasoning_effort: "requested=max; client=max; per-request-options=max".to_string(),
+        reasoning_effort: format!(
+            "requested={0}; client={0}; per-request-options={0}",
+            target.reasoning_effort.as_str()
+        ),
         repetitions,
         output_dir: output_dir.clone(),
         summaries: summarize(&episodes),
@@ -373,6 +384,7 @@ pub async fn run_real_pilot(
 async fn run_episode(
     client: &dyn Client,
     binding: &ModelAttemptBinding,
+    reasoning_effort: ReasoningEffort,
     repetition: usize,
     arm: Arm,
     task: &EvalTask,
@@ -409,7 +421,7 @@ async fn run_episode(
                 measurement.clone(),
                 stream_sender,
                 ModelRequestOptions {
-                    reasoning_effort: Some(Some(ReasoningEffort::Max)),
+                    reasoning_effort: Some(Some(reasoning_effort)),
                 },
             )
             .await;
@@ -530,79 +542,38 @@ async fn run_episode(
     })
 }
 
+fn eval_model_target() -> Result<EvalModelTarget, DynError> {
+    EvalModelTarget::from_environment(PROFILE, PROVIDER, MODEL)
+}
+
 async fn exact_model_client(
     run_root: &Path,
-) -> Result<(Arc<dyn Client>, MorphzRuntime, ModelAttemptBinding), DynError> {
-    if let Some(path) = config::host_env_path() {
-        if let Err(error) = config::load_env(&path.to_string_lossy()) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!("failed to load Morphz host environment: {error}").into());
-            }
-        }
-    }
-    let cwd = std::env::current_dir()?;
-    let mut resolved = config::resolve_config(&cwd, None, Some(PROFILE))?;
-    resolved.config.apply_runtime_env_overrides()?;
-    let route = resolved
-        .config
-        .model_routes
-        .get(MODEL)
-        .ok_or("ME-02 exact gpt-5.6-sol route is not configured")?;
-    if route.fallback || route.candidates.len() != 1 {
-        return Err("ME-02 requires one gpt-5.6-sol candidate and fallback=false".into());
-    }
-    let candidate = &route.candidates[0];
-    if candidate.provider != PROVIDER || candidate.model != MODEL {
-        return Err("ME-02 profile is not bound to custom/gpt-5.6-sol".into());
-    }
-    resolved.config.llm.model = MODEL.to_string();
-    resolved.config.llm.reasoning_effort = Some(ReasoningEffort::Max);
-    resolved.config.llm.max_output_tokens = Some(4_096);
-    let (client, selected) = build_configured_client(&resolved.config, None, Some(MODEL))?;
-    if selected.id != PROVIDER || selected.model != MODEL {
-        return Err("ME-02 configured client selected a different model/provider".into());
-    }
-    client.set_reasoning_effort(Some(ReasoningEffort::Max))?;
-    if client.reasoning_effort() != Some(ReasoningEffort::Max) {
-        return Err("ME-02 client did not retain reasoning=max".into());
-    }
-    let runtime = MorphzRuntime::builder(resolved.config, Arc::clone(&client))
-        .database_path(run_root.join("provider-control.db").to_string_lossy())
-        .build()
-        .await?;
-    let binding = client
-        .bind_model_attempt(&ModelRequestContext {
-            context_id: "me02-provider-preflight".to_string(),
-            session_id: "me02-provider-preflight".to_string(),
-            attempt_id: "me02-provider-preflight".to_string(),
-            objective_id: None,
-            required_capabilities: Vec::new(),
-        })
-        .await?;
-    if binding.requested_alias != MODEL
-        || binding.physical_model != MODEL
-        || binding.provider_instance_id != PROVIDER
-        || binding.protocol != "openai-responses"
-    {
-        return Err(format!(
-            "ME-02 exact binding mismatch: alias={}, provider={}, physical={}, protocol={}",
-            binding.requested_alias,
-            binding.provider_instance_id,
-            binding.physical_model,
-            binding.protocol
-        )
-        .into());
-    }
-    Ok((client, runtime, binding))
+    target: &EvalModelTarget,
+) -> Result<
+    (
+        Arc<dyn Client>,
+        morphz::runtime::MorphzRuntime,
+        ModelAttemptBinding,
+    ),
+    DynError,
+> {
+    build_exact_model_client(run_root, target, "me02-provider-preflight", 4_096).await
 }
 
 fn prompt_bundle(tasks: &[EvalTask]) -> Result<Vec<PromptTaskArtifact>, DynError> {
+    prompt_bundle_for_arms(tasks, &Arm::ALL)
+}
+
+fn prompt_bundle_for_arms(
+    tasks: &[EvalTask],
+    arms: &[Arm],
+) -> Result<Vec<PromptTaskArtifact>, DynError> {
     tasks
         .iter()
         .map(|task| {
             let canonical = serde_json::to_value(&task.program)?;
             let digest = semantic_digest(&task.program)?;
-            let arms = Arm::ALL
+            let arms = arms
                 .iter()
                 .map(|arm| {
                     let prompt = render_program(&task.program, *arm)?;
@@ -624,6 +595,54 @@ fn prompt_bundle(tasks: &[EvalTask]) -> Result<Vec<PromptTaskArtifact>, DynError
             })
         })
         .collect()
+}
+
+fn selected_tasks() -> Result<Vec<EvalTask>, DynError> {
+    let all = tasks();
+    let Ok(raw) = std::env::var("MORPHZ_ME02_TASKS") else {
+        return Ok(all);
+    };
+    let requested = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Err("MORPHZ_ME02_TASKS selected no tasks".into());
+    }
+    for id in &requested {
+        if !all.iter().any(|task| task.id == *id) {
+            return Err(format!("unknown ME-02 task: {id}").into());
+        }
+    }
+    Ok(all
+        .into_iter()
+        .filter(|task| requested.contains(&task.id))
+        .collect())
+}
+
+fn selected_arms() -> Result<Vec<Arm>, DynError> {
+    let Ok(raw) = std::env::var("MORPHZ_ME02_ARMS") else {
+        return Ok(Arm::ALL.to_vec());
+    };
+    let mut arms = Vec::new();
+    for name in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let arm = Arm::ALL
+            .into_iter()
+            .find(|arm| arm.name() == name)
+            .ok_or_else(|| format!("unknown ME-02 arm: {name}"))?;
+        if !arms.contains(&arm) {
+            arms.push(arm);
+        }
+    }
+    if arms.is_empty() {
+        return Err("MORPHZ_ME02_ARMS selected no arms".into());
+    }
+    Ok(arms)
 }
 
 fn semantic_digest(program: &Program) -> Result<String, DynError> {

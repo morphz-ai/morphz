@@ -1,0 +1,63 @@
+[llm]
+model = "gpt-5.6-sol"
+reasoning_effort = "max"
+
+[credentials.custom]
+source = "env"
+name = "MORPHZ_PROVIDER_API_KEY"
+
+[accounts.custom-default]
+auth_adapter = "credential"
+credential_ref = "custom"
+provider = "custom"
+
+[services.custom]
+adapter = "protocol-compatible"
+protocol = "openai-responses"
+base_url = "http://mini-m4.local:8317/v1"
+accounts = ["custom-default"]
+
+[models."gpt-5.6-sol"]
+service = "custom"
+account = "custom-default"
+physical_model = "gpt-5.6-sol"
+
+[models."claude-opus-5"]
+service = "custom"
+account = "custom-default"
+physical_model = "claude-opus-5"
+
+[models."grok-4.6"]
+service = "custom"
+account = "custom-default"
+physical_model = "grok-4.6"
+
+[models."gemini-3.7-flash-high"]
+service = "custom"
+account = "custom-default"
+physical_model = "gemini-3.7-flash-high"
+
+[models."deepseek-v4-pro"]
+service = "custom"
+account = "custom-default"
+physical_model = "deepseek-v4-pro"
+
+[models."bai-deepseek-v4-flash"]
+service = "custom"
+account = "custom-default"
+physical_model = "bai-deepseek-v4-flash"
+
+[models."k3-256k"]
+service = "custom"
+account = "custom-default"
+physical_model = "k3-256k"
+
+[models."glm-5.3"]
+service = "custom"
+account = "custom-default"
+physical_model = "glm-5.3"
+
+[models."qwen3.8-max-preview"]
+service = "custom"
+account = "custom-default"
+physical_model = "qwen3.8-max-preview"
