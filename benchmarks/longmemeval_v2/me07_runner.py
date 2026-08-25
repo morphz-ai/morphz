@@ -209,6 +209,13 @@ def run_cell(args: argparse.Namespace) -> None:
     ]
     environment = dict(os.environ)
     require(bool(environment.get("OPENAI_API_KEY")), "OPENAI_API_KEY is not set")
+    no_proxy = {
+        item.strip()
+        for item in environment.get("NO_PROXY", "").split(",")
+        if item.strip()
+    }
+    no_proxy.update({"mini-m4.local", "127.0.0.1", "localhost"})
+    environment["NO_PROXY"] = ",".join(sorted(no_proxy))
     completed = subprocess.run(
         command,
         cwd=official_root,
