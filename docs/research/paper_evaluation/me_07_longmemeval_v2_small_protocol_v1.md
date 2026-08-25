@@ -53,6 +53,12 @@ CLIProxyAPI 目录在冻结时不提供这两个精确模型。因此分两级�
 原始 reader 回答、usage、memory projection、judge 输出和官方 scorer 结果全部保留，使未来
 获得精确 reader/judge 后可以只重放必要阶段，不重新生成或篡改 memory evidence。
 
+p1 substitute 已在真实调用前冻结：reader 与 judge 均请求
+`qwen3.8-max-preview`，CLIProxyAPI 返回的物理模型均为 `qwen3.8-max`；reader 使用官方候选的
+`temperature=0.6`、`top_p=0.95`、`top_k=20`，judge 使用 `medium` reasoning 参数。多模态
+question image 与 judge 二元输出预检均通过。`gpt-5.6-sol` 的 Chat Completions 线路在预检中
+连续返回上游 TLS handshake 500，因此未进入实验；不修改官方 scorer 去迁就 Responses API。
+
 ## 5. 运行与统计
 
 - 全 451 题，每个 arm 一次，不重复五遍；

@@ -26,7 +26,9 @@ EXPECTED_HASHES = {
 ARMS = ("no_retrieval", "morphz_structured_projection")
 DOMAINS = ("web", "enterprise")
 READER_MODEL = "qwen3.8-max-preview"
-EVALUATOR_MODEL = "gpt-5.6-sol"
+READER_PHYSICAL_MODEL = "qwen3.8-max"
+EVALUATOR_MODEL = "qwen3.8-max-preview"
+EVALUATOR_PHYSICAL_MODEL = "qwen3.8-max"
 BASE_URL = "http://mini-m4.local:8317/v1"
 PROTOCOL_ID = "ME-07-longmemeval-v2-small-v1"
 
@@ -147,7 +149,9 @@ def run_cell(args: argparse.Namespace) -> None:
         "domain": args.domain,
         "limit": args.limit,
         "reader_model": READER_MODEL,
+        "reader_physical_model": READER_PHYSICAL_MODEL,
         "evaluator_model": EVALUATOR_MODEL,
+        "evaluator_physical_model": EVALUATOR_PHYSICAL_MODEL,
         "provider": "cliproxyapi",
         "base_url": BASE_URL,
         "reader_temperature": 0.6,
@@ -352,7 +356,7 @@ def summarize(args: argparse.Namespace) -> None:
 - Protocol: {PROTOCOL_ID}
 - Questions: {len(question_ids)}
 - Reader: {READER_MODEL} via CLIProxyAPI (substitute; not an official leaderboard run)
-- Judge: {EVALUATOR_MODEL}, medium
+- Judge: {EVALUATOR_MODEL} -> {EVALUATOR_PHYSICAL_MODEL}, medium
 - Internal concurrency: 1
 - No retrieval: {baseline_correct}/{len(question_ids)} = {baseline_correct / len(question_ids):.2%}
 - Morphz structured projection: {morphz_correct}/{len(question_ids)} = {morphz_correct / len(question_ids):.2%}

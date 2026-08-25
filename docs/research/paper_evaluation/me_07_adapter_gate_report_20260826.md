@@ -38,7 +38,11 @@
 - 官方 web 首题：100 trajectories，1737 Frames，1637 relations，投影 20 Frames；
 - 官方 enterprise 首题：100 trajectories，3358 Frames，3258 relations，投影 20 Frames；
 - 两题均返回 20 个稳定 source refs；共享 SQLite/FTS Gate 索引约 188 MiB；
-- 真实 reader/judge 尚未在此 Gate 中调用。
+- substitute reader 多模态预检通过：请求 `qwen3.8-max-preview`，物理模型
+  `qwen3.8-max`，能够读取 question image；
+- substitute judge 二元输出预检通过：同一 requested/physical model，`medium` reasoning；
+- `gpt-5.6-sol` Chat Completions 预检连续出现代理上游 TLS handshake 500，因官方 judge 固定
+  使用 Chat Completions，未修改官方 scorer，亦未将该失败计为实验结果。
 
 ## 边界
 
