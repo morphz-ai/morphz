@@ -1,0 +1,54 @@
+2026-08-25T13:40:59.723+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 
+[工具调用 1/1] context_tx  (call_id=call_gNrrGm18zZbOGCGsv9ptu8G4)
+参数:
+{
+  "transaction": "(context-tx (base-version 0) (reason \"Preserve the evidence-backed current and superseded webhook routes and the deferred final-action contract for a later decision.\") (derive billing-webhook-route-current (from @e2) (route-state (object-id \"billing-webhook\") (value \"/hooks/v2\") (status current) (source-record (event-id \"ev-sc-001\") (source \"api-governance\") (version 11) (timestamp \"2026-08-25T09:00:00+08:00\")) (declared-to-supersede \"/hooks/v1\"))) (derive billing-webhook-route-superseded (from @e2) (route-state (object-id \"billing-webhook\") (value \"/hooks/v1\") (status superseded-historical) (current-state-declaring-supersession (event-id \"ev-sc-001\")) (historical-record (event-id \"ev-sc-002\") (source \"archived-runbook\") (version 4) (timestamp \"2026-07-01T09:00:00+08:00\") (archived true)))) (derive billing-webhook-later-action-contract (from @e2) (decision-state (stage \"establish\") (final-action-status deferred) (emit-final-action-now false) (when-requested (exact-fields \"action\" \"object_id\" \"value\" \"evidence_id\") (required-action-vocabulary \"route_webhook\")))) (relate billing-webhook-route-current supersedes billing-webhook-route-superseded) (protect billing-webhook-route-current billing-webhook-route-superseded billing-webhook-later-action-contract))"
+}
+
+Evidence ingested and preserved for the later decision:
+
+- **Current:** `billing-webhook` → `/hooks/v2` (`ev-sc-001`)
+- **Superseded historical state:** `billing-webhook` → `/hooks/v1` (`ev-sc-002`, archived)
+- **Relationship:** `/hooks/v2` supersedes `/hooks/v1`
+- **Deferred contract:** exact fields and required `route_webhook` vocabulary retained
+
+No final action has been emitted.
+
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 
+[工具调用 1/1] context_tx  (call_id=call_BimrFQLoPJmObYQmzePDBA5L)
+参数:
+{
+  "transaction": "(context-tx (base-version 1) (reason \"Incorporate the authoritative v3 revision, preserve v2 as the newly superseded state, repair the supersession chain, and keep final action emission deferred.\") (derive billing-webhook-route-v2-superseded (from billing-webhook-route-current @e20) (route-state (object-id \"billing-webhook\") (value \"/hooks/v2\") (status superseded) (original-current-record (event-id \"ev-sc-001\") (source \"api-governance\") (version 11) (timestamp \"2026-08-25T09:00:00+08:00\")) (superseding-decision (event-id \"ev-sc-003\") (source \"api-governance\") (version 12) (timestamp \"2026-08-25T11:00:00+08:00\") (new-value \"/hooks/v3\")))) (revise billing-webhook-route-current (from @e20) (route-state (object-id \"billing-webhook\") (value \"/hooks/v3\") (status current) (authoritative-decision (event-id \"ev-sc-003\") (source \"api-governance\") (version 12) (timestamp \"2026-08-25T11:00:00+08:00\")) (deployment-acceptance (event-id \"ev-sc-004\") (source \"deployment-log\") (version 12) (timestamp \"2026-08-25T11:01:00+08:00\")) (declared-to-supersede \"/hooks/v2\"))) (revise billing-webhook-later-action-contract (from @e2 @e20) (decision-state (stage \"revise\") (final-action-status deferred) (emit-final-action-now false) (when-requested (exact-fields \"action\" \"object_id\" \"value\" \"evidence_id\") (required-action-vocabulary \"route_webhook\")))) (unrelate billing-webhook-route-current supersedes billing-webhook-route-superseded) (relate billing-webhook-route-v2-superseded supersedes billing-webhook-route-superseded) (relate billing-webhook-route-current supersedes billing-webhook-route-v2-superseded) (protect billing-webhook-route-v2-superseded))"
+}
+2026-08-25T13:42:24.218+08:00  WARN morphz::provider: Provider stream establishment failed; preparing to retry protocol="openai-responses" status=500 Internal Server Error failure_kind="server_unavailable" attempt=1 max=5 event_code="provider.stream_open.retrying_status"
+2026-08-25T13:42:30.475+08:00  WARN morphz::provider: Provider stream establishment failed; preparing to retry protocol="openai-responses" status=500 Internal Server Error failure_kind="server_unavailable" attempt=2 max=5 event_code="provider.stream_open.retrying_status"
+2026-08-25T13:42:37.943+08:00  WARN morphz::provider: Provider stream establishment failed; preparing to retry protocol="openai-responses" status=500 Internal Server Error failure_kind="server_unavailable" attempt=3 max=5 event_code="provider.stream_open.retrying_status"
+2026-08-25T13:42:47.687+08:00  WARN morphz::provider: Provider stream establishment failed; preparing to retry protocol="openai-responses" status=500 Internal Server Error failure_kind="server_unavailable" attempt=4 max=5 event_code="provider.stream_open.retrying_status"
+2026-08-25T13:43:01.778+08:00  WARN morphz::orchestrator::orchestrator: Provider failure is awaiting an independent health probe; the shared circuit remains closed provider_resource=model-route:gpt-5.6-sol failure_kind="server_unavailable" generation=1 event_code="orchestrator.provider.failure_awaiting_probe"
+2026-08-25T13:43:01.783+08:00  WARN morphz::orchestrator::orchestrator: LLM request failed after retries; Thread entered durable Provider wait session_id="me01-me01-p1-supersession-conflict-01-session-a" attempt_id="work_7b98303b0aa33b892e3d97da" incident_id=runtime_failure_incident_1787636581783020000 error=Provider returned HTTP 500 Internal Server Error: {"error":{"message":"Post \"https://chatgpt.com/backend-api/codex/responses\": utls: TLS handshake: EOF","type":"server_error","code":"internal_server_error"}} failure_kind="server_unavailable" event_code="orchestrator.model_request.provider_wait_entered"
+
+[Agent 进度] The model service is temporarily unavailable. The Runtime preserved the current task and entered Provider backoff; it will continue after service recovery.
+2026-08-25T13:43:11.802+08:00  WARN morphz::orchestrator::orchestrator: Independent Provider health probe failed event_code="orchestrator.provider.probe_failed" provider_resource=model-route:gpt-5.6-sol generation=1 independent_failures=1 error=Provider returned HTTP 500 Internal Server Error: {"error":{"message":"Post \"https://chatgpt.com/backend-api/codex/responses\": utls: TLS handshake: EOF","type":"server_error","code":"internal_server_error"}}
+2026-08-25T13:43:18.825+08:00  WARN morphz::orchestrator::orchestrator: Independent Provider health probe failed event_code="orchestrator.provider.probe_failed" provider_resource=model-route:gpt-5.6-sol generation=1 independent_failures=2 error=Provider returned HTTP 500 Internal Server Error: {"error":{"message":"Post \"https://chatgpt.com/backend-api/codex/responses\": utls: TLS handshake: EOF","type":"server_error","code":"internal_server_error"}}
+2026-08-25T13:43:27.871+08:00  WARN morphz::orchestrator::orchestrator: Independent Provider health probe failed event_code="orchestrator.provider.probe_failed" provider_resource=model-route:gpt-5.6-sol generation=1 independent_failures=3 error=Provider returned HTTP 500 Internal Server Error: {"error":{"message":"Post \"https://chatgpt.com/backend-api/codex/responses\": utls: TLS handshake: EOF","type":"server_error","code":"internal_server_error"}}
+2026-08-25T13:43:27.872+08:00  WARN morphz::orchestrator::orchestrator: Multiple independent health probes failed; the shared Provider circuit opened event_code="orchestrator.provider.shared_circuit_opened" provider_resource=model-route:gpt-5.6-sol generation=1 delay_secs=20 probe_failures=3
+
+Revision incorporated and supersession history preserved:
+
+- **Current:** `billing-webhook` → `/hooks/v3` (`ev-sc-003`)
+- **Deployment acceptance:** `/hooks/v3` accepted (`ev-sc-004`)
+- **Supersession chain:** `/hooks/v3` supersedes `/hooks/v2`, which supersedes `/hooks/v1`
+- **Deferred contract retained:** exact required fields and `route_webhook` vocabulary
+
+No final action has been emitted.
+
+> 退出 Morphz。
+2026-08-25T13:44:03.362+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... 
+{"action":"route_webhook","object_id":"billing-webhook","value":"/hooks/v3","evidence_id":"ev-sc-003"}
+
+> 退出 Morphz。

@@ -1,0 +1,12 @@
+{
+  "status": "invalid_preconnect_launch",
+  "suite_id": "ME-01-real-smoke-20260825T053856.530Z-59168",
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "model_response_received": false,
+  "scored_episode_created": false,
+  "failure_kind": "TransientNetwork",
+  "failure_boundary": "first append_only request before provider connection",
+  "message": "DNS resolution for mini-m4.local was blocked in the sandboxed launcher; the frozen run was relaunched with existing external-network authorization.",
+  "included_in_results": false
+}
+

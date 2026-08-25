@@ -1,0 +1,59 @@
+{
+  "id": "me01-p1-supersession-conflict-01",
+  "family": "supersession_conflict",
+  "title": "Explicit endpoint supersession",
+  "required_action": "route_webhook",
+  "stages": [
+    {
+      "id": "establish",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-sc-001",
+          "source": "api-governance",
+          "version": 11,
+          "timestamp": "2026-08-25T09:00:00+08:00",
+          "content": "Object billing-webhook currently routes to /hooks/v2 and supersedes /hooks/v1."
+        },
+        {
+          "event_id": "ev-sc-002",
+          "source": "archived-runbook",
+          "version": 4,
+          "timestamp": "2026-07-01T09:00:00+08:00",
+          "content": "Historical procedure for billing-webhook used /hooks/v1. This record is archived."
+        }
+      ],
+      "instruction": "Ingest the evidence and preserve the current and superseded states for a later decision. Do not emit the final action yet."
+    },
+    {
+      "id": "revise",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-sc-003",
+          "source": "api-governance",
+          "version": 12,
+          "timestamp": "2026-08-25T11:00:00+08:00",
+          "content": "Approved change: billing-webhook now routes to /hooks/v3. This decision explicitly supersedes /hooks/v2."
+        },
+        {
+          "event_id": "ev-sc-004",
+          "source": "deployment-log",
+          "version": 12,
+          "timestamp": "2026-08-25T11:01:00+08:00",
+          "content": "The /hooks/v3 configuration was accepted by the deployment controller."
+        }
+      ],
+      "instruction": "Incorporate the authoritative revision and its supersession relation. Do not emit the final action yet."
+    },
+    {
+      "id": "act",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [],
+      "instruction": "Select the current routing action for object billing-webhook. Return only the strict four-field JSON action contract."
+    }
+  ]
+}

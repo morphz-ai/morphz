@@ -1,0 +1,113 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "suite_id": "ME-01-real-smoke-20260825T053954.305Z-59200",
+  "created_at": "2026-08-25T05:44:11.964344+00:00",
+  "suite_root": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200",
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "requested_model": "gpt-5.6-sol",
+  "physical_model": "gpt-5.6-sol",
+  "provider": "custom",
+  "reasoning": "max",
+  "arms": [
+    {
+      "arm": "append_only",
+      "run_root": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/append_only",
+      "observed_episode_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/append_only/observed_episode.json",
+      "score_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/append_only/score.json",
+      "score": {
+        "protocol_id": "me01-context-reentry-p1.1-candidate",
+        "fixture_id": "me01-p1-supersession-conflict-01",
+        "arm": "append_only",
+        "parsed_action": {
+          "action": "route_webhook",
+          "object_id": "billing-webhook",
+          "value": "/hooks/v3",
+          "evidence_id": "ev-sc-003"
+        },
+        "json_contract_valid": true,
+        "action_matches": true,
+        "object_matches": true,
+        "value_matches": true,
+        "evidence_matches": true,
+        "stale_value_reused": false,
+        "foreign_value_reused": false,
+        "task_success": true,
+        "implementation_valid": true,
+        "strict_success": true,
+        "integrity_violations": []
+      },
+      "provider_calls": 3,
+      "model_bindings_valid": true,
+      "process_restart_proven": false,
+      "passed": true
+    },
+    {
+      "arm": "structured_no_direct_reentry",
+      "run_root": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/structured_no_direct_reentry",
+      "observed_episode_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/structured_no_direct_reentry/observed_episode.json",
+      "score_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/structured_no_direct_reentry/score.json",
+      "score": {
+        "protocol_id": "me01-context-reentry-p1.1-candidate",
+        "fixture_id": "me01-p1-supersession-conflict-01",
+        "arm": "structured_no_direct_reentry",
+        "parsed_action": {
+          "action": "route_webhook",
+          "object_id": "billing-webhook",
+          "value": "/hooks/v3",
+          "evidence_id": "ev-sc-003"
+        },
+        "json_contract_valid": true,
+        "action_matches": true,
+        "object_matches": true,
+        "value_matches": true,
+        "evidence_matches": true,
+        "stale_value_reused": false,
+        "foreign_value_reused": false,
+        "task_success": true,
+        "implementation_valid": true,
+        "strict_success": true,
+        "integrity_violations": []
+      },
+      "provider_calls": 3,
+      "model_bindings_valid": true,
+      "process_restart_proven": true,
+      "passed": true
+    },
+    {
+      "arm": "full_morphz",
+      "run_root": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/full_morphz",
+      "observed_episode_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/full_morphz/observed_episode.json",
+      "score_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/full_morphz/score.json",
+      "score": {
+        "protocol_id": "me01-context-reentry-p1.1-candidate",
+        "fixture_id": "me01-p1-supersession-conflict-01",
+        "arm": "full_morphz",
+        "parsed_action": {
+          "action": "route_webhook",
+          "object_id": "billing-webhook",
+          "value": "/hooks/v3",
+          "evidence_id": "ev-sc-003"
+        },
+        "json_contract_valid": true,
+        "action_matches": true,
+        "object_matches": true,
+        "value_matches": true,
+        "evidence_matches": true,
+        "stale_value_reused": false,
+        "foreign_value_reused": false,
+        "task_success": true,
+        "implementation_valid": true,
+        "strict_success": true,
+        "integrity_violations": []
+      },
+      "provider_calls": 5,
+      "model_bindings_valid": true,
+      "process_restart_proven": true,
+      "passed": true
+    }
+  ],
+  "all_arms_executed": true,
+  "all_implementation_valid": true,
+  "all_task_success": true,
+  "pilot_permitted": true
+}

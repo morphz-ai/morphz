@@ -1,0 +1,33 @@
+2026-08-25T13:40:16.630+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 2026-08-25T13:40:16.725+08:00  WARN morphz::orchestrator::orchestrator: Context-transaction budget is exhausted during ordinary work; preserving the physical work budget session_id="me01-me01-p1-supersession-conflict-01-session-a" used=0 limit=6 event_code="orchestrator.context_transaction.budget_exhausted"
+
+Evidence recorded for the later decision:
+
+- **Current state:** `billing-webhook` routes to `/hooks/v2`, supported by `ev-sc-001` from `api-governance`, version 11. This state explicitly supersedes `/hooks/v1`.
+- **Superseded state:** `billing-webhook` previously routed to `/hooks/v1`, supported by archived record `ev-sc-002`, version 4.
+- **Later action contract retained:** exactly four fields—`action`, `object_id`, `value`, and `evidence_id`—with `action` restricted to `route_webhook`.
+
+No final action emitted.
+
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 2026-08-25T13:40:37.669+08:00  WARN morphz::orchestrator::orchestrator: Context-transaction budget is exhausted during ordinary work; preserving the physical work budget session_id="me01-me01-p1-supersession-conflict-01-session-a" used=0 limit=6 event_code="orchestrator.context_transaction.budget_exhausted"
+
+Authoritative revision incorporated:
+
+- **Current state:** `billing-webhook` routes to `/hooks/v3`, established by `ev-sc-003` from `api-governance`, version 12.
+- **Deployment corroboration:** `ev-sc-004` confirms the `/hooks/v3` configuration was accepted by the deployment controller.
+- **Supersession chain:** `/hooks/v3` supersedes `/hooks/v2`, which previously superseded `/hooks/v1`.
+- **Historical states retained:** `/hooks/v2` and `/hooks/v1` remain preserved as superseded states.
+- **Later action contract retained:** exactly `action`, `object_id`, `value`, and `evidence_id`, with `action` restricted to `route_webhook`.
+
+No final action emitted.
+
+> 退出 Morphz。
+2026-08-25T13:40:52.213+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... 2026-08-25T13:40:52.273+08:00  WARN morphz::orchestrator::orchestrator: Context-transaction budget is exhausted during ordinary work; preserving the physical work budget session_id="me01-me01-p1-supersession-conflict-01-session-a" used=0 limit=6 event_code="orchestrator.context_transaction.budget_exhausted"
+
+{"action":"route_webhook","object_id":"billing-webhook","value":"/hooks/v3","evidence_id":"ev-sc-003"}
+
+> 退出 Morphz。

@@ -1,0 +1,35 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "arm": "full_morphz",
+  "visible_input_sha256": "ceaa060313d61819440435454e53b4f7657ef68e07e92c928278082efb98c201",
+  "final_response": "{\"action\":\"route_webhook\",\"object_id\":\"billing-webhook\",\"value\":\"/hooks/v3\",\"evidence_id\":\"ev-sc-003\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_full_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/full_morphz/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-supersession-conflict-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-supersession-conflict-01-session-a": "me01-me01-p1-supersession-conflict-01-context-primary"
+    },
+    "context_tx_tool_exposed": true,
+    "context_tx_attempts": 2,
+    "context_tx_commits": 2,
+    "committed_frame_ids": [
+      "billing-webhook-later-action-contract",
+      "billing-webhook-route-current",
+      "billing-webhook-route-superseded",
+      "billing-webhook-route-v2-superseded"
+    ],
+    "act_projection_frame_ids": [
+      "billing-webhook-route-current",
+      "billing-webhook-route-superseded",
+      "billing-webhook-later-action-contract",
+      "billing-webhook-route-v2-superseded"
+    ],
+    "structured_context_snapshot_sha256": "1a64cd83c7e485c7e2d781d3b1ea7d28ce376ed3f663b5b5c458fa9d9d801e83",
+    "message_transcript_sha256": null
+  }
+}

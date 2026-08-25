@@ -1,0 +1,25 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "arm": "structured_no_direct_reentry",
+  "visible_input_sha256": "ceaa060313d61819440435454e53b4f7657ef68e07e92c928278082efb98c201",
+  "final_response": "{\"action\":\"route_webhook\",\"object_id\":\"billing-webhook\",\"value\":\"/hooks/v3\",\"evidence_id\":\"ev-sc-003\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_read_only_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T053954.305Z-59200/structured_no_direct_reentry/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-supersession-conflict-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-supersession-conflict-01-session-a": "me01-me01-p1-supersession-conflict-01-context-primary"
+    },
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": "58b506dfb42170ba0309b3c9c2e87c074c4bcb3dc2851e56afd5edd6d3717f9b",
+    "message_transcript_sha256": null
+  }
+}

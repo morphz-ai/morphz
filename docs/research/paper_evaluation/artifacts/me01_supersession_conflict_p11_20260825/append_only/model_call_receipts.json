@@ -1,0 +1,41 @@
+[
+  {
+    "arm": "append_only",
+    "stage_id": "establish",
+    "requested_model": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "provider": "custom",
+    "protocol": "openai-responses",
+    "reasoning": "max",
+    "input_sha256": "061f007c0ce5d93cf02236602bf9ffc6f71e1d9fe1c009c95d9378a62dd180f4",
+    "response_sha256": "a39e089b3129095fb72c3bf2dd0ef99eb7e2b9a9546c0f56850bc2989d0eb8a7",
+    "usage": {},
+    "wall_clock_ms": 7950
+  },
+  {
+    "arm": "append_only",
+    "stage_id": "revise",
+    "requested_model": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "provider": "custom",
+    "protocol": "openai-responses",
+    "reasoning": "max",
+    "input_sha256": "08e14c7a1a618faa73abc40f11ca507be9ecb6a64ce1b5b73467467e74c1b1f3",
+    "response_sha256": "03ce5b30f408fcc694e95e962d208bd499cb1bda3b03f3fece58c074a41f991f",
+    "usage": {},
+    "wall_clock_ms": 7582
+  },
+  {
+    "arm": "append_only",
+    "stage_id": "act",
+    "requested_model": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "provider": "custom",
+    "protocol": "openai-responses",
+    "reasoning": "max",
+    "input_sha256": "17aa691356b145a204d6040b4c92ea4b4b67e4ad372c9df3f8e8330287a72ae4",
+    "response_sha256": "2c3430642a247a20d06152257d5162fd975b6481bfb1b1b0bcebdd68e2dad077",
+    "usage": {},
+    "wall_clock_ms": 6552
+  }
+]

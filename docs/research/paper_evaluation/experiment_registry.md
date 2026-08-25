@@ -60,6 +60,14 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-01 p1.1 第二个真实 cell `supersession_conflict` 完成：三组均严格选择最终权威值
+  `/hooks/v3` 和 `ev-sc-003`，没有复用已被取代的 `/hooks/v1` 或 `/hooks/v2`；两个
+  Morphz arms 的进程重启成立。完整 Morphz 的 2 次事务和 4 个行动前 Frame 只作为真实
+  机制轨迹，不是三组得分，前两组该能力记为“不适用”。本 cell 出现 4 次 Provider HTTP
+  500 后由同一 episode 的 Runtime 恢复；另有一次模型响应前的沙箱 DNS 无效启动，完整
+  保留且不计分。目前两个真实 cell 共 6/6 有效 episode 严格通过，但存在天花板效应，
+  仍不支持优越性结论。报告见
+  [`artifacts/me01_supersession_conflict_p11_20260825/RESULT.md`](./artifacts/me01_supersession_conflict_p11_20260825/RESULT.md)；
 - ME-01 p1.1 三组真实模型 Smoke 完成：在不制造 Context 压力的
   `delayed_reference` 任务上，`append_only`、`structured_no_direct_reentry` 和
   `full_morphz` 均严格通过并返回完全相同的正确行动。完整 Morphz 使用正式二进制、独立

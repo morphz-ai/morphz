@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "You are participating in the ME-01 controlled memory experiment. Treat every evidence event as carrying an immutable event_id, source, version, timestamp, and content. Preserve source authority, explicit supersession, object identity, and Context boundaries. On non-final stages, acknowledge ingestion without inventing a final action. On the final act stage, return only one JSON object with exactly four string fields: action, object_id, value, evidence_id. Do not use Markdown fences or additional prose."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'establish':\n[\n  {\n    \"event_id\": \"ev-sc-001\",\n    \"source\": \"api-governance\",\n    \"version\": 11,\n    \"timestamp\": \"2026-08-25T09:00:00+08:00\",\n    \"content\": \"Object billing-webhook currently routes to /hooks/v2 and supersedes /hooks/v1.\"\n  },\n  {\n    \"event_id\": \"ev-sc-002\",\n    \"source\": \"archived-runbook\",\n    \"version\": 4,\n    \"timestamp\": \"2026-07-01T09:00:00+08:00\",\n    \"content\": \"Historical procedure for billing-webhook used /hooks/v1. This record is archived.\"\n  }\n]\n\nInstruction: Ingest the evidence and preserve the current and superseded states for a later decision. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'route_webhook'."
+  },
+  {
+    "role": "assistant",
+    "content": "Evidence ingested for object `billing-webhook`. Preserved `/hooks/v2` as the current route under `ev-sc-001`, with `/hooks/v1` explicitly superseded. Preserved `ev-sc-002` as an archived historical record for `/hooks/v1`. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'revise':\n[\n  {\n    \"event_id\": \"ev-sc-003\",\n    \"source\": \"api-governance\",\n    \"version\": 12,\n    \"timestamp\": \"2026-08-25T11:00:00+08:00\",\n    \"content\": \"Approved change: billing-webhook now routes to /hooks/v3. This decision explicitly supersedes /hooks/v2.\"\n  },\n  {\n    \"event_id\": \"ev-sc-004\",\n    \"source\": \"deployment-log\",\n    \"version\": 12,\n    \"timestamp\": \"2026-08-25T11:01:00+08:00\",\n    \"content\": \"The /hooks/v3 configuration was accepted by the deployment controller.\"\n  }\n]\n\nInstruction: Incorporate the authoritative revision and its supersession relation. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'route_webhook'."
+  },
+  {
+    "role": "assistant",
+    "content": "Revision ingested for `billing-webhook`. Preserved `ev-sc-003` from `api-governance` version 12 as the authoritative current route `/hooks/v3`, explicitly superseding `/hooks/v2`; `/hooks/v1` remains historically superseded. Preserved `ev-sc-004` as deployment confirmation of the `/hooks/v3` configuration. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'act':\n[]\n\nInstruction: Select the current routing action for object billing-webhook. Return only the strict four-field JSON action contract.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'route_webhook'."
+  },
+  {
+    "role": "assistant",
+    "content": "{\"action\":\"route_webhook\",\"object_id\":\"billing-webhook\",\"value\":\"/hooks/v3\",\"evidence_id\":\"ev-sc-003\"}"
+  }
+]
