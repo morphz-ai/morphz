@@ -1,6 +1,6 @@
 # ME-02 等信息递归表示对照协议 p1
 
-> 状态：`protocol-frozen`（Pilot p1.1）
+> 状态：`pilot-complete`（Pilot p1.1）
 >
 > 冻结时间：p1 2026-08-25 18:33 CST；p1.1 2026-08-25 18:59 CST
 >
@@ -213,9 +213,9 @@ No-model Gate：
 - [x] 隐藏答案泄漏扫描通过；
 - [x] scorer 正负例通过；
 - [x] 精确模型和 reasoning effort 绑定通过；
-- [ ] 18 个 Pilot episode 均有完整、可重评分的原始产物；
-- [ ] 判断天花板/地板效应和主要失败模式；
-- [ ] 根据 paired 差异而不是主观期望冻结确认性任务复杂度和样本量。
+- [x] 18 个 Pilot episode 均有完整、可重评分的原始产物；
+- [x] 三组均为 6/6，确认存在天花板效应；未观察到表示导致的失败模式；
+- [ ] 在不重复容易样本的前提下，另行冻结更长组合压力任务及确认性样本量。
 
 可能结论严格限定为：
 
@@ -233,3 +233,4 @@ No-model Gate：
 | p1 frozen | 2026-08-25 | 6×3 No-model Gate 和零 completion 精确物理绑定预检通过；冻结 Pilot | 否 |
 | p1 invalid | 2026-08-25 | 首次真实运行暴露布尔字符串类型错误和缺失 Provider continuation；18 episodes 整体无效并保留 | — |
 | p1.1 frozen | 2026-08-25 | 新增原生 Boolean IR、typed-literal Gate 和 Responses continuation 回传；No-model 与绑定 Gate 重过 | 是：p1 真实 Pilot 不得并入 p1.1 |
+| p1.1 Pilot complete | 2026-08-25 | 6 tasks × 3 arms 共 18/18 严格通过；三组均 6/6，记录天花板和不退化证据 | 否 |

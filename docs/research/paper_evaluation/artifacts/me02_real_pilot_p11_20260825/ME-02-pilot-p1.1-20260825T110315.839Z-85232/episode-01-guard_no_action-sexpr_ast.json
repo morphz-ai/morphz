@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "guard_no_action",
+  "semantic_digest": "f5fad44683bb689ef5499af630d33c14f11e218bd47b2a4adf43d8a1c6bbf20d",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 1,
+  "prompt_chars": 129,
+  "tool_trace": [],
+  "final_answer": "NO-ACTION-REQUIRED",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[]; actual=[]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"NO-ACTION-REQUIRED\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1340,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1340,
+        "calibration_key": 7802386707662129745,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(if (= (literal archival) (literal live)) (call forbidden_effect (arg mode (literal live))) (reply (literal NO-ACTION-REQUIRED)))"
+        }
+      ],
+      "response": {
+        "content": "NO-ACTION-REQUIRED",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "NO-ACTION-REQUIRED"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 964,
+            "uncached_input_tokens": 964,
+            "cached_input_tokens": 0,
+            "output_tokens": 53,
+            "reasoning_tokens": 41,
+            "total_tokens": 1017,
+            "raw": [
+              {
+                "input_tokens": 964,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 53,
+                "output_tokens_details": {
+                  "reasoning_tokens": 41
+                },
+                "total_tokens": 1017
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXfdzoqrO6m8V8SMIR--7NAl__4OhtQwwER7UV86sHj-PDWg9MZDF8WjiXxF-83qdkI_6PUFafp1lgvTDNPlbJqx-7Sq1mpa-SNSTbgR_bif7nEuaPGcx_zwROJ_72ll4MOvd2GP25nTSv_Fni2vvfqQcUFrGi8Kd8xtRh6DZYb_P4SGXUcAboCQip6vdMBK7zJXGU8-fYFyADYSFIWvQYpK725w_RBnsz7OMY9z2DEsTVs2ECfXkd7IZkRKEYLbcLYEavpvNnHS061mlK8h8ZnbciAoKFriDZpQMmfMGB2ecHcBBCdPlKwUs96Mb6XTaU_kTjyIdTOjYcCIimTirGeHGSkA8W4Z7TbJDEfDWy-Sn2mr6LSb6ZYZXcEBlJfvRNMd0RbBc8YzAA4W28xkeT6hP36r9WlbPhN_0Rc1-QPkJ1NYUT4JpJpmcHVBTAhctQceJlKeXempVm1aWv8Oj6wI5KjWojwl9Uiwjg-3ShpKKtewNO8dOubA50ror86HV8ycjpa1izDDyOaWtGSlJABXy-LuNa9_tcm10O0NRZtmkqeDWnsSEe3yY5RdmaxK85M2-aBF7FJxpkqsiZacvZXAoTzaQPV8chWnpnQSFax10Sk0LYlSffGupqzS1RlJ8oJNJ-68EFLpV_rkCWpNM6fa6Ds7KFdY9XuNFATLO_z807ABjuj_Bl9RCuZ1OnSfLyt8rm36WdJKnUdnP2fu3isfSHiekc6rQzD8aMuKkhRkPhBNxdFY3TX_2IA-9IK5Pl79R4Hjg5eEv9Q2OItFCYImrtHo-zLtR8EEkuGXxFAKN2ZtLDLemDWWeglf5v5BIh0bHSTkENq_-JSAy_KmQjTaEichr6cWBtts9odDhNBWZJbKk_uuKiVlIKQBgrJPoX3pXdHTxGg_VYKhUltjzVAfOF1278dLPmWazsHuH-aFpDwMvzA-Eh20OyR_O8z27c8kjSAWeaYkPbL3tw7_Reb4MkQHhzPGFiVmcnj6PNzVxSjKusUn3TdzBcpWbqIj3sf0OKtvszZYZJUrTQrEcZxk0TRdSC5K8LG3KTP36s0lsUHCkMcXQBP2pJgzjP3mzPFEtqVQ_m0MgVyHRuIzEdxWIGbdDm43x7dqQhfbAoL4cxDzIRIBxMp_gW8ywFLUxgWvDwxbg_1_sIxfTydNEsKwnfrWUtks5lzuehb-uTKxF1EhYNCMOfwDz5HHpP5YqaL-bDwL6Sai7Thick2oUqEuXog24T-gNlue_x9Gh9fjvav9cLeqY5JoPwlXixUHGTCezC_zcOMHdtyGR4OUrxUN1tX9ARhcGCoe2mD5RjCosrrE84wqCZW5eQjsP8lDteXQvg1i5EUMc9mKWE7HwO0-NDa0NsOkJ4hU3RY21UHnL3OnxzNrJmJn8MiJLSAW0YW1AYjgG3r4KHgyJk3Ae6BPTuXZnW2vJVahXsrRwPSQO3T8wx7EBgD0us4K3AcWkcO1K09z2Skrf65yvqH1vWMEoScA8WDXl1Z0fe4O8Z6GXnoAcTDxS34MU-w3pGKDMgcN",
+                "id": "rs_09a920d4a0d38ed3016a8d77dd674c87d08883f9c933df16f4",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 964,
+        "uncached_input_tokens": 964,
+        "cached_input_tokens": 0,
+        "output_tokens": 53,
+        "reasoning_tokens": 41,
+        "total_tokens": 1017,
+        "raw": [
+          {
+            "input_tokens": 964,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 53,
+            "output_tokens_details": {
+              "reasoning_tokens": 41
+            },
+            "total_tokens": 1017
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

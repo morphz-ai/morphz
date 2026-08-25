@@ -1,6 +1,6 @@
 # Morphz 论文实验中心
 
-> 状态：执行阶段（ME-01 p1.1 Stage A Pilot、ME-04 确定性 Gate 已完成；ME-02 Pilot 协议已冻结）
+> 状态：执行阶段（ME-01 与 ME-02 Pilot、ME-04 确定性 Gate 已完成）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
@@ -34,6 +34,7 @@
 - [ME-02 等信息递归表示对照 p1.1](./me_02_equal_information_representation_protocol_p1.md)：由同一 Canonical Program IR 生成 S-expression、JSON AST 和 Markdown 三组；只改变表面表示，不再混入 Kernel 解释强度和任务措辞差异；
 - [ME-02 p1.1 No-model Gate 与绑定预检](./me_02_no_model_gate_2026_08_25.md)：6×3 表示 digest、原生 Boolean、隐藏答案泄漏和 scorer 正负例全部通过；零 completion 确认物理模型为 `gpt-5.6-sol`、reasoning `max`、单候选无 fallback；
 - [ME-02 p1 首次真实 Pilot 无效记录](./me_02_p1_invalid_pilot_2026_08_25.md)：记录布尔值被建模成字符串和缺失 Responses continuation 的装置错误；18 个 episode 全部保留但不得进入论文结果；
+- [ME-02 p1.1 真实 Pilot 结果](./artifacts/me02_real_pilot_p11_20260825/RESULT.md)：6×3 共 18/18 严格通过；支持 S-expression 统一程序/数据表示的可行性和当前条件下不退化，不支持相对 JSON/Markdown 的优越性；
 - [ME-01 p1.1 Supersession Conflict](./artifacts/me01_supersession_conflict_p11_20260825/RESULT.md)：三组均正确选择两级 supersession 后的 `/hooks/v3`；累计两个真实 cell、6/6 有效 episode 严格通过，仍只作可行性与非退化证据；
 - [ME-01 p1.1 Source Authority](./artifacts/me01_source_authority_p11_20260825/RESULT.md)：三组均正确保留权威来源的 `R-45`，拒绝更新但未批准的 `R-07/R-90`；累计三个真实 cell、9/9 有效 episode 严格通过；
 - [ME-01 p1.1 Cross-Session Continuity](./artifacts/me01_cross_session_continuity_p11_20260825/RESULT.md)：有效重跑中，Session A/B 真实挂载同一 Context，三组均正确；首次硬编码 Session A 的运行永久标记无效；

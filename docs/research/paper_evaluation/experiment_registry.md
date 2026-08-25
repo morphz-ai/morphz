@@ -23,7 +23,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
 | ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
-| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F`；p1.1 No-model Gate 通过；p1 真实运行无效保留 | `protocol-frozen` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 从 p1.1 冻结 commit 重跑完整 6×3 Pilot，判定天花板/地板与格式偏置 |
+| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
@@ -60,6 +60,15 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-02 p1.1 真实 Pilot 完成：同一 Canonical Program IR 生成的 S-expression AST、
+  JSON AST 和 Markdown Program 在六个任务上均为 6/6 严格通过，共 18/18；96 次模型
+  请求、78 次工具调用无 Provider 错误，15 个发生工具调用的 episode 均正确回放
+  Responses continuation。结果支持 S-expression 作为统一程序/数据表示的可行性和当前
+  条件下未观察到退化，不支持其优于另两种表示。三组全通过构成天花板效应，不再机械重复
+  容易样本；如需确认性结果，应先冻结更长组合求值、嵌套作用域、共享引用和干扰压力任务。
+  p1 因布尔字符串类型错误和缺失 continuation 永久无效并独立保留；p1.1 从冻结 commit
+  `f42f906` 全量重跑。报告见
+  [`artifacts/me02_real_pilot_p11_20260825/RESULT.md`](./artifacts/me02_real_pilot_p11_20260825/RESULT.md)；
 - ME-04 p1 确定性 Gate 完成：八类 Runtime 权威边界与故障注入全部通过；完整 lib
   989/989、6 个精确 `attempt_loop` 跨组件测试 6/6、Runtime Store conformance 5/5，
   模型调用为 0。新增恶意 Observation 正负控制：fake Provider 按恶意文本返回未开放
