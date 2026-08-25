@@ -1,0 +1,681 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": 3,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"release-deadline-v2\", expected a sequence at line 2 column 32"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": \"release-deadline-v2\",\n  \"explanation\": \"Candidates with the forbidden property 'gradual' are excluded, leaving hot_swap, feature_flag, and big_bang. Selecting hot_swap and big_bang satisfies the requirement: both are rapid and capacity_light, so the set covers every required property group.\",\n  \"selected\": [\"hot_swap\", \"big_bang\"]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 736,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "glm-5.3",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 736,
+      "calibration_key": 4814846893146203825,
+      "calibration_shape": 8447746186420711612
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": \"release-deadline-v2\",\n  \"explanation\": \"Candidates with the forbidden property 'gradual' are excluded, leaving hot_swap, feature_flag, and big_bang. Selecting hot_swap and big_bang satisfies the requirement: both are rapid and capacity_light, so the set covers every required property group.\",\n  \"selected\": [\"hot_swap\", \"big_bang\"]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " without"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " feature"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_flag"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " big"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " set"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " of"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covering"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_light"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " big"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " alone"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " big"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " works"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_light"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ")."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " big"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "release"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-de"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ad"
+      },
+      {
+        "kind": "text_delta",
+        "text": "line"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "2"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "text_delta",
+        "text": "planation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Candidates"
+      },
+      {
+        "kind": "text_delta",
+        "text": " with"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "text_delta",
+        "text": " property"
+      },
+      {
+        "kind": "text_delta",
+        "text": " '"
+      },
+      {
+        "kind": "text_delta",
+        "text": "grad"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ual"
+      },
+      {
+        "kind": "text_delta",
+        "text": "'"
+      },
+      {
+        "kind": "text_delta",
+        "text": " are"
+      },
+      {
+        "kind": "text_delta",
+        "text": " excluded"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " leaving"
+      },
+      {
+        "kind": "text_delta",
+        "text": " hot"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " feature"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_flag"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " big"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": " Select"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ing"
+      },
+      {
+        "kind": "text_delta",
+        "text": " hot"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " big"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "text_delta",
+        "text": " satisfies"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " requirement"
+      },
+      {
+        "kind": "text_delta",
+        "text": ":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " both"
+      },
+      {
+        "kind": "text_delta",
+        "text": " are"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " capacity"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_light"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " so"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " set"
+      },
+      {
+        "kind": "text_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "text_delta",
+        "text": " every"
+      },
+      {
+        "kind": "text_delta",
+        "text": " required"
+      },
+      {
+        "kind": "text_delta",
+        "text": " property"
+      },
+      {
+        "kind": "text_delta",
+        "text": " group"
+      },
+      {
+        "kind": "text_delta",
+        "text": ".\",\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "hot"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\","
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "big"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ang\"]\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 596,
+          "uncached_input_tokens": 596,
+          "cached_input_tokens": 0,
+          "output_tokens": 145,
+          "reasoning_tokens": 0,
+          "total_tokens": 741,
+          "raw": [
+            {
+              "input_tokens": 596,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 145,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 741
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_021787674216530ad6c77bbc9dd3a58ea6d8fc22d5c5074550a02_0",
+              "summary": [
+                {
+                  "text": "Forbidden: gradual. Candidates without gradual: hot_swap, feature_flag, big_bang. Need set of 2 covering rapid and capacity_light. big_bang alone has both. hot_swap + big_bang works (both rapid, capacity_light). Select hot_swap and big_bang.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 596,
+      "uncached_input_tokens": 596,
+      "cached_input_tokens": 0,
+      "output_tokens": 145,
+      "reasoning_tokens": 0,
+      "total_tokens": 741,
+      "raw": [
+        {
+          "input_tokens": 596,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 145,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 741
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,2818 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "shared_reference",
+  "semantic_digest": "40ed5d28331135a4bfcb5790f614a85c4a395643d71fb90cbd9b038bae6b23ab",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 398,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_piece",
+      "arguments": {
+        "key": "shared"
+      },
+      "output": {
+        "ok": true,
+        "token": "SH-8813"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "transform_piece",
+      "arguments": {
+        "lane": "left",
+        "token": "SH-8813"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "L-8813"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "transform_piece",
+      "arguments": {
+        "lane": "right",
+        "token": "SH-8813"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "R-8813"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_shared",
+      "arguments": {
+        "left": "L-8813",
+        "right": "R-8813"
+      },
+      "output": {
+        "delivery_token": "SHARED-VERIFIED-3490",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "**Step 4 complete:** `verified` = `{\"delivery_token\": \"SHARED-VERIFIED-3490\", \"ok\": true}`\n\n**Step 5:** Now I evaluate the `REPLY` instruction.\n\nThe reply references `(ref verified delivery_token)`, which evaluates to `\"SHARED-VERIFIED-3490\"`.\n\n---\n\n**Final result:** `\"SHARED-VERIFIED-3490\"`",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]; actual=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"**Step 4 complete:** `verified` = `{\\\"delivery_token\\\": \\\"SHARED-VERIFIED-3490\\\", \\\"ok\\\": true}`\\n\\n**Step 5:** Now I evaluate the `REPLY` instruction.\\n\\nThe reply references `(ref verified delivery_token)`, which evaluates to `\\\"SHARED-VERIFIED-3490\\\"`.\\n\\n---\\n\\n**Final result:** `\\\"SHARED-VERIFIED-3490\\\"`\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1411,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1411,
+        "calibration_key": 8500404324558083948,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "I'll evaluate this program step by step.\n\n**Step 1:** `fetch_piece` with key `\"shared\"`.\n\n",
+        "tool_calls": [
+          {
+            "id": "call_7d9f968f33bb487d9fbb2a55",
+            "type": "function",
+            "func_name": "fetch_piece",
+            "arguments": "{\"key\": \"shared\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " evaluate"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " this program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " by step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Let me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " start with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the first"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " instruction.\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " source ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "call fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_piece"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "arg key"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (literal"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " shared))))\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "bind left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " transform"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_piece"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (arg"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " lane"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (literal"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left))"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (arg"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref source"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token))))\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " transform_p"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "iece ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "arg lane"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (literal"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")) ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "arg token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " source token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "))))\n4"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "bind verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "shared ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "arg"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt))"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (arg"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right receipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "))))\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "5."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (reply"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token))\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " start with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1:"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch_p"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "iece with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " key"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \"shared"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "I"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'ll evaluate"
+        },
+        {
+          "kind": "text_delta",
+          "text": " this program"
+        },
+        {
+          "kind": "text_delta",
+          "text": " step by"
+        },
+        {
+          "kind": "text_delta",
+          "text": " step"
+        },
+        {
+          "kind": "text_delta",
+          "text": ".\n\n**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Step "
+        },
+        {
+          "kind": "text_delta",
+          "text": "1:**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `fetch"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_piece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "` with"
+        },
+        {
+          "kind": "text_delta",
+          "text": " key"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "shared\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "`.\n\n"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_7d9f968f33bb487d9fbb2a55",
+          "name": "fetch_piece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\"key\": \"shared\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1551,
+            "uncached_input_tokens": 1551,
+            "cached_input_tokens": 0,
+            "output_tokens": 212,
+            "reasoning_tokens": 141,
+            "total_tokens": 1763,
+            "raw": [
+              {
+                "input_tokens": 1551,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 212,
+                "output_tokens_details": {
+                  "reasoning_tokens": 141
+                },
+                "total_tokens": 1763
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_f53b5f2a-207f-43d1-8873-27dd70c1e05a_0",
+                "summary": [
+                  {
+                    "text": "I need to evaluate this program step by step. Let me start with the first instruction.\n\nThe program is:\n1. (bind source (call fetch_piece (arg key (literal shared))))\n2. (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n3. (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n4. (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n5. (reply (ref verified delivery_token))\n\nLet me start with step 1: fetch_piece with key \"shared\".",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1551,
+        "uncached_input_tokens": 1551,
+        "cached_input_tokens": 0,
+        "output_tokens": 212,
+        "reasoning_tokens": 141,
+        "total_tokens": 1763,
+        "raw": [
+          {
+            "input_tokens": 1551,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 212,
+            "output_tokens_details": {
+              "reasoning_tokens": 141
+            },
+            "total_tokens": 1763
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1676,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1676,
+        "calibration_key": 12020219672761256505,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_f53b5f2a-207f-43d1-8873-27dd70c1e05a_0\",\"summary\":[{\"text\":\"I need to evaluate this program step by step. Let me start with the first instruction.\\n\\nThe program is:\\n1. (bind source (call fetch_piece (arg key (literal shared))))\\n2. (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\\n3. (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\\n4. (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\\n5. (reply (ref verified delivery_token))\\n\\nLet me start with step 1: fetch_piece with key \\\"shared\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll evaluate this program step by step.\n\n**Step 1:** `fetch_piece` with key `\"shared\"`.\n\n",
+          "tool_calls": [
+            {
+              "id": "call_7d9f968f33bb487d9fbb2a55",
+              "type": "function",
+              "function": {
+                "name": "fetch_piece",
+                "arguments": "{\"key\": \"shared\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+          "name": "fetch_piece",
+          "tool_call_id": "call_7d9f968f33bb487d9fbb2a55"
+        }
+      ],
+      "response": {
+        "content": "**Step 1 complete:** `source` = `{\"ok\": true, \"token\": \"SH-8813\"}`\n\n**Steps 2 & 3:** Now I'll call `transform_piece` for both lanes using the source token. These are independent, so I'll run them together.",
+        "tool_calls": [
+          {
+            "id": "call_00_kQHpWdNgrFKV7cdDxcPk6046",
+            "type": "function",
+            "func_name": "transform_piece",
+            "arguments": "{\"lane\": \"left\", \"token\": \"SH-8813\"}"
+          },
+          {
+            "id": "call_01_pncJ0cnz15e4w0wn3Xf60238",
+            "type": "function",
+            "func_name": "transform_piece",
+            "arguments": "{\"lane\": \"right\", \"token\": \"SH-8813\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " source"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " binding"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " gives"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " us"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " `"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "{"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "881"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "}`"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " transform"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_p"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "iece"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " lane"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "881"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " These"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " parallel"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "text_delta",
+          "text": " "
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": " complete"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "source"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ="
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "{\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " true"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "token"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "881"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "}`"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Steps"
+        },
+        {
+          "kind": "text_delta",
+          "text": " "
+        },
+        {
+          "kind": "text_delta",
+          "text": "2"
+        },
+        {
+          "kind": "text_delta",
+          "text": " &"
+        },
+        {
+          "kind": "text_delta",
+          "text": " "
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " Now"
+        },
+        {
+          "kind": "text_delta",
+          "text": " I"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'ll"
+        },
+        {
+          "kind": "text_delta",
+          "text": " call"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "transform"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_p"
+        },
+        {
+          "kind": "text_delta",
+          "text": "iece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " for"
+        },
+        {
+          "kind": "text_delta",
+          "text": " both"
+        },
+        {
+          "kind": "text_delta",
+          "text": " lanes"
+        },
+        {
+          "kind": "text_delta",
+          "text": " using"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " source"
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " These"
+        },
+        {
+          "kind": "text_delta",
+          "text": " are"
+        },
+        {
+          "kind": "text_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " so"
+        },
+        {
+          "kind": "text_delta",
+          "text": " I"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'ll"
+        },
+        {
+          "kind": "text_delta",
+          "text": " run"
+        },
+        {
+          "kind": "text_delta",
+          "text": " them"
+        },
+        {
+          "kind": "text_delta",
+          "text": " together"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_kQHpWdNgrFKV7cdDxcPk6046",
+          "name": "transform_piece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "lane"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "left"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ", "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "token"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "SH"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "881"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 3,
+          "id": "call_01_pncJ0cnz15e4w0wn3Xf60238",
+          "name": "transform_piece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "lane"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "right"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": ", "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "token"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "SH"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "881"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 3
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1866,
+            "uncached_input_tokens": 458,
+            "cached_input_tokens": 1408,
+            "output_tokens": 238,
+            "reasoning_tokens": 62,
+            "total_tokens": 2104,
+            "raw": [
+              {
+                "input_tokens": 1866,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 238,
+                "output_tokens_details": {
+                  "reasoning_tokens": 62
+                },
+                "total_tokens": 2104
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_a6399241-c510-47db-998e-88f95120ac23_0",
+                "summary": [
+                  {
+                    "text": "The source binding gives us `{ok: true, token: \"SH-8813\"}`.\n\nNow step 2 and 3: transform_piece with lane \"left\" and \"right\" both with token \"SH-8813\". These are independent, so I can call both in parallel.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1866,
+        "uncached_input_tokens": 458,
+        "cached_input_tokens": 1408,
+        "output_tokens": 238,
+        "reasoning_tokens": 62,
+        "total_tokens": 2104,
+        "raw": [
+          {
+            "input_tokens": 1866,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 238,
+            "output_tokens_details": {
+              "reasoning_tokens": 62
+            },
+            "total_tokens": 2104
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1961,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1961,
+        "calibration_key": 10943183107721421290,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_f53b5f2a-207f-43d1-8873-27dd70c1e05a_0\",\"summary\":[{\"text\":\"I need to evaluate this program step by step. Let me start with the first instruction.\\n\\nThe program is:\\n1. (bind source (call fetch_piece (arg key (literal shared))))\\n2. (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\\n3. (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\\n4. (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\\n5. (reply (ref verified delivery_token))\\n\\nLet me start with step 1: fetch_piece with key \\\"shared\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll evaluate this program step by step.\n\n**Step 1:** `fetch_piece` with key `\"shared\"`.\n\n",
+          "tool_calls": [
+            {
+              "id": "call_7d9f968f33bb487d9fbb2a55",
+              "type": "function",
+              "function": {
+                "name": "fetch_piece",
+                "arguments": "{\"key\": \"shared\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+          "name": "fetch_piece",
+          "tool_call_id": "call_7d9f968f33bb487d9fbb2a55"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_a6399241-c510-47db-998e-88f95120ac23_0\",\"summary\":[{\"text\":\"The source binding gives us `{ok: true, token: \\\"SH-8813\\\"}`.\\n\\nNow step 2 and 3: transform_piece with lane \\\"left\\\" and \\\"right\\\" both with token \\\"SH-8813\\\". These are independent, so I can call both in parallel.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "**Step 1 complete:** `source` = `{\"ok\": true, \"token\": \"SH-8813\"}`\n\n**Steps 2 & 3:** Now I'll call `transform_piece` for both lanes using the source token. These are independent, so I'll run them together.",
+          "tool_calls": [
+            {
+              "id": "call_00_kQHpWdNgrFKV7cdDxcPk6046",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\": \"left\", \"token\": \"SH-8813\"}"
+              }
+            },
+            {
+              "id": "call_01_pncJ0cnz15e4w0wn3Xf60238",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\": \"right\", \"token\": \"SH-8813\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"L-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_00_kQHpWdNgrFKV7cdDxcPk6046"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"R-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_01_pncJ0cnz15e4w0wn3Xf60238"
+        }
+      ],
+      "response": {
+        "content": "**Steps 2 & 3 complete:**\n- `left` = `{\"ok\": true, \"receipt\": \"L-8813\"}`\n- `right` = `{\"ok\": true, \"receipt\": \"R-8813\"}`\n\n**Step 4:** Now calling `verify_shared` with both receipts.",
+        "tool_calls": [
+          {
+            "id": "call_00_DUH7Lw1imbcGu42W3kQ77613",
+            "type": "function",
+            "func_name": "verify_shared",
+            "arguments": "{\"left\": \"L-8813\", \"right\": \"R-8813\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " complete"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " {\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "rece"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "L"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "881"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"}\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " complete"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " {\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "rece"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "R"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "881"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "}\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "shared"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "L"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "881"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "R"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "881"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Steps"
+        },
+        {
+          "kind": "text_delta",
+          "text": " "
+        },
+        {
+          "kind": "text_delta",
+          "text": "2"
+        },
+        {
+          "kind": "text_delta",
+          "text": " &"
+        },
+        {
+          "kind": "text_delta",
+          "text": " "
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": " complete"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "left"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ="
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "{\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " true"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "rece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ipt"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "L"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "881"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\"}"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "right"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ="
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "{\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " true"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "rece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ipt"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "R"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "881"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "}`"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "text_delta",
+          "text": " "
+        },
+        {
+          "kind": "text_delta",
+          "text": "4"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " Now"
+        },
+        {
+          "kind": "text_delta",
+          "text": " calling"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "verify"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_"
+        },
+        {
+          "kind": "text_delta",
+          "text": "shared"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " with"
+        },
+        {
+          "kind": "text_delta",
+          "text": " both"
+        },
+        {
+          "kind": "text_delta",
+          "text": " receipts"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_DUH7Lw1imbcGu42W3kQ77613",
+          "name": "verify_shared"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "left"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "L"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "881"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ", "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "right"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "R"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "881"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2150,
+            "uncached_input_tokens": 102,
+            "cached_input_tokens": 2048,
+            "output_tokens": 206,
+            "reasoning_tokens": 69,
+            "total_tokens": 2356,
+            "raw": [
+              {
+                "input_tokens": 2150,
+                "input_tokens_details": {
+                  "cached_tokens": 2048
+                },
+                "output_tokens": 206,
+                "output_tokens_details": {
+                  "reasoning_tokens": 69
+                },
+                "total_tokens": 2356
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_9b6d3965-1267-4712-a7b9-976812122bae_0",
+                "summary": [
+                  {
+                    "text": "Step 2 complete: left = {\"ok\": true, \"receipt\": \"L-8813\"}\nStep 3 complete: right = {\"ok\": true, \"receipt\": \"R-8813\"}\n\nStep 4: verify_shared with left = \"L-8813\", right = \"R-8813\".",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2150,
+        "uncached_input_tokens": 102,
+        "cached_input_tokens": 2048,
+        "output_tokens": 206,
+        "reasoning_tokens": 69,
+        "total_tokens": 2356,
+        "raw": [
+          {
+            "input_tokens": 2150,
+            "input_tokens_details": {
+              "cached_tokens": 2048
+            },
+            "output_tokens": 206,
+            "output_tokens_details": {
+              "reasoning_tokens": 69
+            },
+            "total_tokens": 2356
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2172,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2172,
+        "calibration_key": 1949499671899349263,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_f53b5f2a-207f-43d1-8873-27dd70c1e05a_0\",\"summary\":[{\"text\":\"I need to evaluate this program step by step. Let me start with the first instruction.\\n\\nThe program is:\\n1. (bind source (call fetch_piece (arg key (literal shared))))\\n2. (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\\n3. (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\\n4. (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\\n5. (reply (ref verified delivery_token))\\n\\nLet me start with step 1: fetch_piece with key \\\"shared\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll evaluate this program step by step.\n\n**Step 1:** `fetch_piece` with key `\"shared\"`.\n\n",
+          "tool_calls": [
+            {
+              "id": "call_7d9f968f33bb487d9fbb2a55",
+              "type": "function",
+              "function": {
+                "name": "fetch_piece",
+                "arguments": "{\"key\": \"shared\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+          "name": "fetch_piece",
+          "tool_call_id": "call_7d9f968f33bb487d9fbb2a55"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_a6399241-c510-47db-998e-88f95120ac23_0\",\"summary\":[{\"text\":\"The source binding gives us `{ok: true, token: \\\"SH-8813\\\"}`.\\n\\nNow step 2 and 3: transform_piece with lane \\\"left\\\" and \\\"right\\\" both with token \\\"SH-8813\\\". These are independent, so I can call both in parallel.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "**Step 1 complete:** `source` = `{\"ok\": true, \"token\": \"SH-8813\"}`\n\n**Steps 2 & 3:** Now I'll call `transform_piece` for both lanes using the source token. These are independent, so I'll run them together.",
+          "tool_calls": [
+            {
+              "id": "call_00_kQHpWdNgrFKV7cdDxcPk6046",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\": \"left\", \"token\": \"SH-8813\"}"
+              }
+            },
+            {
+              "id": "call_01_pncJ0cnz15e4w0wn3Xf60238",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\": \"right\", \"token\": \"SH-8813\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"L-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_00_kQHpWdNgrFKV7cdDxcPk6046"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"R-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_01_pncJ0cnz15e4w0wn3Xf60238"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_9b6d3965-1267-4712-a7b9-976812122bae_0\",\"summary\":[{\"text\":\"Step 2 complete: left = {\\\"ok\\\": true, \\\"receipt\\\": \\\"L-8813\\\"}\\nStep 3 complete: right = {\\\"ok\\\": true, \\\"receipt\\\": \\\"R-8813\\\"}\\n\\nStep 4: verify_shared with left = \\\"L-8813\\\", right = \\\"R-8813\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "**Steps 2 & 3 complete:**\n- `left` = `{\"ok\": true, \"receipt\": \"L-8813\"}`\n- `right` = `{\"ok\": true, \"receipt\": \"R-8813\"}`\n\n**Step 4:** Now calling `verify_shared` with both receipts.",
+          "tool_calls": [
+            {
+              "id": "call_00_DUH7Lw1imbcGu42W3kQ77613",
+              "type": "function",
+              "function": {
+                "name": "verify_shared",
+                "arguments": "{\"left\": \"L-8813\", \"right\": \"R-8813\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"SHARED-VERIFIED-3490\",\"ok\":true}",
+          "name": "verify_shared",
+          "tool_call_id": "call_00_DUH7Lw1imbcGu42W3kQ77613"
+        }
+      ],
+      "response": {
+        "content": "**Step 4 complete:** `verified` = `{\"delivery_token\": \"SHARED-VERIFIED-3490\", \"ok\": true}`\n\n**Step 5:** Now I evaluate the `REPLY` instruction.\n\nThe reply references `(ref verified delivery_token)`, which evaluates to `\"SHARED-VERIFIED-3490\"`.\n\n---\n\n**Final result:** `\"SHARED-VERIFIED-3490\"`",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " 4"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " complete"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ": verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " = {\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "del"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ivery_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\": \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "SHAR"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ED-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ERIFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-349"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "0\","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \"ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\": true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "}\n\nStep"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " 5"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ") which"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "SHAR"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ED-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ERIFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-349"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "0\"."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Step "
+        },
+        {
+          "kind": "text_delta",
+          "text": "4 complete"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":** `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "verified`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " = `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "{\"del"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ivery_token"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\": \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "SHAR"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ED-V"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ERIFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-349"
+        },
+        {
+          "kind": "text_delta",
+          "text": "0\","
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "ok\":"
+        },
+        {
+          "kind": "text_delta",
+          "text": " true}`"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\n\n**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "text_delta",
+          "text": " 5"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":** Now"
+        },
+        {
+          "kind": "text_delta",
+          "text": " I evaluate"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "REPL"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Y`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " instruction.\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The reply"
+        },
+        {
+          "kind": "text_delta",
+          "text": " references `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "(ref"
+        },
+        {
+          "kind": "text_delta",
+          "text": " verified delivery"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_token)"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`, which"
+        },
+        {
+          "kind": "text_delta",
+          "text": " evaluates to"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "SHAR"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ED-V"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ERIFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-349"
+        },
+        {
+          "kind": "text_delta",
+          "text": "0\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "`.\n\n---\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**Final"
+        },
+        {
+          "kind": "text_delta",
+          "text": " result"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":** `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\"SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ARED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "349"
+        },
+        {
+          "kind": "text_delta",
+          "text": "0\""
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2307,
+            "uncached_input_tokens": 771,
+            "cached_input_tokens": 1536,
+            "output_tokens": 149,
+            "reasoning_tokens": 53,
+            "total_tokens": 2456,
+            "raw": [
+              {
+                "input_tokens": 2307,
+                "input_tokens_details": {
+                  "cached_tokens": 1536
+                },
+                "output_tokens": 149,
+                "output_tokens_details": {
+                  "reasoning_tokens": 53
+                },
+                "total_tokens": 2456
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_404d2088-ab2f-47f1-acac-422d55d35f78_0",
+                "summary": [
+                  {
+                    "text": "Step 4 complete: verified = {\"delivery_token\": \"SHARED-VERIFIED-3490\", \"ok\": true}\n\nStep 5: REPLY with (ref verified delivery_token) which is \"SHARED-VERIFIED-3490\".",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2307,
+        "uncached_input_tokens": 771,
+        "cached_input_tokens": 1536,
+        "output_tokens": 149,
+        "reasoning_tokens": 53,
+        "total_tokens": 2456,
+        "raw": [
+          {
+            "input_tokens": 2307,
+            "input_tokens_details": {
+              "cached_tokens": 1536
+            },
+            "output_tokens": 149,
+            "output_tokens_details": {
+              "reasoning_tokens": 53
+            },
+            "total_tokens": 2456
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "closed_base",
+  "context_id": "research-landscape-v1",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94), ignoring open-preference constraints.\",\"selected\":[\"controlled_trial\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 709,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 709,
+      "calibration_key": 8401388573231043596,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94), ignoring open-preference constraints.\",\"selected\":[\"controlled_trial\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94), ignoring open-preference constraints.\",\"selected\":[\"controlled_trial\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 881,
+          "uncached_input_tokens": 881,
+          "cached_input_tokens": 0,
+          "output_tokens": 144,
+          "reasoning_tokens": 104,
+          "total_tokens": 1025,
+          "raw": [
+            {
+              "input_tokens": 881,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 144,
+              "output_tokens_details": {
+                "reasoning_tokens": 104
+              },
+              "total_tokens": 1025
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjb27W_Y6evYzAOcLfmDUljjsEc7tqWMPBTYb6g2zU63kG-f1YfY9fKcX4MfVbPTw9iu00xgQk1bXIY4kaoe5EoYPgtHnci9QwADzqf1ESXpfDA4o1KTX6JZdSZUlmSp1SkfgxvvF3mEs2zfZdSE0uHN-7xQcCQepSSKOHqzhcjN7imwiwMOllE9VCke4ORmQtjxTPkL_GAnsUVKUzSSHH1JTXrK7NCFesWfArah3J-oVFePI0NSMMvNzRHPJTxtXXLsr3pCoKGTMVQ1yIGPn_5cvtmVdv-O5P3MkyokPM6rSkCrL5cxQ7aRftJ7DlY1uG_0Duzcspbfzc3fblOzVIK3cHELsfypVZv8-G0YCxnqSz6H60WzjgjtvJVo9eN3qcaJzwJRkoslWt2N4TEwQBAsHJEYg_YQHvyntZkP1dREt7w3ZoezRw1yUqy5LNdXabMArf8PzVBHAZKL1MDm2pqgaZBcsWss0XZzyldSK1WpzoqF6n-rzfX-eVSPWmW2m45jIUa3lC6cxXdZqZQQmD0o8NgtGPheMfwMlMzvtubmbDhD-PPz7aKNBzCpRfcT7SiWHLcSRMd73Pvc2romChTlJwUG8EAGTb4mnfyQsW-SC7zZAXOt9_z3AB0zfbvE9X7EMajW2DvPXDy6SXJ_mpfq67Apz1i2N69E-FFapCV7JAY5TrmoypQMfE61u5FMfx-tIReodTZRRORxv59gosEigzKidITeDMygwomlTxGqayFzDVJOM-Iuq2B8-5uWRsCtSrg6-NfH8N1ErlkJUJtcxcPs7yaP_WK3tK6F0rpeEXJfY9nHYXR8ODS4rl3bxz_iChz4DqXPO_kWdyl9glimtJzL5DFiwJqac3YX_XonEGT6n2qjYGMJjmxnJ8VGyyJ9xsvgGl4es1W9dsbc4ylxRHf_fZNM0YbEpsJVNoi-lsxBNuBA5wIDRJv6QgEeu8-q8SDnGKSbH4vrvqCwCuglRq09aItmOrZ8I7TqRSls3XaPI6VY9qc-BO1TcF_KqLz4SyBXv_Du4GJLrvuYqv_4VHrDPN1Jdpevtm1OOWHQhN6bb3rA1GbGBHC_IgawTDowQOXRz1HaNcYOR7qSxjYAZR2H-5QR1KZpzJwxJGUSHfhFmwhBwRhb3QRFiWQzpo8IlsZ7rBhNJdYkoEwn67kaRjA7rEVr7VRnRanTS9-14mZPhC5rOhY3f0292AjRFbtdvP4Sdxsndk9XyKOwL8M1R-WKTkcMCl6RzwdoicKDc0t-ie88L9XM1CbSizf_e7mwcvjB1C0owHDO6mIY8ylxPXx_3kp-TBcOZ6ZQxJ6Sj1LEaBAtwXlyDdmYKD0N4KwQCg2kMlksTPW8llnjnEJQQLYVmm_mTrDXeSz8B4-sL6hUJLFH0Of3p4wqBi7CW1exfL1vFPkRfn1pEGcV849SBPf_Ly0NO98kwoYtVH6Gje0RBx4TCJHkz7j8r84f2wtk0O3VUHtONPLfmkBbPWd1vV6d9jJceG6YTemVIOv0ZTTrKpG4uLpxZfflydlDcaWXruthvcpec59chUvHDH2mgqogJbj68Ls71EdNY6JIfMMYkaHJdwXGRoJvJLNJFygKR1V5UeiMSlBmjXSQERKCbBQ8FFZR_IaUi0smKcNVjZzBmbSxvzOHV9m-Lq2YKeOnfT4mJUFeHHeoDqLsJkzO9UjzJXX-ItAThl4BrkuJIUoBrOUwp3-REzO_i9Rq_tM-wN_lAVYaHTzzuP_MUYQOoexcYtLOa0KXUY892asWWsrzYhy1R3C0ZIFa8aVkuTM9bf91EEn-qJuTcf9AB2nmCDZWYZjfUwB2FMsb6N6gXsCqUMZb7w2sdB0kHjdal-PUNA2oN85KuKj6mfgNx_hD7fnRXc99JeveKO-GHD86jPtzoGx2l8doL4YvYZoBvaxXEASPHw6gYxhIYRCvMmzdfwutYGdxrvyf1mfQz_ILcPwxXodn4vUemE1eTQDwltGyPxwqNbbQpz2osqu2LaSdoPw==",
+              "id": "rs_01debccb51cd6dd6016a8dbdbbee6487d092821a648b5276bb",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 881,
+      "uncached_input_tokens": 881,
+      "cached_input_tokens": 0,
+      "output_tokens": 144,
+      "reasoning_tokens": 104,
+      "total_tokens": 1025,
+      "raw": [
+        {
+          "input_tokens": 881,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 144,
+          "output_tokens_details": {
+            "reasoning_tokens": 104
+          },
+          "total_tokens": 1025
+        }
+      ]
+    },
+    "error": null
+  }
+}

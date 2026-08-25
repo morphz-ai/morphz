@@ -1,0 +1,465 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": 5,
+  "selected": [
+    "preserve_logs",
+    "publish_status"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis incident-accountability-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Picked two non-disruptive actions that jointly supply transparency and evidence for public accountability.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 765,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 765,
+      "calibration_key": 86806707220527905,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Picked two non-disruptive actions that jointly supply transparency and evidence for public accountability.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " act"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " as"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " model"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "owned"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluator"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " typed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cognitive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " boundary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Markdown"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "{\n  \"selected\": [\n    \"publish_status\",\n    \"notify_affected\"\n  ]\n}   {\"basis\": [\"incident-accountability-v2\"], \"explanation\": \"Selected candidates provide transparency for public accountability and evidence for preservation, aligning with the authoritative disclosure priorities."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "incident"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "accountability"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "2"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "P"
+      },
+      {
+        "kind": "text_delta",
+        "text": "icked"
+      },
+      {
+        "kind": "text_delta",
+        "text": " two"
+      },
+      {
+        "kind": "text_delta",
+        "text": " non"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "disrupt"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ive"
+      },
+      {
+        "kind": "text_delta",
+        "text": " actions"
+      },
+      {
+        "kind": "text_delta",
+        "text": " that"
+      },
+      {
+        "kind": "text_delta",
+        "text": " jointly"
+      },
+      {
+        "kind": "text_delta",
+        "text": " supply"
+      },
+      {
+        "kind": "text_delta",
+        "text": " transparency"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "text_delta",
+        "text": " for"
+      },
+      {
+        "kind": "text_delta",
+        "text": " public"
+      },
+      {
+        "kind": "text_delta",
+        "text": " accountability"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "publish"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "status"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "preserve"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "logs"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 859,
+          "uncached_input_tokens": 731,
+          "cached_input_tokens": 128,
+          "output_tokens": 1288,
+          "reasoning_tokens": 1243,
+          "total_tokens": 2147,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 859,
+                "output_tokens": 1288
+              },
+              "cost_in_usd_ticks": 15731800,
+              "input_tokens": 859,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 1288,
+              "output_tokens_details": {
+                "reasoning_tokens": 1243
+              },
+              "total_tokens": 2147
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_3d63cfc8-468e-9b68-812d-6bc7c3a0ccb3",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user wants me to act as a model-owned evaluator at a typed cognitive boundary. I need to return exactly one JSON object and no Markdown.\n{\n  \"selected\": [\n    \"publish_status\",\n    \"notify_affected\"\n  ]\n}   {\"basis\": [\"incident-accountability-v2\"], \"explanation\": \"Selected candidates provide transparency for public accountability and evidence for preservation, aligning with the authoritative disclosure priorities.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 859,
+      "uncached_input_tokens": 731,
+      "cached_input_tokens": 128,
+      "output_tokens": 1288,
+      "reasoning_tokens": 1243,
+      "total_tokens": 2147,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 859,
+            "output_tokens": 1288
+          },
+          "cost_in_usd_ticks": 15731800,
+          "input_tokens": 859,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 1288,
+          "output_tokens_details": {
+            "reasoning_tokens": 1243
+          },
+          "total_tokens": 2147
+        }
+      ]
+    },
+    "error": null
+  }
+}

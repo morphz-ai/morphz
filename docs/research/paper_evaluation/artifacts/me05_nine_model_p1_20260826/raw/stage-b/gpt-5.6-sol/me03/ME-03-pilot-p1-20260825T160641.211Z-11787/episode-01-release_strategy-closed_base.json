@@ -1,0 +1,117 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "closed_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 707,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 707,
+      "calibration_key": 7094990819166888333,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 881,
+          "uncached_input_tokens": 881,
+          "cached_input_tokens": 0,
+          "output_tokens": 127,
+          "reasoning_tokens": 94,
+          "total_tokens": 1008,
+          "raw": [
+            {
+              "input_tokens": 881,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 127,
+              "output_tokens_details": {
+                "reasoning_tokens": 94
+              },
+              "total_tokens": 1008
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjb2kuYkTjrbKz6uJZuDZLjJq5zVV4jscLKGu3scSM7yvxXvJSqnGMvAuYr7_29A-WPRQmK8xWCTdcsfzytDzxIpyMm5qnhFBesDtRFNLY98bkm1w_ckzIf49dthpCvzKJ6jT20A-xYlEh0-j-v-o879XhiJpqgit4A6gbTtc4v28K-antFtp00WiNGu7qUHl6c1m0L8O1B5XBXq02CMiwl5udZLaAfkyXQ8terf2SR0g-SbCVpK3QjDTV5wxnT1Hfcw1RxKf_O8l2QFJqw9n4l2hosXAS68shuHZc2k9oxA8yGLQF067_GxGXMsydM2_dHUb12xWJJz1jXw33Be25OUqzsg2oCHHc3ylRkdfn2lpe8HWXASIgPC4GenBzOVtgoXGyMzM6WYUDk8upR6dgvpqlSFTX9FYOkHQ55YefydUZVrH4ufdnrqYRfTGgA4ObzaWj7d5NpSvwY9uQZI4t3BuDTfS_51BCim00QEW-LLBW4ii2ul5hxLvehaxcl4tpopLN2X3C96eFk3LkxbnVcEveILRx9nprX5msOtVZyZifgfOGSa7vxHrd4O273-KyOw_srW_XJLMDSLWYOgOg0d9Lq8RnpWucFvTAnCDAInFWASAHI_5JpWf08LkjIoicY89tsoGg0ApnkFTqeR-y72mfC46IsEn7hwJ4Bnbc-wkGSCFGIjBX2Bq7gHJ0uWbztdr8DqekdEfbZBi2IlTebUdYufRqh57o8iltsNMtHrqLorFfrpqferR0-Y9Hc5k4hdl_NWLjWsx-PWF43Mw86u4CXhmzb_n0GnOATJLg2ZbpYWbvkMnbvibkRb9r1fOiC1lp7PeXJrtfw0gYFp79bsNkAbGzXr7mtfOH8QZ2I0oomjYujh4OMotnBv9DD5cHaSqQsgCHfrAEPDo6pB98-ODLXXuiYiCWTVRzpggAoz7kOcz5vd-p1MekM21Mx1peonP7KGBv46p_11x2mpa5OWkEpVoXTdkYpKpObviKFbDk22OmQtNRoWUTDD7lMhc3YKSTegtQYDEwJCbkpmy_8OWdeisAbKqZgvukAYjz5GwnQwJ39zXV0IXFP1tDjobYeMn9be6E9Vx0x3Y9AeLYgaySM6l5LZT4H4cudZdF1hUmOh_a3X9fdgWMnqzpYtdRqZRIgOldclvfsQ0tMtNrLA7qu_Cl0kPUPG56sButflSoZjXPO87JDY9lli-ixXA0jE1neQ43-MiEP8MBJxJ4W7k3S3mg0AB-L2JiIhUiTzTa2U_KCGLZ8z7Gf5OsnB-EjpdrU-PDCUDe4VMGVePGargiOXBybXAFlPWfyKhj5nft3YWuZBVl6JiII4fFiKrgn2HmSescBRSOp-RWTXzM6W6KHOmGpqnIK1suK8hZXrEl5owN4GNToY6VDoQcKiQ6vjcjTgtZlLKvvgu1dgYFGOjf3LWOJionE00Z6CW_LFu-D1SRJvl0Q3isBw3N3HFf0BcOmOREPIdl3ijmXXRO6rY_Qar2qcGg8hg0qv2wsVzTuNNIBuJeYT5kBlTTAnJYk0pjXifduOJBEnSy1D0wxaVA_7uvzxWxApSYOBqQEcaCkVf5iQQRIXNiRpcdBrJ7xj-ELPgZwwXQ-_urXrtX81c49Ux1xvRP6MLpo9EnXMCML5c5Zw-FdY7XOWPb1fB6diIEGRjz3WZ7O6MazmG-w72hADRfM0c4jFESgr9XpIugTsLfypIZtLJgZeAyud0PGwc4S5QYPAlkI2W6aLLDa_Apa_PbXBINioCxl0tECcHOfv6cxvbO2eJpGjMzeqmgnns8sm52rGQe-eC4Ps16NbhY9liwS400ndhkZ_Nrje28UYT15y-vd5FsNL8-sAa-Uw20TdLm1yUOowUuNaBZUh6u6in-FlK-JoIK3E9Vz1cu18=",
+              "id": "rs_098d1dfb14a8c564016a8dbda4ad6887d08a8bfee2dc5721f6",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 881,
+      "uncached_input_tokens": 881,
+      "cached_input_tokens": 0,
+      "output_tokens": 127,
+      "reasoning_tokens": 94,
+      "total_tokens": 1008,
+      "raw": [
+        {
+          "input_tokens": 881,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 127,
+          "output_tokens_details": {
+            "reasoning_tokens": 94
+          },
+          "total_tokens": 1008
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,1151 @@
+{
+  "id": "ME-03-pilot-p1-20260825T160641.211Z-11787",
+  "created_at": "2026-08-25T16:07:37.776298+00:00",
+  "model": "gpt-5.6-sol",
+  "provider": "custom",
+  "protocol": "openai-responses",
+  "immutable_binding": {
+    "requested_alias": "gpt-5.6-sol",
+    "route_id": "gpt-5.6-sol",
+    "route_revision": "sha256:2b09e972ecac317f15338a29b01d84817f75b1ab29d9a95ccdbc625b93cd6a9a",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "gpt-5.6-sol",
+    "protocol": "openai-responses",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-b/gpt-5.6-sol/me03/ME-03-pilot-p1-20260825T160641.211Z-11787",
+  "summaries": {
+    "bounded_open_base": {
+      "episodes": 2,
+      "passed": 2,
+      "pass_rate": 1.0,
+      "observed_unique_selections": 2
+    },
+    "bounded_open_intervention": {
+      "episodes": 2,
+      "passed": 2,
+      "pass_rate": 1.0,
+      "observed_unique_selections": 2
+    },
+    "closed_base": {
+      "episodes": 2,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "observed_unique_selections": 0
+    },
+    "closed_intervention": {
+      "episodes": 2,
+      "passed": 1,
+      "pass_rate": 0.5,
+      "observed_unique_selections": 1
+    }
+  },
+  "task_analysis": [
+    {
+      "task": "release_strategy",
+      "base_valid_set_count": 3,
+      "intervention_valid_set_count": 3,
+      "observed_open_base_unique": 1,
+      "observed_open_intervention_unique": 1,
+      "paired_context_shift_passed": 1,
+      "paired_context_shift_total": 1,
+      "paired_closed_invariance_passed": 0,
+      "paired_closed_invariance_total": 1
+    },
+    {
+      "task": "research_strategy",
+      "base_valid_set_count": 4,
+      "intervention_valid_set_count": 5,
+      "observed_open_base_unique": 1,
+      "observed_open_intervention_unique": 1,
+      "paired_context_shift_passed": 1,
+      "paired_context_shift_total": 1,
+      "paired_closed_invariance_passed": 0,
+      "paired_closed_invariance_total": 1
+    }
+  ],
+  "episodes": [
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "bounded_open_base",
+      "context_id": "release-risk-control-v1",
+      "valid_open_set_count": 3,
+      "selected": [
+        "blue_green",
+        "canary"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"blue_green\", \"canary\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"blue_green\", \"canary\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis release-risk-control-v1"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Both mechanisms are gradual and reversible, and neither has the forbidden rapid property.\",\"selected\":[\"blue_green\",\"canary\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 732,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 732,
+          "calibration_key": 12857500622870047717,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Both mechanisms are gradual and reversible, and neither has the forbidden rapid property.\",\"selected\":[\"blue_green\",\"canary\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Both mechanisms are gradual and reversible, and neither has the forbidden rapid property.\",\"selected\":[\"blue_green\",\"canary\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 887,
+              "uncached_input_tokens": 887,
+              "cached_input_tokens": 0,
+              "output_tokens": 150,
+              "reasoning_tokens": 107,
+              "total_tokens": 1037,
+              "raw": [
+                {
+                  "input_tokens": 887,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 150,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 107
+                  },
+                  "total_tokens": 1037
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb2XoadbEVgyvGtc4GXCSppWXyMkHAd0BO-u2ZQeRjyiouI4nprVfxRH6elsMuI-bVbRf-r4zcb2DCcc3-JfqYhUYifgagqZylC2QtTQ9G3ithii7uKSgawrH-G-jHQlzGzsMWOEdoISKWNtbNsrQGcTMYfBSsKS6--cNoy4L6RbUCLRJ9_bwNQWCeOArpNF4j9dXuKGpaCPmHapNMTWXBnbRkdEk6dnktyRB5b5COUVPX1r7yL6pxM0ePqGiFe9ImbFR3HMHRWoi6lzQXCJLvrC9tBlFJTOF2JKfd7ZpLqx6wezYDpQ7kXzlWx9JyHfVlIR9K4lE2hLXUyjae9IYmCxnzxnd2YSbad2Bj-VcwiV3g1P3zIeL4Uvlj1zlGk5s8Hor-MidgmisM82BUsoOwWxCZyaJXDxtjM30dzrRgQyQfMw9NhM38adqmb8vAHCLJy3s1J-KPQI1KTCRtvY6o1t4p1s1YEP9UeZW-Bi2Mbw0DfPFE50-z4cOXZfl2W971JMcrmYCgsJZDizlGcXgYSgnGw5oefMcOwG8zesbF1xbTK2wIgU2NrpxQ2v5HNrRvAgmh8x7O2tekV2CB6gneM13BjbnfAJP0O7Mnr90FWbTTHeTc5LXvhKO5OST37se4yWTGb7apXcwoBMfSvsamMOWgX--CtbrGGkTntcy7f1ytQm-Y6x1u5ycpXah1-uONCq3NlOCt4mk3v31KM_5mXNekoH4iV1Um-qTCNCgTzG9mLNdIhYAefHKAakmn0llu7h49s7wsQPoXRNwNRtT3HC-Krd2UjyNV5olZy93KwCGTOhm9Mi2JQlPa_ipHXt3d964ReySRiRYi_J7WFcpdEQQgKYgEcPWH82kmLV2xyiDjR4MRoC2EyweY8psY67JxGEShy2H_82Wtvp0TvQbXsWCLooW2oh_3t1464_aaeRTi6HCNBMjFs3OKp5sHmN-MwsXvKNpisvvMpRgiL2egISdixuiGJA4EFglUL1g51lJ50IlExiPKBT6mRYMtHxREWXJYZ_hWG16WuQvbJqh-eB7zf8HMcucNZF_3E4YjN-qD6gBJWzrwnsYUbqyDjMZcgm8_gs7J6AtnEKCIJRyYBw67sVMCY02yaLkuZul1RDEv1t3wBShuR69F5ldPOVq0xE72FaOtBaZS_vWrwZOcrvGvpB13VZB_mLUFda3OAU7a_oGQEwrfEracsyp5hKU8okTo0iiV9oUgM53kpm7NuflZ-MkTiyQuJLvcf1dqEcGQS7d8kayz-yMGnKmyC6xOXrjKeusSAMchN4lm-gI71KlmKZ63quEAPF1fqomvWaV3UthGdqcE48bcyGkgi2OT5uuMnr-ke_1U5OOEJrBbbUMAV0LsJikq9oyktywUfZ_d8tKo3IXu_dqnX9mkzxcg7644MSPTHWre72wTy-J51KCLP6b1GCKm_7HB6wNqAh9Rp4Q11Lf1Mb_StMnzWFjmovSxOZ3TF1L_FwAyJQ2EQ0TSCJMhTxsskUfIu5w-Ygry1LfU3gnMhcuaGwlKqlhFseUcslzx-di95R4o7usHx7Kill3vns2HMHWS7clTzgTWwdBbBSxiUiEGtaTP-2w9gCIXrQhYqUAkAYGtmQp6zrvFZz98zpjH6Ul9DqzLyXD-hd6gI8Kq9gFd7cYaXiiy3JFSI_ofIVHRvofElpDoE9L-fsPGweAzBJDaYZZVETGAE_KTvtRkKgKyCXmObqlSybtktis7UOznFgtPu-Fdf3_iZvonhdR_4wKUJebxLy1lDYHyudttfIXeReotVTFHBrjAHxWHWgE7UDg7ESvH3OqavzCz7AXrVUWnpILt8Pze8mRpn6bSGEk5eAe1RPa_MYDRsCqc8JeayxgmtKWfMzaNWJEp7ZBl1Hg_DoRzuynznRwpOM79KxtDJOtr4Y7sN2kYsJl1GVNNT1tFPqrdTF6rEJjip8BDV5s7MSFEbRYL767tAlnQkCDM_DCRyv7-ehFy2pmJe3YTl6zPvxVKhytQ==",
+                  "id": "rs_0524b1677f9e6ec9016a8dbd97ce0487d09f9f6f40d32f4d21",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 887,
+          "uncached_input_tokens": 887,
+          "cached_input_tokens": 0,
+          "output_tokens": 150,
+          "reasoning_tokens": 107,
+          "total_tokens": 1037,
+          "raw": [
+            {
+              "input_tokens": 887,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 150,
+              "output_tokens_details": {
+                "reasoning_tokens": 107
+              },
+              "total_tokens": 1037
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "bounded_open_intervention",
+      "context_id": "release-deadline-v2",
+      "valid_open_set_count": 3,
+      "selected": [
+        "feature_flag",
+        "hot_swap"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis release-deadline-v2"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Both are non-gradual and rapid; hot_swap provides capacity_light coverage.\",\"selected\":[\"hot_swap\",\"feature_flag\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 737,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 737,
+          "calibration_key": 12290187989363008677,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Both are non-gradual and rapid; hot_swap provides capacity_light coverage.\",\"selected\":[\"hot_swap\",\"feature_flag\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Both are non-gradual and rapid; hot_swap provides capacity_light coverage.\",\"selected\":[\"hot_swap\",\"feature_flag\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 890,
+              "uncached_input_tokens": 890,
+              "cached_input_tokens": 0,
+              "output_tokens": 155,
+              "reasoning_tokens": 111,
+              "total_tokens": 1045,
+              "raw": [
+                {
+                  "input_tokens": 890,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 155,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 111
+                  },
+                  "total_tokens": 1045
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb2fiXiJxEuBp4zdst1Bv5ZomABaFqZo1SeHLNWj2MGzBQueaJawcXvNFMhGGK64iR-U87-KCHlw7y7xg3kjVydGTn70w3bmqQ9FZDhFSc4E2-rBiMj2WFfn2_AuAhigGr8YjcK49E6VaZ4yXfQOYwXTEtxj-rcdVfi9tlMYrq6YKhbd8hdt_M5ia4pENvDfvAknqWtocOVoY0AX60_uC8ehveYLzASBbDRNQMvhBfdoBThlrQdCg4EmVfOfEOfxjFFVxIFa-DDRC2obvbI22ABqxh5J0Rjok0fvkS_Fr7i_GQ96zS_2Oz5lgcO7g2CiomILT14sXAZlwIzMATYZKUCLEUVUnFqAeYbBFqgyHSqr6jMD8c9lBEuml5PJQZ5junKWqqaYX6utLS1kPmWFJhoO9HTrAlg53v5hEJDFQfyFFm_hRpPGWzM67DJ1qYywnu25QrVcf9mILZdIsllkjbFcpNSyNMolXRqJJnTS7u0XxldnsGKMB11LWcgxtzZl1U_VBRBrilbn4CqgvucF7KKphWXJmF09x7OfGDJkEviY755P4lYd-EJPtKJHOAEhZWM_MssEqBKmJqe-IWqQzvIiee2dBs39fwlxYKpCRGU_sYTIsDARdpQSUw7kGfEVjdj6GTB0lMnaUKK72WLhDkW-kECIrZTMizE-beIQodTDMpe5FX2-EbUSV6mI-r31LcY5MGRo0s-iND0fSO-h-5DOqv2zlh0HiwqkdUFaXV8vji-A8ZwKpRQSeBWwdwDLn0JFc4uQl98mHm0ZpRbtNLF8IRupOCa1aszXRE7scF4a--SzDeF_eh7glrCXh52E_yZILN9Y1c2y3nE644_lsSgUlhI_T4Q2SN09zUIHmLEdwo-Bn2ZB-GnIiazS4c0UJW6Z7K2tISeI2Bm54zWEAmMH3NkBZbrvl6VWKtNlLJ51jA1DFAv44Zl_qGeIJJEhPZIVEO_TdqdqwJvCFOAS4dANobpqGS0H0nE-gJXPeFGz-4pe0zTkcJ9W60MxMGIf64JwKJkOkN3ZvOAWvCMlFY4YQGAYX4vkLG_SXw3x2sOtFcnAzYoQgf_sGezmWg-MQ7nzoUM9NZU-wKdjCerb42Hki65klMdDtQ-Mh7zIdC1PGs86tpFmMvw3xTgxJrULPVVUuBWilrdam2KecVujaEzpSjUMVM8xPZc5RyYQ8nAYptC48wNUbp3fOYjQvPwN_O3zD6FAypfazS7LIeF9Z1LcMpvTBfj6ZMQpbvRUZtYUCaAXkDFgSP_7FmrZeQpInJ1ftserH-LXVvDM2LfenZNg2G_c4iasXg04qFyHKe5iQjWN4LEjVJB54bZ4KMVD36rYUsesDFbpzYcUvatW4XzxEJfEjGMapn0_kCqeVYt6Uvt2k5CM8Il8I_Qxs7lpKLjpGbEMHt32qvCsA2QN-9BAsxnzOqEz8_qTY1Aia1xx80j-ZIZwr1ZtNYkM4HsZd02m-EGYXdLziyd-qSyERjCzM3nAyQ1mUZKBKJL5FmcK7-FaXCpbWzSAKMVi86j0WmNzBDPK2G98-PvmEPvNwrL1vakgk2agQxR4QrFag8gwKX2orO1-58UD4fk9RhzkWjS7mLY_nesfkoKUJAgOu16Wv6UpSjTrFT5uiRlIMF5_kcZZqAv91Ilx2XkZwpzN1toAOrEUi_4OvjMOfChngtpM3pLQB76JeosJlfivD9bCxJkPMs8iE_hrRI9SCPkjdcpLoQjsJ8-Gpr4JGMeyrbgF7z3KM1ZaZFxQN1n4N6EBNwgJG0GMbqV1i_t0NWvS9F26qkEnlTABm6lgwiljBlxl_QxYF4GOrqla9WGl4s9UvtIxIXb8SDQjWffnoGB1A03H43EycoBildpwN89EBOiLZDBxhC4-LQ7dw8YVpdYxO4qntTlz8hrZ20idHDF6kk8pVQQePoAdIJmCmtys1k_b1JGJkMEcbRRfEOuPx4gB6TzzkLq0HvjyeRu63R3Qqivrs1QdupxhydNj-aFi-oZ6_Fdt2uZdBTaAStNhGOlkEJc=",
+                  "id": "rs_0d4ff8473d1fd24c016a8dbd9f0aa087d0a5eb3b716e05f267",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 890,
+          "uncached_input_tokens": 890,
+          "cached_input_tokens": 0,
+          "output_tokens": 155,
+          "reasoning_tokens": 111,
+          "total_tokens": 1045,
+          "raw": [
+            {
+              "input_tokens": 890,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 155,
+              "output_tokens_details": {
+                "reasoning_tokens": 111
+              },
+              "total_tokens": 1045
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "closed_base",
+      "context_id": "release-risk-control-v1",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+        }
+      ],
+      "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 707,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 707,
+          "calibration_key": 7094990819166888333,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 881,
+              "uncached_input_tokens": 881,
+              "cached_input_tokens": 0,
+              "output_tokens": 127,
+              "reasoning_tokens": 94,
+              "total_tokens": 1008,
+              "raw": [
+                {
+                  "input_tokens": 881,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 127,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 94
+                  },
+                  "total_tokens": 1008
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb2kuYkTjrbKz6uJZuDZLjJq5zVV4jscLKGu3scSM7yvxXvJSqnGMvAuYr7_29A-WPRQmK8xWCTdcsfzytDzxIpyMm5qnhFBesDtRFNLY98bkm1w_ckzIf49dthpCvzKJ6jT20A-xYlEh0-j-v-o879XhiJpqgit4A6gbTtc4v28K-antFtp00WiNGu7qUHl6c1m0L8O1B5XBXq02CMiwl5udZLaAfkyXQ8terf2SR0g-SbCVpK3QjDTV5wxnT1Hfcw1RxKf_O8l2QFJqw9n4l2hosXAS68shuHZc2k9oxA8yGLQF067_GxGXMsydM2_dHUb12xWJJz1jXw33Be25OUqzsg2oCHHc3ylRkdfn2lpe8HWXASIgPC4GenBzOVtgoXGyMzM6WYUDk8upR6dgvpqlSFTX9FYOkHQ55YefydUZVrH4ufdnrqYRfTGgA4ObzaWj7d5NpSvwY9uQZI4t3BuDTfS_51BCim00QEW-LLBW4ii2ul5hxLvehaxcl4tpopLN2X3C96eFk3LkxbnVcEveILRx9nprX5msOtVZyZifgfOGSa7vxHrd4O273-KyOw_srW_XJLMDSLWYOgOg0d9Lq8RnpWucFvTAnCDAInFWASAHI_5JpWf08LkjIoicY89tsoGg0ApnkFTqeR-y72mfC46IsEn7hwJ4Bnbc-wkGSCFGIjBX2Bq7gHJ0uWbztdr8DqekdEfbZBi2IlTebUdYufRqh57o8iltsNMtHrqLorFfrpqferR0-Y9Hc5k4hdl_NWLjWsx-PWF43Mw86u4CXhmzb_n0GnOATJLg2ZbpYWbvkMnbvibkRb9r1fOiC1lp7PeXJrtfw0gYFp79bsNkAbGzXr7mtfOH8QZ2I0oomjYujh4OMotnBv9DD5cHaSqQsgCHfrAEPDo6pB98-ODLXXuiYiCWTVRzpggAoz7kOcz5vd-p1MekM21Mx1peonP7KGBv46p_11x2mpa5OWkEpVoXTdkYpKpObviKFbDk22OmQtNRoWUTDD7lMhc3YKSTegtQYDEwJCbkpmy_8OWdeisAbKqZgvukAYjz5GwnQwJ39zXV0IXFP1tDjobYeMn9be6E9Vx0x3Y9AeLYgaySM6l5LZT4H4cudZdF1hUmOh_a3X9fdgWMnqzpYtdRqZRIgOldclvfsQ0tMtNrLA7qu_Cl0kPUPG56sButflSoZjXPO87JDY9lli-ixXA0jE1neQ43-MiEP8MBJxJ4W7k3S3mg0AB-L2JiIhUiTzTa2U_KCGLZ8z7Gf5OsnB-EjpdrU-PDCUDe4VMGVePGargiOXBybXAFlPWfyKhj5nft3YWuZBVl6JiII4fFiKrgn2HmSescBRSOp-RWTXzM6W6KHOmGpqnIK1suK8hZXrEl5owN4GNToY6VDoQcKiQ6vjcjTgtZlLKvvgu1dgYFGOjf3LWOJionE00Z6CW_LFu-D1SRJvl0Q3isBw3N3HFf0BcOmOREPIdl3ijmXXRO6rY_Qar2qcGg8hg0qv2wsVzTuNNIBuJeYT5kBlTTAnJYk0pjXifduOJBEnSy1D0wxaVA_7uvzxWxApSYOBqQEcaCkVf5iQQRIXNiRpcdBrJ7xj-ELPgZwwXQ-_urXrtX81c49Ux1xvRP6MLpo9EnXMCML5c5Zw-FdY7XOWPb1fB6diIEGRjz3WZ7O6MazmG-w72hADRfM0c4jFESgr9XpIugTsLfypIZtLJgZeAyud0PGwc4S5QYPAlkI2W6aLLDa_Apa_PbXBINioCxl0tECcHOfv6cxvbO2eJpGjMzeqmgnns8sm52rGQe-eC4Ps16NbhY9liwS400ndhkZ_Nrje28UYT15y-vd5FsNL8-sAa-Uw20TdLm1yUOowUuNaBZUh6u6in-FlK-JoIK3E9Vz1cu18=",
+                  "id": "rs_098d1dfb14a8c564016a8dbda4ad6887d08a8bfee2dc5721f6",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 881,
+          "uncached_input_tokens": 881,
+          "cached_input_tokens": 0,
+          "output_tokens": 127,
+          "reasoning_tokens": 94,
+          "total_tokens": 1008,
+          "raw": [
+            {
+              "input_tokens": 881,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 127,
+              "output_tokens_details": {
+                "reasoning_tokens": 94
+              },
+              "total_tokens": 1008
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "closed_intervention",
+      "context_id": "release-deadline-v2",
+      "valid_open_set_count": null,
+      "selected": [
+        "canary"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 1, got 1"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"canary\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"canary\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis closed-score-rule"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Canary has the unique greatest closed_score of 91.\",\"selected\":[\"canary\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 712,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 712,
+          "calibration_key": 8395135110503059538,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Canary has the unique greatest closed_score of 91.\",\"selected\":[\"canary\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Canary has the unique greatest closed_score of 91.\",\"selected\":[\"canary\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 884,
+              "uncached_input_tokens": 884,
+              "cached_input_tokens": 0,
+              "output_tokens": 114,
+              "reasoning_tokens": 79,
+              "total_tokens": 998,
+              "raw": [
+                {
+                  "input_tokens": 884,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 114,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 79
+                  },
+                  "total_tokens": 998
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb2qT2ofjfVje4qov4VPoTvMPxKLPbnpsnkQLmJ9ECS0ElbU_W8tYVNFFsooVTfSRhV0mbRlhBuYOk4fr1T7tsV3W2xkHkbRhTPHZVkSi1Ip7-yBd0GOiVWz9RgbqxsAANvyw9JrvUg22oGfRMM2h95NkofVaBhk_MpVKp26sjsQceTCDZvEIhHH4eKRluo_MJE04RMtpFv3W6Ic92PmHi2Bi66BSPWBISSIjiNyIfolbfxd1GHBuOjulpVO8K0R5l0ojhCZY5lNL0JyWSrDUqNLfjxWSjtJSQmKcoYVhDEhCuw9Ru_FFEW1TkwaETz6a5n239I8DJujQUJM3gQw5oFqnAJT9NYQNRdUO7h7XZMuj_pP4kyxZ-zlpS9QgyyyZDDIPM-LTWH5ZSoDNjkkWZFuidnpRmvvRXgceHGCo4liCDYLpL5HTANXIHwYGUCEK3sQ3gGjlly9GTQ1l3jQfZa2GZioXL5ZcXYoJHhYv9nHjW0HPWJ6L8NHIMJrWh_qI75iXI8eWjuaJ6aBlD9QUcoV3mEiV-T9kV_y7My6rGF0tRxmmj5PCbRWD7mMfoll35VRF9NXEO-iffbvlJlCPF7yH-T2iulq_AhFadVNAW7WdDBbl6kfYXsluXsK84cCkZJsZShlx8rCgOPOPjiaSbi9IexD_9Teo7YkzU7nQQFPPmNdHcnQQGUE6NAzqWt5sYO0TiC1GWHi9FNRRw7WhLj1CuEVrf5LtqiDpC4kx6D1HWmt5RTmaoKevKx45rKQps9QqC83G04aDbSEIKzuUTfRpPs4Jf3SY425vSS1Tpqa8KvtmaP-I2GiGhFNjSBL5In16PSFmBGoc0FU6MdZmoUDzQxB_Uy4DDpHBokgmwKtFBUOP1OAcQM9c4ZoQArbyjAKRYxrT_24VeCeS2W_qC2Ue4NQBupAhcNA-BMkcVrqEh1-R0TjmjOVXhpCqz_Tu6LaL_wXzX44W2a8opTkG3bQbGoeTQ2y4C78S3mfFr4CoD9tNCtQUaVoHJ_DiSo7yQijaTfRN1iOXNV2BrIcre0Nv23kBv7dWLrmDrF1Wn3s9ju9JRmF9n5901nSqCHZWZN1lucwDvNonUbF1_7sH7mNjaHFpdhKJTVdisUNuDsMhmYTI_GSfJwbBJmWxKNYq_haeNpvn-jyvc7ZAyCTgcPrQ7TpozMSbWY5uGIxTrp8wpRwzmj23NcVnA9CJwF_2equseezRQcO6JEeQ9iB0JANTIrDOMP4LA4pVmRCS_R56bnqLZ0k-DILrJvrpDl1ay92YZPVS2l9x7eKFDC8xL5zZMhnHgSC7sGOp_tq89qXuhruE2J5Sv6-UzRG1sFudneDgxJBhgSpHBCIu_a2s9LDHCMCFvxj6GEy7vwLqGbKSlN_KUhLtwqECknt0ZRFRlqQlZ8TF3EESefOMhOqGzA19H13pib8pq9mE3EP5nEGLyV17a1UK7iXdji6TKQFunEeSkLfiRMVgJFKiP8spZaKZkC5dk5lZZby3ZHP9oVOhRF0bsCDI97-eejZOLawlfr8ITuZzIpc8TKrEOd3iN_V4Z5up-z_wN1KgyoAaDQFywjAVLhMQEN3S6JXog2ybCYS8S2IiaUOQLGO8QgPPg1J4hYunKqXAOI3gSZ-kOArLsraMIFpalrvjL7wxfREUiuLo85FcF3-vX56Om7F_vnonDAlTJgrc7lVLo3RX47LDbHTrGDuuEQ8N0Sd5Rb2hViv4v-942nC28NXCkJL-K8XZruYjNyxtb-kq83onKDJZ2jhvrH1TbRRkp-tpm3rWnU5lmglj43MNtzqIDcwCPVsA90xnTrz0T1cbCMCYTc_UTQ=",
+                  "id": "rs_041d04ccd128c26e016a8dbdaa4ec887d0ac9f72d4888f27a6",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 884,
+          "uncached_input_tokens": 884,
+          "cached_input_tokens": 0,
+          "output_tokens": 114,
+          "reasoning_tokens": 79,
+          "total_tokens": 998,
+          "raw": [
+            {
+              "input_tokens": 884,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 114,
+              "output_tokens_details": {
+                "reasoning_tokens": 79
+              },
+              "total_tokens": 998
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "bounded_open_intervention",
+      "context_id": "research-causal-v2",
+      "valid_open_set_count": 5,
+      "selected": [
+        "controlled_trial",
+        "replication"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis research-causal-v2"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both methods use primary evidence, provide depth, and avoid forbidden secondary methods.\",\"selected\":[\"controlled_trial\",\"replication\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 736,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 736,
+          "calibration_key": 3018436796561308905,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both methods use primary evidence, provide depth, and avoid forbidden secondary methods.\",\"selected\":[\"controlled_trial\",\"replication\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both methods use primary evidence, provide depth, and avoid forbidden secondary methods.\",\"selected\":[\"controlled_trial\",\"replication\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 884,
+              "uncached_input_tokens": 884,
+              "cached_input_tokens": 0,
+              "output_tokens": 170,
+              "reasoning_tokens": 127,
+              "total_tokens": 1054,
+              "raw": [
+                {
+                  "input_tokens": 884,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 170,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 127
+                  },
+                  "total_tokens": 1054
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb2yyC8-Xpbh7fJVRt0Zqny9CD8hrKRHHCl5L8NhXWUDguK2NfGKwkQFE358UagpTIIzPzLLcsUmmOtaBRINONIFRNbb4HhHQg0vPiOQ9dYcrKJ4ZA-i2d_67Hw8NzBa7waJDnw7c0GhQWKbJ8lQ_lEmS7AA8Gve_v6P-bQzEQbS0h2WeK13grIIfitMasyfuH8wd_Q6QcAH8xwlss-AWg3rvsTzwTH-TIrqhPqaKvDF9z_GJu7Uxxr39lPLXKrv_2lDlCpZ0LNkPINVC23c5aNZ94rpKeuk54zS-6LotROwCUs2Vy6w_rmrIJmK11T8iKvBnv5gav2s15QKtQFiNptvlnvyhB9b9XI5S1TCt4BzbGzh1DAJN2ThyHSJam25d5YZeGfsbXYw65tBiEalx4EO0k82ek07a__94UwT5aLAZ3eJZLegc63Cc9BnzqNP-RT8H24F0_NhV2b3P6j-0nnSfMTXomCCj9nQ6BOnYa1ouuqJV1ZZ4rYHKE5DSYG72UgoJQCSDgi-WJueXefFYOm-u30aocIOiSfYbYwMyUIocgUV-JNN5bh38DhvRrsdnj-QrPmrvt2R0DBHzz1PhheANdVaYsPN8s5JMjUZwATd1AAgc9ch0n3zWNiwTb7BlQbLTgOZmDIZAdgtDt9ztVRAHDqwFBWWW8gng1lVe_tBpOEStSkHdaRKZhdpJ4K-LabF24qaxmzhOJz0YnUJ1gJS0yLCNDKPdCls3Yv2Iwnf73vW8j__Ri-3Ix9c4LZVGH5mA0yGKCvJu3oTZUeTSKfxtdFZfX9y9ambkje6rZF6YZ1qKzCzvaUVu4mrWbQWUtVSZlzQEhSwLdySm1RVsR1bdfOMKJ8D_Rfvmo6yM-DggQBzxfZ8_D-GPUaGbce8JqSJtNduwnKPbZ6vfVhNLrbAsSWCllCmdq22Q2SnQ8YGWGPOOFA28_1oK-aX9rUw3VtJc95YSeVq7q0YzfETkjLyMito0OJXJERcM9PYGTKItFX0t8RmutTtt6UVLALNsbuRpResawXxf171DIcy9mZkEEyJarnUAgNVbuTwl20cKTTJCm_rkKYohtYlm5FS7k91gp4IDcunvHiOafQIJNW3CIARf-oF7e6Te6CDGTNedIoePRYR-UoJ9IFbsO57SluSuxjlsdL32arGkcmW-Eg3Uy8kYNPSmYOo0PDqHbNi9aKQmjOg5m8TI2bTObFZP5FxLjByioGnWcmRowvZ5R8YwXO8EPcXa-U0wwW7h2SyxOi4j6HWu1AWxc4NVU_IzooPlrmRs3sIvk_GbJs-ioTfEVeE9fGYSZQnty9QYCdaVlRNUIYi1UEAwsCOiB6ukDI3u07M38DomqzDQ3wrBFSFGzU5ORHtmF9dz2iASr0osNP13CLeru5aJGq0EPIuqEXFjke0nBeAaFfM8siwCWR6UcTRyZ7DWQ2u5b4Viyq5eFp6UEjulemTx1Koxd_XAv8Sl7XCYzfbZCVQrzujxEEgiAKWMVKP7P5YwRjN2-2v8Sk3m3Xze6B0oLT-zP14X_FDq2x3czJjOyIy9P8e3jdtLh1bUTxRVaOPRfcg6wm7u5tcJ1cYG-QNj2RdjPNCQp9Ca9eXAJLz6v8TLS0tn9kGzcmhSoLyWII3uVoKXsuZXUGnX37xbWE0PzIUS_1mKF4sCzIrMcFIIbft_GukplcxKi6O4xoV2p6OtJuLFiOeelQhsxUikp_X1xaTqz0ec6bGiNkr001OvvQyTVQmDIVn7ZWri1V0p7qNPaWDiFoTP6CPZnaHi6_ZJR3Z1XZ1PO_Ur9EtqmdIdOd88S1BhllMuXhDgb4MOjC1uwHy93unT2XDTOU_KjEeZA77DXtCtLxEA3naXkQPfzq1i466T2qYvOSTJICmZ4mCY8tZFWUlMBEsjQTq9mQ1ymYcfzicCz9dER_V-L_oPAjihy2ypvJna9T4QRlJGx5ZX2YP7uqIaoCk8wKQel2jVfGph-uH_8_91lEByQFvkiTrxUUTPRDWvX3pMSMfwlro-HXZam36odxrP3WHmQsLdfA-qCuShPMnh4-3wjhb8sqAeTbzoRJ7tYkp09zoTQawbyRs5KiK3iVAUwBUe8V8nql9WwLJi96Mymb4KbdsGSfrtbTa5k1cUlEBfLawdDYfoqyI1Y3obi1a7VFBKUMXiINH2a5sSWGvtj2WGufedQWhJHSz0i3uSkkBVM_3U85hcAsh55UB-pNpuY8xuLu9uXNrxfKNsBPe",
+                  "id": "rs_066fdd7ebe2dbdb1016a8dbdb2235887d0ad564cd4218aff7f",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 884,
+          "uncached_input_tokens": 884,
+          "cached_input_tokens": 0,
+          "output_tokens": 170,
+          "reasoning_tokens": 127,
+          "total_tokens": 1054,
+          "raw": [
+            {
+              "input_tokens": 884,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 170,
+              "output_tokens_details": {
+                "reasoning_tokens": 127
+              },
+              "total_tokens": 1054
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "closed_base",
+      "context_id": "research-landscape-v1",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+        }
+      ],
+      "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94), ignoring open-preference constraints.\",\"selected\":[\"controlled_trial\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 709,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 709,
+          "calibration_key": 8401388573231043596,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94), ignoring open-preference constraints.\",\"selected\":[\"controlled_trial\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94), ignoring open-preference constraints.\",\"selected\":[\"controlled_trial\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 881,
+              "uncached_input_tokens": 881,
+              "cached_input_tokens": 0,
+              "output_tokens": 144,
+              "reasoning_tokens": 104,
+              "total_tokens": 1025,
+              "raw": [
+                {
+                  "input_tokens": 881,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 144,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 104
+                  },
+                  "total_tokens": 1025
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb27W_Y6evYzAOcLfmDUljjsEc7tqWMPBTYb6g2zU63kG-f1YfY9fKcX4MfVbPTw9iu00xgQk1bXIY4kaoe5EoYPgtHnci9QwADzqf1ESXpfDA4o1KTX6JZdSZUlmSp1SkfgxvvF3mEs2zfZdSE0uHN-7xQcCQepSSKOHqzhcjN7imwiwMOllE9VCke4ORmQtjxTPkL_GAnsUVKUzSSHH1JTXrK7NCFesWfArah3J-oVFePI0NSMMvNzRHPJTxtXXLsr3pCoKGTMVQ1yIGPn_5cvtmVdv-O5P3MkyokPM6rSkCrL5cxQ7aRftJ7DlY1uG_0Duzcspbfzc3fblOzVIK3cHELsfypVZv8-G0YCxnqSz6H60WzjgjtvJVo9eN3qcaJzwJRkoslWt2N4TEwQBAsHJEYg_YQHvyntZkP1dREt7w3ZoezRw1yUqy5LNdXabMArf8PzVBHAZKL1MDm2pqgaZBcsWss0XZzyldSK1WpzoqF6n-rzfX-eVSPWmW2m45jIUa3lC6cxXdZqZQQmD0o8NgtGPheMfwMlMzvtubmbDhD-PPz7aKNBzCpRfcT7SiWHLcSRMd73Pvc2romChTlJwUG8EAGTb4mnfyQsW-SC7zZAXOt9_z3AB0zfbvE9X7EMajW2DvPXDy6SXJ_mpfq67Apz1i2N69E-FFapCV7JAY5TrmoypQMfE61u5FMfx-tIReodTZRRORxv59gosEigzKidITeDMygwomlTxGqayFzDVJOM-Iuq2B8-5uWRsCtSrg6-NfH8N1ErlkJUJtcxcPs7yaP_WK3tK6F0rpeEXJfY9nHYXR8ODS4rl3bxz_iChz4DqXPO_kWdyl9glimtJzL5DFiwJqac3YX_XonEGT6n2qjYGMJjmxnJ8VGyyJ9xsvgGl4es1W9dsbc4ylxRHf_fZNM0YbEpsJVNoi-lsxBNuBA5wIDRJv6QgEeu8-q8SDnGKSbH4vrvqCwCuglRq09aItmOrZ8I7TqRSls3XaPI6VY9qc-BO1TcF_KqLz4SyBXv_Du4GJLrvuYqv_4VHrDPN1Jdpevtm1OOWHQhN6bb3rA1GbGBHC_IgawTDowQOXRz1HaNcYOR7qSxjYAZR2H-5QR1KZpzJwxJGUSHfhFmwhBwRhb3QRFiWQzpo8IlsZ7rBhNJdYkoEwn67kaRjA7rEVr7VRnRanTS9-14mZPhC5rOhY3f0292AjRFbtdvP4Sdxsndk9XyKOwL8M1R-WKTkcMCl6RzwdoicKDc0t-ie88L9XM1CbSizf_e7mwcvjB1C0owHDO6mIY8ylxPXx_3kp-TBcOZ6ZQxJ6Sj1LEaBAtwXlyDdmYKD0N4KwQCg2kMlksTPW8llnjnEJQQLYVmm_mTrDXeSz8B4-sL6hUJLFH0Of3p4wqBi7CW1exfL1vFPkRfn1pEGcV849SBPf_Ly0NO98kwoYtVH6Gje0RBx4TCJHkz7j8r84f2wtk0O3VUHtONPLfmkBbPWd1vV6d9jJceG6YTemVIOv0ZTTrKpG4uLpxZfflydlDcaWXruthvcpec59chUvHDH2mgqogJbj68Ls71EdNY6JIfMMYkaHJdwXGRoJvJLNJFygKR1V5UeiMSlBmjXSQERKCbBQ8FFZR_IaUi0smKcNVjZzBmbSxvzOHV9m-Lq2YKeOnfT4mJUFeHHeoDqLsJkzO9UjzJXX-ItAThl4BrkuJIUoBrOUwp3-REzO_i9Rq_tM-wN_lAVYaHTzzuP_MUYQOoexcYtLOa0KXUY892asWWsrzYhy1R3C0ZIFa8aVkuTM9bf91EEn-qJuTcf9AB2nmCDZWYZjfUwB2FMsb6N6gXsCqUMZb7w2sdB0kHjdal-PUNA2oN85KuKj6mfgNx_hD7fnRXc99JeveKO-GHD86jPtzoGx2l8doL4YvYZoBvaxXEASPHw6gYxhIYRCvMmzdfwutYGdxrvyf1mfQz_ILcPwxXodn4vUemE1eTQDwltGyPxwqNbbQpz2osqu2LaSdoPw==",
+                  "id": "rs_01debccb51cd6dd6016a8dbdbbee6487d092821a648b5276bb",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 881,
+          "uncached_input_tokens": 881,
+          "cached_input_tokens": 0,
+          "output_tokens": 144,
+          "reasoning_tokens": 104,
+          "total_tokens": 1025,
+          "raw": [
+            {
+              "input_tokens": 881,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 144,
+              "output_tokens_details": {
+                "reasoning_tokens": 104
+              },
+              "total_tokens": 1025
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "closed_intervention",
+      "context_id": "research-causal-v2",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+        }
+      ],
+      "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94).\",\"selected\":[\"controlled_trial\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 712,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 712,
+          "calibration_key": 6456439229498768954,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94).\",\"selected\":[\"controlled_trial\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Selected the unique candidate with the greatest closed_score (94).\",\"selected\":[\"controlled_trial\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 880,
+              "uncached_input_tokens": 880,
+              "cached_input_tokens": 0,
+              "output_tokens": 134,
+              "reasoning_tokens": 99,
+              "total_tokens": 1014,
+              "raw": [
+                {
+                  "input_tokens": 880,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 134,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 99
+                  },
+                  "total_tokens": 1014
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb3DH4OjIDyKXkbtapHd_ISIPcmQyWe7TZaJH0RWSCtXXgHkaIK9JkcbYCKXCBmkFwxb9ElWV6Kqm5vL451MbFH74GCR2jeAy1My3YaxhprFSp05kPWwE5aHXPGI3L_R_z9HaQm_vH0shcJhjDACID66ex6rF3Nt5AFL2DN623q4gER0Nx1X5cKhwwp8l9iYjN1RKJakfZJcfRnNlN4TsLSSyccFuR2frWkujGyjURflzB2MH-UczptUk8vxIK5aEb1ir3IM-CPxbH5sPBWIIbSDTwL6YKWucOGTn0yO0s81cAIg-wptO-1TsZXWhcrufqXwQSeWYzLOJDf7sWWJkuNv6huPQPYrgMUCXYEaOKhZZ9LXL67J9X25CRUOkHE8i4nWrf-OvgoLwrkl-bSsPisGdZwFc3C6cn6OeOR_aUkGJssJAOSJiOsCtPPWh9B4P1U0m55mst0sq-REI0v8KiiuPD4yJ-HSlaPbfWuCPzsOmmLIR1CkUkC6yR2GMoPnJapf8SSCj_5jax7m6Ri89WvHRnpy4QXXlD6DgHIENlHPFGYZfXyRnIWEO9aLX5aBxfyeNrWswQaK7oIrriEbiXmwPx_oIOCvnyFWALyXDhmFRo6yoe8TA51fAJGCacFNRUPhjNF0Pv1rj0iy9p9wVyw0P5c2xVbMnzlnJHkXPPiUHbX8tykY6DVmTtXjX8QBtTa5yk6CzF3rJbi6o0Fu1n4aUhp8aKIAgID1caJUV1hpWkuFh5Hc_gDmB69A6OH-r_enozZbDYvU6cEG-QEL8i6eoAQ_hz77bztRfibw8QAQuoMJMJA_7xH5F62Wcps7ZLIzrQy6QMBHdWuQdhxuLJRW17YZuMRodWnJ65hWs1Gt_X88rp0LIxpefNyHkcJFdyONmRgllzhSSOGrKJQGCJyTLrH2R5jkZAFdm68cp1MTXNEOLe5zJQdkVpAnjnY_VpRICSbTMqvA8MUbxzCMsnEQi3pCmB6oKSGsGdmFBKsoqPxTt5XRtFLR9QqNIWAYNKF24mOMuHUSXPmsD2RrOrbwO1kT8MCuDM8aaAk2E5a4h6y8lC5oFrna6vHiyaMVlOfP9uqo_5qfUh57l6RW9reIcuvmKhmzHV8PfuzYlgTPlXGzFqI2hw53hGYmM8dPpcrbC4dNblAE8UieTZRl1T4O33kPtNS7ZZYjY8N6qyN4kglomXRj4-2N3Y1TalsUfEVPaXDxX79HFRCes9kEHmmAKiQ9P7eLaHpvIlEd5xApUa84Mm77ySU3XMeEL0KTKzOPa0OxsBEyGEtI_1lvwrjtaCwAdJXw481v5NczzLACSwf-VTxLEEvpuyo_FiYV7wpoGKT4bubHd65voOKmTLuXzbC9GGjd7ktBVOqUeK1SOicF54WLIf03thu2S-UuoxW0S6gfYeM1fxV7aaUNrmolh2Hk7xSkKKXzxR_j9Nah4bpdaXCDEV0mZCYLGe9FFl0mvkDzgXJ6_jrj-anS0wFlh9V1gfhagIgjHGP0LORdsuJmoVspkrENhRDZUqSuu1babxBmlIOjA5kxRCdttTSusDYJwQhK8g2ywEbTVQwG8l-_h1BGgEX5IxDCsrHliDEMCuQ6X71aBIm81LUU835iTIw-6mxspG9EcKsjupDKj11kRIry_jad2PZUPJrWPY9R9MxrZ3Je-O97OIrZa2raVCt1I8nxFujkrucyaJvqV4Q1Kp8faXwAYVF3esJTuKbuOd9a8Vkdi_puCnNr6Wwr7wNKTVWLeONjZjl5CLrSkwWJEfH9gR_vErPD1YC6PKNHn1ZebM0OFa59O4MmMq0D2luFRJwKggjp3Q_-XfP790Nj7YN5NE7dtdS3BBxp1SLh_J16WygZ_JI8wXc_UY-ALCe6e-yaagFqfy8xW5WQSbPRR6aHaai9gMjZP_a8gVNA6iNXwDl2FIiM3QTCrNxqWq6sOUcZ-M6bmNDb5ky_mUbvYSz52wlYY-MmqM8LMQ5oc7hsi-adxOhXYk1zWNZqRg==",
+                  "id": "rs_0a4e30f0dfcc2f88016a8dbdc3c17487d096b134547bfb292b",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 880,
+          "uncached_input_tokens": 880,
+          "cached_input_tokens": 0,
+          "output_tokens": 134,
+          "reasoning_tokens": 99,
+          "total_tokens": 1014,
+          "raw": [
+            {
+              "input_tokens": 880,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 134,
+              "output_tokens_details": {
+                "reasoning_tokens": 99
+              },
+              "total_tokens": 1014
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "bounded_open_base",
+      "context_id": "research-landscape-v1",
+      "valid_open_set_count": 4,
+      "selected": [
+        "broad_scan",
+        "expert_interviews"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis research-landscape-v1"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"Broad scan provides breadth and speed; expert interviews add primary qualitative coverage without using causal methods.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 733,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "gpt-5.6-sol",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 733,
+          "calibration_key": 12671490927792481961,
+          "calibration_shape": 15188613938863591474
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"Broad scan provides breadth and speed; expert interviews add primary qualitative coverage without using causal methods.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"Broad scan provides breadth and speed; expert interviews add primary qualitative coverage without using causal methods.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 887,
+              "uncached_input_tokens": 887,
+              "cached_input_tokens": 0,
+              "output_tokens": 147,
+              "reasoning_tokens": 99,
+              "total_tokens": 1034,
+              "raw": [
+                {
+                  "input_tokens": 887,
+                  "input_tokens_details": {
+                    "cache_write_tokens": 0,
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 147,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 99
+                  },
+                  "total_tokens": 1034
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "content": [],
+                  "encrypted_content": "gAAAAABqjb3K3k0kYn603gr7qlpg8lh8Y79g8AU1wZNxTKOaObqJv-QYJyjbEmIdF9YtBIh0OikzP9Ri0fj497OFM7qbNQlmlrN7nhJgMvfhyPTQvwoY8ktx4-E3oVqonH_HdyMXU0URAO_VVuo5y5pecdfbNaVDyumCX326dcozXObdzRw4VvhoiHMDAPP7Dy2jhFVb9QyeO7I5Q6Di9pXFXq5K7Wzk4yigi-79dgpOjdS9pCrxszaLQpQzKHeG6gvePhNoUrqJwyw37QylfuiuKT4NxK-X-qRAg7hr4Nrh2xMNhGnPyycSraKa8L2ytuKnreOxi-q_ayGeHRnDGAGNtycGYZhdKxMrRHr84_cinPX_OmRyjVirsqBCS13V-C-r4MPFeUbLjpA8Do7bb7VSr3AJH0V150hwIVfwUdef4etksophaLT5CezyLHWGpvcmRWFFpwstJxOB2FhpZVuW8FcVnQRnrp3qPZIhNjijWkqwWYYFY2dLj-B1Sl6ryQ_cskPRX_xO78veBq81hJdwxK9G7vC8wD-OeEjyyJ2bP1AAUTGdVA0VmMS0ymifWHsDNHarqS_5-8-2mc73_rMYKH0JDd8kfQ8QbtV9VUbmzlTr4kIJGHDBei9MTJ8UFFEM4C2Sfrtsrmf-IYJKZXGNw5QU316DHGjyRLWGfHnfuadITbPkLjRO49eMONqirUnAghlNT7-ptf7pBUy5S6z3m9ZXMAuzQKKjEqNFx4n3EMRjoUHzpNiXXaQ98-VUa9-SqYKmkXhIIGsc5OcjxLIJ81SoW-og4T_t1w1EL5KHfi9SWRg0zeKSyUTHMcVxk3Al4sWkRuzy9quIfQyJ14alvPMmAmKh7ImIoJbALjgOcfHPr1g761LRtGMfDX5PZdk7r8RHTLpXDbQUPD24xKIxufme8ACaW1HWGs5m_FMvqKtyxDzJendadwaKwWCvr7L6w4Fed8T3BHssnOBqR3Iqm9HmZLGYuQ3bcQDJ72kV-w4T0Npq8b5ukN8toinSl5jfL9WnSOqkcdxFen0LhG9aSz1oNZRpiPoQ-_bCM2NqSLjD87jro_Tp8J1cApgTS3BhEK7jA8nRFzjwQgnRaU8hQK4TnrTlcaGfr3fkgaNU4Y7j6Ou9f-b2ROlFt2dW3boNH1Mzskx-Ftj_vcC75750FlzaGfoLmwOlU52m8hCpUVxBBJlzNTFNi5vhdbB2JPOAhTJyT3D-XcitF-fvJEbsdpzXshb54jL0eIY8uc0ozepk8eM-ZkydeypxTAmhOShbM8Ow3-wmtF1iMORAbMquz6TYuJHXeJ-u_fEmRptVpCVVr5t5ORqEvkXsuLhsLtO3yVqGX4nGcJ7UziTokpmvqDSkKwKEsX_REjwG9TbXC85soSnokmGryygaYaZuKbj2Kp-n2LSdhdprdiuEBKjhW8k8V17zJoL7csDIjywDtoZfpjGyYxUWvrVnU-IK9EJVOc0NpKBg2fgIJ_V6xvK4-z8fCFNFxi2FBVtXrPkXzUJ_Am8oMpACj3hpgL8pTopP2scNKCqvPI5fSPl85_0BEoWW-d1lmt0t3Lbqip4Re7zXSt-jcX8UwOqVGAnmNf3Zo9iG0EU5UjWAfi6bGxi_xe8qc7AgarhPhM8pN0-GpOHTvrDjcJE55gvQytBloFq1ClH9xO5TkuChx4PKYQX6h6E8whEDWtEMCypPGD_wd0D7l_iGrjrNVa3SEVcuUpS1p8E9H54BdFmSsD6jzOaYBM57yJ8s_PGPWEDyX5CAdPf619DOkQxSsubtCObfAfsv8zl0LFln3TzcLPOTDBgjsUC-hd94S4rLkYyNASEeU5SD8FMf87sm7pzhc6ejqHUP0hHJlrUd2j3f4X1hU_VIWH_a1n3TdMy3S1iP6w3MVDyInzU7LU_RopuWvbQJfPrJIJyiEgSeXzcZZbZKOm_zBUZrvaWCOg==",
+                  "id": "rs_09da433857d560d6016a8dbdca5f8887d0a72debe37ea55d01",
+                  "summary": [],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 887,
+          "uncached_input_tokens": 887,
+          "cached_input_tokens": 0,
+          "output_tokens": 147,
+          "reasoning_tokens": 99,
+          "total_tokens": 1034,
+          "raw": [
+            {
+              "input_tokens": 887,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 147,
+              "output_tokens_details": {
+                "reasoning_tokens": 99
+              },
+              "total_tokens": 1034
+            }
+          ]
+        },
+        "error": null
+      }
+    }
+  ],
+  "conclusion_boundary": "ME-03 p1 tests nondeterministic cognitive evaluation contract validity, Context intervention sensitivity and deterministic-control invariance. Diversity is descriptive and is not induced through temperature. This Pilot does not establish cross-model generality, S-expression superiority, long-context advantage or Runtime authority guarantees."
+}

@@ -1,0 +1,91 @@
+[
+  {
+    "task": "nested_fallback",
+    "canonical_program": {
+      "op": "seq",
+      "steps": [
+        {
+          "expression": {
+            "backup": {
+              "backup": {
+                "arguments": {
+                  "name": {
+                    "kind": "literal",
+                    "value": "tertiary"
+                  }
+                },
+                "op": "call",
+                "tool": "probe_endpoint"
+              },
+              "op": "fallback",
+              "primary": {
+                "arguments": {
+                  "name": {
+                    "kind": "literal",
+                    "value": "secondary"
+                  }
+                },
+                "op": "call",
+                "tool": "probe_endpoint"
+              }
+            },
+            "op": "fallback",
+            "primary": {
+              "arguments": {
+                "name": {
+                  "kind": "literal",
+                  "value": "primary"
+                }
+              },
+              "op": "call",
+              "tool": "probe_endpoint"
+            }
+          },
+          "name": "selected",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "name": {
+                "binding": "selected",
+                "field": "name",
+                "kind": "reference"
+              },
+              "token": {
+                "binding": "selected",
+                "field": "token",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "verify_endpoint"
+          },
+          "name": "verified",
+          "op": "bind"
+        },
+        {
+          "op": "reply",
+          "values": [
+            {
+              "binding": "verified",
+              "field": "delivery_token",
+              "kind": "reference"
+            }
+          ]
+        }
+      ]
+    },
+    "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+    "arms": [
+      {
+        "arm": "sexpr_ast",
+        "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+        "system_contract_sha256": "5264c5c689332a4deb75bdfa263b3607edffd09cbdfb8965eab202354cf8a6cb",
+        "prompt_chars": 346,
+        "prompt_bytes": 346,
+        "prompt": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+      }
+    ]
+  }
+]

@@ -1,0 +1,150 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "research-causal-v2",
+  "valid_open_set_count": 5,
+  "selected": [
+    "controlled_trial",
+    "replication"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis research-causal-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Selected controlled_trial and replication, which both avoid forbidden secondary evidence while collectively satisfying the depth and primary property groups.\",\"selected\":[\"controlled_trial\",\"replication\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 739,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gemini-3.7-flash-high",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 739,
+      "calibration_key": 7855086831401353183,
+      "calibration_shape": 6417341132265401514
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Selected controlled_trial and replication, which both avoid forbidden secondary evidence while collectively satisfying the depth and primary property groups.\",\"selected\":[\"controlled_trial\",\"replication\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Selected controlled_trial and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " replication, which both avoid forbidden secondary evidence while collectively satisfying the depth and primary property groups.\",\"selected\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\"controlled_trial\",\"replication\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 682,
+          "uncached_input_tokens": 682,
+          "cached_input_tokens": 0,
+          "output_tokens": 45,
+          "reasoning_tokens": 721,
+          "total_tokens": 1448,
+          "raw": [
+            {
+              "input_tokens": 682,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 45,
+              "output_tokens_details": {
+                "reasoning_tokens": 721
+              },
+              "total_tokens": 1448
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "cpa-gemini-responses-carrier-v1:previous:text:RXEwYUNxb2FBUkZOTWcvVVBpOU9OSEt0SGJRN0RqNUFkQjZmclN5c2VvV1haUUZxTllTOW42WTRYUkY5WEhLNEEyc1ZrR1lrWU50SVRXT1VtV3c3OVFTUDd5RkxDWnhhRlVrcHFLMWMvUjNvcFFCa2xJTkZQSVF3SlJoVjR4ZmRhWGdvdzFvMkV1SlJndzZGbUlFMVZpbXRBRkMxamhQNnliYVE2d1VFdkY3emJpb1Z2eEV4cDNHSkNxN21UamszSVpzUnlqaDNnVkJFNC9DL1l6YnNwWnBEUmpicEpYS3pRUm53TXluN3k1aGFyS2Zla2tEZm52V1pGUjM3a0toWjdWRHprdHlKK0xPK3BwR2thWmYyNHZSRThrU2cxVTB6Z3ozZk0rcnhzSzF5bTlkUFZvdm5EaVNZdkU4ekVrRjFtNjNDaS95aU5FZWQ3T3kyZ0I3K0xXcTg1ME9BRkxsYTRyRFZtOGkzRjlSZmxrWG9WQk9sZzE5eEtqbk1zMjhrT1ZzWFNCdXFnMTMvd0NMOFFpRnllUHpHRDI0ZXZHUTM0cTJBZzBEcHJPU1c5OUI2YWdpckpJUitNbzNhemtMdHc2enN5Q0x2Y3VHbWx0QWRuVnpQbDFBYTRuWWpxcVZ4dWpJK3VobWR0TTVuUlg1dFJvTlhHY1FJUTNQNE9ld0huVGxMNzNuYklYSUMveG1SMFZ1ZmxWTFRHWWJjeHN6dFZ3UEVpZnU2bXpES1pMZWl4Tzd3QjVIbURJOEViWm9IT2pIYlB1UmZWNzEvcmZCeWpKcEtScTFxRkdCTzNzWW9WeDJMMnpSbCtIOEo5dWhVTEdiWDZvU2plUTIrdkZ6eVhaYnVmL3VpQ0JydHVxWE0rN29lM1FaSDZMV2t4WTZvTzl1aitBM0hNQmxwbExNdkZUL3ExYmVCdm9wZWI1NWYzTjBrVXIwaHRzUHhKTnNhM1BUVkdQOEdMWHY3WVRvREVaNTVmZkU2TXVVRDZxMjA5S1QvaFBuV2c5TzQ3ZTRxT2dxSi81Z0dpNDdTTUlZaWZUYTlGRlFlb01WcVkyM2l0azFNbTRIcDd6VU1IRWJyZ1UreG8xSFdIYWJQV2QwcGJsc3ZpY1VrTjQzdkZvMGk0ZFlMK0hPa3RjcStGOGR0b29CWXo3eUxLcjQraXluSWNDd2RXakZBR0JVaGtERWhDcmoxWWZQYmlBNm5hUUJnOGMrU1QzZVlOVnYzQnRnWWRuU091Z1RTcGlBNUxjd25NM3hxMXFtemtqSTY1a1Q1RHcyb1U1M0dVc2JUTk9NSWtTWVc0cUxEOWk2SzRyZmRZY05Hb1haaHRNZ0dJSTVVUU9YZ1MvR09HSXAxNzY1NDdnOStIUEx0dU1EM01JQnFqQzRSaTBxRGVlMkdEckVFVHJvc3Nmc3NZVkJLekRZWktpRzhWSXBWdVFJTGdrYzdnTE5zRSttcGd1aTJkOEhpOTRJbWxIbTltMDVwYjRBQnltNUdxMFNVWjgwdzZXcENUYnNmdW10RjRKVVROYVdNUC8vaEZyanYxNlRqYTMzTGNPem1EdmF4RGVBQ09OeThJZzRVcCtUUk5MZlZjTkI3NTdIQ0lUNHNMSU43N0UzUFN4TGVaQjJVNEdMVDhrQlYvZFQ5dFZ6UGtUVmJPYlN2eUtxYnN6dzRYdGpIUCttTGNlYnV6aE4vRG4wTC82dG9abGhHbUxTdDBka215L1o1S2JPejl3ZU83czVvUkI0SEVjUXY2TUNMMk9uK0FERjRnaUJiQTlwd1lWUnBVUFc3SjcrSnl3TDNxUFg2NFN5d0xzMU5CMllKd2VEZkptc1hOQ0x4dDEvaXcvczl2V3FZMXZGQklHWnNBZ3RoMGdkWUdMenplWDJIdmZ0N0ttaFpOdFR2TDY0cXpGa3g3MHpWL1JSQzl5VWFYUXU3YnhwMkxaWXRjVWZIazRUL1kxU2FBUE9nWGtrbkltYUNhODRRU3JubE9MbTZHQ25NSmFyS0ZkbHBEYnU2V0E5RHRXRjdxczdSUzNCNEp3ZkFRak4zb2c2OUc4OHZUWnczdDlQd0d0cDJEOEZEdzR1V2o0QXBIZG92Qzg5VHY2Z3RvdXBzbDJsamU5SDdVV3ZkRzZaMko5MzRwbzgxZmFnTmo5U3M3UmQ4MkUweUZ3QlJRTXBRcnB4RmkxTmZuNUt2YlRrVnkydURWKzNOVEZZdWJJQ0ZLaHNLOStJcmJRRDkxUU8wbkpmWHFOTTRPajdMMmVHcThUYmRoUHBzSFI5dGg5WUE1WTZOWThXbDZ6UVlVRU02WTFCL05JWEo4TWNSeXByYTZxWVMvSjhDY1hvK3hzOUNoTDEyNHM0WjdNSVFta1BEUFRUOVo1QXZGeWVieHRjSFFxWDcvRXlGTWJhQzVFYjNqcTliQkk3QmY1QjVrMEFPRExHVnpDWWdiN2hwMmdPMTBUNDNkdjRhT3YvdlZMVVdJVkc4VFVNZTlVVVk5K3pzL3RvNmloL0dOVnQ5RUYyUEhiMkdtWXRiSlREeTJDaUdiQ2pKdzRFSWxHM2dDeGt1QmpiWlVGWitYSmlJbFJoSHNYNXJ0d2VhcXRPT0FvUEZNc3FFY0Z5YVhIKzBSQzk2ZkozaGFBOW8xM1ZkNVJqSkRXUVY2em5ieUdpZGZwVG5oYzNVODRnZHNsL1I0TG5pbzlKV3QzbWVhdG5ldUFjRUZrdFVQb2pxbWhlZjJBc1pHYTRBNzRlVlRyWC94T1E5WmNRUXlBbTllYm9yNDczb3A5cnQycnhxR0R6cEQxcEczcjRNdHd5RjNoMEtIaHpXeFh1aDlYUHMxOERMc3U0eHp5eTF6NGYrd21TWVYzQVZzMXlCSUt5YVI0bzloQXlQVlVOS3piSmloUmxDNk1EdUFjRHZrMXVTaTRrUnU1YkxWdmltZ09LVHdGeW53K2QzL0xZZTBaTi9ydjJoVEJsdWNocU5kNFdkaklGZ1BJMGtnR3JiZGpyNnVDendFQUMxM21najZnL0FYWGtDelFxT3MvVTdHeFJQMGZsR29JekJLdnBNU0poR3JCU2xYWEt0eVBXWit4V3Mzemdha29FRWtYYXMrNGFMVk16OUVlNWg3cU9tdlliUjJJZW9yKzU4R2NIbWdHazdRR014Ymc2VjAzNkQ5R3V6dURDZHdpMGMza1hSWXRFSW9kb2czaGpwTVZvYWZ6MElyOW1kemVVNTBHQnNjVjdaWHVYWjRVcVdLQkF6ZnA2NGNMeUdnVGh6K054N1RMTlZkQUVJdWJSUWRpdDFwVmtvb1IvbnpKZittdy9nSE5sSWc0a1c2VHVyZDhDVGVrY25uWkJXQVpQWTROenRSWkVjZWlibkZJY2xrSWtNNTNqZCtKYzJIOXVyZzhwOHhITlAzcU03ZG1RWHlIY3l2M0poY1c0MnkvVzB3NnJYaVlrVVJOUnpIQk50bi9tc1FyTzJsdWxLVFh2Y3VoUEhmclNTRWlVZ0hmN1U5N3NueXlzdXFxdmdwRU9lMWJwUjMzOFZ6K3dXMUZZcnpDeFhxZnZycFIwOGFDemtQaDZRNHR6RFJsVVpwMlU3N3ZFaHhDUFAyY1JmbG90NXZVTXJVeUQ2TlJvQ0VPKzlZejBaYThwU2tSRWJmZmMyMWxuTXgyL1B6ZHorS3A4V0lxMFViTFR3aWJPU1JNZ1VIMlgrMzhOSWloYmhjdU5lRXl1MS9CM2YyaEZLanBscVVndVJyOENZZmVLUTU3UTM0Mk5razRDSGZYTjFmc1JKdVdVQzhXUmR2dmpTc2dUbVNOWGFqNnFrTW4reStFOXUxNVN4bDJYWERXY2hIMlU0WnU5dFNHLzR5YXpCVHF0dlNtM2lHYkZrdmtTQTlPWnpXSURUQjcvZUtNY29RYVl1NzBNR0hNYnI3K1dMSFU1d00yemZnRUhlYkFmRUZkcnkrQWwrUGJiZVp4M1lweVQ0N2pZK2trR3lBODVuQlpYYUg5NVZXQ2t0YThSeXNTYXl5OEVxSkZZMExubzVYSFhKOTg1YUdiczZZbjEwM2R5Y0hqR2huclNhbW9HQW5US21PakMxZTVnWWtGZElIQ3dzdk9xUkIrL2RvWTVaLzR6WjJ5dXRKaHd5ZHY0Z0kxdC9YckQ1cms3VDRTbWwzdWZkczlBNENFTUhqaHVIb2VZMzFjaE9rV29QbTREMVZ4YmFwb0syclpnTzRDZjJOOHNMRXNWVFdtcGRPS0V6R3VQOW5yaVZKNlUwV0xBSkcrTS9PM2xNZ1RzU0ZhK2Mwb0R5c0tiVVZvZTMzVmVXVkkxVkZlcU56Nmh1QzAzOFNrZ1RDRkZiNnFmQTJ0MUhQTENhWWhaWUxtVXZtNi84Q3pQUkppS3hjczVhK1E3bVJtREtDS1FHZTZpNEsxdjBnTmo0b2tJaDkycG9mQzNTcDJONFdwSkRDU0t5SEl6K0paZWJFUnJRZkVNZ1JFZEx4S1FFcEtqSjg5bE4rZENoQXRiN0c0SWdjdDhEbGxZQnJHM3BLNFZYaWNMMkd6UVB1QXM5WUJua3QrU0RyK0Uzd3pNOGRnT1ZkY1ROMUliWjVBMTFkQWNRb05PdmgyMTFrYUZNam5Cd1J1UFdWK2MrVlUzUGxGM3MzcFRTdVozQ0tVN0xvSklyRXc0bEdMMXJ0cFY4U2hxMi92dzZNY3lwVmJ4MkVuNEsxSHdLR3dZNVdnK3g1T3hLb0tFV1VFbmcwOWtIVUp6dXE0Z2dEaTViUWtRd3JtOGxoeWxYaHZJeVZVc0I1TUt6VFdvdzhxS1lvV2hPUmFDMUp2Yjd3WTVzckgrSlRVTFIwMllYbHd5QlBVYnoxWmdmb2RIUm9FZHYzSzJDOGFySVBoNk9KWGRSYlo3Nk5aRVNvSHloVzZ2NU5lRHZKbVpxS0Y3L2Y5eUJoaVVrcjNKTzBiS05yT01Xc2xONllIeCtZZ1gyZTBrVnVJUGNPYm9menhwT3g0eUYxOVlhenpRTFJSOGNNOXh3YVdGTnIwTHBCN1JiTDJDa1BiZ3dSWmw1eUVpbmZZWWxEbUJhTE43SEFSSVBGZDcwd3BVNDFIa1J1WjVaVG52MVQ3QzNmOGZJQmVISUdRL0JGbFg4UUhDWnNicFJrTEVWbTlFeE1hK0xFbW43NEMxSktGUGVjYTdEdldZUWZBb014Z0RSZzFCeExGRHlRWlRyS2UxSTNCRXFUdjY2TDRuWm9NUmVwbXJxMjFGMmpNMjdrUGRZWWozelpqV2ZaZ2MxaWhVL0Iwb092WjNHSkE2YU1EeXJpc25qNGNTVlBzTkE0bW9SblAyeTcvdUtrc2NwTUY2bWV3R2p0bUtSUEdWenhRZEhaa0RTdlh6SkhIalY3T2Q5Y0pJL1pva0EzdXpxeld4YmlibWNYZlVMNkZVTkxNRmJ1YXV3Wm9HUXF1c2pwelI1UFEvRm5OcHVsbHI4QldsRUVrSGR1NDZXSmJGWlZ1Uk16UElobWoxbzN1SW4wRUh4R1RiY05KOWw0dDU2VUdscWt1SSt3d1NEaTZaMEw4M21rOGVHS1dMUE9MNUl2TUxCY3ZRSU4zZjZKcDdzSXpraERUSjlhY0pkMmJiU0J6OGpndU52OGIrdFZlVDFwVFpNLzR3UEtMUEFlRE4zNEgvVWNhdGtLcVk0cmM3b3RhNUVtT0U3dmtiQnlEd256UjdUR3laOU1Vc1JVV0JneDdjMHVjNEU0WEp3bnpJeVlLN0xncUxxNFR1dHI4V3NYdEcxdnliRjlCTjZjZ2VKRW1ueVFPc3VEQjliZ2RlaUswZElqb0llL3Z0WjRWVEMwL0JwL0NRRWZocGg4b0RTc3NSYkQ0YjRlcWJXNFBxWmo2eFFTall1Ly9JMmVGbHF2Y1BvQUI4MHM1c3gzeG9kS3NFcjlneUI4Z2hqemNkblBuRE9XbGpNSTI1U2phU0luWTRmQ2M3U0M1dWtnY0pqTCtpeHFUdkFPeVJ5akpTSFhiYXpzbXN3cGc9PQ",
+              "id": "rs_resp_zb2NarKlDvSljrEPr4Cm8Qg_detached_after_1",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 682,
+      "uncached_input_tokens": 682,
+      "cached_input_tokens": 0,
+      "output_tokens": 45,
+      "reasoning_tokens": 721,
+      "total_tokens": 1448,
+      "raw": [
+        {
+          "input_tokens": 682,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 45,
+          "output_tokens_details": {
+            "reasoning_tokens": 721
+          },
+          "total_tokens": 1448
+        }
+      ]
+    },
+    "error": null
+  }
+}

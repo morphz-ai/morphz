@@ -1,0 +1,397 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": 3,
+  "selected": [
+    "blue_green",
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-risk-control-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Two gradual reversible mechanisms without rapid properties collectively cover both required groups.\",\"selected\":[\"blue_green\",\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 731,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 731,
+      "calibration_key": 10688892680526499634,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Two gradual reversible mechanisms without rapid properties collectively cover both required groups.\",\"selected\":[\"blue_green\",\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " this"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Let"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " understand"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " it"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " carefully"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "{\n  \"basis\": [\"release-risk-control-v1\"],\n  \"explanation\": \"Selected blue_green and canary to satisfy both required gradual and reversible groups while excluding all rapid mechanisms."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "release"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "risk"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "control"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "1"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Two"
+      },
+      {
+        "kind": "text_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "text_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "text_delta",
+        "text": " mechanisms"
+      },
+      {
+        "kind": "text_delta",
+        "text": " without"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "text_delta",
+        "text": " properties"
+      },
+      {
+        "kind": "text_delta",
+        "text": " collectively"
+      },
+      {
+        "kind": "text_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "text_delta",
+        "text": " both"
+      },
+      {
+        "kind": "text_delta",
+        "text": " required"
+      },
+      {
+        "kind": "text_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "blue"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "green"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "can"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 847,
+          "uncached_input_tokens": 847,
+          "cached_input_tokens": 0,
+          "output_tokens": 743,
+          "reasoning_tokens": 702,
+          "total_tokens": 1590,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 847,
+                "output_tokens": 743
+              },
+              "cost_in_usd_ticks": 10458400,
+              "input_tokens": 847,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 743,
+              "output_tokens_details": {
+                "reasoning_tokens": 702
+              },
+              "total_tokens": 1590
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_d8ae8300-bc30-95e8-96f4-adcf1617bd22",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user wants me to evaluate this infer-request. Let me understand it carefully.\n{\n  \"basis\": [\"release-risk-control-v1\"],\n  \"explanation\": \"Selected blue_green and canary to satisfy both required gradual and reversible groups while excluding all rapid mechanisms.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 847,
+      "uncached_input_tokens": 847,
+      "cached_input_tokens": 0,
+      "output_tokens": 743,
+      "reasoning_tokens": 702,
+      "total_tokens": 1590,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 847,
+            "output_tokens": 743
+          },
+          "cost_in_usd_ticks": 10458400,
+          "input_tokens": 847,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 743,
+          "output_tokens_details": {
+            "reasoning_tokens": 702
+          },
+          "total_tokens": 1590
+        }
+      ]
+    },
+    "error": null
+  }
+}

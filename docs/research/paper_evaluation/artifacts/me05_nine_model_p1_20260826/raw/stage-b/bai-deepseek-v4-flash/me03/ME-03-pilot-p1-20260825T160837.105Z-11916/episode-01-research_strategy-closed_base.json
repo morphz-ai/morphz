@@ -1,0 +1,293 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "closed_base",
+  "context_id": "research-landscape-v1",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 2 column 30"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": \"closed-score-rule\",\n  \"explanation\": \"Select the candidate with the highest closed_score.\",\n  \"selected\": [\"controlled_trial\"]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 712,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "bai-deepseek-v4-flash",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 712,
+      "calibration_key": 2487103036823145408,
+      "calibration_shape": 11369313708662499037
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": \"closed-score-rule\",\n  \"explanation\": \"Select the candidate with the highest closed_score.\",\n  \"selected\": [\"controlled_trial\"]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are given a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " DETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC_CONT"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ROL task. The rule is:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"Ignore open-p"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "reference constraints and select the unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate with the greatest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score.\" The context includes"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden_properties and required_property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_groups, but"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the rule says to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ignore open-preference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints. The context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "'s required_property_g"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "roups and forbidden_properties are likely"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open-preference constraints"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". So we ignore them. The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule is to select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the unique candidate with the greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed_score. Among the candidates,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the closed_scores"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are: broad_scan "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "73, expert_interviews "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "81, controlled_trial 94"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", replication 90, dataset"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_audit "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "86, field_observation 78"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". The greatest is 94 for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled_trial."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " So selected should be [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled_trial\"]."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The basis should be \"closed-score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-rule\". Explanation: select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the candidate with highest closed_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n  \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis\": \"closed-score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-rule\",\n  \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation\": \"Select"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the candidate with the highest closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_score.\",\n  \"selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\": [\"controlled_trial\"]\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 601,
+          "uncached_input_tokens": 601,
+          "cached_input_tokens": 0,
+          "output_tokens": 218,
+          "reasoning_tokens": 180,
+          "total_tokens": 819,
+          "raw": [
+            {
+              "input_tokens": 601,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 218,
+              "output_tokens_details": {
+                "reasoning_tokens": 180
+              },
+              "total_tokens": 819
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_f54ec12f-0ba2-4675-867f-9b92e65af8e7_0",
+              "summary": [
+                {
+                  "text": "We are given a DETERMINISTIC_CONTROL task. The rule is: \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\" The context includes forbidden_properties and required_property_groups, but the rule says to ignore open-preference constraints. The context's required_property_groups and forbidden_properties are likely open-preference constraints. So we ignore them. The rule is to select the unique candidate with the greatest closed_score. Among the candidates, the closed_scores are: broad_scan 73, expert_interviews 81, controlled_trial 94, replication 90, dataset_audit 86, field_observation 78. The greatest is 94 for controlled_trial. So selected should be [\"controlled_trial\"]. The basis should be \"closed-score-rule\". Explanation: select the candidate with highest closed_score.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 601,
+      "uncached_input_tokens": 601,
+      "cached_input_tokens": 0,
+      "output_tokens": 218,
+      "reasoning_tokens": 180,
+      "total_tokens": 819,
+      "raw": [
+        {
+          "input_tokens": 601,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 218,
+          "output_tokens_details": {
+            "reasoning_tokens": 180
+          },
+          "total_tokens": 819
+        }
+      ]
+    },
+    "error": null
+  }
+}

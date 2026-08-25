@@ -1,0 +1,1122 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "nested_fallback",
+  "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 5,
+  "prompt_chars": 346,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "primary"
+      },
+      "output": {
+        "error": "PRIMARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "secondary"
+      },
+      "output": {
+        "error": "SECONDARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "tertiary"
+      },
+      "output": {
+        "name": "tertiary",
+        "ok": true,
+        "token": "EP-T-5541"
+      }
+    },
+    {
+      "attempt": 4,
+      "name": "verify_endpoint",
+      "arguments": {
+        "name": "tertiary",
+        "token": "EP-T-5541"
+      },
+      "output": {
+        "delivery_token": "ENDPOINT-VERIFIED-7752",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "ENDPOINT-VERIFIED-7752",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"ENDPOINT-VERIFIED-7752\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1394,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1394,
+        "calibration_key": 5370393366010617149,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "tool_roHnThl4v2FKn0zlMLdNXv5t",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\": \"primary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " execute"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " this"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Start"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fallback"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " First"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_endpoint"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "tool_roHnThl4v2FKn0zlMLdNXv5t",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"name\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "primary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1230,
+            "uncached_input_tokens": 1230,
+            "cached_input_tokens": 0,
+            "output_tokens": 68,
+            "reasoning_tokens": 25,
+            "total_tokens": 1298,
+            "raw": [
+              {
+                "input_tokens": 1230,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 68,
+                "output_tokens_details": {
+                  "reasoning_tokens": 25
+                },
+                "total_tokens": 1298
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "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",
+                "id": "rs_msg_iw2u71251IydR8FvNUYlO8XI_0",
+                "summary": [
+                  {
+                    "text": "Let me execute this program.\n\nStart: bind selected with fallback. First call probe_endpoint primary.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1230,
+        "uncached_input_tokens": 1230,
+        "cached_input_tokens": 0,
+        "output_tokens": 68,
+        "reasoning_tokens": 25,
+        "total_tokens": 1298,
+        "raw": [
+          {
+            "input_tokens": 1230,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 68,
+            "output_tokens_details": {
+              "reasoning_tokens": 25
+            },
+            "total_tokens": 1298
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 2603,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2603,
+        "calibration_key": 11364138303939893128,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"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\",\"id\":\"rs_msg_iw2u71251IydR8FvNUYlO8XI_0\",\"summary\":[{\"text\":\"Let me execute this program.\\n\\nStart: bind selected with fallback. First call probe_endpoint primary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_roHnThl4v2FKn0zlMLdNXv5t",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_roHnThl4v2FKn0zlMLdNXv5t"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\": \"secondary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\"name\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "secondary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1319,
+            "uncached_input_tokens": 295,
+            "cached_input_tokens": 1024,
+            "output_tokens": 49,
+            "reasoning_tokens": 0,
+            "total_tokens": 1368,
+            "raw": [
+              {
+                "input_tokens": 1319,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 49,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1368
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1319,
+        "uncached_input_tokens": 295,
+        "cached_input_tokens": 1024,
+        "output_tokens": 49,
+        "reasoning_tokens": 0,
+        "total_tokens": 1368,
+        "raw": [
+          {
+            "input_tokens": 1319,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 49,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1368
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 2670,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2670,
+        "calibration_key": 15122492072051608339,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"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\",\"id\":\"rs_msg_iw2u71251IydR8FvNUYlO8XI_0\",\"summary\":[{\"text\":\"Let me execute this program.\\n\\nStart: bind selected with fallback. First call probe_endpoint primary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_roHnThl4v2FKn0zlMLdNXv5t",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_roHnThl4v2FKn0zlMLdNXv5t"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "tool_L2vQbDoyrEnvu1SGLf4aW0Qh",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\": \"tertiary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "tool_L2vQbDoyrEnvu1SGLf4aW0Qh",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\"name\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "ter"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "ti"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "ary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1410,
+            "uncached_input_tokens": 130,
+            "cached_input_tokens": 1280,
+            "output_tokens": 51,
+            "reasoning_tokens": 0,
+            "total_tokens": 1461,
+            "raw": [
+              {
+                "input_tokens": 1410,
+                "input_tokens_details": {
+                  "cached_tokens": 1280
+                },
+                "output_tokens": 51,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1461
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1410,
+        "uncached_input_tokens": 130,
+        "cached_input_tokens": 1280,
+        "output_tokens": 51,
+        "reasoning_tokens": 0,
+        "total_tokens": 1461,
+        "raw": [
+          {
+            "input_tokens": 1410,
+            "input_tokens_details": {
+              "cached_tokens": 1280
+            },
+            "output_tokens": 51,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1461
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2739,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2739,
+        "calibration_key": 113356245054528208,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"N3Zf+7Qc3gEJRtc7cRzlXnl7GirpgngHKdEd4vi5A77Y64iCoWDgvk54YctOfrKqRvzzHxlnEsytzsJTxaLC4XCXm4E0q1WtTe7XuyStd27juDvbjsxRzpqQsgdT/6J73d9jOGlczJTYRCgxQ8pdIGfe3J0uGAdQNq8EAR9u9rMGkFKdtNJHyIPrVzQovrg8suao5jEjVUvYMLpqCL2TjrJKSCCtW+BIGqBQFDofXTeucPT6o1hBxDhAe+Q3uSAHR7f1R4fguXygDSTkrsoOSE1ETrNiBSgwjHZV8mQ45tWKIE5H4u3XLQkZt2YH/+c0mTAhz3c2hoN1eOIh0MsgFvDEOoRzekF+otIwV1HxO/fM3u9JG9X0b/I62qSb932U4wNav0YxB2Ei+358keiA6VMZt+1slkejH4ry5+g3NKsH1ZZJDKzA2VDM7W4ZFl81d9N0lXWyQU05dcsabx4q/kCYaTj5bJxvuJ5JBElQOLExo7xf+te1B94O8sOk4STVHtBE+ag8iI1iOoGLu9OpVxq+Ayaq3iihNeBiDyJih9PtETV7YrpbzUmkiPKnfv/S/FpA/ynf8yuAWeNGiWmSnfT0hGL/0H67uX6gzpP6fEMJCOFwdm+hPm2Y5NXJKdGjVFr6Vl+yRyvrCMgZmbq64Bn4Y52Ff/3/xlfpJNwrkxwS7U/0d1e9zWA5vE/fHmfb2yn502Aa7eOh4au24eAzw/BEBGOf5N5+a5YUBFY4YLNgSI+wUKgOW62w31wLau+BjGyR/37veAeJTCtU7T9EtNxcZq2+0tALSDG0DFpeMIWVjv4Es3/V6F6gistz3Nypj6rjqDkWg4d4RECFwn9KoUYkl6y7Oc+AA6Fwgwfpyt4tRMZS4ZXCPf3PAjUrYmvBy8Vp4Dox7iUfajddObqGQ8R3I4OAuGU58VEcIyQ5ypDkdJghh3DZ6b2Qidi5ezRsQ+3ZdtlZWqF6Nhygy4yEmMRT7TvISeYkIaKMcxhbdrf0/0rhmlI8oRRVqxYpkXLO++SMnWr3szrgicRtOmEIidYzs+TvluyhtCrw5ws54mPSEdFtc8xDvxZvw1P6EIrbc2zB9C+dBFWziQspQ9ADu5UaLg0TZbXKtAyVxtFVBVZJTWtRQhy+1VVEYzW4KOHXm4PNKsUosajb6O0wEkcSJyXLpzY63DlxHhgDOEJwFuTs3bsm/f8/RHTY+MPPuLsMx3nstA1PZbZYMVjlI0lu1KxdpGOKv2Lu0w16pNYAcWKEhe2ffjcpyxKo1m1aWHCvprRE8VbJb83ewwZEUsZAsBDnqA44QGQuMqlJOYhiDRVxTF3KlekSLrR+RnW/ABEMG4I/V1/y1NaQh2tmVckONzO+to008ayG8m9fFI17Gdij6iLg6v8fFL+n99Ch924CWqwQPfzDkNpZ7h4VcMnScFHY3czei+QNngg6tahA0/jutDgQS3wfeaMqA8Ev3Yx7TmKPnz6BhttJj8edf5Lae9D6m80FU7X0ieHubnLJHY9jb6xo+rFl+nmKQ6tCSlWAGjH7f/NvEC3kAgYOgUKePOdlu6l4miZBvmkwUOb9OZuvYEr7DO/45381enRNT4dWQD1w9W86rfwu4yTSZQlclpX5WC/0yo32TBJYbUXuRC7EK0qDuIs8M613B4L7G3XOK4zcUeTA6HMlsao3jhGddrihP4ZtOix+n3HMrkPz9BidhIK7X39zdjDOThLLps7NQgIR1rhV5XgegW+hXGEHKZSxDcDyat8+mUQ+KbBfWF9ungcALNXKP8O9wKktogjcnHzUL8Fyqbotnx0ck1qDTue8CLOzyx4QfuY9Has/Ej8sWNTcS8au+BUxgCNJAifuYI0ryf+bcpMTytwmR5Akxep6vKdc+QX/ekFNv9s9Quqag6B4fsGCqz+zmoQUtUOZaL8erFXEadflcxGmHB9a49/NcZxVzsWxtVk8qAOkIqJoOTM9zsPUaZ4EE2T/cBpNK2kWaXcTrtohanli6bsc9iF+Ay+o6GckM1S1KmoY7wsLQsUA1reG/Mc5Sx2DB51t/RRVHdC+/nw0CSE9p16Z3hoSlN3dFvcU7hK9538thYX2J8yUWnEhp4oz9fuf0/nxdjQA7djb2l/ow8q0kVSWw7pB9X1/GavngnPUB/cDdtFmT+0BX0cg9m8jYwHYuXX7ejv9BzBId2N0Zba7AIv+jNE7bMgtaCdFZDpXNg58Ec9VTfYN5AUl3P6DPCNMsSprtXjE1z2aIKamD3mQ6i7OmeDgd6mtPIf+i7WSzKYSZM0bOfATOzgBF4yjeUJe3HFC5N740HDxIFRSQE/oXxXC8YXJEENPqQM6jQXuHf5PHNpNpHPT9FYr1RaF/6SbtIo8kuF7kGU7HuVpEm0p4cP0n6IH+meCTtYyGQe1M0OBKHNwzruGpSCaiiH/YR/xfY5JkWHLmq+bGB3h+n0CBNJShSKL8itX9zebK5UhGCJQlle8m7cQ6KzlAIcbd9DadWYVGvVJyRuYlXFRpOOCIvelI71vfUUNdJJEBHlc5xBU83RYKSX4fS8d7hKrLSlX9zMIUsuA3zplwE/1F03JzSPnhLYNP1XeI3gX7DQWk4ByDdMIiuWGfu3mhGXjsk0TkJoQVwLm1fvBXDEWvOgO3oNnmPe34fy9c3M7xaEdaFinSXlkFXuEY38Igh2Gl898ew12uP/ZVlb6hT5nEbOzuMszj9HykheEyEj8gh4X3GDUJovFMJgPRvk2oxPfTjg9ZRWN6C7wgNrBhJW9QEK5AHiRuEi9wbegOxj3UMOHfDw0VpvI1d6VPLf+IdMY+reYdmYf2xw1ky/V7x+eeSJbpqL4WSO0QV+KwT9UgUmQqRpmj1Z3h98rFnshluz8kDWvjlTCDDcTwfHvqWZm7gdbhZu4V4uhSrWID4OxtbK/awxhF6cFIJdUKG1GmZo/ZpZH1j/82eZJR/KBMQPPZGXk0SI9QQmVTqzm3fwSeXfY89j8/MeVkFIUsZmQg6jevX2jIadR9MQbntz4iKWT/a3lv9CXc29bKE9Qa6qCfBbH/HamUSK9SnBNmzicq/o3XUrzr94Rz1pYOn3XKBsSm9IDxtU6Kzpw3kmMkXAoCLdtw+gDMDOFmWs+6Sce4d1aj7Zjgip/mzggFO8l2M0n1yF5BxRhEj8MH1J397wpd30AyxBx7e8UVlOXpXLqrAGcNcl58pPzxZU6l7Jx4F56lY0M9OPlx+xeIEyHXmdRuNq8EaKFGcKLJcrWZ7eJHlUeozd8cST/yHmugfR7g9drbYSgTPGKup3qVsUDXbvmDEt1d2SIEWk/dHVMx54RRi8uGw3PJmGs8aZrrJ0DdhXmAYXJ+vKnPoDYUe+4wSciWPn7lkWbC+X1VIu+Y1noOrlPC7cPU0f1EP1+1S+CeOFSWXQ4z0vJL0mrN+qGDVnxU2IaTy7j85BeucjeJXk3Ks1jnkY7eFpaJ+1RMtuKOHfcuAWbUgVeTOC4P1NKThnY2TkUYy1OfV9Fa414HVFlVBBgwBvV2kTxB5PhKNUDQi5hrVwaCnFrgDjqJcwLtSxPKpv2tlDafcCPSVHXgjGC2NC31B9CceZS6PqvaHayl6MpL6Ap8P0vQOjqw0Cvnw1+QUOUDKzI1k5ezYMvKUfB66nDu5arVvWeyxr/kCcD6H5fCIeM3WiN385wvoO1+slOkh7MUTe94mv1Q88C78zJu3uIaRtmsSRYyBFaeCgLzwLPpWrjmAJx0A1LYF0ChQ3dOEj7redZ/q/fHD7UQXdT6CcuIjdIeK/ZTIA4yFht2KQnR7tbREN7NgjY+Xih/fmsleVLfkszOm8I9spy0zoNNPFyOwmKNhZVF57q1CqVb4WydxtGlcrJ98PViOOlOuBokeVjZvNftsnUk3hIsUc+0MlZMZKmog0lQdHj9QBKQIlcbWrz3KN5r9HH52AGnAYaJGuTpe5zLAGUmbuQeLhsuFUBB5vdNPTPtsQGVFeg1lKWTJicLDVvH/ueWeWROSofQPn9rwOkk27szWaDNZdiaiu7z2WqkCsVEibjVMwj3Ni6SajFZoBYKl0YoaOZh7HlD2loSFsVyt77zMkv1yXGP46eXZ9OZedkgFVkADJvJCqE6IGyneFowmr+vNBqfNb1G/q4uh5sfbHCzuRmykehgK7GfC6KMEWpi+DL1weo6LAVuNwfCIYRJcQeQaXNDnAMtlrMRskkvlngE0Vm1ZEo9yvA+XEOBmYX2Jqapy6/LTPSRdpiCufx8+fRE91BhgWnqPT+CF/3UQzYJPNIkrNrFr5SrAIAw6kFF4m7SmVdU+mRhQzR4wOglINtBDbrdY2dGcLZi1DgFYYQ1TqVf8YJ\",\"id\":\"rs_msg_iw2u71251IydR8FvNUYlO8XI_0\",\"summary\":[{\"text\":\"Let me execute this program.\\n\\nStart: bind selected with fallback. First call probe_endpoint primary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_roHnThl4v2FKn0zlMLdNXv5t",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_roHnThl4v2FKn0zlMLdNXv5t"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_L2vQbDoyrEnvu1SGLf4aW0Qh",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_L2vQbDoyrEnvu1SGLf4aW0Qh"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "tool_bchSdINheaQetoJKIOfJeY63",
+            "type": "function",
+            "func_name": "verify_endpoint",
+            "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "tool_bchSdINheaQetoJKIOfJeY63",
+          "name": "verify_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\"name\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "ter"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "ti"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "ary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": ", \"token\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "EP"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "-T"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "554"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1510,
+            "uncached_input_tokens": 230,
+            "cached_input_tokens": 1280,
+            "output_tokens": 70,
+            "reasoning_tokens": 0,
+            "total_tokens": 1580,
+            "raw": [
+              {
+                "input_tokens": 1510,
+                "input_tokens_details": {
+                  "cached_tokens": 1280
+                },
+                "output_tokens": 70,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1580
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1510,
+        "uncached_input_tokens": 230,
+        "cached_input_tokens": 1280,
+        "output_tokens": 70,
+        "reasoning_tokens": 0,
+        "total_tokens": 1580,
+        "raw": [
+          {
+            "input_tokens": 1510,
+            "input_tokens_details": {
+              "cached_tokens": 1280
+            },
+            "output_tokens": 70,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1580
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 5,
+      "prompt_measurement": {
+        "tokens": 2814,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2814,
+        "calibration_key": 9955154147098152304,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"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\",\"id\":\"rs_msg_iw2u71251IydR8FvNUYlO8XI_0\",\"summary\":[{\"text\":\"Let me execute this program.\\n\\nStart: bind selected with fallback. First call probe_endpoint primary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_roHnThl4v2FKn0zlMLdNXv5t",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_roHnThl4v2FKn0zlMLdNXv5t"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_zKbc5bEK9cqY2A4HbIWBuLyp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_L2vQbDoyrEnvu1SGLf4aW0Qh",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "tool_L2vQbDoyrEnvu1SGLf4aW0Qh"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "tool_bchSdINheaQetoJKIOfJeY63",
+              "type": "function",
+              "function": {
+                "name": "verify_endpoint",
+                "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}",
+          "name": "verify_endpoint",
+          "tool_call_id": "tool_bchSdINheaQetoJKIOfJeY63"
+        }
+      ],
+      "response": {
+        "content": "ENDPOINT-VERIFIED-7752",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "We"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " final"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " reply"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " exactly"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "END"
+        },
+        {
+          "kind": "text_delta",
+          "text": "POINT"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "775"
+        },
+        {
+          "kind": "text_delta",
+          "text": "2"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1627,
+            "uncached_input_tokens": 347,
+            "cached_input_tokens": 1280,
+            "output_tokens": 30,
+            "reasoning_tokens": 11,
+            "total_tokens": 1657,
+            "raw": [
+              {
+                "input_tokens": 1627,
+                "input_tokens_details": {
+                  "cached_tokens": 1280
+                },
+                "output_tokens": 30,
+                "output_tokens_details": {
+                  "reasoning_tokens": 11
+                },
+                "total_tokens": 1657
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "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",
+                "id": "rs_msg_QRdFTeADkSDvoGx6pdjyCUA6_0",
+                "summary": [
+                  {
+                    "text": "We need final reply exactly ref delivery token.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1627,
+        "uncached_input_tokens": 347,
+        "cached_input_tokens": 1280,
+        "output_tokens": 30,
+        "reasoning_tokens": 11,
+        "total_tokens": 1657,
+        "raw": [
+          {
+            "input_tokens": 1627,
+            "input_tokens_details": {
+              "cached_tokens": 1280
+            },
+            "output_tokens": 30,
+            "output_tokens_details": {
+              "reasoning_tokens": 11
+            },
+            "total_tokens": 1657
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,405 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": 3,
+  "selected": [
+    "big_bang",
+    "hot_swap"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"big_bang\", \"hot_swap\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"big_bang\", \"hot_swap\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-deadline-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Picked two non-gradual candidates that jointly supply rapid and capacity-light.\",\"selected\":[\"hot_swap\",\"big_bang\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 736,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 736,
+      "calibration_key": 9199845887617810023,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Picked two non-gradual candidates that jointly supply rapid and capacity-light.\",\"selected\":[\"hot_swap\",\"big_bang\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " this"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Let"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " understand"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " task"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "release"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "deadline"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "2"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "P"
+      },
+      {
+        "kind": "text_delta",
+        "text": "icked"
+      },
+      {
+        "kind": "text_delta",
+        "text": " two"
+      },
+      {
+        "kind": "text_delta",
+        "text": " non"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "grad"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ual"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "text_delta",
+        "text": " that"
+      },
+      {
+        "kind": "text_delta",
+        "text": " jointly"
+      },
+      {
+        "kind": "text_delta",
+        "text": " supply"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " capacity"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "light"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "hot"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "swap"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "big"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "bang"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 850,
+          "uncached_input_tokens": 722,
+          "cached_input_tokens": 128,
+          "output_tokens": 726,
+          "reasoning_tokens": 682,
+          "total_tokens": 1576,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 850,
+                "output_tokens": 726
+              },
+              "cost_in_usd_ticks": 9968800,
+              "input_tokens": 850,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 726,
+              "output_tokens_details": {
+                "reasoning_tokens": 682
+              },
+              "total_tokens": 1576
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_13b99bab-0874-9451-87e7-421dfdbf75d4",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user wants me to evaluate this infer-request. Let me understand the task.\n",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 850,
+      "uncached_input_tokens": 722,
+      "cached_input_tokens": 128,
+      "output_tokens": 726,
+      "reasoning_tokens": 682,
+      "total_tokens": 1576,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 850,
+            "output_tokens": 726
+          },
+          "cost_in_usd_ticks": 9968800,
+          "input_tokens": 850,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 726,
+          "output_tokens_details": {
+            "reasoning_tokens": 682
+          },
+          "total_tokens": 1576
+        }
+      ]
+    },
+    "error": null
+  }
+}

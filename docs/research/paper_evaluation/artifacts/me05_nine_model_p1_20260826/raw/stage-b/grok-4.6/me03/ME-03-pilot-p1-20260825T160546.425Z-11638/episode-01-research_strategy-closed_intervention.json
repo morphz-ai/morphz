@@ -1,0 +1,341 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "closed_intervention",
+  "context_id": "research-causal-v2",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Ignored preference filters and selected the unique candidate with the greatest closed_score.\",\"selected\":[\"controlled_trial\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 711,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 711,
+      "calibration_key": 11432736169921969635,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Ignored preference filters and selected the unique candidate with the greatest closed_score.\",\"selected\":[\"controlled_trial\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " sent"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " an"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " process"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " this"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " carefully"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Ignored"
+      },
+      {
+        "kind": "text_delta",
+        "text": " preference"
+      },
+      {
+        "kind": "text_delta",
+        "text": " filters"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "text_delta",
+        "text": " with"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "controlled"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "trial"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 832,
+          "uncached_input_tokens": 704,
+          "cached_input_tokens": 128,
+          "output_tokens": 1002,
+          "reasoning_tokens": 966,
+          "total_tokens": 1834,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 832,
+                "output_tokens": 1002
+              },
+              "cost_in_usd_ticks": 12722800,
+              "input_tokens": 832,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 1002,
+              "output_tokens_details": {
+                "reasoning_tokens": 966
+              },
+              "total_tokens": 1834
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_74341da8-8483-9dc3-8ca3-e31beaf305c8",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user has sent an infer-request. I need to process this carefully.\n",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 832,
+      "uncached_input_tokens": 704,
+      "cached_input_tokens": 128,
+      "output_tokens": 1002,
+      "reasoning_tokens": 966,
+      "total_tokens": 1834,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 832,
+            "output_tokens": 1002
+          },
+          "cost_in_usd_ticks": 12722800,
+          "input_tokens": 832,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 1002,
+          "output_tokens_details": {
+            "reasoning_tokens": 966
+          },
+          "total_tokens": 1834
+        }
+      ]
+    },
+    "error": null
+  }
+}

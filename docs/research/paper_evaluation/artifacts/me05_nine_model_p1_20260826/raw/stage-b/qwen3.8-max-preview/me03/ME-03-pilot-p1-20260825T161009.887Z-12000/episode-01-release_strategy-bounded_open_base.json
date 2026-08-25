@@ -1,0 +1,549 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": 3,
+  "selected": [
+    "blue_green",
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-risk-control-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\n    \"release-risk-control-v1\"\n  ],\n  \"explanation\": \"Selected two non-rapid candidates that collectively satisfy gradual and reversible requirements.\",\n  \"selected\": [\n    \"blue_green\",\n    \"canary\"\n  ]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 734,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "qwen3.8-max-preview",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 734,
+      "calibration_key": 17883210002547829401,
+      "calibration_shape": 15960451244876841423
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\n    \"release-risk-control-v1\"\n  ],\n  \"explanation\": \"Selected two non-rapid candidates that collectively satisfy gradual and reversible requirements.\",\n  \"selected\": [\n    \"blue_green\",\n    \"canary\"\n  ]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need answer with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly one JSON object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no Markdown. Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " solve. User request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " in English. Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " analyze"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON. Kind NON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "DETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC. Need return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object with basis non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty array containing current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context id for NON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "DETERMINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", explanation short,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected array candidate ids"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Rule:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden rapid. required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [[gradual],["
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "reversible]]. select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count 2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Choose any two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct candidates such that"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no selected candidate has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden property and selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " set collectively covers at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least one property from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " every required group."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Candidates:\nblue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green: gradual reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity_heavy ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ok no rapid covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual/reversible\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "canary: gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible observability ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ok covers\nrolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": gradual capacity"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_light -> lacks reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " but"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ok no rapid\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "hot_swap"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": rapid ... forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\nfeature_flag rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden\nbig_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang rapid forbidden\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need choose 2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates covering gradual and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible. Any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " two among blue_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " canary, rolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "? If choose blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green and canary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", both cover all"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". If blue_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and rolling,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers gradual and reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " via blue_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". canary and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rolling covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " via canary."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " All"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " fine. Need select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly 2."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Choose [\"blue_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\",\"can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ary\"] maybe."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Basis:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\"release-risk-control"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v1\"]?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " It says basis non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty array containing"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current context id for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " NONDETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC. So basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": [\"release-risk"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-control-v1\"]."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " explanation short. Ensure"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON valid. No"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " markdown."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "  \"basis\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\n    \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "release-risk-control-v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "1\"\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " ],\n  \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation\": \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Selected two non-r"
+      },
+      {
+        "kind": "text_delta",
+        "text": "apid candidates that collectively"
+      },
+      {
+        "kind": "text_delta",
+        "text": " satisfy gradual and reversible"
+      },
+      {
+        "kind": "text_delta",
+        "text": " requirements.\",\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"selected\": ["
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n    \"blue"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_green\",\n   "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"canary\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n  ]\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 723,
+          "uncached_input_tokens": 723,
+          "cached_input_tokens": 0,
+          "output_tokens": 359,
+          "reasoning_tokens": 291,
+          "total_tokens": 1082,
+          "raw": [
+            {
+              "input_tokens": 723,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 359,
+              "output_tokens_details": {
+                "reasoning_tokens": 291
+              },
+              "total_tokens": 1082
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_chatcmpl-3bc03007-da9e-4693-bef0-7baf6d520e7b_0",
+              "summary": [
+                {
+                  "text": "We need answer with exactly one JSON object no Markdown. Need solve. User request in English. Need analyze JSON. Kind NONDETERMINISTIC. Need return object with basis non-empty array containing current context id for NONDETERMINISTIC, explanation short, selected array candidate ids. Rule: forbidden rapid. required groups [[gradual],[reversible]]. select_count 2. Choose any two distinct candidates such that no selected candidate has forbidden property and selected set collectively covers at least one property from every required group.\n\nCandidates:\nblue_green: gradual reversible capacity_heavy -> ok no rapid covers gradual/reversible\ncanary: gradual reversible observability -> ok covers\nrolling: gradual capacity_light -> lacks reversible but ok no rapid\nhot_swap: rapid ... forbidden\nfeature_flag rapid forbidden\nbig_bang rapid forbidden\n\nNeed choose 2 distinct valid candidates covering gradual and reversible. Any two among blue_green, canary, rolling? If choose blue_green and canary, both cover all. If blue_green and rolling, covers gradual and reversible via blue_green. canary and rolling covers via canary. All fine. Need select_count exactly 2. Choose [\"blue_green\",\"canary\"] maybe. Basis: [\"release-risk-control-v1\"]? It says basis non-empty array containing current context id for NONDETERMINISTIC. So basis: [\"release-risk-control-v1\"]. explanation short. Ensure JSON valid. No markdown.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 723,
+      "uncached_input_tokens": 723,
+      "cached_input_tokens": 0,
+      "output_tokens": 359,
+      "reasoning_tokens": 291,
+      "total_tokens": 1082,
+      "raw": [
+        {
+          "input_tokens": 723,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 359,
+          "output_tokens_details": {
+            "reasoning_tokens": 291
+          },
+          "total_tokens": 1082
+        }
+      ]
+    },
+    "error": null
+  }
+}

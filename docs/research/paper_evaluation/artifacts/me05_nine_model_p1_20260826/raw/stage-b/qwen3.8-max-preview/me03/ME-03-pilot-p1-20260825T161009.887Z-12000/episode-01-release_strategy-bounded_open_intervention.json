@@ -1,0 +1,533 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": 3,
+  "selected": [
+    "feature_flag",
+    "hot_swap"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-deadline-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\n    \"release-deadline-v2\"\n  ],\n  \"explanation\": \"Selected two non-gradual candidates that collectively provide rapid delivery and capacity-light behavior.\",\n  \"selected\": [\n    \"hot_swap\",\n    \"feature_flag\"\n  ]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 739,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "qwen3.8-max-preview",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 739,
+      "calibration_key": 14773735509980181809,
+      "calibration_shape": 15960451244876841423
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\n    \"release-deadline-v2\"\n  ],\n  \"explanation\": \"Selected two non-gradual candidates that collectively provide rapid delivery and capacity-light behavior.\",\n  \"selected\": [\n    \"hot_swap\",\n    \"feature_flag\"\n  ]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need answer JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only. Need solve"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". User provided infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-request. Kind"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " NONDETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC. Need select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array of candidate ids"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " length"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "? rule select_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2. Semantics"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": Choose any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " two distinct candidates such"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " that no selected candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden property and selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " set collectively covers at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least one property from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " every required_property_group"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\nContext forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". required groups:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", capacity_light."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need two distinct candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", neither"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has gradual. Cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid and capacity_light"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collectively. Candidates:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\nblue_green:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual forbidden exclude."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\ncanary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": gradual exclude."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\nrolling: gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exclude.\nhot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap: rapid,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible, capacity_light"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (ok covers both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ") \n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "feature_flag: rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", reversible, observ"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ability (ok covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid)\nbig"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_bang: rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", capacity_light ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ok covers both)"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\nNeed any two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ok candidates: hot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap, feature"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_flag, big_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang. They collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " if at least one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity_light. Any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " pair among hot_swap"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " big_bang,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " or hot_swap+"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "feature_flag (hot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity_light), big"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_bang+feature"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_flag. Select any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Need basis non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty array containing current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context id for NON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "DETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC. returns basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " should be [\"release"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-deadline"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v2\"] perhaps"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". selected array length"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 2. explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " short. Ensure JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object no markdown."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"basis\": ["
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n    \"release"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-deadline-v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "2\"\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " ],\n  \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation\": \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Selected two non-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "gradual candidates that"
+      },
+      {
+        "kind": "text_delta",
+        "text": " collectively provide rapid delivery"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and capacity-light behavior"
+      },
+      {
+        "kind": "text_delta",
+        "text": ".\",\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"selected\": ["
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n    \"hot"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_swap\",\n   "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"feature_flag\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n  ]\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 726,
+          "uncached_input_tokens": 726,
+          "cached_input_tokens": 0,
+          "output_tokens": 343,
+          "reasoning_tokens": 271,
+          "total_tokens": 1069,
+          "raw": [
+            {
+              "input_tokens": 726,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 343,
+              "output_tokens_details": {
+                "reasoning_tokens": 271
+              },
+              "total_tokens": 1069
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_chatcmpl-3f8341d8-4ee3-4c27-9352-94f0ab837209_0",
+              "summary": [
+                {
+                  "text": "We need answer JSON only. Need solve. User provided infer-request. Kind NONDETERMINISTIC. Need select array of candidate ids length? rule select_count 2. Semantics: Choose any two distinct candidates such that no selected candidate has forbidden property and selected set collectively covers at least one property from every required_property_group.\nContext forbidden gradual. required groups: rapid, capacity_light. Need two distinct candidates, neither has gradual. Cover rapid and capacity_light collectively. Candidates:\nblue_green: gradual forbidden exclude.\ncanary: gradual exclude.\nrolling: gradual exclude.\nhot_swap: rapid, reversible, capacity_light (ok covers both) \nfeature_flag: rapid, reversible, observability (ok covers rapid)\nbig_bang: rapid, capacity_light (ok covers both)\nNeed any two distinct from ok candidates: hot_swap, feature_flag, big_bang. They collectively cover both if at least one has capacity_light. Any pair among hot_swap and big_bang, or hot_swap+feature_flag (hot_swap has capacity_light), big_bang+feature_flag. Select any. Need basis non-empty array containing current context id for NONDETERMINISTIC. returns basis should be [\"release-deadline-v2\"] perhaps. selected array length 2. explanation short. Ensure JSON object no markdown.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 726,
+      "uncached_input_tokens": 726,
+      "cached_input_tokens": 0,
+      "output_tokens": 343,
+      "reasoning_tokens": 271,
+      "total_tokens": 1069,
+      "raw": [
+        {
+          "input_tokens": 726,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 343,
+          "output_tokens_details": {
+            "reasoning_tokens": 271
+          },
+          "total_tokens": 1069
+        }
+      ]
+    },
+    "error": null
+  }
+}

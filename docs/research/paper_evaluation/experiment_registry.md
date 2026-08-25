@@ -1,6 +1,6 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-25
+> 最后更新：2026-08-26
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
@@ -26,7 +26,7 @@
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（开放 12/12；Context shift 6/6；闭合严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
-| ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 无模型 Gate + 九条零 completion 精确绑定通过 | `protocol-frozen` | [`p1 frozen`](./me_05_nine_model_generality_protocol_p1.md) | 从干净冻结 commit 运行 Stage A 45 cells |
+| ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
 | ME-07 | 公开 Benchmark 外部验证（A: Terminal-Bench；B: Mem2ActBench） | 外部效度 | P1 | Terminal-Bench 前 40 题四臂 `P` | `pilot-complete` | [`ME-07A 结果`](./artifacts/terminal_bench_four_arm_prior_40_20260825/RESULT.md) | 保留 40 题为系统能力 Pilot；ME-07B 完成许可/环境/适配范围审计 |
 | ME-08 | 第二公开 Benchmark | RQ5/RQ6 | P2 | 无 | `planned` | — | ME-07 后选择 |
@@ -58,6 +58,16 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ## 状态更新记录
 
+### 2026-08-26
+
+- ME-05 p1 九模型矩阵完成：来自冻结 commit `38d9d84` 的 Stage A 45 cells 与 Stage B
+  99 cells 共 144/144 完整，无补跑。冻结严格评分 98/144；ME-02 严格程序轨迹 26/36、
+  最终值 32/36，四个未交付均为 Claude Provider safety refusal；ME-03 严格合同 72/108。
+  明确标注为事后诊断的语义选择重评分为 104/108，四个未通过均为空响应/Provider 失败；
+  所有 104 个可解析选择都满足原始可见 Context 合同。该结果支持跨模型机制可执行性，同时
+  显示严格 schema 和程序轨迹仍需要确定性 Runtime 校验。结果与 222 个校验后的原始 JSON
+  见 [`artifacts/me05_nine_model_p1_20260826/RESULT.md`](./artifacts/me05_nine_model_p1_20260826/RESULT.md)；
+
 ### 2026-08-25
 
 - 建立 ME-05 p1 candidate：固定九个模型全部经 `mini-m4.local` CLIProxyAPI、单候选、
@@ -74,8 +84,8 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   独立数据库和目录复用负例 6/6 通过；完整 `morphz-evals` 93 个库测试和 3 个 Harness 测试
   通过，Clippy `-D warnings` 与 diff-check 通过。审计见
   [`me_05_no_model_and_binding_gate_2026_08_25.md`](./me_05_no_model_and_binding_gate_2026_08_25.md)；
-- ME-03 p1.1 真实 Pilot 完成：开放条件 12/12 严格满足类型、候选、数量、Context 依据和
-  语义约束；六个 Base/Intervention 配对 6/6 发生符合预注册合法集合的变化。闭合条件严格
+- ME-03 p1.1 真实 Pilot 完成：非确定性条件 12/12 严格满足类型、候选、数量、Context 依据和
+  语义约束；六个 Base/Intervention 配对 6/6 发生符合预注册合法集合的变化。确定性控制严格
   11/12；唯一失败选择了正确 `canary`，但把数组 `basis` 输出成字符串，按冻结 scorer
   保留失败且不补跑。相同 task/Context 的两次重复选择一致，未观察到重复间多样性；该结果
   支持“契约允许多值、Context 约束选择”，不支持随机性或高熵输出主张。报告见
@@ -85,10 +95,10 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   统筹观察，但各 trial 的 Agent 使用独立空 Context、没有题目记忆。该结果仍不能当作公开
   榜单或显著优越性结论。ME-05 继续只承担核心机制跨模型验证；ME-07B 保留
   Mem2ActBench 作为与跨 Session 记忆更贴近的外部验证；
-- ME-03 p1.1 协议冻结：三个任务的 Base/Intervention 开放合法集合分别为 6/5、3/3、
-  4/5，所有干预前后集合不相交；每个任务的闭合分数最大值唯一。scorer 对全部合法集合
-  正例以及任意文本、未知候选、错误数量、错误 Context 依据和错误闭合值负例均正确判定。
-  首次候选 Gate 后、真实模型调用前发现任务数量措辞与闭合单选冲突，且开放 Prompt 暴露
+- ME-03 p1.1 协议冻结：三个任务的 Base/Intervention 非确定性合法集合分别为 6/5、3/3、
+  4/5，所有干预前后集合不相交；每个任务的确定性分数最大值唯一。scorer 对全部合法集合
+  正例以及任意文本、未知候选、错误数量、错误 Context 依据和错误确定性值负例均正确判定。
+  首次候选 Gate 后、真实模型调用前发现任务数量措辞与确定性单选冲突，且非确定性 Prompt 暴露
   无关 `closed_score`；p1.1 修正后二次 Gate 全部通过。零 completion 精确绑定为
   `gpt-5.6-sol`/max/单候选/no-fallback。报告见
   [`me_03_no_model_gate_2026_08_25.md`](./me_03_no_model_gate_2026_08_25.md)；

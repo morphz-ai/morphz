@@ -1,0 +1,213 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "closed_base",
+  "context_id": "research-landscape-v1",
+  "valid_open_set_count": null,
+  "selected": [
+    "controlled_trial"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: unique max closed_score is controlled_trial (94); context preferences do not apply.\"}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 711,
+      "source": "anthropic-messages-serialized-request-estimate",
+      "model": "claude-opus-5",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 711,
+      "calibration_key": 12585888985724603573,
+      "calibration_shape": 6585425193993932596
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: unique max closed_score is controlled_trial (94); context preferences do not apply.\"}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 1042,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1040,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1040,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1040,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "service_tier": "standard"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "text_delta",
+        "text": "{"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"sel"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ected\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\"contro"
+      },
+      {
+        "kind": "text_delta",
+        "text": "lled_trial\"],\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "bas"
+      },
+      {
+        "kind": "text_delta",
+        "text": "is\":[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "closed-score-rule\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "],\"explanation\":\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Deterministic rule: un"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ique max"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed_score is"
+      },
+      {
+        "kind": "text_delta",
+        "text": " controlled_trial (94"
+      },
+      {
+        "kind": "text_delta",
+        "text": "); context preferences do"
+      },
+      {
+        "kind": "text_delta",
+        "text": " not ap"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ply.\"}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "output_tokens": 71,
+          "raw": [
+            {
+              "cache_creation_input_tokens": 1040,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 71,
+              "output_tokens_details": {
+                "thinking_tokens": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 1042,
+      "uncached_input_tokens": 2,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 1040,
+      "output_tokens": 71,
+      "total_tokens": 1113,
+      "raw": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1040,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 1040,
+          "cache_read_input_tokens": 0,
+          "inference_geo": "not_available",
+          "input_tokens": 2,
+          "output_tokens": 1,
+          "service_tier": "standard"
+        },
+        {
+          "cache_creation_input_tokens": 1040,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 71,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          }
+        }
+      ]
+    },
+    "error": null
+  }
+}

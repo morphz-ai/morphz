@@ -1,0 +1,120 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "nested_fallback",
+  "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+  "success": false,
+  "semantic_success": false,
+  "score": 1,
+  "max_score": 5,
+  "attempts": 1,
+  "prompt_chars": 346,
+  "tool_trace": [],
+  "final_answer": "",
+  "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal",
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": false,
+      "evidence": "missing=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": false,
+      "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": false,
+      "evidence": "violations=[\"probe_endpoint:primary->probe_endpoint:secondary:None->None\", \"probe_endpoint:secondary->probe_endpoint:tertiary:None->None\", \"probe_endpoint:tertiary->verify_endpoint:tertiary:EP-T-5541:None->None\"]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": false,
+      "evidence": "missing=[\"ENDPOINT-VERIFIED-7752\"]; final=\"\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1281,
+        "source": "anthropic-messages-serialized-request-estimate",
+        "model": "claude-opus-5",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1281,
+        "calibration_key": 7243184567710512247,
+        "calibration_shape": 16819325337791764233
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": null,
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2667,
+            "uncached_input_tokens": 2,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 2665,
+            "raw": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 2665,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 2665,
+                "cache_read_input_tokens": 0,
+                "inference_geo": "not_available",
+                "input_tokens": 2,
+                "output_tokens": 0,
+                "service_tier": "standard"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "failed",
+          "message": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2667,
+        "uncached_input_tokens": 2,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 2665,
+        "raw": [
+          {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 2665,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 2665,
+            "cache_read_input_tokens": 0,
+            "inference_geo": "not_available",
+            "input_tokens": 2,
+            "output_tokens": 0,
+            "service_tier": "standard"
+          }
+        ]
+      },
+      "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+    }
+  ]
+}

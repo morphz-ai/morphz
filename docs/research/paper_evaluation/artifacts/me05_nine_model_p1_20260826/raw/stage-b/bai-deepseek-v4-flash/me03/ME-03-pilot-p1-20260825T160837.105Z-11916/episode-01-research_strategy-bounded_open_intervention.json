@@ -1,0 +1,904 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "research-causal-v2",
+  "valid_open_set_count": 5,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "provider-completion",
+      "passed": false,
+      "evidence": "model response contains neither non-empty content nor tool calls"
+    }
+  ],
+  "raw_output": "",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 739,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "bai-deepseek-v4-flash",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 739,
+      "calibration_key": 9195871327111828743,
+      "calibration_shape": 11369313708662499037
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": null,
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are given a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " nondeterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " inference request."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The task is to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select 2 distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates from the list"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " such that no selected candidate has a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden property (secondary) and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the selected set collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers at least one property from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " every required property group"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". The required property groups are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\"depth\"] and [\"primary\"]."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " So we need at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least one candidate with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"depth\" and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at least one candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with \"primary\". And"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no candidate with \"secondary\".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Let's list candidates and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " their properties:\n\n- broad"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_scan: breadth, secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", fast -> has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary -> forbidden\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "- expert_interviews:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth, primary, qualitative ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has primary, no secondary ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed\n- controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_trial: depth, primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", causal -> has depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and primary -> allowed\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "- replication: depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", primary, verification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> has depth and primary ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed\n- dataset"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_audit:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth, secondary, verification ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has secondary -> forbidden\n- field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_observation: breadth, primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", field -> has primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", no secondary ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed\n\nWe need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to select exactly 2 distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates, both must"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " not have secondary. So"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " possible candidates: expert_interviews,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled_trial, replication, field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_observation.\n\nWe need the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected set to collectively cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at least one property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " from each required group:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " we need at least one candidate with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"depth\" and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at least one candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with \"primary\"."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Since we are selecting 2,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " we can choose one candidate that has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both depth and primary ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled_trial or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication) and then any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " other candidate that also has primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (or depth) but must"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ensure the set covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both. Actually, if we choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one candidate with depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and primary, that"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers both depth and primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". So any second"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate from the allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " list would work,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " as long as it"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "'s distinct and not forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". But we must"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " also ensure that the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collective set has at least one property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " from each group."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Since the first candidate already has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both, the second can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " be any allowed candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". However, if"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " we choose two candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " that both have only"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary (expert_interviews"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and field_observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "), then we would have no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth, so that set"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " would not cover depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". So not allowed."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Similarly, if we choose two that"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both have depth and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary, that's fine. Or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one depth+primary and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one primary-only,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " that's fine because"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth is covered by the first.\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "But we need to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select exactly 2."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The rule says \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "select_count\": 2."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " So we need to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " output an array of two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate ids.\n\nN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ondeterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " means we can choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any valid combination. We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need to return one JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object.\n\nLet's verify"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " all possible valid pairs:\n\n- ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled_trial,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication) -> both have"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth and primary, so covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both groups. No forbidden."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Valid.\n- ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled_trial,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " expert_interviews)"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> controlled_trial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has depth and primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", expert_interviews"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has primary. So depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covered by controlled_trial,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary covered by both. Valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n- (controlled_trial,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field_observation) -> similar"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n- (replication, expert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_interviews) -> replication has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth and primary, expert_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views has primary. Valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n- (replication,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field_observation) -> valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n- (expert_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views, field_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "observation) -> both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " have primary but no depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". So depth not covered."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Invalid.\n- (controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_trial, dataset"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_audit)"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> dataset_audit has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary, forbidden. Invalid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n- (re"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "plication, dataset_audit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ") -> invalid.\n- ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "expert_interviews, dataset"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_audit)"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> invalid.\n-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (field_observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", dataset_audit)"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> invalid.\n-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (broad_scan"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", anything) -> broad_scan"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has secondary, forbidden.\n\nSo"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid pairs are those"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " where both candidates are from {ex"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "pert_interviews,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled_trial, replication, field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_observation} and at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least one of them"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has depth. So"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the pairs that include"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " expert_interviews and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field_observation together are invalid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " because neither has depth."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " So the valid pairs are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": (controlled_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial, replication), (controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_trial, expert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_interviews), (controlled_trial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", field_observation),"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (replication,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " expert_interviews),"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (replication,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field_observation)."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Also (expert_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views, controlled_trial) etc"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". but order doesn't matter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\nWe need to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select any one of"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " these valid pairs.\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The context also has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " an id: \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "research-causal-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2\". The instruction"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says: \"Select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any result that satisfies"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the current Context and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the declared contract.\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " So we just pick one.\n\nWe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "'ll return a JSON object with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"selected\" array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " of two ids, \"expl"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "anation\" string, and \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "basis\" which should be \"non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty array containing the current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context id\". Actually"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the returns says: \"basis\":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"non-empty array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containing the current context id for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " NONDETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC, or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed-score-rule for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " DETERMINIST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC_CONTROL\". So for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " NONDETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC, basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " should be a non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty array containing the current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context id. In"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "",
+              "id": "rs_ce6a0b32-c447-44f5-b543-d77781bdf022_0",
+              "summary": [
+                {
+                  "text": "We are given a nondeterministic inference request. The task is to select 2 distinct candidates from the list such that no selected candidate has a forbidden property (secondary) and the selected set collectively covers at least one property from every required property group. The required property groups are [\"depth\"] and [\"primary\"]. So we need at least one candidate with \"depth\" and at least one candidate with \"primary\". And no candidate with \"secondary\".\n\nLet's list candidates and their properties:\n\n- broad_scan: breadth, secondary, fast -> has secondary -> forbidden\n- expert_interviews: breadth, primary, qualitative -> has primary, no secondary -> allowed\n- controlled_trial: depth, primary, causal -> has depth and primary -> allowed\n- replication: depth, primary, verification -> has depth and primary -> allowed\n- dataset_audit: depth, secondary, verification -> has secondary -> forbidden\n- field_observation: breadth, primary, field -> has primary, no secondary -> allowed\n\nWe need to select exactly 2 distinct candidates, both must not have secondary. So possible candidates: expert_interviews, controlled_trial, replication, field_observation.\n\nWe need the selected set to collectively cover at least one property from each required group: we need at least one candidate with \"depth\" and at least one candidate with \"primary\". Since we are selecting 2, we can choose one candidate that has both depth and primary (controlled_trial or replication) and then any other candidate that also has primary (or depth) but must ensure the set covers both. Actually, if we choose one candidate with depth and primary, that covers both depth and primary. So any second candidate from the allowed list would work, as long as it's distinct and not forbidden. But we must also ensure that the collective set has at least one property from each group. Since the first candidate already has both, the second can be any allowed candidate. However, if we choose two candidates that both have only primary (expert_interviews and field_observation), then we would have no depth, so that set would not cover depth. So not allowed. Similarly, if we choose two that both have depth and primary, that's fine. Or one depth+primary and one primary-only, that's fine because depth is covered by the first.\n\nBut we need to select exactly 2. The rule says \"select_count\": 2. So we need to output an array of two candidate ids.\n\nNondeterministic means we can choose any valid combination. We need to return one JSON object.\n\nLet's verify all possible valid pairs:\n\n- (controlled_trial, replication) -> both have depth and primary, so covers both groups. No forbidden. Valid.\n- (controlled_trial, expert_interviews) -> controlled_trial has depth and primary, expert_interviews has primary. So depth covered by controlled_trial, primary covered by both. Valid.\n- (controlled_trial, field_observation) -> similar.\n- (replication, expert_interviews) -> replication has depth and primary, expert_interviews has primary. Valid.\n- (replication, field_observation) -> valid.\n- (expert_interviews, field_observation) -> both have primary but no depth. So depth not covered. Invalid.\n- (controlled_trial, dataset_audit) -> dataset_audit has secondary, forbidden. Invalid.\n- (replication, dataset_audit) -> invalid.\n- (expert_interviews, dataset_audit) -> invalid.\n- (field_observation, dataset_audit) -> invalid.\n- (broad_scan, anything) -> broad_scan has secondary, forbidden.\n\nSo valid pairs are those where both candidates are from {expert_interviews, controlled_trial, replication, field_observation} and at least one of them has depth. So the pairs that include expert_interviews and field_observation together are invalid because neither has depth. So the valid pairs are: (controlled_trial, replication), (controlled_trial, expert_interviews), (controlled_trial, field_observation), (replication, expert_interviews), (replication, field_observation). Also (expert_interviews, controlled_trial) etc. but order doesn't matter.\n\nWe need to select any one of these valid pairs.\n\nThe context also has an id: \"research-causal-v2\". The instruction says: \"Select any result that satisfies the current Context and the declared contract.\" So we just pick one.\n\nWe'll return a JSON object with \"selected\" array of two ids, \"explanation\" string, and \"basis\" which should be \"non-empty array containing the current context id\". Actually the returns says: \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\". So for NONDETERMINISTIC, basis should be a non-empty array containing the current context id. In",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "failed",
+        "message": "model response contains neither non-empty content nor tool calls"
+      }
+    ],
+    "usage": {},
+    "error": "model response contains neither non-empty content nor tool calls"
+  }
+}

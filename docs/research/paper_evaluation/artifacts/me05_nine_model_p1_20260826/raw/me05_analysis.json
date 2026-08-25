@@ -1,0 +1,231 @@
+{
+  "analysis_boundary": "ME-02 strict program execution and ME-03 strict contract scores are frozen primary metrics. ME-03 semantic_selection_passed_post_hoc ignores only output-schema/basis shape and re-evaluates selected candidates against the original visible contract; it is a diagnostic secondary metric, not a replacement scorer.",
+  "me03_failure_classes": {
+    "provider_or_empty_response": 4,
+    "semantic_correct_schema_or_basis_failure": 32
+  },
+  "models": [
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 4
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 8
+      },
+      "model": "gpt-5.6-sol",
+      "usage": {
+        "cached_input_tokens": 6144,
+        "input_tokens": 45231,
+        "output_tokens": 2906,
+        "reasoning_tokens": 1829,
+        "total_tokens": 48137,
+        "uncached_input_tokens": 39087
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 0,
+        "provider_failures": 4,
+        "strict_program_execution_passed": 0
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 10
+      },
+      "model": "claude-opus-5",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 23967,
+        "output_tokens": 4312,
+        "reasoning_tokens": 0,
+        "total_tokens": 17116,
+        "uncached_input_tokens": 32
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 4
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 6
+      },
+      "model": "grok-4.6",
+      "usage": {
+        "cached_input_tokens": 29312,
+        "input_tokens": 61481,
+        "output_tokens": 13539,
+        "reasoning_tokens": 12626,
+        "total_tokens": 75020,
+        "uncached_input_tokens": 32169
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 4
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 12
+      },
+      "model": "gemini-3.7-flash-high",
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 62925,
+        "output_tokens": 1085,
+        "reasoning_tokens": 11376,
+        "total_tokens": 75386,
+        "uncached_input_tokens": 62925
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 3
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 3,
+        "semantic_selection_passed_post_hoc": 9,
+        "strict_contract_passed": 5
+      },
+      "model": "deepseek-v4-pro",
+      "usage": {
+        "cached_input_tokens": 30336,
+        "input_tokens": 42381,
+        "output_tokens": 7746,
+        "reasoning_tokens": 6173,
+        "total_tokens": 50127,
+        "uncached_input_tokens": 12045
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 2
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 1,
+        "semantic_selection_passed_post_hoc": 11,
+        "strict_contract_passed": 6
+      },
+      "model": "bai-deepseek-v4-flash",
+      "usage": {
+        "cached_input_tokens": 22912,
+        "input_tokens": 43318,
+        "output_tokens": 7446,
+        "reasoning_tokens": 4141,
+        "total_tokens": 50764,
+        "uncached_input_tokens": 20406
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 3
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 9
+      },
+      "model": "k3-256k",
+      "usage": {
+        "cached_input_tokens": 22272,
+        "input_tokens": 35038,
+        "output_tokens": 6096,
+        "reasoning_tokens": 4930,
+        "total_tokens": 41134,
+        "uncached_input_tokens": 12766
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 3
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 4
+      },
+      "model": "glm-5.3",
+      "usage": {
+        "cached_input_tokens": 24384,
+        "input_tokens": 35179,
+        "output_tokens": 2241,
+        "reasoning_tokens": 0,
+        "total_tokens": 37420,
+        "uncached_input_tokens": 10795
+      }
+    },
+    {
+      "me02": {
+        "episodes": 4,
+        "final_delivery_passed": 4,
+        "provider_failures": 0,
+        "strict_program_execution_passed": 3
+      },
+      "me03": {
+        "episodes": 12,
+        "provider_or_empty_response_failures": 0,
+        "semantic_selection_passed_post_hoc": 12,
+        "strict_contract_passed": 12
+      },
+      "model": "qwen3.8-max-preview",
+      "usage": {
+        "cached_input_tokens": 19456,
+        "input_tokens": 44166,
+        "output_tokens": 7593,
+        "reasoning_tokens": 5921,
+        "total_tokens": 51759,
+        "uncached_input_tokens": 24710
+      }
+    }
+  ],
+  "primary_strict_score": {
+    "episodes": 144,
+    "passed": 98
+  },
+  "schema": "morphz-me05-analysis-v1",
+  "totals": {
+    "me02_episodes": 36,
+    "me02_final": 32,
+    "me02_provider_failures": 4,
+    "me02_strict": 26,
+    "me03_episodes": 108,
+    "me03_provider_failures": 4,
+    "me03_semantic": 104,
+    "me03_strict": 72
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": 5,
+  "selected": [
+    "preserve_logs",
+    "publish_status"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis incident-accountability-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected non-disruptive actions that collectively provide public transparency and preserve evidence.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 766,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 766,
+      "calibration_key": 3134143820059405623,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected non-disruptive actions that collectively provide public transparency and preserve evidence.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected non-disruptive actions that collectively provide public transparency and preserve evidence.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 909,
+          "uncached_input_tokens": 909,
+          "cached_input_tokens": 0,
+          "output_tokens": 120,
+          "reasoning_tokens": 76,
+          "total_tokens": 1029,
+          "raw": [
+            {
+              "input_tokens": 909,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 120,
+              "output_tokens_details": {
+                "reasoning_tokens": 76
+              },
+              "total_tokens": 1029
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjbxY0KX3edZ5EmXIRlKl0DyiS2DLaaOwIxnIXY_007bvUQLe7fUTTWJPrKMQHLvV1riRUzDITmAPdYKg3gYlWO52vwmoojqxRMP2mBeNeeH1TAfrpKFZbjVs2eJYOuHH5gh5UpIdgUDEo-stuvaMqSaKkc-SAwd-qBZQiPSPWoV3FQnAi1m0i6c2dx-HU0_MA_xH0jHKa2zlvvBNLrFVwGltlF3LtAQSrxeaX1JoXUvpDnRdi8i_K3evwTbWP4RJfhCqbzRWg2vKV16Rfde_nekF5Qp8wu68jOWhD2-RjlD_q1cI1IsisgscxPbnIunOF8vYsvaWBolRyr3iKisGv9bW6hOL_Pd_K01Y2sFdwvQkyl_qfb8IrFRDpZHyGWmzroajdHDvatjrI3SwkbslYjS1vldHKRThKJcHRIVjUmaWrZmq0QOXTM3VcGg6Csj6MZZS3qAliEnk2g6_c_en-oL-cmYLSJL2cM70atTtFAzYbviVXzN8WxdfsXUMzQDJo4u4ADoa577GzS5R4jFfG_1A1XXP7qon-uG04jOYI_5rwU4FC9jokBWpe7sg0asnnMj-1HlLNbl74bQaUwqHkwa1amzQrOHWrL0zi6GVzpysJeavIdHia36hf-UAUpyLcA6VZrSj33D1Q1UH2A0rjpKfS6ad7Q5qNE6TEMaQZmThQy5jcMWw9Pee1AQc0or3jAvTOW_h5ZG3kraobdYCc0VWwuRMJxSneC20sRL6Pl-uFxJTRMnOnZOMlLA583zGEbNW8h8NcV4Ph0NpNJ3m2FQhD_msYtGdYMr_ikjT7kJvOkXIKOOtiXv3DkWPXuCDahKEdvx0XYbXo4L8y0g2OIfqWi41i5KvInk52EWS8aXRNZs5BqekehzJ2N9oKIAy-fyfvhqwD4Wlnr4njgV2ZD8X8nERQt6uuLNPnFRB8knVH3SbfwW5wG2c6GwELVp7B1iZ4tLKyoH4nRtpvX_YQVhwkeHpW838NTOD1C-fCB44WO1qgr9iMKZaMiX4dZ4z63mtxbAfhQBXmKQes7EAlRTUiMI_YQOGpYMxPMBIhtgLgF7HCJ6BIEb3UzqUAtBkIO5E5xfDW2_uguFy11Z_AF1BuQbmAkI927w9EGZw6uIT-234e2TlqXL2y8vbtOt-iSxK6bcaO-ElaWrcwc5lapFRBBbYiyPGxRlEsG0cbSSezLYiISne9-q8fLx__wZ6D_ygNQiwRzDfocN-eY9_jmkfTQGGO7wHYd_IGOn6OoP-qPiGqGf6M4vqP4SHoj7Dx012ptVpBmGNfXn6ei9ts-Ga42CylnexDXEAcvVVpWmERxOoI8mv0NhZfUCtYgEEM0gtHMwaz0OXlYbFpooScy9qDTY80DlUvBkxV1Jqrc6shF2FqwT-OkOusOx35WyYYaKUpVVJm7Rz7JEE42DKyHzVziUzOP9An1YHdchWlByyi5NsfMvrveX4ol6PidNNEG8GbCabgys0rVlwKb3Si3gqN1AdkEMdOWLOwdpqTH1YgAVSCHe7j-kvhtR9ntux0gv7PfBWrMc4KWVk0fvC6KvcphzLYQNq5tLg62ek5vpeBANzgBY193cHLKXD3gc477Jes0lIl4JYs-uU3JEh-nwqqNIDJEb4kN83zRZZSwAGtSKY_-QHArDiyv3Bj5HDGdNMqK9TfqpV0xrRqdU1jtRzkqt1-5L9S9XRnieCnIo82lLPBawaXGb8k4FCqZU2CCfk5u025q7_gyO3DWVhqzKAPIXkslOmxXBtNffqzQ3J3u5ija92CGszBJNRkYeJA4JG_JTat1pUEB0iqNU9gDCEaImZXVB5BdLGGSv5bp7E7WJnrz-P0e81ke2wRgiBFCQy52iPXpUv4BGFJce13RqtAQ==",
+              "id": "rs_094e70e00410d44a016a8dbc58445087d0875fdd7ec6d140e2",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 909,
+      "uncached_input_tokens": 909,
+      "cached_input_tokens": 0,
+      "output_tokens": 120,
+      "reasoning_tokens": 76,
+      "total_tokens": 1029,
+      "raw": [
+        {
+          "input_tokens": 909,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 120,
+          "output_tokens_details": {
+            "reasoning_tokens": 76
+          },
+          "total_tokens": 1029
+        }
+      ]
+    },
+    "error": null
+  }
+}

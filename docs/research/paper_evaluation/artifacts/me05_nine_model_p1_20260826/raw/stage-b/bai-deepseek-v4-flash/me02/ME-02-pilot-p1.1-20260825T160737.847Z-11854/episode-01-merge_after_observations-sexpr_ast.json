@@ -1,0 +1,1905 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "merge_after_observations",
+  "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 335,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "alpha"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-A-1937"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "beta"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-B-7391"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "merge_records",
+      "arguments": {
+        "alpha": "REC-A-1937",
+        "beta": "REC-B-7391"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "MERGED-AB-4472"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_merge",
+      "arguments": {
+        "receipt": "MERGED-AB-4472"
+      },
+      "output": {
+        "delivery_token": "MERGE-VERIFIED-5208",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "MERGE-VERIFIED-5208",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"MERGE-VERIFIED-5208\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1395,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1395,
+        "calibration_key": 4914360455351410913,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_00_3dsZ4rqN6E419zlgK1Kk9575",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"alpha\"}"
+          },
+          {
+            "id": "call_01_NddmmdLRHgI2EYFFllhn6291",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"beta\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " start"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " executing"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " by"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "First"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " evaluate"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " SEQ"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " children"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " from"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IND"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "=\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " This"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " an"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IND"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "=\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " This"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " also"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " them"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " parallel"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " do"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " that"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_00_3dsZ4rqN6E419zlgK1Kk9575",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "alpha"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_01_NddmmdLRHgI2EYFFllhn6291",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "beta"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1613,
+            "uncached_input_tokens": 205,
+            "cached_input_tokens": 1408,
+            "output_tokens": 156,
+            "reasoning_tokens": 82,
+            "total_tokens": 1769,
+            "raw": [
+              {
+                "input_tokens": 1613,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 156,
+                "output_tokens_details": {
+                  "reasoning_tokens": 82
+                },
+                "total_tokens": 1769
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_f519a2c8-5f68-4643-b90c-735e8e76e5b8_0",
+                "summary": [
+                  {
+                    "text": "Let me start executing the program step by step.\n\nFirst, I need to evaluate the SEQ children from left to right.\n\nStep 1: BIND alpha = CALL fetch_record(name=\"alpha\"). This is an independent call.\nStep 2: BIND beta = CALL fetch_record(name=\"beta\"). This is also independent.\n\nBoth are independent, so I can call them in parallel.\n\nLet me do that.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1613,
+        "uncached_input_tokens": 205,
+        "cached_input_tokens": 1408,
+        "output_tokens": 156,
+        "reasoning_tokens": 82,
+        "total_tokens": 1769,
+        "raw": [
+          {
+            "input_tokens": 1613,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 156,
+            "output_tokens_details": {
+              "reasoning_tokens": 82
+            },
+            "total_tokens": 1769
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1641,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1641,
+        "calibration_key": 12089808115630089339,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_f519a2c8-5f68-4643-b90c-735e8e76e5b8_0\",\"summary\":[{\"text\":\"Let me start executing the program step by step.\\n\\nFirst, I need to evaluate the SEQ children from left to right.\\n\\nStep 1: BIND alpha = CALL fetch_record(name=\\\"alpha\\\"). This is an independent call.\\nStep 2: BIND beta = CALL fetch_record(name=\\\"beta\\\"). This is also independent.\\n\\nBoth are independent, so I can call them in parallel.\\n\\nLet me do that.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_3dsZ4rqN6E419zlgK1Kk9575",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_01_NddmmdLRHgI2EYFFllhn6291",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_00_3dsZ4rqN6E419zlgK1Kk9575"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_01_NddmmdLRHgI2EYFFllhn6291"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_00_vQ99bNimj00nYUJI8YB62921",
+            "type": "function",
+            "func_name": "merge_records",
+            "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-A"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "193"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "7"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "739"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IND"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merged"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_rec"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ords"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-A"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "193"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "7"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "739"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " These"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " dependent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " prior"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " results"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_00_vQ99bNimj00nYUJI8YB62921",
+          "name": "merge_records"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "alpha"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-A"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "193"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "7"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "beta"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-B"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "739"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1815,
+            "uncached_input_tokens": 151,
+            "cached_input_tokens": 1664,
+            "output_tokens": 123,
+            "reasoning_tokens": 54,
+            "total_tokens": 1938,
+            "raw": [
+              {
+                "input_tokens": 1815,
+                "input_tokens_details": {
+                  "cached_tokens": 1664
+                },
+                "output_tokens": 123,
+                "output_tokens_details": {
+                  "reasoning_tokens": 54
+                },
+                "total_tokens": 1938
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_809f8234-5e04-45b6-b6e1-13de79530f0c_0",
+                "summary": [
+                  {
+                    "text": "alpha token = REC-A-1937\nbeta token = REC-B-7391\n\nStep 3: BIND merged = CALL merge_records(alpha=REC-A-1937, beta=REC-B-7391). These are dependent on prior results.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1815,
+        "uncached_input_tokens": 151,
+        "cached_input_tokens": 1664,
+        "output_tokens": 123,
+        "reasoning_tokens": 54,
+        "total_tokens": 1938,
+        "raw": [
+          {
+            "input_tokens": 1815,
+            "input_tokens_details": {
+              "cached_tokens": 1664
+            },
+            "output_tokens": 123,
+            "output_tokens_details": {
+              "reasoning_tokens": 54
+            },
+            "total_tokens": 1938
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1786,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1786,
+        "calibration_key": 7504504597995910781,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_f519a2c8-5f68-4643-b90c-735e8e76e5b8_0\",\"summary\":[{\"text\":\"Let me start executing the program step by step.\\n\\nFirst, I need to evaluate the SEQ children from left to right.\\n\\nStep 1: BIND alpha = CALL fetch_record(name=\\\"alpha\\\"). This is an independent call.\\nStep 2: BIND beta = CALL fetch_record(name=\\\"beta\\\"). This is also independent.\\n\\nBoth are independent, so I can call them in parallel.\\n\\nLet me do that.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_3dsZ4rqN6E419zlgK1Kk9575",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_01_NddmmdLRHgI2EYFFllhn6291",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_00_3dsZ4rqN6E419zlgK1Kk9575"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_01_NddmmdLRHgI2EYFFllhn6291"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_809f8234-5e04-45b6-b6e1-13de79530f0c_0\",\"summary\":[{\"text\":\"alpha token = REC-A-1937\\nbeta token = REC-B-7391\\n\\nStep 3: BIND merged = CALL merge_records(alpha=REC-A-1937, beta=REC-B-7391). These are dependent on prior results.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_vQ99bNimj00nYUJI8YB62921",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_00_vQ99bNimj00nYUJI8YB62921"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_00_auPDijAAwh6bmO6NXoED3407",
+            "type": "function",
+            "func_name": "verify_merge",
+            "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "merged"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " MER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "G"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "AB"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "447"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IND"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(re"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ce"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "=M"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ERG"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "AB"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "447"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_00_auPDijAAwh6bmO6NXoED3407",
+          "name": "verify_merge"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "rece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "ipt"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "M"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "ERG"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "ED"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "AB"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "447"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1967,
+            "uncached_input_tokens": 47,
+            "cached_input_tokens": 1920,
+            "output_tokens": 89,
+            "reasoning_tokens": 36,
+            "total_tokens": 2056,
+            "raw": [
+              {
+                "input_tokens": 1967,
+                "input_tokens_details": {
+                  "cached_tokens": 1920
+                },
+                "output_tokens": 89,
+                "output_tokens_details": {
+                  "reasoning_tokens": 36
+                },
+                "total_tokens": 2056
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_e2983cc9-3e25-49f3-b296-a8fdaa595ee2_0",
+                "summary": [
+                  {
+                    "text": "merged receipt = MERGED-AB-4472\n\nStep 4: BIND verified = CALL verify_merge(receipt=MERGED-AB-4472).",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1967,
+        "uncached_input_tokens": 47,
+        "cached_input_tokens": 1920,
+        "output_tokens": 89,
+        "reasoning_tokens": 36,
+        "total_tokens": 2056,
+        "raw": [
+          {
+            "input_tokens": 1967,
+            "input_tokens_details": {
+              "cached_tokens": 1920
+            },
+            "output_tokens": 89,
+            "output_tokens_details": {
+              "reasoning_tokens": 36
+            },
+            "total_tokens": 2056
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 1911,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1911,
+        "calibration_key": 2338445287736529442,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_f519a2c8-5f68-4643-b90c-735e8e76e5b8_0\",\"summary\":[{\"text\":\"Let me start executing the program step by step.\\n\\nFirst, I need to evaluate the SEQ children from left to right.\\n\\nStep 1: BIND alpha = CALL fetch_record(name=\\\"alpha\\\"). This is an independent call.\\nStep 2: BIND beta = CALL fetch_record(name=\\\"beta\\\"). This is also independent.\\n\\nBoth are independent, so I can call them in parallel.\\n\\nLet me do that.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_3dsZ4rqN6E419zlgK1Kk9575",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_01_NddmmdLRHgI2EYFFllhn6291",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_00_3dsZ4rqN6E419zlgK1Kk9575"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_01_NddmmdLRHgI2EYFFllhn6291"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_809f8234-5e04-45b6-b6e1-13de79530f0c_0\",\"summary\":[{\"text\":\"alpha token = REC-A-1937\\nbeta token = REC-B-7391\\n\\nStep 3: BIND merged = CALL merge_records(alpha=REC-A-1937, beta=REC-B-7391). These are dependent on prior results.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_vQ99bNimj00nYUJI8YB62921",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_00_vQ99bNimj00nYUJI8YB62921"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_e2983cc9-3e25-49f3-b296-a8fdaa595ee2_0\",\"summary\":[{\"text\":\"merged receipt = MERGED-AB-4472\\n\\nStep 4: BIND verified = CALL verify_merge(receipt=MERGED-AB-4472).\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_auPDijAAwh6bmO6NXoED3407",
+              "type": "function",
+              "function": {
+                "name": "verify_merge",
+                "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"MERGE-VERIFIED-5208\",\"ok\":true}",
+          "name": "verify_merge",
+          "tool_call_id": "call_00_auPDijAAwh6bmO6NXoED3407"
+        }
+      ],
+      "response": {
+        "content": "MERGE-VERIFIED-5208",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " MER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "GE"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "520"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "8"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "5"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " MER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "GE"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "520"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "8"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "MER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "GE"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "520"
+        },
+        {
+          "kind": "text_delta",
+          "text": "8"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2085,
+            "uncached_input_tokens": 37,
+            "cached_input_tokens": 2048,
+            "output_tokens": 42,
+            "reasoning_tokens": 33,
+            "total_tokens": 2127,
+            "raw": [
+              {
+                "input_tokens": 2085,
+                "input_tokens_details": {
+                  "cached_tokens": 2048
+                },
+                "output_tokens": 42,
+                "output_tokens_details": {
+                  "reasoning_tokens": 33
+                },
+                "total_tokens": 2127
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_44ed7850-c5bd-49d1-ae38-6d0ef11874a3_0",
+                "summary": [
+                  {
+                    "text": "verified delivery_token = MERGE-VERIFIED-5208\n\nStep 5: REPLY (ref verified delivery_token) = MERGE-VERIFIED-5208",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2085,
+        "uncached_input_tokens": 37,
+        "cached_input_tokens": 2048,
+        "output_tokens": 42,
+        "reasoning_tokens": 33,
+        "total_tokens": 2127,
+        "raw": [
+          {
+            "input_tokens": 2085,
+            "input_tokens_details": {
+              "cached_tokens": 2048
+            },
+            "output_tokens": 42,
+            "output_tokens_details": {
+              "reasoning_tokens": 33
+            },
+            "total_tokens": 2127
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

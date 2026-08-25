@@ -1,0 +1,1389 @@
+{
+  "id": "ME-03-pilot-p1-20260825T160510.922Z-11599",
+  "created_at": "2026-08-25T16:05:49.534293+00:00",
+  "model": "claude-opus-5",
+  "provider": "custom",
+  "protocol": "anthropic-messages",
+  "immutable_binding": {
+    "requested_alias": "claude-opus-5",
+    "route_id": "claude-opus-5",
+    "route_revision": "sha256:a365836a2902197e02a3f2dff333ead6b66a266802e61ce195b776fac15acd1b",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "claude-opus-5",
+    "protocol": "anthropic-messages",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-b/claude-opus-5/me03/ME-03-pilot-p1-20260825T160510.922Z-11599",
+  "summaries": {
+    "bounded_open_base": {
+      "episodes": 2,
+      "passed": 2,
+      "pass_rate": 1.0,
+      "observed_unique_selections": 2
+    },
+    "bounded_open_intervention": {
+      "episodes": 2,
+      "passed": 2,
+      "pass_rate": 1.0,
+      "observed_unique_selections": 2
+    },
+    "closed_base": {
+      "episodes": 2,
+      "passed": 1,
+      "pass_rate": 0.5,
+      "observed_unique_selections": 1
+    },
+    "closed_intervention": {
+      "episodes": 2,
+      "passed": 2,
+      "pass_rate": 1.0,
+      "observed_unique_selections": 2
+    }
+  },
+  "task_analysis": [
+    {
+      "task": "release_strategy",
+      "base_valid_set_count": 3,
+      "intervention_valid_set_count": 3,
+      "observed_open_base_unique": 1,
+      "observed_open_intervention_unique": 1,
+      "paired_context_shift_passed": 1,
+      "paired_context_shift_total": 1,
+      "paired_closed_invariance_passed": 0,
+      "paired_closed_invariance_total": 1
+    },
+    {
+      "task": "research_strategy",
+      "base_valid_set_count": 4,
+      "intervention_valid_set_count": 5,
+      "observed_open_base_unique": 1,
+      "observed_open_intervention_unique": 1,
+      "paired_context_shift_passed": 1,
+      "paired_context_shift_total": 1,
+      "paired_closed_invariance_passed": 1,
+      "paired_closed_invariance_total": 1
+    }
+  ],
+  "episodes": [
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "bounded_open_base",
+      "context_id": "release-risk-control-v1",
+      "valid_open_set_count": 3,
+      "selected": [
+        "canary",
+        "rolling"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"canary\", \"rolling\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"canary\", \"rolling\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis release-risk-control-v1"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"selected\":[\"canary\",\"rolling\"],\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Both are non-rapid; canary supplies reversible and both supply gradual, so all required groups are covered by two distinct candidates. Other admissible pairs exist; this is one valid result, not a unique optimum.\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 734,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 734,
+          "calibration_key": 17184760836650368755,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"selected\":[\"canary\",\"rolling\"],\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Both are non-rapid; canary supplies reversible and both supply gradual, so all required groups are covered by two distinct candidates. Other admissible pairs exist; this is one valid result, not a unique optimum.\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1077,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1075,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1075,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1075,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 5,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"selected\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": "[\"canary\",\"rolling\"],\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Both are non-rapid; canary supplies reversible and both supply gradual, so all required groups are covered by two distinct candidates. Other adm"
+          },
+          {
+            "kind": "text_delta",
+            "text": "issible pairs exist; this is one valid result, not a unique optimum.\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 377,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1075,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 377,
+                  "output_tokens_details": {
+                    "thinking_tokens": 270
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1077,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1075,
+          "output_tokens": 377,
+          "total_tokens": 1454,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1075,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1075,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 5,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1075,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 377,
+              "output_tokens_details": {
+                "thinking_tokens": 270
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "bounded_open_intervention",
+      "context_id": "release-deadline-v2",
+      "valid_open_set_count": 3,
+      "selected": [
+        "feature_flag",
+        "hot_swap"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis release-deadline-v2"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\n  \"selected\": [\"hot_swap\", \"feature_flag\"],\n  \"basis\": [\"release-deadline-v2\"],\n  \"explanation\": \"Both are rapid and non-gradual; hot_swap supplies capacity_light, so the pair covers every required group. Other valid pairs exist; this is one admissible result.\"\n}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 739,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 739,
+          "calibration_key": 3625135890451326874,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\n  \"selected\": [\"hot_swap\", \"feature_flag\"],\n  \"basis\": [\"release-deadline-v2\"],\n  \"explanation\": \"Both are rapid and non-gradual; hot_swap supplies capacity_light, so the pair covers every required group. Other valid pairs exist; this is one admissible result.\"\n}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1085,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1083,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1083,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1083,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 2,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\n  \"selected\": [\"hot_swap\", \"feature_flag\"],\n  \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis\": [\"release-deadline-v2\"],\n  \"explanation\": \"Both are rapid and non-gradual; hot_swap supplies capacity_light, so the pair covers every required group. Other valid pairs exist; this is one adm"
+          },
+          {
+            "kind": "text_delta",
+            "text": "issible result.\"\n}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 417,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1083,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 417,
+                  "output_tokens_details": {
+                    "thinking_tokens": 309
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1085,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1083,
+          "output_tokens": 417,
+          "total_tokens": 1502,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1083,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1083,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 2,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1083,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 417,
+              "output_tokens_details": {
+                "thinking_tokens": 309
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "closed_base",
+      "context_id": "release-risk-control-v1",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: unknown field `kind`, expected one of `selected`, `basis`, `explanation` at line 1 column 7"
+        }
+      ],
+      "raw_output": "{\"kind\":\"DETERMINISTIC_CONTROL\",\"selected\":[\"canary\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule applied: ignoring the context's gradual/reversible/rapid preferences, canary holds the unique maximum closed_score (91 > 89 feature_flag > 85 hot_swap > 82 blue_green > 76 rolling > 58 big_bang).\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 709,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 709,
+          "calibration_key": 9086375905433535808,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"kind\":\"DETERMINISTIC_CONTROL\",\"selected\":[\"canary\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule applied: ignoring the context's gradual/reversible/rapid preferences, canary holds the unique maximum closed_score (91 > 89 feature_flag > 85 hot_swap > 82 blue_green > 76 rolling > 58 big_bang).\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1062,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1060,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1060,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1060,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 3,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"k"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ind\":\"DETERMINISTIC_CONTROL\",\"selected\":[\"canary\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule applied: ignoring the context's gradual/reversible/rapid preferences, canary hol"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ds the unique maximum closed_score (91 > 89 feature_flag > 85 hot_swap > 82 blue_green > 76 rolling > 58 big_bang).\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 288,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1060,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 288,
+                  "output_tokens_details": {
+                    "thinking_tokens": 143
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1062,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1060,
+          "output_tokens": 288,
+          "total_tokens": 1350,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1060,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1060,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 3,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1060,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 288,
+              "output_tokens_details": {
+                "thinking_tokens": 143
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "closed_intervention",
+      "context_id": "release-deadline-v2",
+      "valid_open_set_count": null,
+      "selected": [
+        "canary"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 1, got 1"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"canary\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"canary\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis closed-score-rule"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"selected\":[\"canary\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule applied: ignoring the context's property filters, canary holds the unique greatest closed_score (91) among all candidates.\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 714,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 714,
+          "calibration_key": 2705991523942840873,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"selected\":[\"canary\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule applied: ignoring the context's property filters, canary holds the unique greatest closed_score (91) among all candidates.\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1068,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1066,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1066,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1066,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 2,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"selected\":[\"canary\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule applied: ignoring the context's property filters, canary holds the unique greatest closed_score (91) among"
+          },
+          {
+            "kind": "text_delta",
+            "text": " all candidates.\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 226,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1066,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 226,
+                  "output_tokens_details": {
+                    "thinking_tokens": 149
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1068,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1066,
+          "output_tokens": 226,
+          "total_tokens": 1294,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1066,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1066,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 2,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1066,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 226,
+              "output_tokens_details": {
+                "thinking_tokens": 149
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "bounded_open_intervention",
+      "context_id": "research-causal-v2",
+      "valid_open_set_count": 5,
+      "selected": [
+        "controlled_trial",
+        "replication"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis research-causal-v2"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"selected\":[\"controlled_trial\",\"replication\"],\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both are primary and depth, neither is secondary; the pair covers every required group and fits causal validation. Other valid pairs exist; no unique optimum was sought.\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 738,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 738,
+          "calibration_key": 11784375987641197385,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"selected\":[\"controlled_trial\",\"replication\"],\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both are primary and depth, neither is secondary; the pair covers every required group and fits causal validation. Other valid pairs exist; no unique optimum was sought.\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1057,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1055,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1055,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1055,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 2,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"selected\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": "[\"controlled_trial\",\"replication\"],\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both are primary and depth, neither is secondary; the pair covers every required group and fits caus"
+          },
+          {
+            "kind": "text_delta",
+            "text": "al validation. Other valid pairs exist; no unique optimum was sought.\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 382,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1055,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 382,
+                  "output_tokens_details": {
+                    "thinking_tokens": 290
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1057,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1055,
+          "output_tokens": 382,
+          "total_tokens": 1439,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1055,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1055,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 2,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1055,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 382,
+              "output_tokens_details": {
+                "thinking_tokens": 290
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "closed_base",
+      "context_id": "research-landscape-v1",
+      "valid_open_set_count": null,
+      "selected": [
+        "controlled_trial"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 1, got 1"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis closed-score-rule"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: unique max closed_score is controlled_trial (94); context preferences do not apply.\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 711,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 711,
+          "calibration_key": 12585888985724603573,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: unique max closed_score is controlled_trial (94); context preferences do not apply.\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1042,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1040,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1040,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1040,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 1,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"sel"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ected\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": "[\"contro"
+          },
+          {
+            "kind": "text_delta",
+            "text": "lled_trial\"],\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "bas"
+          },
+          {
+            "kind": "text_delta",
+            "text": "is\":[\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "closed-score-rule\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "],\"explanation\":\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "Deterministic rule: un"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ique max"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed_score is"
+          },
+          {
+            "kind": "text_delta",
+            "text": " controlled_trial (94"
+          },
+          {
+            "kind": "text_delta",
+            "text": "); context preferences do"
+          },
+          {
+            "kind": "text_delta",
+            "text": " not ap"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ply.\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 71,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1040,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 71,
+                  "output_tokens_details": {
+                    "thinking_tokens": 0
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1042,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1040,
+          "output_tokens": 71,
+          "total_tokens": 1113,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1040,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1040,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 1,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1040,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 71,
+              "output_tokens_details": {
+                "thinking_tokens": 0
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "closed_intervention",
+      "context_id": "research-causal-v2",
+      "valid_open_set_count": null,
+      "selected": [
+        "controlled_trial"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 1, got 1"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis closed-score-rule"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: highest closed_score is controlled_trial at 94, uniquely greater than replication (90); context property filters were not applied.\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 714,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 714,
+          "calibration_key": 11416995159256396239,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: highest closed_score is controlled_trial at 94, uniquely greater than replication (90); context property filters were not applied.\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1044,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1042,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1042,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1042,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 2,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\"selected\":[\"controlled_trial\"],\"basis\":[\"closed-score-rule\"],\"explanation\":\"Deterministic rule: highest closed_score is controlled_trial at"
+          },
+          {
+            "kind": "text_delta",
+            "text": " 94, uniquely greater than replication (90); context property filters were not applied.\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 291,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1042,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 291,
+                  "output_tokens_details": {
+                    "thinking_tokens": 208
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1044,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1042,
+          "output_tokens": 291,
+          "total_tokens": 1335,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1042,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1042,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 2,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1042,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 291,
+              "output_tokens_details": {
+                "thinking_tokens": 208
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "bounded_open_base",
+      "context_id": "research-landscape-v1",
+      "valid_open_set_count": 4,
+      "selected": [
+        "broad_scan",
+        "expert_interviews"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis research-landscape-v1"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\n  \"selected\": [\"broad_scan\", \"expert_interviews\"],\n  \"basis\": [\"research-landscape-v1\"],\n  \"explanation\": \"broad_scan is the only 'fast' candidate and also supplies 'breadth'; expert_interviews is a valid non-causal second pick that reinforces breadth. controlled_trial is excluded as forbidden 'causal'. Other pairings would also satisfy the contract; this one fits the landscape-mapping context.\"\n}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 735,
+          "source": "anthropic-messages-serialized-request-estimate",
+          "model": "claude-opus-5",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 735,
+          "calibration_key": 15095341640001421983,
+          "calibration_shape": 6585425193993932596
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\n  \"selected\": [\"broad_scan\", \"expert_interviews\"],\n  \"basis\": [\"research-landscape-v1\"],\n  \"explanation\": \"broad_scan is the only 'fast' candidate and also supplies 'breadth'; expert_interviews is a valid non-causal second pick that reinforces breadth. controlled_trial is excluded as forbidden 'causal'. Other pairings would also satisfy the contract; this one fits the landscape-mapping context.\"\n}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 1055,
+              "uncached_input_tokens": 2,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 1053,
+              "raw": [
+                {
+                  "cache_creation": {
+                    "ephemeral_1h_input_tokens": 1053,
+                    "ephemeral_5m_input_tokens": 0
+                  },
+                  "cache_creation_input_tokens": 1053,
+                  "cache_read_input_tokens": 0,
+                  "inference_geo": "not_available",
+                  "input_tokens": 2,
+                  "output_tokens": 2,
+                  "service_tier": "standard"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\n  \"selected\": [\"broad_scan\", \"expert_interviews\"],\n  \"basis\": [\"research-landscape-v1\"],\n  \"explanation\": \"bro"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ad_scan is the only 'fast' candidate and also supplies 'breadth'; expert_interviews is a valid non-causal second pick that reinforces breadth. controlled_trial is excluded as forbidden '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "causal'. Other pairings would also satisfy the contract; this one fits the landscape-mapping context.\"\n}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "output_tokens": 458,
+              "raw": [
+                {
+                  "cache_creation_input_tokens": 1053,
+                  "cache_read_input_tokens": 0,
+                  "input_tokens": 2,
+                  "output_tokens": 458,
+                  "output_tokens_details": {
+                    "thinking_tokens": 300
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 1055,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1053,
+          "output_tokens": 458,
+          "total_tokens": 1513,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1053,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1053,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 2,
+              "service_tier": "standard"
+            },
+            {
+              "cache_creation_input_tokens": 1053,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 458,
+              "output_tokens_details": {
+                "thinking_tokens": 300
+              }
+            }
+          ]
+        },
+        "error": null
+      }
+    }
+  ],
+  "conclusion_boundary": "ME-03 p1 tests nondeterministic cognitive evaluation contract validity, Context intervention sensitivity and deterministic-control invariance. Diversity is descriptive and is not induced through temperature. This Pilot does not establish cross-model generality, S-expression superiority, long-context advantage or Runtime authority guarantees."
+}

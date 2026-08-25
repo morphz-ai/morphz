@@ -1,0 +1,501 @@
+{
+  "config": "/Users/shafreeck/Codes/Morphz-paper-evals/docs/research/paper_evaluation/config/me05_nine_model_cliproxyapi.toml",
+  "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+  "credential": "MORPHZ_PROVIDER_API_KEY resolved by Morphz host environment; value intentionally not recorded",
+  "failures": [],
+  "integrity_passed": true,
+  "max_concurrency": 3,
+  "models": [
+    "gpt-5.6-sol",
+    "claude-opus-5",
+    "grok-4.6",
+    "gemini-3.7-flash-high",
+    "deepseek-v4-pro",
+    "bai-deepseek-v4-flash",
+    "k3-256k",
+    "glm-5.3",
+    "qwen3.8-max-preview"
+  ],
+  "repository": "/Users/shafreeck/Codes/Morphz-paper-evals",
+  "results": [
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/gpt-5.6-sol/me02/ME-02-pilot-p1.1-20260825T160502.604Z-11572/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 3,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/gpt-5.6-sol/me02/ME-02-pilot-p1.1-20260825T160502.604Z-11572/report.json",
+            "report_sha256": "a296ab272ace4f737fab3ffd59b3415a7033b6df78b12eb3aa3e641221771482"
+          },
+          "model": "gpt-5.6-sol",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/gpt-5.6-sol/me03/ME-03-pilot-p1-20260825T160641.211Z-11787/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 5,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/gpt-5.6-sol/me03/ME-03-pilot-p1-20260825T160641.211Z-11787/report.json",
+            "report_sha256": "e8114d922a43d7a2ebd3e292521065ea455e5cf9e59ed1f0dc0d6af1079102c9"
+          },
+          "model": "gpt-5.6-sol",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/claude-opus-5/me02/ME-02-pilot-p1.1-20260825T160502.605Z-11574/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 0,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/claude-opus-5/me02/ME-02-pilot-p1.1-20260825T160502.605Z-11574/report.json",
+            "report_sha256": "ebb0d4be885ff6beb52128301c37597cd05f5d57e7d0ae901b1b6f7e90279d64"
+          },
+          "model": "claude-opus-5",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/claude-opus-5/me03/ME-03-pilot-p1-20260825T160510.922Z-11599/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 7,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/claude-opus-5/me03/ME-03-pilot-p1-20260825T160510.922Z-11599/report.json",
+            "report_sha256": "f0ce046a70d0f4154a24a1b545a56eb8faf04d54e120ef28d243d6ba4cccbdca"
+          },
+          "model": "claude-opus-5",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "claude-opus-5"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/grok-4.6/me02/ME-02-pilot-p1.1-20260825T160502.605Z-11573/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 3,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/grok-4.6/me02/ME-02-pilot-p1.1-20260825T160502.605Z-11573/report.json",
+            "report_sha256": "050b5ff5450e4e09338443f0c00be210c77cce844c81da34e36277793d86cda6"
+          },
+          "model": "grok-4.6",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/grok-4.6/me03/ME-03-pilot-p1-20260825T160546.425Z-11638/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 4,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/grok-4.6/me03/ME-03-pilot-p1-20260825T160546.425Z-11638/report.json",
+            "report_sha256": "2df0efa364c9180bf04461edec1965b5b373f466211d36e74d1b3c0e5585b463"
+          },
+          "model": "grok-4.6",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "grok-4.6"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/gemini-3.7-flash-high/me02/ME-02-pilot-p1.1-20260825T160549.601Z-11647/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 3,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/gemini-3.7-flash-high/me02/ME-02-pilot-p1.1-20260825T160549.601Z-11647/report.json",
+            "report_sha256": "412a7cee57eda791853f3cf975331c7acce02a680478b8623a3230047e680455"
+          },
+          "model": "gemini-3.7-flash-high",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/gemini-3.7-flash-high/me03/ME-03-pilot-p1-20260825T160728.207Z-11845/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 8,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/gemini-3.7-flash-high/me03/ME-03-pilot-p1-20260825T160728.207Z-11845/report.json",
+            "report_sha256": "ea907bfa6f569206c2535d216320384cc0b5e86c6201b5ee14166e3fcae66095"
+          },
+          "model": "gemini-3.7-flash-high",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "gemini-3.7-flash-high"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/deepseek-v4-pro/me02/ME-02-pilot-p1.1-20260825T160726.901Z-11837/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 2,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/deepseek-v4-pro/me02/ME-02-pilot-p1.1-20260825T160726.901Z-11837/report.json",
+            "report_sha256": "2fae862c8d2d66a98a4c0e9af9e3fa4b8b5f8d5841274f54fd71bdb0d7381b6f"
+          },
+          "model": "deepseek-v4-pro",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/deepseek-v4-pro/me03/ME-03-pilot-p1-20260825T160802.365Z-11888/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 3,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/deepseek-v4-pro/me03/ME-03-pilot-p1-20260825T160802.365Z-11888/report.json",
+            "report_sha256": "0304652674e3c3e3a00089250241427bb822d0f5c5bc67fad2c702a78d0db376"
+          },
+          "model": "deepseek-v4-pro",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "deepseek-v4-pro"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/bai-deepseek-v4-flash/me02/ME-02-pilot-p1.1-20260825T160737.847Z-11854/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 2,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/bai-deepseek-v4-flash/me02/ME-02-pilot-p1.1-20260825T160737.847Z-11854/report.json",
+            "report_sha256": "8b7a9ed4a65d2072f87e1308709923c0891b09458723dc897adf86613f348e2e"
+          },
+          "model": "bai-deepseek-v4-flash",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/bai-deepseek-v4-flash/me03/ME-03-pilot-p1-20260825T160837.105Z-11916/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 3,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/bai-deepseek-v4-flash/me03/ME-03-pilot-p1-20260825T160837.105Z-11916/report.json",
+            "report_sha256": "2b39775da15fc9f9dd4c082ce0ea1d1861413ac67e552b52b9b565d629f1014d"
+          },
+          "model": "bai-deepseek-v4-flash",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "bai-deepseek-v4-flash"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/k3-256k/me02/ME-02-pilot-p1.1-20260825T160802.195Z-11880/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 2,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/k3-256k/me02/ME-02-pilot-p1.1-20260825T160802.195Z-11880/report.json",
+            "report_sha256": "c683c6afd1dc0d4dfc28ba00d90f527a142f5c64bebee39f70314f7bb579c7c4"
+          },
+          "model": "k3-256k",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/k3-256k/me03/ME-03-pilot-p1-20260825T161308.956Z-12206/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 6,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/k3-256k/me03/ME-03-pilot-p1-20260825T161308.956Z-12206/report.json",
+            "report_sha256": "3a1647484315ccb4b92ca2a14513661a50eb14e47cb16d5cd56c97e5b1f29136"
+          },
+          "model": "k3-256k",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "k3-256k"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/glm-5.3/me02/ME-02-pilot-p1.1-20260825T160925.594Z-11964/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 2,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/glm-5.3/me02/ME-02-pilot-p1.1-20260825T160925.594Z-11964/report.json",
+            "report_sha256": "5b60b4bd96576b42e9dc3e46e3e88ca43913acc0ef6b474215320dd4881d95e5"
+          },
+          "model": "glm-5.3",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/glm-5.3/me03/ME-03-pilot-p1-20260825T161013.030Z-12010/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 3,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/glm-5.3/me03/ME-03-pilot-p1-20260825T161013.030Z-12010/report.json",
+            "report_sha256": "3bc845537b58e0010368d0d43328618c1a00f063de41347cea734445a693d12a"
+          },
+          "model": "glm-5.3",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "glm-5.3"
+    },
+    {
+      "experiments": [
+        {
+          "arms": [
+            "sexpr_ast"
+          ],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me02_representation_eval",
+          "binary_sha256": "372bc94744303b862ef19ec2a1fefc24b29bfa0e35e2fd40e78ea3793b85316a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me02",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/qwen3.8-max-preview/me02/ME-02-pilot-p1.1-20260825T160930.911Z-11972/provider-control.db",
+            "episode_count": 3,
+            "episode_count_ok": true,
+            "passed": 2,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/qwen3.8-max-preview/me02/ME-02-pilot-p1.1-20260825T160930.911Z-11972/report.json",
+            "report_sha256": "1d51d2df8f68ed0ef8105e0889d72ea323417e403706eb380381405fa4007a97"
+          },
+          "model": "qwen3.8-max-preview",
+          "returncode": 0,
+          "tasks": [
+            "alternating_branches",
+            "shared_reference",
+            "merge_after_observations"
+          ]
+        },
+        {
+          "arms": [],
+          "binary": "/Users/shafreeck/Codes/Morphz-paper-evals/target/debug/me03_bounded_open_eval",
+          "binary_sha256": "1c55f7c94b9ec34076aad024453f6256c3a20f532e20b6628f903ed1e45f403a",
+          "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+          "experiment": "me03",
+          "integrity": {
+            "binding_ok": true,
+            "database": "/private/tmp/morphz-me05-p1-20260826/stage-b/qwen3.8-max-preview/me03/ME-03-pilot-p1-20260825T161009.887Z-12000/provider-control.db",
+            "episode_count": 8,
+            "episode_count_ok": true,
+            "passed": 8,
+            "report": "/private/tmp/morphz-me05-p1-20260826/stage-b/qwen3.8-max-preview/me03/ME-03-pilot-p1-20260825T161009.887Z-12000/report.json",
+            "report_sha256": "d4e58ed3ae1f8c1374381ea9a786aad7bbe37478c30a7c53fffe18d4fb7db67a"
+          },
+          "model": "qwen3.8-max-preview",
+          "returncode": 0,
+          "tasks": [
+            "release_strategy",
+            "research_strategy"
+          ]
+        }
+      ],
+      "integrity_passed": true,
+      "model": "qwen3.8-max-preview"
+    }
+  ],
+  "schema": "morphz-me05-launcher-v1",
+  "stage": "stage-b"
+}

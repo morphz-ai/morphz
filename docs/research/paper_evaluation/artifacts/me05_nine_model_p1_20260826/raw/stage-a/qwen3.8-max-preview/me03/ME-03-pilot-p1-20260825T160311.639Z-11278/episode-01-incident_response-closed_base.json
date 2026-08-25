@@ -1,0 +1,740 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "closed_base",
+  "context_id": "incident-continuity-v1",
+  "valid_open_set_count": null,
+  "selected": [
+    "rate_limit"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"rate_limit has the greatest closed_score at 88, so the deterministic rule selects it uniquely.\",\n  \"selected\": [\n    \"rate_limit\"\n  ]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 741,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "qwen3.8-max-preview",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 741,
+      "calibration_key": 11290434827877351311,
+      "calibration_shape": 15960451244876841423
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 71,\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 83,\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 88,\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 67,\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 74,\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 79,\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"id\": \"incident-continuity-v1\",\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"statement\": \"Maintain service continuity while containing the incident; external communication is not yet authorized.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"rate_limit has the greatest closed_score at 88, so the deterministic rule selects it uniquely.\",\n  \"selected\": [\n    \"rate_limit\"\n  ]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need answer JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only. Need analyze"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " request. It's"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " DETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC_CONTROL. Rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": select_count "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "1,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " semantics: Ignore open"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-preference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints and select unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate with greatest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score. Candidates closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_scores: isolate_edge"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 71,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rotate_tokens 8"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "3, rate_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 88,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " publish_status 6"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "7, notify_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "affected 74"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", preserve_logs "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "79. Greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " is rate_limit "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "88. Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " returns: basis:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed-score-rule for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " D"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETERMINISTIC_CONTROL"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "? It says basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"non-empty array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containing"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the current context id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for NONDETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MINISTIC, or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed-score-rule for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " DETERMINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_CONTROL\". Likely basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " should"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " be [\"closed-score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-rule\"]"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "? It says array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". For DETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MINISTIC_CONTROL"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", maybe [\"closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-score-rule\"]"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " or current context?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Let's parse:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".basis: \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "non-empty array containing"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the current context id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for NONDETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MINISTIC, or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed-score-rule for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " DETERMINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_CONTROL\". It may"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " expect array containing string"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"closed-score-rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\". Could also be"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\"closed-score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-rule\"]. selected array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate ids: [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit\"]. explanation short"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Need consider forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_properties"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "? For deterministic control"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", apply"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " declared deterministic rule exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Context preferences relevant"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only to nondetermin"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "istic do not override"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Rule says ignore"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open-preference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints? It says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ignore open"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-preference constraints,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select unique greatest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score. Does"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden_properties count?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " deterministic rule likely overrides"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " but maybe required property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups? The rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " specifically"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says ignore open-pre"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ference constraints, not"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " necessarily"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hard constraints? However"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " kind"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " DETERMINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " CONTROL and declared rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed_score. It"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says Context preferences relevant"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " nondeterministic judgment"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " do not override deterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule. Forbidden properties"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " It's context."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " But task says Choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required by declared evaluation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". The rule is"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique greatest closed_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". So"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rate_limit. It"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " also satisfies required groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containment, low_dis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ruption,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " not external anyway."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " So fine.\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need final exactly JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Markdown. Ensure keys"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " basis, explanation,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Basis non-empty"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array. Use"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\"closed-score-rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]. Explanation: \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rate_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has the highest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "88).\" selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\"rate_limit\"]."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n  \"basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\": [\n   "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-score-rule\"\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "  ],\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"explanation\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"rate_limit has"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the greatest closed_score"
+      },
+      {
+        "kind": "text_delta",
+        "text": " at 88"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " so the deterministic rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": " selects it"
+      },
+      {
+        "kind": "text_delta",
+        "text": " uniquely.\",\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected\": [\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "    \"rate_limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"\n  ]"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 742,
+          "uncached_input_tokens": 742,
+          "cached_input_tokens": 0,
+          "output_tokens": 506,
+          "reasoning_tokens": 440,
+          "total_tokens": 1248,
+          "raw": [
+            {
+              "input_tokens": 742,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 506,
+              "output_tokens_details": {
+                "reasoning_tokens": 440
+              },
+              "total_tokens": 1248
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_chatcmpl-23337d18-b064-4a56-a27d-0bcf1fb3cc81_0",
+              "summary": [
+                {
+                  "text": "We need answer JSON only. Need analyze request. It's DETERMINISTIC_CONTROL. Rule: select_count 1, semantics: Ignore open-preference constraints and select unique candidate with greatest closed_score. Candidates closed_scores: isolate_edge 71, rotate_tokens 83, rate_limit 88, publish_status 67, notify_affected 74, preserve_logs 79. Greatest is rate_limit 88. Need returns: basis: closed-score-rule for DETERMINISTIC_CONTROL? It says basis: \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\". Likely basis should be [\"closed-score-rule\"]? It says array. For DETERMINISTIC_CONTROL, maybe [\"closed-score-rule\"] or current context? Let's parse: returns.basis: \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\". It may expect array containing string \"closed-score-rule\". Could also be [\"closed-score-rule\"]. selected array candidate ids: [\"rate_limit\"]. explanation short. Need consider forbidden_properties? For deterministic control, apply declared deterministic rule exactly. Context preferences relevant only to nondeterministic do not override. Rule says ignore open-preference constraints? It says ignore open-preference constraints, select unique greatest closed_score. Does forbidden_properties count? The deterministic rule likely overrides; but maybe required property groups? The rule specifically says ignore open-preference constraints, not necessarily hard constraints? However kind DETERMINISTIC CONTROL and declared rule select greatest closed_score. It says Context preferences relevant only to nondeterministic judgment do not override deterministic rule. Forbidden properties? It's context. But task says Choose required by declared evaluation rule. The rule is unique greatest closed_score. So rate_limit. It also satisfies required groups containment, low_disruption, not external anyway. So fine.\nNeed final exactly JSON object no Markdown. Ensure keys basis, explanation, selected. Basis non-empty array. Use [\"closed-score-rule\"]. Explanation: \"rate_limit has the highest closed_score (88).\" selected [\"rate_limit\"].",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 742,
+      "uncached_input_tokens": 742,
+      "cached_input_tokens": 0,
+      "output_tokens": 506,
+      "reasoning_tokens": 440,
+      "total_tokens": 1248,
+      "raw": [
+        {
+          "input_tokens": 742,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 506,
+          "output_tokens_details": {
+            "reasoning_tokens": 440
+          },
+          "total_tokens": 1248
+        }
+      ]
+    },
+    "error": null
+  }
+}
