@@ -27,6 +27,8 @@
 - [《实践论》《矛盾论》Mind Frame 原文通读与来源](./dialectical_practice_mind_frame_provenance_2026_08_24.md)：记录两篇完整原文读取、快照哈希、概念综合和最终哲学 Frame 的取舍；
 - [Terminal-Bench 2.1 既有前 40 题四臂对照协议](./terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)：原生 Morphz、极简 v0.5、官方 Codex、辩证实践 Mind Frame 四臂各 40×1 的冻结比较边界；
 - [Terminal-Bench 2.1 前 40 题停止决策](./terminal_bench_2_1_prior_40_stop_decision_2026_08_25.md)：冻结 Morphz 75% vs Codex 官方 70% 的同环境主口径，记录不补剩余 49 题、不再运行 89×5、资源监控与后续恢复条件；
+- [ME-01 结构化 Context 与结果直接回流 Pilot 协议 p1](./me_01_structured_context_reentry_pilot_protocol_p1.md)：三核心 arm、五任务族、低成本两级 Pilot、生产 Runtime 真实性与重评分 Gate；
+- [ME-01 fixture 与评分器无模型 Gate](./me_01_no_model_fixture_scorer_gate_2026_08_25.md)：15/15 正例、5/5 负例、生产只读 Context capability；尚未允许真实模型 smoke；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

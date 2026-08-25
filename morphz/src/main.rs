@@ -599,6 +599,10 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
             "orchestrator.context_maintenance_reserve_tokens",
         ),
         (
+            "MORPHZ_CONTEXT_TRANSACTIONS_ENABLED",
+            "orchestrator.context_transactions_enabled",
+        ),
+        (
             "MORPHZ_LLM_CONNECT_TIMEOUT_SECS",
             "llm.connect_timeout_secs",
         ),

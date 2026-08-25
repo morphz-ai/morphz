@@ -352,6 +352,11 @@ pub struct OrchestratorConfig {
     pub attempt_soft_checkpoint_interval: usize,
     /// Maximum Context transactions per user turn; does not limit physical tools or replies.
     pub max_context_transactions_per_turn: usize,
+    /// Whether the model-facing Runtime exposes Context transactions.
+    ///
+    /// This defaults to true. A false value keeps the production Context projection and durable
+    /// Event path while making the Mind read-only for controlled evaluations or restricted hosts.
+    pub context_transactions_enabled: bool,
     /// Session history automatically included in the current Context Encoding.
     pub session_working_set: SessionWorkingSetConfig,
     /// Cognitive-activity window between an explicit frame-retirement request and actual retirement.
@@ -393,6 +398,7 @@ impl Default for OrchestratorConfig {
             observation_preview_chars: 16_000,
             attempt_soft_checkpoint_interval: 90,
             max_context_transactions_per_turn: 6,
+            context_transactions_enabled: true,
             session_working_set: SessionWorkingSetConfig::default(),
             frame_retirement: FrameRetirementConfig::default(),
             eval_callable_tools: crate::sexpr_eval::DEFAULT_CALLABLE_TOOLS
@@ -3438,6 +3444,12 @@ impl AppConfig {
                     format!(
                         "MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE is not a valid boolean: {value}"
                     )
+                })?;
+        }
+        if let Ok(value) = std::env::var("MORPHZ_CONTEXT_TRANSACTIONS_ENABLED") {
+            self.orchestrator.context_transactions_enabled =
+                parse_env_bool(&value).ok_or_else(|| {
+                    format!("MORPHZ_CONTEXT_TRANSACTIONS_ENABLED is not a valid boolean: {value}")
                 })?;
         }
         if let Ok(value) = std::env::var("MORPHZ_EVAL_CALLABLE_TOOLS") {

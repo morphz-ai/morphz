@@ -8745,7 +8745,8 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
         checkpoint_due,
         context_transactions_used,
         context_transactions_limit,
-        context_tx_available: context_transactions_used < context_transactions_limit,
+        context_tx_available: config.context_transactions_enabled
+            && context_transactions_used < context_transactions_limit,
         phase: phase.to_string(),
     }
 }
@@ -12831,6 +12832,26 @@ mod tests {
         assert_eq!(budget.context_transactions_used, 2);
         assert!(!budget.context_tx_available);
         assert_eq!(budget.phase, "soft-checkpoint");
+    }
+
+    #[test]
+    fn disabled_context_transactions_are_unavailable_even_with_unused_budget() {
+        let user = Event::new(
+            "user:read-only".to_string(),
+            "User".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::new(),
+        );
+        let config = OrchestratorConfig {
+            context_transactions_enabled: false,
+            max_context_transactions_per_turn: 6,
+            ..Default::default()
+        };
+        let budget = turn_budget_for(&[user], &config);
+        assert_eq!(budget.context_transactions_used, 0);
+        assert_eq!(budget.context_transactions_limit, 6);
+        assert!(!budget.context_tx_available);
     }
 
     #[test]

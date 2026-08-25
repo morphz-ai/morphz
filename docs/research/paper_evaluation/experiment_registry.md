@@ -22,7 +22,7 @@
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 部分既有 runner | `planned` | — | 冻结 manifest、目录、评分与重放规范 |
-| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | 零散 `F` | `protocol-draft` | p1 待写 | 三核心 arm 的任务/评分器设计 |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | 零散 `F` | `protocol-candidate` | [`p1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 无模型三 arm 真实性、隔离与重评分 Gate |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | 多项 `D` 分散存在 | `planned` | — | 建立面向论文主张的覆盖矩阵 |
@@ -60,6 +60,18 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- 建立 ME-01 Pilot p1 candidate：冻结候选 `append_only`、
+  `structured_no_direct_reentry`、`full_morphz` 三核心 arm，明确 full arm 必须运行生产
+  Morphz、真实 SQLite/ContextEngine 与真实 `context_tx`，旧路演的本地 JSON 状态机不得
+  作为论文证据；Pilot 改为先跑 5 个 paired cells（15 episodes），Gate 通过后才增加
+  第二批 15 episodes，避免未验证 runner 和评分器前消耗大批模型额度。协议见
+  [`me_01_structured_context_reentry_pilot_protocol_p1.md`](./me_01_structured_context_reentry_pilot_protocol_p1.md)；
+- ME-01 fixture/scorer 无模型 Gate 完成：5 个任务族、三组 15 个正例全部 strict pass，
+  非法 JSON、错误来源、伪造 full 提交、只读组提交和输入 hash 漂移 5 类负例全部被拒绝；
+  新增默认不影响产品路径的 `MORPHZ_CONTEXT_TRANSACTIONS_ENABLED=false`，从生产 Registry
+  移除 `context_tx` 并在 Context 协议中报告不可用。当前仍未实现生产 arm adapters，
+  `ready_for_real_model_smoke=false`，本 Gate 没有模型调用。完整记录见
+  [`me_01_no_model_fixture_scorer_gate_2026_08_25.md`](./me_01_no_model_fixture_scorer_gate_2026_08_25.md)；
 - 完成 `terminal-bench-four-arm-prior-40-v1` 四臂正式运行，160/160 trial 均保留。以
   Harbor/Terminal-Bench 官方评分器为对外主口径：原生 Morphz 30/40（75.0%）、官方
   Codex CLI 28/40（70.0%）、Morphz+v0.5 23/40（57.5%）、Morphz+辩证实践 Mind

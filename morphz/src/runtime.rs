@@ -1608,7 +1608,9 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         config,
         policy,
     } = dependencies;
-    registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
+    if config.orchestrator.context_transactions_enabled {
+        registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
+    }
     // The evaluator reaches other tools through the same Registry it is
     // registered in, so it is constructed with a handle to it rather than with
     // a private tool table that could drift.
@@ -10917,6 +10919,25 @@ mod tests {
             }
         }
         assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    #[tokio::test]
+    async fn read_only_context_configuration_omits_context_tx_from_production_registry() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.orchestrator.context_transactions_enabled = false;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+
+        assert!(!runtime
+            .inner
+            .registry
+            .definitions()
+            .iter()
+            .any(|definition| definition.name == "context_tx"));
     }
 
     #[tokio::test]

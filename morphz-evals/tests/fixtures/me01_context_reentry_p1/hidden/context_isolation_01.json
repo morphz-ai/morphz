@@ -1,0 +1,11 @@
+{
+  "fixture_id": "me01-p1-context-isolation-01",
+  "expected": {
+    "action": "set_delivery_target",
+    "object_id": "report-daily",
+    "value": "blue-archive",
+    "evidence_id": "ev-ci-002"
+  },
+  "stale_values": [],
+  "foreign_values": ["red-vault"]
+}

@@ -1,0 +1,11 @@
+{
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "expected": {
+    "action": "route_webhook",
+    "object_id": "billing-webhook",
+    "value": "/hooks/v3",
+    "evidence_id": "ev-sc-003"
+  },
+  "stale_values": ["/hooks/v1", "/hooks/v2"],
+  "foreign_values": []
+}

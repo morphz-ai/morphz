@@ -1,0 +1,11 @@
+{
+  "fixture_id": "me01-p1-cross-session-continuity-01",
+  "expected": {
+    "action": "set_fulfillment_mode",
+    "object_id": "order-nova-82",
+    "value": "bonded-express",
+    "evidence_id": "ev-cs-001"
+  },
+  "stale_values": [],
+  "foreign_values": []
+}

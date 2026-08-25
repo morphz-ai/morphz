@@ -1,0 +1,44 @@
+{
+  "id": "me01-p1-context-isolation-01",
+  "family": "context_isolation",
+  "title": "Similar objects across isolated contexts",
+  "stages": [
+    {
+      "id": "establish-foreign",
+      "context_key": "foreign",
+      "session_key": "session-foreign",
+      "events": [
+        {
+          "event_id": "ev-ci-001",
+          "source": "tenant-red-policy",
+          "version": 9,
+          "timestamp": "2026-08-25T09:00:00+08:00",
+          "content": "In Context foreign, object report-daily uses delivery target red-vault. This fact belongs only to tenant red."
+        }
+      ],
+      "instruction": "Preserve this tenant-scoped state inside the current Context only. Do not emit the final action yet."
+    },
+    {
+      "id": "establish-primary",
+      "context_key": "primary",
+      "session_key": "session-primary",
+      "events": [
+        {
+          "event_id": "ev-ci-002",
+          "source": "tenant-blue-policy",
+          "version": 4,
+          "timestamp": "2026-08-25T10:00:00+08:00",
+          "content": "In Context primary, object report-daily uses delivery target blue-archive. This fact belongs only to tenant blue."
+        }
+      ],
+      "instruction": "Preserve this tenant-scoped state inside the current Context only. Do not emit the final action yet."
+    },
+    {
+      "id": "act",
+      "context_key": "primary",
+      "session_key": "session-primary",
+      "events": [],
+      "instruction": "Select the delivery action for object report-daily in the current Context only. Return only the strict four-field JSON action contract."
+    }
+  ]
+}

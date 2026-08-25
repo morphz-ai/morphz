@@ -1,0 +1,11 @@
+{
+  "fixture_id": "me01-p1-source-authority-01",
+  "expected": {
+    "action": "set_retention_tier",
+    "object_id": "audit-export",
+    "value": "R-45",
+    "evidence_id": "ev-sa-001"
+  },
+  "stale_values": [],
+  "foreign_values": ["R-07", "R-90"]
+}

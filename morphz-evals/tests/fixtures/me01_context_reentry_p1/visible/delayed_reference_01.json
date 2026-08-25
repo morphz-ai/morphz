@@ -1,0 +1,58 @@
+{
+  "id": "me01-p1-delayed-reference-01",
+  "family": "delayed_reference",
+  "title": "Delayed deployment channel selection",
+  "stages": [
+    {
+      "id": "establish",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-dr-001",
+          "source": "release-board",
+          "version": 7,
+          "timestamp": "2026-08-25T09:00:00+08:00",
+          "content": "Object service-orion has approved deployment channel blue-17. This decision remains active until explicitly superseded."
+        },
+        {
+          "event_id": "ev-dr-002",
+          "source": "operations",
+          "version": 2,
+          "timestamp": "2026-08-25T09:02:00+08:00",
+          "content": "Object service-lyra uses deployment channel green-04. It is unrelated to service-orion."
+        }
+      ],
+      "instruction": "Ingest the evidence and preserve any state needed for a later operational decision. Do not emit the final action yet."
+    },
+    {
+      "id": "revise",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-dr-003",
+          "source": "diagnostics",
+          "version": 1,
+          "timestamp": "2026-08-25T10:00:00+08:00",
+          "content": "A latency alert for service-orion was resolved. It does not change the approved deployment channel."
+        },
+        {
+          "event_id": "ev-dr-004",
+          "source": "release-board",
+          "version": 3,
+          "timestamp": "2026-08-25T10:05:00+08:00",
+          "content": "Object service-vega has approved deployment channel blue-71. It is unrelated to service-orion."
+        }
+      ],
+      "instruction": "Incorporate the new evidence while preserving the current authoritative state. Do not emit the final action yet."
+    },
+    {
+      "id": "act",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [],
+      "instruction": "Select the currently authorized deployment action for object service-orion. Return only the strict four-field JSON action contract."
+    }
+  ]
+}

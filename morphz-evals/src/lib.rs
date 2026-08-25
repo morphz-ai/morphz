@@ -191,6 +191,7 @@ pub mod context_prefix_cache_eval;
 pub mod context_pressure_eval;
 pub mod eval_sandbox;
 pub mod long_horizon_agent_eval;
+pub mod me01_context_reentry_eval;
 pub mod principal_identity_eval;
 pub mod roadshow_demo_001;
 pub mod roadshow_demo_001_adapter;

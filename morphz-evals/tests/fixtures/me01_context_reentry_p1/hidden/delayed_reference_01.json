@@ -1,0 +1,11 @@
+{
+  "fixture_id": "me01-p1-delayed-reference-01",
+  "expected": {
+    "action": "apply_deployment_channel",
+    "object_id": "service-orion",
+    "value": "blue-17",
+    "evidence_id": "ev-dr-001"
+  },
+  "stale_values": [],
+  "foreign_values": ["green-04", "blue-71"]
+}
