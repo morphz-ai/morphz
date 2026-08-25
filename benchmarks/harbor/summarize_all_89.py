@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Merge the frozen first-40 and remaining-49 Terminal-Bench paired results."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import random
+from pathlib import Path
+from typing import Any
+
+
+BOOTSTRAP_SEED = 20260826
+BOOTSTRAP_REPETITIONS = 10_000
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    require(isinstance(payload, dict), f"expected JSON object: {path}")
+    return payload
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalize_task_name(value: Any) -> str:
+    require(isinstance(value, str) and value, "invalid task name")
+    return value.removeprefix("terminal-bench/")
+
+
+def binary_reward(value: Any, *, label: str) -> int:
+    reward = float(value)
+    require(reward in {0.0, 1.0}, f"non-binary reward for {label}: {reward}")
+    return int(reward)
+
+
+def load_prior_strict(path: Path) -> dict[str, int]:
+    payload = load_json(path)
+    require(payload.get("audit_complete") is True, f"prior audit incomplete: {path}")
+    require(payload.get("trial_count") == 40, f"prior trial count is not 40: {path}")
+    trials = payload.get("trials")
+    require(isinstance(trials, list) and len(trials) == 40, f"invalid prior trials: {path}")
+    rewards: dict[str, int] = {}
+    for trial in trials:
+        require(isinstance(trial, dict), f"invalid trial row: {path}")
+        task = normalize_task_name(trial.get("task_name"))
+        require(task not in rewards, f"duplicate prior task: {task}")
+        rewards[task] = binary_reward(trial.get("raw_reward"), label=task)
+    return rewards
+
+
+def load_remaining(path: Path) -> tuple[dict[str, int], dict[str, int]]:
+    payload = load_json(path)
+    require(payload.get("official_scoring_is_primary") is True, "remaining summary does not use official scoring")
+    require(payload.get("task_count") == 49, "remaining task count is not 49")
+    rows = payload.get("per_task")
+    require(isinstance(rows, list) and len(rows) == 49, "invalid remaining per_task rows")
+    morphz: dict[str, int] = {}
+    codex: dict[str, int] = {}
+    for row in rows:
+        require(isinstance(row, dict), "invalid remaining task row")
+        task = normalize_task_name(row.get("task"))
+        require(task not in morphz, f"duplicate remaining task: {task}")
+        morphz[task] = binary_reward(row.get("morphz"), label=f"morphz:{task}")
+        codex[task] = binary_reward(row.get("codex"), label=f"codex:{task}")
+    return morphz, codex
+
+
+def exact_two_sided(first: int, second: int) -> float:
+    discordant = first + second
+    if discordant == 0:
+        return 1.0
+    tail = sum(math.comb(discordant, k) for k in range(min(first, second) + 1))
+    return min(1.0, 2.0 * tail / (2**discordant))
+
+
+def wilson_95(successes: int, total: int) -> list[float]:
+    require(total > 0, "Wilson interval requires a positive denominator")
+    z = 1.959963984540054
+    proportion = successes / total
+    denominator = 1.0 + z * z / total
+    center = (proportion + z * z / (2.0 * total)) / denominator
+    half = z * math.sqrt(
+        proportion * (1.0 - proportion) / total + z * z / (4.0 * total * total)
+    ) / denominator
+    return [max(0.0, center - half), min(1.0, center + half)]
+
+
+def paired_bootstrap_95(differences: list[int]) -> list[float]:
+    require(differences, "paired bootstrap requires observations")
+    rng = random.Random(BOOTSTRAP_SEED)
+    count = len(differences)
+    samples = sorted(
+        sum(differences[rng.randrange(count)] for _ in range(count)) / count
+        for _ in range(BOOTSTRAP_REPETITIONS)
+    )
+    return [
+        samples[int(0.025 * BOOTSTRAP_REPETITIONS)],
+        samples[int(0.975 * BOOTSTRAP_REPETITIONS)],
+    ]
+
+
+def summarize(
+    prior_morphz_path: Path,
+    prior_codex_path: Path,
+    remaining_path: Path,
+) -> dict[str, Any]:
+    prior_morphz = load_prior_strict(prior_morphz_path)
+    prior_codex = load_prior_strict(prior_codex_path)
+    require(set(prior_morphz) == set(prior_codex), "first-40 arm task sets differ")
+    remaining_morphz, remaining_codex = load_remaining(remaining_path)
+    require(set(remaining_morphz) == set(remaining_codex), "remaining arm task sets differ")
+    require(not (set(prior_morphz) & set(remaining_morphz)), "first-40 and remaining-49 overlap")
+
+    morphz = {**prior_morphz, **remaining_morphz}
+    codex = {**prior_codex, **remaining_codex}
+    require(len(morphz) == 89 and set(morphz) == set(codex), "combined set is not 89 paired tasks")
+
+    tasks = sorted(morphz)
+    morphz_wins = sum(morphz[task] > codex[task] for task in tasks)
+    codex_wins = sum(codex[task] > morphz[task] for task in tasks)
+    both_pass = sum(morphz[task] == codex[task] == 1 for task in tasks)
+    both_fail = sum(morphz[task] == codex[task] == 0 for task in tasks)
+    morphz_passed = sum(morphz.values())
+    codex_passed = sum(codex.values())
+    differences = [morphz[task] - codex[task] for task in tasks]
+
+    return {
+        "protocol": "ME-08-terminal-bench-2.1-all-89-paired-v1",
+        "official_verifier_raw_reward_is_primary": True,
+        "task_count": 89,
+        "arms": {
+            "morphz-native": {
+                "passed": morphz_passed,
+                "score": morphz_passed / 89,
+                "wilson_95_ci": wilson_95(morphz_passed, 89),
+            },
+            "official-codex": {
+                "passed": codex_passed,
+                "score": codex_passed / 89,
+                "wilson_95_ci": wilson_95(codex_passed, 89),
+            },
+        },
+        "paired": {
+            "difference": (morphz_passed - codex_passed) / 89,
+            "paired_bootstrap_95_ci": paired_bootstrap_95(differences),
+            "morphz_wins": morphz_wins,
+            "codex_wins": codex_wins,
+            "both_pass": both_pass,
+            "both_fail": both_fail,
+            "exact_two_sided_p": exact_two_sided(morphz_wins, codex_wins),
+        },
+        "subsets": {
+            "first_40": {
+                "morphz_passed": sum(prior_morphz.values()),
+                "codex_passed": sum(prior_codex.values()),
+            },
+            "remaining_49": {
+                "morphz_passed": sum(remaining_morphz.values()),
+                "codex_passed": sum(remaining_codex.values()),
+            },
+        },
+        "per_task": [
+            {"task": task, "morphz": morphz[task], "codex": codex[task]}
+            for task in tasks
+        ],
+        "input_sha256": {
+            str(prior_morphz_path): sha256(prior_morphz_path),
+            str(prior_codex_path): sha256(prior_codex_path),
+            str(remaining_path): sha256(remaining_path),
+        },
+        "bootstrap": {
+            "seed": BOOTSTRAP_SEED,
+            "repetitions": BOOTSTRAP_REPETITIONS,
+        },
+    }
+
+
+def result_markdown(summary: dict[str, Any]) -> str:
+    morphz = summary["arms"]["morphz-native"]
+    codex = summary["arms"]["official-codex"]
+    paired = summary["paired"]
+    return f"""# ME-08 Terminal-Bench 2.1 all-89 paired result
+
+- Tasks: 89
+- Primary metric: official verifier raw reward
+- Morphz: {morphz['passed']}/89 = {morphz['score']:.2%}
+- Official Codex: {codex['passed']}/89 = {codex['score']:.2%}
+- Paired difference: {paired['difference']:+.2%}
+- Morphz-only / Codex-only passes: {paired['morphz_wins']} / {paired['codex_wins']}
+- Both pass / both fail: {paired['both_pass']} / {paired['both_fail']}
+- Exact two-sided paired p: {paired['exact_two_sided_p']:.6g}
+- Paired bootstrap 95% CI: [{paired['paired_bootstrap_95_ci'][0]:+.2%}, {paired['paired_bootstrap_95_ci'][1]:+.2%}]
+
+This is a same-environment one-attempt-per-task comparison, not an official
+leaderboard submission and not an estimate of within-task sampling variance.
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prior-morphz", type=Path, required=True)
+    parser.add_argument("--prior-codex", type=Path, required=True)
+    parser.add_argument("--remaining-summary", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    args = parser.parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=False)
+    summary = summarize(args.prior_morphz, args.prior_codex, args.remaining_summary)
+    (args.output_dir / "all_89_summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    (args.output_dir / "RESULT.md").write_text(result_markdown(summary), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
