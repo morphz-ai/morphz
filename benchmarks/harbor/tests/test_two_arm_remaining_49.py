@@ -28,7 +28,7 @@ class Remaining49ProtocolTest(unittest.TestCase):
         self.assertEqual({"morphz-native", "official-codex"}, set(result))
         for command in result.values():
             self.assertIn("--concurrency", command)
-            self.assertEqual("3", command[command.index("--concurrency") + 1])
+            self.assertEqual("1", command[command.index("--concurrency") + 1])
             self.assertIn("--expect-trials", command)
             self.assertEqual("49", command[command.index("--expect-trials") + 1])
         self.assertIn("--harness-mode", result["morphz-native"])
