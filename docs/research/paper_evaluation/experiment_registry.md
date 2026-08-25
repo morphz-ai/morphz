@@ -1,6 +1,6 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-24
+> 最后更新：2026-08-25
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
@@ -57,6 +57,25 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | Harbor、π-Bench adapter | 通用能力 | F | 附录/系统案例；不替代 ME-07 |
 
 ## 状态更新记录
+
+### 2026-08-25
+
+- 完成 `terminal-bench-four-arm-prior-40-v1` 四臂正式运行，160/160 trial 均保留。以
+  Harbor/Terminal-Bench 官方评分器为对外主口径：原生 Morphz 30/40（75.0%）、官方
+  Codex CLI 28/40（70.0%）、Morphz+v0.5 23/40（57.5%）、Morphz+辩证实践 Mind
+  Frame 24/40（60.0%）。四臂均为 `gpt-5.6-sol` / `max`、同任务环境、一次尝试、零重试；
+  结果归档见
+  [`artifacts/terminal_bench_four_arm_prior_40_20260825/RESULT.md`](./artifacts/terminal_bench_four_arm_prior_40_20260825/RESULT.md)；
+- 纠正附加完整性扫描器的地位：本地规则将 Codex 的
+  `find / -path /tests -prune ...` 误判为私有测试访问，产生 67.5% 的辅助 strict 值；
+  该值不是官方成绩，不再作为对外或主要比较口径，原始审计文件继续保留；
+- 决定 Terminal-Bench 当前停在既有前 40 题，不补剩余 49 题、不再运行 89×5；40 题
+  作为开发集上的通用 Agent 能力和同环境 Codex 对照，不作为结构化 Context 因果证据，
+  论文资源转入 ME-01。完整决策与未来补跑条件见
+  [`terminal_bench_2_1_prior_40_stop_decision_2026_08_25.md`](./terminal_bench_2_1_prior_40_stop_decision_2026_08_25.md)；
+- 本轮没有启用宿主机历史采样，无法事后恢复完整负载曲线；日志发现一次任务容器自身
+  memcg OOM，不是 64 GiB 宿主机耗尽。海外节点现已启用 `sysstat`，每 10 分钟记录
+  CPU、内存、Load、磁盘和网络并保留 28 天；下一次运行同时采集容器级资源指标。
 
 ### 2026-08-24
 

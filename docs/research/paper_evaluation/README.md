@@ -26,6 +26,7 @@
 - [Terminal Harness 最小干预设计与 v0.5](./terminal_harness_minimal_intervention_design_2026_08_24.md)：逐项拆解 v0.4、冻结可选认知状态边界和静态干预门禁；
 - [《实践论》《矛盾论》Mind Frame 原文通读与来源](./dialectical_practice_mind_frame_provenance_2026_08_24.md)：记录两篇完整原文读取、快照哈希、概念综合和最终哲学 Frame 的取舍；
 - [Terminal-Bench 2.1 既有前 40 题四臂对照协议](./terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)：原生 Morphz、极简 v0.5、官方 Codex、辩证实践 Mind Frame 四臂各 40×1 的冻结比较边界；
+- [Terminal-Bench 2.1 前 40 题停止决策](./terminal_bench_2_1_prior_40_stop_decision_2026_08_25.md)：冻结 Morphz 75% vs Codex 官方 70% 的同环境主口径，记录不补剩余 49 题、不再运行 89×5、资源监控与后续恢复条件；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；
