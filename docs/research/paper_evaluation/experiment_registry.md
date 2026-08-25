@@ -27,8 +27,8 @@
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（开放 12/12；Context shift 6/6；闭合严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
-| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | [`F + D`（Phase A Gate）](./artifacts/me06_phase_a_no_model_gate_20260826/RESULT.md) | `protocol-frozen / running` | [`p1 frozen`](./me_06_long_horizon_compaction_protocol_p1.md) | 第一 paired cell 作为 smoke，未改协议则直接保留并完成三 fixture Pilot |
-| ME-07 | LongMemEval-V2 Small 官方数据与协议的外部记忆验证 | 外部效度/RQ6 | P1 | 官方仓库、451 题 Small tier 与 backend contract 已冻结 | `adapter-implementation` | [`benchmark matrix`](./benchmark_leaderboard_matrix_and_roadmap_2026_08_17.md) | 完成 Morphz backend、固定 reader/judge 兼容审计与完整 Small 运行；非官方模型替代不得冒充榜单分数 |
+| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | [`F + D`（Phase A Gate）](./artifacts/me06_phase_a_no_model_gate_20260826/RESULT.md)；真实 runner Gate 已闭合 | `protocol-frozen / queued` | [`p1 frozen`](./me_06_long_horizon_compaction_protocol_p1.md) | 保留两次启动装置事故；按统一 900 秒请求上限重新运行三 fixture paired Pilot |
+| ME-07 | LongMemEval-V2 Small 官方数据与协议的外部记忆验证 | 外部效度/RQ6 | P1 | 451 题 Small tier；四 cell 真实 smoke 已闭合 | `full-run-active` | [`v1 frozen`](./me_07_longmemeval_v2_small_protocol_v1.md) | 按域串行完成 no-retrieval 与 Morphz 结构化投影双臂；替代 reader/judge 结果不得冒充官方榜单分数 |
 | ME-08 | Terminal-Bench 2.1 剩余 49 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | 前 40 题完成；剩余 49 题已冻结并运行 | `running` | [`remaining-49 protocol`](./me_08_terminal_bench_remaining_49_protocol_v1.md) | 每臂并发 1；完成后合并为 89 题同环境一次配对结果 |
 
 ## 依赖
@@ -60,6 +60,16 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-26
 
+- ME-07 已冻结 LongMemEval-V2 官方仓库 commit `2cc8c54`、数据 commit `f152293` 与 451 题
+  Small tier。真实 smoke 的四个 cell 均完成：no-retrieval 与 Morphz 结构化投影分别覆盖
+  web/enterprise 首题，reader 和 judge 统一绑定 CLIProxyAPI 的 Qwen 3.8 Max；完整运行按
+  每 cell 内部并发 1 启动。由于官方论文的 Qwen3.5-9B reader / GPT-5.2 judge 路线当前不可
+  获得，本结果只作为官方数据与评分协议上的配对实验，不申报官方 leaderboard 分数；
+- ME-06 真实 runner 在模型结果产生前暴露并修复 provider-control 父目录缺失；第二次启动
+  随后暴露 baseline 600 秒与生产 stage 900 秒不一致、且成功调用只在 cell 结束时落盘的
+  公平性/可观测性缺陷。两次启动及其哈希均永久保留，不计作有效模型结果。冻结协议现统一
+  单请求 900 秒，并逐调用原子保存成功或失败产物；等待 GPT-5.6 Sol 的 ME-08 云端负载结束
+  后再以新目录运行，不改变批次并发 1；
 - ME-05 p1 九模型矩阵完成：来自冻结 commit `38d9d84` 的 Stage A 45 cells 与 Stage B
   99 cells 共 144/144 完整，无补跑。冻结严格评分 98/144；ME-02 严格程序轨迹 26/36、
   最终值 32/36，四个未交付均为 Claude Provider safety refusal；ME-03 严格合同 72/108。
