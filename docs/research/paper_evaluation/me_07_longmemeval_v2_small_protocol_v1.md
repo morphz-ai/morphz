@@ -24,9 +24,11 @@ adapter 或 reader 使用的轨迹截图归档。数据 checksum 和缺失文件
 2. `morphz_structured_projection`：按照官方真实字段（`goal`、`outcome`、`thought`、
    `accessibility_tree` 等）将每个 trajectory/state 映射为稳定可寻址 Frame，保存
    trajectory/state source ref 和 `next-state` relation；共享的 content-addressed SQLite/FTS
-   Frame 存储避免跨题重复复制原始轨迹，每题则使用只包含官方 haystack 的独立逻辑 Context；
-   query 只收到官方允许的问题正文和可选图片，以冻结的 FTS/BM25 投影规则返回最多 20 个
-   source-linked Frames。
+   Frame 存储避免跨题重复复制原始轨迹。官方完整 Harness 在同一 domain 的全部问题间共享
+   同一份 Small haystack，因此实现为每个 domain 建立一个不可变逻辑 Context；每道题仍以
+   隔离的 query invocation 读取该 Context，不能写回或看到其他题的问题与回答。query 只收到
+   官方允许的问题正文和可选图片，以冻结的 FTS/BM25 投影规则返回最多 20 个 source-linked
+   Frames。
 
 两组使用完全相同的 reader、judge、问题顺序、并发 1、memory-context ceiling 和 scorer。
 ME-07 不再引入第三方完整 Agent 产品，也不调用第二个模型替 adapter 做隐藏检索。
@@ -71,3 +73,12 @@ question image 与 judge 二元输出预检均通过。`gpt-5.6-sol` 的 Chat Co
 
 2026-08-26 的四 cell 真实 smoke 已通过运行完整性 Gate，结果见
 `me_07_real_smoke_report_20260826.md`。Smoke 分数只用于确认路径可运行，不作为论文主结果。
+
+## 6. 运行中实现澄清
+
+完整运行启动后复核官方 Harness 的 materialization 路径，确认同一 domain 的所有问题共享一份
+Small haystack。第 2 节据此把原先“每题独立逻辑 Context”的不准确描述更正为“每 domain 一个
+不可变逻辑 Context、每题 query invocation 隔离”。两种描述下可见 memory evidence 完全相同；
+adapter 在 query 阶段没有写操作，问题正文、回答和 judge 结果也不会进入 Context。因此本澄清
+不改变任一实验臂的输入、模型请求、检索结果、评分器或预注册统计，只消除实现文档与官方数据
+组织方式之间的文字偏差。
