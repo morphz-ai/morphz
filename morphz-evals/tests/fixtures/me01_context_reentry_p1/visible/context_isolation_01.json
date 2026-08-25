@@ -2,6 +2,7 @@
   "id": "me01-p1-context-isolation-01",
   "family": "context_isolation",
   "title": "Similar objects across isolated contexts",
+  "required_action": "set_delivery_target",
   "stages": [
     {
       "id": "establish-foreign",

@@ -2,6 +2,7 @@
   "id": "me01-p1-cross-session-continuity-01",
   "family": "cross_session_continuity",
   "title": "Cross-session fulfillment state",
+  "required_action": "set_fulfillment_mode",
   "stages": [
     {
       "id": "establish",

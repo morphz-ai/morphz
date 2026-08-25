@@ -2,6 +2,7 @@
   "id": "me01-p1-source-authority-01",
   "family": "source_authority",
   "title": "Authority before recency",
+  "required_action": "set_retention_tier",
   "stages": [
     {
       "id": "establish",

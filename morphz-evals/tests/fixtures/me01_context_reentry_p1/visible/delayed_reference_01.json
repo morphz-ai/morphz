@@ -2,6 +2,7 @@
   "id": "me01-p1-delayed-reference-01",
   "family": "delayed_reference",
   "title": "Delayed deployment channel selection",
+  "required_action": "apply_deployment_channel",
   "stages": [
     {
       "id": "establish",

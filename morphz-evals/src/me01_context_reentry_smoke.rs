@@ -202,7 +202,10 @@ async fn run_append_only(
     let mut receipts = Vec::new();
     let mut final_response = String::new();
     for stage in &fixture.visible.stages {
-        messages.push(message("user", render_stage_prompt(stage)?));
+        messages.push(message(
+            "user",
+            render_stage_prompt(stage, &fixture.visible.required_action)?,
+        ));
         let input_sha256 = sha256(&serde_json::to_vec(&messages)?);
         let started = Instant::now();
         let measurement = exact
@@ -344,7 +347,11 @@ async fn run_morphz_arm(
         .iter()
         .filter(|stage| stage.id != "act")
     {
-        send_prompt(&mut child, &render_stage_prompt(stage)?).await?;
+        send_prompt(
+            &mut child,
+            &render_stage_prompt(stage, &fixture.visible.required_action)?,
+        )
+        .await?;
         wait_for_new_reply(&store, &session_id, replies_before, STAGE_TIMEOUT).await?;
         replies_before = reply_count(&store, &session_id).await?;
     }
@@ -376,7 +383,11 @@ async fn run_morphz_arm(
         .find(|stage| stage.id == "act")
         .ok_or("ME-01 smoke fixture has no act stage")?;
     let replies_before_act = reply_count(&store, &session_id).await?;
-    send_prompt(&mut restarted, &render_stage_prompt(act)?).await?;
+    send_prompt(
+        &mut restarted,
+        &render_stage_prompt(act, &fixture.visible.required_action)?,
+    )
+    .await?;
     let final_response =
         wait_for_new_reply(&store, &session_id, replies_before_act, STAGE_TIMEOUT).await?;
     stop_agent(restarted).await?;
@@ -789,12 +800,13 @@ fn smoke_fixture() -> Result<Me01FixturePair, DynError> {
         .ok_or_else(|| "ME-01 delayed-reference smoke fixture is missing".into())
 }
 
-fn render_stage_prompt(stage: &Me01Stage) -> Result<String, DynError> {
+fn render_stage_prompt(stage: &Me01Stage, required_action: &str) -> Result<String, DynError> {
     Ok(format!(
-        "ME-01 visible evidence for stage '{}':\n{}\n\nInstruction: {}\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id.",
+        "ME-01 visible evidence for stage '{}':\n{}\n\nInstruction: {}\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly '{}'.",
         stage.id,
         serde_json::to_string_pretty(&stage.events)?,
-        stage.instruction
+        stage.instruction,
+        required_action,
     ))
 }
 
@@ -890,12 +902,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smoke_uses_delayed_reference_and_no_hidden_text_in_prompt() {
+    fn smoke_exposes_the_scored_action_vocabulary() {
         let fixture = smoke_fixture().unwrap();
         assert_eq!(fixture.visible.family, "delayed_reference");
         for stage in &fixture.visible.stages {
-            let prompt = render_stage_prompt(stage).unwrap();
-            assert!(!prompt.contains(&fixture.hidden.expected.action));
+            let prompt = render_stage_prompt(stage, &fixture.visible.required_action).unwrap();
+            assert!(prompt.contains(&fixture.hidden.expected.action));
         }
     }
 

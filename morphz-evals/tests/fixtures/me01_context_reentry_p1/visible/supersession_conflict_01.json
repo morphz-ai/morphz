@@ -2,6 +2,7 @@
   "id": "me01-p1-supersession-conflict-01",
   "family": "supersession_conflict",
   "title": "Explicit endpoint supersession",
+  "required_action": "route_webhook",
   "stages": [
     {
       "id": "establish",

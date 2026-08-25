@@ -15,7 +15,7 @@ use tokio::process::Command;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const ME01_PROTOCOL_ID: &str = "me01-context-reentry-p1-candidate";
+pub const ME01_PROTOCOL_ID: &str = "me01-context-reentry-p1.1-candidate";
 const FIXTURE_ROOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/me01_context_reentry_p1"
@@ -77,6 +77,7 @@ pub struct Me01VisibleFixture {
     pub id: String,
     pub family: String,
     pub title: String,
+    pub required_action: String,
     pub stages: Vec<Me01Stage>,
 }
 
@@ -840,6 +841,15 @@ fn validate_fixture_pair(
     }
     if visible.stages.last().map(|stage| stage.id.as_str()) != Some("act") {
         return Err(format!("{} must end with an act stage", visible.id).into());
+    }
+    if visible.required_action.trim().is_empty()
+        || visible.required_action != hidden.expected.action
+    {
+        return Err(format!(
+            "{} must expose the exact required action vocabulary used by the scorer",
+            visible.id
+        )
+        .into());
     }
     let mut event_ids = BTreeSet::new();
     for stage in &visible.stages {
