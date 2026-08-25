@@ -1432,7 +1432,7 @@ fn implementation_violations(
             }
         }
         Me01Arm::StructuredNoDirectReentry => {
-            require_production_context_evidence(observed, &mut violations);
+            require_production_context_evidence(observed, fixture, &mut violations);
             if observed.runtime.adapter_kind != "production_morphz_read_only_context" {
                 violations.push("read_only_adapter_kind_invalid".to_string());
             }
@@ -1445,7 +1445,7 @@ fn implementation_violations(
             }
         }
         Me01Arm::FullMorphz => {
-            require_production_context_evidence(observed, &mut violations);
+            require_production_context_evidence(observed, fixture, &mut violations);
             if observed.runtime.adapter_kind != "production_morphz_full_context" {
                 violations.push("full_morphz_adapter_kind_invalid".to_string());
             }
@@ -1479,6 +1479,7 @@ fn implementation_violations(
 
 fn require_production_context_evidence(
     observed: &Me01ObservedEpisode,
+    fixture: &Me01FixturePair,
     violations: &mut Vec<String>,
 ) {
     if !observed.runtime.production_morphz_runtime {
@@ -1492,6 +1493,20 @@ fn require_production_context_evidence(
     }
     if observed.runtime.session_mounts.is_empty() {
         violations.push("session_mount_evidence_missing".to_string());
+    }
+    let expected_actual_contexts = fixture_context_ids_actual(&fixture.visible);
+    let expected_fake_contexts = fixture_context_ids(&fixture.visible);
+    if observed.runtime.context_ids != expected_actual_contexts
+        && observed.runtime.context_ids != expected_fake_contexts
+    {
+        violations.push("context_identity_set_mismatch".to_string());
+    }
+    let expected_actual_mounts = fixture_session_mounts_actual(&fixture.visible);
+    let expected_fake_mounts = fixture_session_mounts(&fixture.visible);
+    if observed.runtime.session_mounts != expected_actual_mounts
+        && observed.runtime.session_mounts != expected_fake_mounts
+    {
+        violations.push("session_mount_set_mismatch".to_string());
     }
     if observed
         .runtime
@@ -1667,6 +1682,31 @@ mod tests {
         assert!(score
             .integrity_violations
             .contains(&"committed_frame_missing_from_act_projection".to_string()));
+    }
+
+    #[test]
+    fn cross_session_fixture_rejects_incomplete_mount_evidence() {
+        let fixture = load_me01_fixtures()
+            .unwrap()
+            .into_iter()
+            .find(|fixture| fixture.visible.family == "cross_session_continuity")
+            .unwrap();
+        let mut observed =
+            fake_observed_episode(&fixture, Me01Arm::FullMorphz, &fixture.hidden.expected);
+        let omitted = observed
+            .runtime
+            .session_mounts
+            .keys()
+            .next()
+            .cloned()
+            .unwrap();
+        observed.runtime.session_mounts.remove(&omitted);
+        let score = score_me01_episode(&observed, &fixture);
+        assert!(score.task_success);
+        assert!(!score.implementation_valid);
+        assert!(score
+            .integrity_violations
+            .contains(&"session_mount_set_mismatch".to_string()));
     }
 
     #[test]

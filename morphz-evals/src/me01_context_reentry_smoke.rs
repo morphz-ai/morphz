@@ -1,6 +1,6 @@
 use crate::me01_context_reentry_eval::{
     load_me01_fixtures, score_me01_episode, Me01Arm, Me01EpisodeScore, Me01FixturePair,
-    Me01ObservedEpisode, Me01RuntimeEvidence, Me01Stage, ME01_PROTOCOL_ID,
+    Me01ObservedEpisode, Me01RuntimeEvidence, Me01Stage, Me01VisibleFixture, ME01_PROTOCOL_ID,
 };
 use chrono::Utc;
 use morphz::config::{self, OrchestratorConfig};
@@ -311,14 +311,12 @@ async fn run_morphz_arm(
     let artifact_root = run_root.join("artifacts");
     std::fs::create_dir_all(&workspace_root)?;
     std::fs::create_dir_all(&artifact_root)?;
-    let context_id = actual_context_id(&fixture.visible.id, "primary");
-    let session_id = actual_session_id(&fixture.visible.id, "session-a");
     let agent_id = format!("me01-agent-{}", filesystem_component(&fixture.visible.id));
     let principal_id = format!(
         "me01-principal-{}",
         filesystem_component(&fixture.visible.id)
     );
-    let environment = BTreeMap::from([
+    let base_environment = BTreeMap::from([
         (
             "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
             database_path.to_string_lossy().to_string(),
@@ -333,8 +331,6 @@ async fn run_morphz_arm(
         ),
         ("MORPHZ_AGENT_ID".to_string(), agent_id),
         ("MORPHZ_PRINCIPAL_ID".to_string(), principal_id),
-        ("MORPHZ_CONTEXT_ID".to_string(), context_id.clone()),
-        ("MORPHZ_SESSION_ID".to_string(), session_id.clone()),
         ("MORPHZ_CONTEXT_EVAL_MODE".to_string(), "true".to_string()),
         ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
         (
@@ -359,43 +355,110 @@ async fn run_morphz_arm(
             (arm == Me01Arm::FullMorphz).to_string(),
         ),
     ]);
-    write_json(&run_root.join("environment_non_secret.json"), &environment)?;
+    let (context_ids, session_mounts) = fixture_runtime_bindings(&fixture.visible)?;
+    let stage_bindings = fixture
+        .visible
+        .stages
+        .iter()
+        .map(|stage| {
+            json!({
+                "stage_id": stage.id,
+                "context_key": stage.context_key,
+                "session_key": stage.session_key,
+                "context_id": actual_context_id(&fixture.visible.id, &stage.context_key),
+                "session_id": actual_session_id(&fixture.visible.id, &stage.session_key),
+            })
+        })
+        .collect::<Vec<_>>();
+    write_json(
+        &run_root.join("environment_non_secret.json"),
+        &json!({
+            "base": &base_environment,
+            "stage_bindings": stage_bindings,
+        }),
+    )?;
 
     let stdout_path = run_root.join("agent.stdout.log");
     let stderr_path = run_root.join("agent.stderr.log");
     File::create(&stdout_path)?;
     File::create(&stderr_path)?;
 
-    let mut child = spawn_agent(agent_binary, &environment, &stdout_path, &stderr_path)?;
-    let store = wait_for_store(&database_path).await?;
-    let mut replies_before = reply_count(&store, &session_id).await?;
+    let mut active_process: Option<(Child, String, String)> = None;
     for stage in fixture
         .visible
         .stages
         .iter()
         .filter(|stage| stage.id != "act")
     {
+        let context_id = actual_context_id(&fixture.visible.id, &stage.context_key);
+        let session_id = actual_session_id(&fixture.visible.id, &stage.session_key);
+        let binding_changed =
+            active_process
+                .as_ref()
+                .is_none_or(|(_, active_context, active_session)| {
+                    active_context != &context_id || active_session != &session_id
+                });
+        if binding_changed {
+            if let Some((child, _, _)) = active_process.take() {
+                stop_agent(child).await?;
+            }
+            let environment = stage_environment(
+                &base_environment,
+                &fixture.visible.id,
+                &stage.context_key,
+                &stage.session_key,
+            );
+            let child = spawn_agent(agent_binary, &environment, &stdout_path, &stderr_path)?;
+            active_process = Some((child, context_id.clone(), session_id.clone()));
+        }
+        let store = wait_for_store(&database_path).await?;
+        let replies_before = reply_count(&store, &session_id).await?;
         send_prompt(
-            &mut child,
+            &mut active_process
+                .as_mut()
+                .ok_or("ME-01 pre-act process is missing")?
+                .0,
             &render_stage_prompt(stage, &fixture.visible.required_action)?,
         )
         .await?;
         wait_for_new_reply(&store, &session_id, replies_before, STAGE_TIMEOUT).await?;
-        replies_before = reply_count(&store, &session_id).await?;
     }
-    stop_agent(child).await?;
+    if let Some((child, _, _)) = active_process.take() {
+        stop_agent(child).await?;
+    }
 
     let before_restart_pid = read_last_pid(&run_root.join("process_pids.log"))?;
+    let store = wait_for_store(&database_path).await?;
     let events_before_restart = store.query(QueryFilter::default()).await?;
     write_json(
         &run_root.join("events_before_restart.json"),
         &events_before_restart,
     )?;
 
-    let mut restarted = spawn_agent(agent_binary, &environment, &stdout_path, &stderr_path)?;
+    let act = fixture
+        .visible
+        .stages
+        .iter()
+        .find(|stage| stage.id == "act")
+        .ok_or("ME-01 smoke fixture has no act stage")?;
+    let act_context_id = actual_context_id(&fixture.visible.id, &act.context_key);
+    let act_session_id = actual_session_id(&fixture.visible.id, &act.session_key);
+    let act_environment = stage_environment(
+        &base_environment,
+        &fixture.visible.id,
+        &act.context_key,
+        &act.session_key,
+    );
+    let mut restarted = spawn_agent(agent_binary, &act_environment, &stdout_path, &stderr_path)?;
     let after_restart_pid = read_last_pid(&run_root.join("process_pids.log"))?;
     let process_restart_proven = before_restart_pid != after_restart_pid;
-    let act_projection = load_context_projection(&database_path, &context_id, &session_id).await?;
+    let act_projection = wait_for_context_projection(
+        &database_path,
+        &act_context_id,
+        &act_session_id,
+        Duration::from_secs(30),
+    )
+    .await?;
     write_json(&run_root.join("act_projection.json"), &act_projection)?;
     let act_projection_frame_ids = act_projection["frame_ids"]
         .as_array()
@@ -404,20 +467,14 @@ async fn run_morphz_arm(
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let act = fixture
-        .visible
-        .stages
-        .iter()
-        .find(|stage| stage.id == "act")
-        .ok_or("ME-01 smoke fixture has no act stage")?;
-    let replies_before_act = reply_count(&store, &session_id).await?;
+    let replies_before_act = reply_count(&store, &act_session_id).await?;
     send_prompt(
         &mut restarted,
         &render_stage_prompt(act, &fixture.visible.required_action)?,
     )
     .await?;
     let final_response =
-        wait_for_new_reply(&store, &session_id, replies_before_act, STAGE_TIMEOUT).await?;
+        wait_for_new_reply(&store, &act_session_id, replies_before_act, STAGE_TIMEOUT).await?;
     stop_agent(restarted).await?;
 
     let events = store.query(QueryFilter::default()).await?;
@@ -438,8 +495,11 @@ async fn run_morphz_arm(
         .cloned()
         .collect::<Vec<_>>();
     write_json(&run_root.join("model_usage_events.json"), &usages)?;
+    for (session_id, context_id) in &session_mounts {
+        load_context_projection(&database_path, context_id, session_id).await?;
+    }
     let final_projection =
-        load_context_projection(&database_path, &context_id, &session_id).await?;
+        load_context_projection(&database_path, &act_context_id, &act_session_id).await?;
     write_json(
         &run_root.join("final_context_projection.json"),
         &final_projection,
@@ -461,8 +521,8 @@ async fn run_morphz_arm(
             },
             production_morphz_runtime: true,
             database_path: Some(database_path),
-            context_ids: vec![context_id.clone()],
-            session_mounts: BTreeMap::from([(session_id, context_id)]),
+            context_ids,
+            session_mounts,
             context_tx_tool_exposed,
             context_tx_attempts,
             context_tx_commits,
@@ -752,6 +812,28 @@ async fn load_context_projection(
     }))
 }
 
+async fn wait_for_context_projection(
+    database_path: &Path,
+    context_id: &str,
+    session_id: &str,
+    timeout: Duration,
+) -> Result<Value, DynError> {
+    let started = Instant::now();
+    loop {
+        match load_context_projection(database_path, context_id, session_id).await {
+            Ok(projection) => return Ok(projection),
+            Err(error) if started.elapsed() >= timeout => {
+                return Err(format!(
+                    "ME-01 Context projection did not become available for session {session_id} in context {context_id} within {timeout:?}: {error}"
+                )
+                .into());
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 fn committed_frame_ids_before_act(events: &[Event], act_frame_ids: &[String]) -> Vec<String> {
     let act = act_frame_ids.iter().cloned().collect::<BTreeSet<_>>();
     let changed = events
@@ -866,6 +948,50 @@ fn actual_context_id(fixture_id: &str, context_key: &str) -> String {
         filesystem_component(fixture_id),
         filesystem_component(context_key)
     )
+}
+
+fn stage_environment(
+    base: &BTreeMap<String, String>,
+    fixture_id: &str,
+    context_key: &str,
+    session_key: &str,
+) -> BTreeMap<String, String> {
+    let mut environment = base.clone();
+    environment.insert(
+        "MORPHZ_CONTEXT_ID".to_string(),
+        actual_context_id(fixture_id, context_key),
+    );
+    environment.insert(
+        "MORPHZ_SESSION_ID".to_string(),
+        actual_session_id(fixture_id, session_key),
+    );
+    environment
+}
+
+fn fixture_runtime_bindings(
+    fixture: &Me01VisibleFixture,
+) -> Result<(Vec<String>, BTreeMap<String, String>), DynError> {
+    let context_ids = fixture
+        .stages
+        .iter()
+        .map(|stage| actual_context_id(&fixture.id, &stage.context_key))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut session_mounts = BTreeMap::new();
+    for stage in &fixture.stages {
+        let session_id = actual_session_id(&fixture.id, &stage.session_key);
+        let context_id = actual_context_id(&fixture.id, &stage.context_key);
+        if let Some(existing) = session_mounts.insert(session_id.clone(), context_id.clone()) {
+            if existing != context_id {
+                return Err(format!(
+                    "ME-01 fixture maps session {session_id} to multiple Contexts: {existing} and {context_id}"
+                )
+                .into());
+            }
+        }
+    }
+    Ok((context_ids, session_mounts))
 }
 
 fn actual_session_id(fixture_id: &str, session_key: &str) -> String {
