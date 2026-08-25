@@ -1,0 +1,49 @@
+{
+  "protocol_id": "me06-long-horizon-compaction-p1.1-frozen",
+  "suite_id": "ME-06-real-p1-20260825T210804.696Z-37187",
+  "cells_complete": 6,
+  "cells_expected": 6,
+  "execution_binary_sha256": "f0321bc27ef4d18afd160cace1a2c390d7eb9beab9c5731a9ef149efef81ac32",
+  "execution_source_baseline": "ee9d976",
+  "semantic_rescorer_commit": "3558c12",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "batch_concurrency": 1,
+  "artificial_context_pressure": false,
+  "effective_context": {
+    "soft_token_limit": 196608,
+    "hard_token_limit": 262144,
+    "maintenance_reserve_tokens_observed": 32768
+  },
+  "results": {
+    "controlled_compaction": {
+      "fixture_success": 3,
+      "fixture_total": 3,
+      "state_fields_correct": 24,
+      "state_fields_total": 24,
+      "unique_action_success": 3,
+      "unique_action_total": 3,
+      "provider_calls": 39,
+      "input_tokens": 286907,
+      "output_tokens": 23429,
+      "total_tokens": 310336
+    },
+    "full_morphz": {
+      "fixture_success": 3,
+      "fixture_total": 3,
+      "state_fields_correct": 24,
+      "state_fields_total": 24,
+      "unique_action_success": 3,
+      "unique_action_total": 3,
+      "context_transactions_committed": 40,
+      "causal_audit_complete": 3,
+      "provider_calls": 97,
+      "input_tokens": 4923739,
+      "output_tokens": 169882,
+      "total_tokens": 5093621
+    }
+  },
+  "token_ratio_full_morphz_over_baseline": 16.413,
+  "raw_report_sha256": "a188508c93dfe08d892e85c02ea76160d960b4b814fc3eb61c89dbf92d85c00f",
+  "semantic_rescore_report_sha256": "fb8c20214dd5516914c7baecc65c0433a9ff6861a26b3a30ad54210cd47e70a6"
+}

@@ -1,7 +1,7 @@
 # Morphz 论文主张—证据矩阵（2026-08-26）
 
 > 用途：作为中英文论文改稿的唯一数字与主张入口。最终论文可以压缩表达，但不得越过本表
-> 记录的证据边界。ME-06～ME-08 完成后补齐结果与统计；失败和无效启动不从审计记录删除。
+> 记录的证据边界。ME-07～ME-08 完成后补齐结果与统计；失败和无效启动不从审计记录删除。
 
 ## 1. 论文中心主张
 
@@ -24,21 +24,9 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 | ME-04 Runtime 权威边界 | 8/8 故障/权限 cells 通过；完整 lib 989 passed；恶意 Observation 无法扩大工具权限；并发版本、重放、副作用和恢复边界通过确定性 Gate | 模型生成的候选值与权威现实提交可以被确定性分离；安全主张来自 Runtime Gate，而不是模型自觉 | 识别全部 Prompt Injection；形式化证明整个系统安全；所有外部副作用均可恢复 |
 | ME-05 九模型普适性 | 144/144 完整；冻结严格 98/144；程序最终值 32/36；4 个未交付均为 Claude Provider refusal；非确定性求值事后语义诊断 104/108，且 104/104 可解析结果满足可见 Context 合同 | 机制不依赖单一模型家族；语义正确与 schema/轨迹合规必须分开；确定性校验层具有现实必要性 | 九模型同等可靠；68.1% 是公开榜分；某模型综合智力更高；忽略 Provider 失败后的选择性高分 |
 | Terminal-Bench 2.1 前 40 题 | 同环境、同 GPT-5.6 Sol/max、每题一次：Morphz 30/40（75%），官方 Codex 28/40（70%） | Morphz 的完整 Agent 系统在该固定子集上没有相对 Codex 的能力退化，并出现正向描述性差异 | 官方榜单成绩；统计显著优越；已证明完整 89 题或多次采样的总体优势 |
+| ME-06 长期 Structured Context 与受控 Compaction | 3 paired fixtures；两臂均 3/3 fixture、24/24 最终状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context transaction、跨 Session、版本冲突重读、重启恢复、隔离与因果审计；Morphz 5,093,621 total tokens，受控基线 310,336（约 16.4×） | 在三个长程任务上未观察到相对一次现代受控 compaction 的最终能力退化；Frame 事务、持久恢复和因果审计为额外系统能力；当前实现存在显著 token 成本 | Morphz 准确率或 token 优于 compaction；三个样本具有统计显著性；该结果是公开记忆榜分 |
 
 ## 3. 正在完成的证据
-
-### ME-06：长期 Structured Context 与受控 Compaction
-
-- 两 arms：公开、可审计的现代 `controlled_compaction` 与生产 `full_morphz`；
-- 3 个 paired fixtures，每个 120 events / 12 checkpoints，批次并发 1；
-- 主比较：最终状态、唯一行动、陈旧事实复活、来源权威判断；
-- 架构能力：跨 Session、进程恢复、Context 隔离、非冲突并发保留、冲突发现与恢复；
-- Frame 级事务是 Morphz 的额外能力；基线没有该机制时记“不适用”，不伪造为 0 分；
-- 三次启动装置事故永久保留，但不计入有效 paired 结果；p1.1 统一单请求 900 秒并逐调用落盘，
-  Morphz 使用生产 196,608/262,144/3,000 Context 配置，受控基线在 S6 前固定执行一次
-  compaction；不制造人工 Context 压力，完整实际请求 Token 仍全部计入成本。
-
-待填：两臂逐 checkpoint/fixture 语义结果、维护调用、Token、停顿、冲突与恢复数据。
 
 ### ME-07：LongMemEval-V2 Small
 
@@ -70,8 +58,8 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 4. **长期状态与外部效度：** ME-06、ME-07；
 5. **完整 Agent 产品能力：** ME-08；
 6. **共同结论：** Morphz 改变状态与求值机制并获得持久、可寻址、可事务、跨 Session、恢复
-   和审计能力；已有简单和外部任务证据未显示必然的通用能力代价。是否在复杂长程任务进一步
-   优于 compaction，由 ME-06/07 的最终数据决定，不提前写入摘要。
+   和审计能力；已有简单和外部任务证据未显示必然的通用能力代价。ME-06 未观察到准确率
+   优于 compaction，且暴露出当前实现的显著 token 开销；外部长期记忆效度由 ME-07 决定。
 
 ## 5. 必须保留的有效性威胁
 
