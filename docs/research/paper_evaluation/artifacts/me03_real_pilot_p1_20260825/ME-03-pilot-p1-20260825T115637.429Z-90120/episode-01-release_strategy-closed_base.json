@@ -1,0 +1,117 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "closed_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the unique greatest closed_score of 91.\",\"selected\":[\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 689,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 689,
+      "calibration_key": 7094990819166888333,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor BOUNDED_OPEN, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor CLOSED, apply the declared deterministic rule exactly. Context preferences that are relevant only to the open judgment do not override the closed rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"CLOSED\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for BOUNDED_OPEN, or closed-score-rule for CLOSED\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the unique greatest closed_score of 91.\",\"selected\":[\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Canary has the unique greatest closed_score of 91.\",\"selected\":[\"canary\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 866,
+          "uncached_input_tokens": 866,
+          "cached_input_tokens": 0,
+          "output_tokens": 128,
+          "reasoning_tokens": 94,
+          "total_tokens": 994,
+          "raw": [
+            {
+              "input_tokens": 866,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 128,
+              "output_tokens_details": {
+                "reasoning_tokens": 94
+              },
+              "total_tokens": 994
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjYMkXGWrS8Vzx8SA9xXAUxvVeBnEifrLuTrDtESl68OnBQ6Lh3P4tPm68J8ntpovVBTY_JEaUYV6GticlU2xDI_g79eXLwcXnFQ0847K7YplALrSqNk-Kzc95XPUKFwkqGe73QqXN9jbLAjEl1Rv15kBhlZFiw79rJdderiryiGrBI5m1eLgH2x9n3Jdre7k7mhRiPTD-UTmBjT3olQroMnHnrKXVBPp5AUMI2SljmE_MjRRFHC7HZ-sOKiwVucqhg1Fk4QuTp-gSQKRndTnDrmz2UIgwfytZWwp1rDHYa0ptyGxzni3XSeQqdRSXp-bNNLsdZjPGliiCDDFv89X4olX_1iNo8MvNy_xmkQ3Xmo8ohw9B-s1SowTK-iJdtepp2zD3jSZX_iKnAiEcW9eFwTmIPY_TuN0qkjQ1tDgwg_IreoE4qPjunbWmSPevkrv0LW52t3OaLujv1GZpkI5KL4wZfN2z53AlCNZ8ieVSYUwJ0VVdkd16klY_Pt8ukAMfLQwTzkFFIu4ca0zS1QtTLaHEoGEfBzMZvDk-8RosBhZ-uPKrBXPEG7Lns7h7oPt_lT1e4WY4xFfJdAyd6-JAJpu49keyIg_nNkELVOm2tUIMZcdQOH4L6Hyk2ks6keynk3Q5tfuKNzAjeTWBTGkRkiDirznz3xka3popyUczcsuPiSMfsOHqw_VaIbCECwRJ_q8Z3oji43G-ANuNwsLcVu5D96r-zxOEQtRCLXXPuUG65QMlW8MxzSv2yKqX-VmjEv7PDo7viLrcHU3xtk2kjjTk0CR96FJ4dxjQrIHt7DmgrsgJ44EAq5apjGosOngLzgeqoEAVBbYa0gXzdu1ZPBO8peOfF-b8J9UBSplfCJ9dcoKZjRCWlBfwuU9jh9CYxgjo1px8eCljT9dIl0kDJrsJPoiBE4ehHBRzkWm6uyHXyVMO362WtsQYxTmklqSTlcU3vi955fR8UJuis5ZQyoOi8iumT44r6t-fRrVRzpxqwKbGTYClVcZ5aLtXRLut1oUZQYUA4NREQlM2qGlaTVLwLZxXdUh0mpGn8fQqOpo7KGn_4WIrQhufUKiDo1PO8Jklev324yQykLNpOorIWUWVfvduByX57pSGUoaQDqQolIEPy26K4xQKrukVoYSUEIfViEmqQ4cF6ETKw1sena6wJJ10rdSczBs_C8jnTSoMPjSLci5PawzPigJ1R3VE_xEfLnb-k-bv_TGwx-4pbZqconK3argn38SNW3s3mjlWusQH5ovDSzmil9Fy2scJviCyon8VSkOmeGtJRwgmeridXULdZ5QMMSk6yJ0Kx4tilkPiM8g8lN0YdZurkftVBSD6BIdoZxytQ7loaNJoImYRrrf3tRoiwCgN8cMzcdRny--E0re3bDkosDzPYTsFc0XhiXR8kKibJ3gcj9QuHJjRXmJRT2HAHQr8qbqHGZ8dIJKehRTe1kzwo9bba6SppDjpbh32ruUD9FlBN3jltuuBOez9MUf2p3Y0gssn2hrJUl9FXelQIXk9XH8y9RgfR1kHfslvTyfDzSCCxN1P-0Vn4cBzGz3SVt2b7hAk3AXkQP-kXERzlU01v_0UGLYSeQ-23kipG-DBuNyYxm5aqr20NzMsN56ZkbM1EByOpKueiO5DA_kVkV6bMQVdLsLaP5K8i2gzmYmmELg6WrpaE6IZnI9FqvhGiTGcPqSankkVhYXmqznuV0IRM_jmun1f27NNIutoSikVHjSgzcgoDv609LRwdEOHBpP_wERpGE6ul5ddM7y3YYsxnTaJmRiwuXobHIBxHoiO8beJiQlH4zIpb00gu0LTK-M2EWqFcOxELW6U_o-Yy0pRgFqjDQ3P6ziD7GjAiFG19Z1k8URyVfBpVt7e5jg3mHc_nYBDlVZQWlIMHhtnRB8mqkLvSr2m-ca",
+              "id": "rs_01f92c8e385f1808016a8d8324e0e087d0920c7d09e11f3e79",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 866,
+      "uncached_input_tokens": 866,
+      "cached_input_tokens": 0,
+      "output_tokens": 128,
+      "reasoning_tokens": 94,
+      "total_tokens": 994,
+      "raw": [
+        {
+          "input_tokens": 866,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 128,
+          "output_tokens_details": {
+            "reasoning_tokens": 94
+          },
+          "total_tokens": 994
+        }
+      ]
+    },
+    "error": null
+  }
+}

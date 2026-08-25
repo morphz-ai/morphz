@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "research-causal-v2",
+  "valid_open_set_count": 5,
+  "selected": [
+    "controlled_trial",
+    "replication"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis research-causal-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both methods use primary evidence, provide depth, and avoid forbidden secondary properties; controlled_trial also directly supports causal validation.\",\"selected\":[\"controlled_trial\",\"replication\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 721,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 721,
+      "calibration_key": 3018436796561308905,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor BOUNDED_OPEN, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor CLOSED, apply the declared deterministic rule exactly. Context preferences that are relevant only to the open judgment do not override the closed rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"BOUNDED_OPEN\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for BOUNDED_OPEN, or closed-score-rule for CLOSED\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both methods use primary evidence, provide depth, and avoid forbidden secondary properties; controlled_trial also directly supports causal validation.\",\"selected\":[\"controlled_trial\",\"replication\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"research-causal-v2\"],\"explanation\":\"Both methods use primary evidence, provide depth, and avoid forbidden secondary properties; controlled_trial also directly supports causal validation.\",\"selected\":[\"controlled_trial\",\"replication\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 871,
+          "uncached_input_tokens": 871,
+          "cached_input_tokens": 0,
+          "output_tokens": 221,
+          "reasoning_tokens": 170,
+          "total_tokens": 1092,
+          "raw": [
+            {
+              "input_tokens": 871,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 221,
+              "output_tokens_details": {
+                "reasoning_tokens": 170
+              },
+              "total_tokens": 1092
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjYNSe6ybmDuiMwlmS0eqJFsdhab40lth7eK2KM_YZumdBbm2OLRDNuHfc7-PyZSnhB3Wvw1Af_BFur5H6C1eKZB3mUd6kwLnuFPNWcTf_OJp1Zusf54h-hD_y9R71mDvj1B99Tg65sZ9oW_7WdOWPgK0Wzsce8rGnspYmw3q3TxpAUR4oldMO1mAmqjkhJDI8rXeMLV7duozwMo8fmXBF6IwIrGx-tDzXRnPLAbv53zaoR8NNePB6HGQg0n-gXdMivG2nbATReY9TySfliLwVtsJ-iVql47Y_yKDcuriUrTOruEbsQUOVXiRzvengICdk7hvEAjf8kZCCKOFDHG-7oNYHkj7zrTigMtSCTFeNvq4bgdlPY7mfkama9w73R4B6XsUzbdetWxz6k2OCx0h8K7PwotEsooZzcYtNwy4_TeVyQR0uCgSDf_eAzjzFVZgG-neP3Kv-oSPtfWunCZ0-3ipbxHMpOZAqwJFOI0RWi7LZO-lco6apLvucQ9KRLmiu51N64VqxTDcmfIYu1wHjfIl2ByUQTeeuKUI7BvpfAxlKyPbPMYDc6DP8ixP7PgJLSp6y72D5wrw3vbNF0i1e74gladJssHFHlq_8FlgkNRlIUXGmrv35oUTKmf-rVQc-v6Ku_8qvhMKvftwFjy1dNfCkC3O6eCtncva3p1Fph01XTGpqkj3s_MFg3NZKq4zRsL5uCI1XdmugYHrZVGC_fT8YGMHIvUlv1rg6PDXhNrkcleqFbEv3sVDDLCrMw3C4VGGJBP7NSU_b6yKLhj3nB0Y1wW57MPNWbb94AO6LJZJofO2pWCzi-lFB2frE7cCEPIM_YeWUKkSVBuuDgxyVzS0Mk9RDspVqD7qo55AZX3CusS0Xv3UsttWf_myJYdGSxU3LwkT7BGyo7mbcWUye3J7C9isHScPtEbupOWVnL7WJBJ2kG8L4Ybnar4xYTrbCYuuVM0yq0C_E3RyMESSvV4sJTukd-Sk8Hksd-NwOtm44EdqNteO7w_tB7Lt5FoCFJ2opmMJ-e5qAh2U5qZiF8iVXDFoEveTrorI4SqcFgZ9E8V4x8ss-mWhNQQZvROR68zsbXEYvg0Mwl8o7O45gfRNWL9kriw6hHlXMUdu-kUwxROcP1bnc46bFrJDOoiwfJzf9aCmTHF6rBZaSBTO4CHxcQK9Rf7Ucs47nn-PLj8dmW62qXjQRVBi_YevKob2DpBdvUWvRtL9PSOU1iveVzaMbi-ue2O1zJCqvssin9W07HZXJHBmrvfaOOKkZEatcI_euPKQ7Xld3sGV90XbYmUbpGkNjpiNZop0z1jLaYsCQf_bvz0q_GMzBB9gOJD70QcSZSzlcShTXPSNsz_AeA6zjAb9Uxp9cEszu-TOKwj7pUa9XeCU-nSscN8a0OG431K4fetOf7RNcA5AHc24-qE8npGwQbVKm0TgF_9OKePxd33TuGy1OeDRs9IhEzJq0BCMSgTrqbAZUH9Y7whZKfgnERblJDkEWkemn8VoaXgZtcxsXMh0RznwfKrrUYK0XTmJ7RcbWKD7vtSmbpIbZNx6oVv0htPLpm_mnUTQVf9o7_33DpbGeVLbNFWFecLKn0VGcyMNDNT7vfH_WO3scMsonckBpOKVA9kZpwUMBtCL0TpKf3u1-fNk7vUwJ5BzXsxA3iAm-3sflJb6a_1HNIUZRtcY9XaFF4IcGUx8GR5Cp3BDUijsiZyHXAoREqFlUMLQVwgM6l4rf0OvoJFGTUS_tL0BA42utmL9ZMzA5BcevN8l29p3p2ftFqKCcrFTcTBnFqSMN3R9q_KXGJEAULn9s4RNoGKXl9_nnuvGXlhz75OcFOIo8rHnl37-e4i9yneFgIan9yW74KkvgyVZrKRpDe3ThJveaPGG640L8ho2Feu9T248c-lJ0inK_jkfzn55HhUB0Mb-vikv00D3lkMOBquqCnmI_-E30fFzHa3pYXrN7yVdsLVdt9Mt9cVthpBKUEY0zg7VcgS1kpu8GTlBofSWl-yie2khetd_fuChjJQK0X4T04a2SUL8BreOFHYKAdAaGBf2I5mtD2UTeijPdhkAZULlL3t01HQryrJcHfKR-_Kydj5iAobYTeqTapmbiCDSPUwgPR3Z4u1HobW8skWtQYu-Tn9FyYcvupQ-AD_J9q1tFJ0-BsmG1ePJjBJ7VF2OQw6N-1g-oLWGkoP6CcdsHjbP3H_3ZhbMppeADwmz0w6h_tSMUEbHcTAkGFAYvxYg-iQVcaYIqV3VMwF8BDcv2cTxs6VByWOzX__egKj9L0aU2vo41uMDprEI58gCZjZxufbjsJLGC0mBFuocte-S5JLWg1e_lTm2F6RyJP0Xq0DgleB0Nt2cYbffJLE-FzPTASXfopiMfMwtlpu-mjsdIxY4dpzSeaT6alshfrML0gjdsRpyep73P_JddzLRJZ7zycnPGfWDOY1Qx153GjWybrebbebtc2RZfODY4twGYkshrPDTa0FY1iaWR4_UvXrGdAtiQ3g_uUkgmFiVEvtaz04lCqlvdaUS0Na_6d9O_QoDLTZya1yRZtp_lCHm",
+              "id": "rs_0e483a8948a4df97016a8d8352798487d0bc7e63e2e02ba061",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 871,
+      "uncached_input_tokens": 871,
+      "cached_input_tokens": 0,
+      "output_tokens": 221,
+      "reasoning_tokens": 170,
+      "total_tokens": 1092,
+      "raw": [
+        {
+          "input_tokens": 871,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 221,
+          "output_tokens_details": {
+            "reasoning_tokens": 170
+          },
+          "total_tokens": 1092
+        }
+      ]
+    },
+    "error": null
+  }
+}

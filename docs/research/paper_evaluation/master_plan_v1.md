@@ -168,7 +168,12 @@ Token 和延迟作为机制与成本诊断，不预设 Morphz 必须在每项上
 
 ### ME-07：公开 Benchmark 外部验证
 
-首选 Mem2ActBench，原因是它要求跨 Session 记忆进入后续工具选择和参数落地，与 Morphz 核心机制比被动问答更一致。
+分为两个互补轨道：
+
+- ME-07A Terminal-Bench/Harbor：测量完整 Coding Agent 的外部系统能力，只作为通用能力和
+  宣传数据，不冒充 Structured Context 或非确定性认知求值的因果证据；
+- ME-07B Mem2ActBench：要求跨 Session 记忆进入后续工具选择和参数落地，与 Morphz 核心
+  机制更一致，仍是论文外部有效性的首选机制相关 Benchmark。
 
 执行纪律：
 
@@ -186,7 +191,8 @@ Token 和延迟作为机制与成本诊断，不预设 Morphz 必须在每项上
 - MemoryAgentBench：优先 conflict resolution 和 test-time learning；
 - LongMemEval-V2：长期状态、工作流和冲突的大规模补充。
 
-Harbor/Terminal-Bench 与 π-Bench 保留为通用 Agent 能力和系统案例，不作为认知求值核心主张的唯一证据。
+Terminal-Bench/Harbor 与 π-Bench 保留为通用 Agent 能力和系统案例；可以登记在 ME-07A，
+但不能作为认知求值核心主张的唯一证据，也不替代 ME-07B。
 
 ## 4. 分阶段推进
 

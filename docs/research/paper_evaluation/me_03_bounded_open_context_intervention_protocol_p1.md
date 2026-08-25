@@ -1,6 +1,6 @@
 # ME-03 受约束开放求值与 Context 干预协议 p1
 
-> 状态：`protocol-frozen`（p1.1）  
+> 状态：`pilot-complete`（p1.1）
 > 日期：2026-08-25  
 > 关联研究问题：RQ3  
 > 证据目标：Pilot（P）
@@ -94,7 +94,7 @@ Pilot 可支持机制可行性和失败模式判断，不能直接形成跨模�
 - [x] scorer 正负控制通过；
 - [x] Prompt bundle 与 scorer 版本落盘；
 - [x] 精确物理模型、Provider、reasoning 和 fallback 绑定通过；
-- [ ] 24 个 Pilot episode 完整落盘并可重评分。
+- [x] 24 个 Pilot episode 完整落盘并可重评分；23/24 严格通过，唯一失败为闭合条件的 JSON 字段类型错误。
 
 ## 9. 冻结产物
 
@@ -109,3 +109,4 @@ Pilot 可支持机制可行性和失败模式判断，不能直接形成跨模�
 | --- | --- | --- | ---: |
 | p1 candidate | 2026-08-25 | 首版四条件与三个任务；Gate 后发现数量措辞冲突及开放 Prompt 暴露闭合分数 | 0 |
 | p1.1 frozen | 2026-08-25 | 中性化任务数量；开放 Prompt 移除 `closed_score`；落盘完整合法集合；重新通过测试、Clippy、No-model 与绑定 Gate | 0 |
+| p1.1 Pilot complete | 2026-08-25 | 开放 12/12、Context shift 6/6、闭合严格 11/12；失败不补跑 | 24 |

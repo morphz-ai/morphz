@@ -24,11 +24,11 @@
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
 | ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
-| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D`（p1.1 No-model Gate） | `protocol-frozen` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 从冻结 commit 运行 3 tasks × 4 conditions × 2 repetitions 真实 Pilot |
+| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（开放 12/12；Context shift 6/6；闭合严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
-| ME-07 | Mem2ActBench 外部验证 | RQ5 | P1 | 无 | `planned` | — | 完成许可/环境/适配范围审计 |
+| ME-07 | 公开 Benchmark 外部验证（A: Terminal-Bench；B: Mem2ActBench） | 外部效度 | P1 | Terminal-Bench 前 40 题四臂 `P` | `pilot-complete` | [`ME-07A 结果`](./artifacts/terminal_bench_four_arm_prior_40_20260825/RESULT.md) | 保留 40 题为系统能力 Pilot；ME-07B 完成许可/环境/适配范围审计 |
 | ME-08 | 第二公开 Benchmark | RQ5/RQ6 | P2 | 无 | `planned` | — | ME-07 后选择 |
 
 ## 依赖
@@ -54,12 +54,22 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | `morphz_concurrent_objective_coordination_*` | ME-04/ME-06 | F | 并发、恢复案例和后续故障 fixture 来源 |
 | `morphz_reality_contract_v1_validation.md` | ME-01/ME-04 | F/D | 提炼来源、时序和权威冲突评分项 |
 | Rust/CLI/集成测试 | ME-04 | D | 建立“主张—测试—commit”覆盖矩阵 |
-| Harbor、π-Bench adapter | 通用能力 | F | 附录/系统案例；不替代 ME-07 |
+| Harbor、Terminal-Bench、π-Bench adapter | ME-07A / 通用能力 | F/P | Terminal-Bench 前 40 题四臂结果登记为外部系统能力 Pilot；不替代机制消融或 Mem2ActBench |
 
 ## 状态更新记录
 
 ### 2026-08-25
 
+- ME-03 p1.1 真实 Pilot 完成：开放条件 12/12 严格满足类型、候选、数量、Context 依据和
+  语义约束；六个 Base/Intervention 配对 6/6 发生符合预注册合法集合的变化。闭合条件严格
+  11/12；唯一失败选择了正确 `canary`，但把数组 `basis` 输出成字符串，按冻结 scorer
+  保留失败且不补跑。相同 task/Context 的两次重复选择一致，未观察到重复间多样性；该结果
+  支持“契约允许多值、Context 约束选择”，不支持随机性或高熵输出主张。报告见
+  [`artifacts/me03_real_pilot_p1_20260825/RESULT.md`](./artifacts/me03_real_pilot_p1_20260825/RESULT.md)；
+- Terminal-Bench 前 40 题四臂结果正式登记为 ME-07A 外部系统能力 Pilot，而不是 ME-05。
+  官方 scorer 下原生 Morphz 30/40、同模型 Codex 28/40；每题单次且为此前已观察任务，不能
+  当作公开榜单或显著优越性结论。ME-05 继续只承担核心机制跨模型验证；ME-07B 保留
+  Mem2ActBench 作为与跨 Session 记忆更贴近的外部验证；
 - ME-03 p1.1 协议冻结：三个任务的 Base/Intervention 开放合法集合分别为 6/5、3/3、
   4/5，所有干预前后集合不相交；每个任务的闭合分数最大值唯一。scorer 对全部合法集合
   正例以及任意文本、未知候选、错误数量、错误 Context 依据和错误闭合值负例均正确判定。
