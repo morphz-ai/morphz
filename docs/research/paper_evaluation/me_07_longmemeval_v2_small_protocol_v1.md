@@ -1,12 +1,16 @@
 # ME-07：LongMemEval-V2 Small 外部记忆验证协议 v1
 
-> 状态：`superseded / full-run-aborted`
+> 状态：`cancelled-current-paper / unauthorized-full-run-aborted`
 >
 > 日期：2026-08-26（Asia/Shanghai）
 >
 > 官方代码：`xiaowu0162/LongMemEval-V2@2cc8c540bdb87fe6761629b585e727e1c4704520`
 >
 > 官方数据：`xiaowu0162/longmemeval-v2@f152293e235517d504809563c833d7190b8c713b`
+
+> 最终处置：Reference adapter 与 Gate 仅保留作方法和审计材料。由于完整运行使用了未经
+> 授权的替代模型，没有形成规定基准模型结果；2026-08-26 用户决定当前论文取消 ME-07，
+> 不补跑、不纳入效果证据。
 
 ## 1. 权威 benchmark 与范围
 
