@@ -31,15 +31,17 @@
 
 ## 三组结果
 
-| Arm | 严格成功 | Provider 调用 | 进程重启 | `context_tx` 提交 | 行动前 Frame |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `append_only` | 1/1 | 3 | 不适用 | 0 | 0 |
-| `structured_no_direct_reentry` | 1/1 | 3 | 已证明 | 0 | 0 |
-| `full_morphz` | 1/1 | 5 | 已证明 | 2 | 2 |
+| Arm | 严格成功 | Provider 调用 | 进程重启 | `context_tx` 机制轨迹 |
+| --- | ---: | ---: | ---: | --- |
+| `append_only` | 1/1 | 3 | 不适用 | 不适用：该组没有此能力 |
+| `structured_no_direct_reentry` | 1/1 | 3 | 已证明 | 不适用：实验设计关闭该能力 |
+| `full_morphz` | 1/1 | 5 | 已证明 | 补充证据：2 次提交、2 个行动前 Frame |
 
 三组的 JSON 合同、action、object、value 和 evidence 五项评分均通过；没有陈旧值、跨对象值
-或完整性违规。`full_morphz` 多出的两次 Provider 调用来自两次真实 `context_tx` 工具调用后
-的求值回合，不应在这一个 Smoke 上解释为效率优势或劣势。
+或完整性违规。三组的主要比较结果只有最终行动正确性；`context_tx` 对前两组不适用，
+不能把原始遥测中的零计数当作零分或失败。`full_morphz` 多出的两次 Provider 调用及两次
+事务提交只证明该 arm 的真实机制确实被执行，不是本项实验的优胜指标，也不应解释为效率
+优势或劣势。
 
 ## 真实回流证据
 
@@ -54,8 +56,8 @@
 - Event History 含 2 个 `chat/context_tx_committed` 和对应工具输出。
 
 只读组运行相同生产 Morphz 路径，但 `MORPHZ_CONTEXT_TRANSACTIONS_ENABLED=false`，模型不可
-见 `context_tx`，实际尝试与提交均为 0。它仍可从持久化的完整对话/Observation 中完成这个
-简单任务，因此本项出现三组天花板结果符合预期。
+见 `context_tx`，因此事务提交对该组属于“不适用”，而不是得分为零。它仍可从持久化的
+完整对话/Observation 中完成这个简单任务，因此本项出现三组天花板结果符合预期。
 
 ## 模型与运行身份
 

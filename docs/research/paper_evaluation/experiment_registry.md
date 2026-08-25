@@ -64,8 +64,9 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   `delayed_reference` 任务上，`append_only`、`structured_no_direct_reentry` 和
   `full_morphz` 均严格通过并返回完全相同的正确行动。完整 Morphz 使用正式二进制、独立
   SQLite/Context、`gpt-5.6-sol`/max/no-fallback/full-access，实际产生 2 次
-  `context_tx` 提交、2 个行动前 Frame，并在进程重启后正确引用回流结果；只读组 0 尝试、
-  0 提交。该结果支持真实接线与简单任务非退化，不支持优越性、Token 效率或容量主张；
+  `context_tx` 提交、2 个行动前 Frame，并在进程重启后正确引用回流结果；前两组没有可用的
+  `context_tx` 能力，因此该项为“不适用”，原始遥测零计数不是比较得分。该结果支持真实
+  接线与简单任务非退化，不支持优越性、Token 效率或容量主张；
   完整 Morphz 的 5 次调用对另两组 3 次调用仅作诊断记录。报告与机器可读证据见
   [`artifacts/me01_real_smoke_p11_20260825/RESULT.md`](./artifacts/me01_real_smoke_p11_20260825/RESULT.md)；
 - ME-01 首次 p1 真实运行发现评分器构造缺陷：可见输入没有定义精确动作词，而隐藏 scorer
