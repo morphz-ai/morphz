@@ -147,6 +147,7 @@ Morphz 与官方 Codex 的同环境产品比较归入 ME-07 公开 Benchmark。�
 | 单次业务输出验收上限 | 4,096 tokens |
 | 单次维护输出验收上限 | 4,096 tokens |
 | 每检查点物理请求上限 | 4 |
+| 单次模型请求 wall-clock 上限 | 900 秒（与生产 stage Gate 一致） |
 | 单 fixture wall-clock | 60 分钟，仅用于防止失控 |
 
 冻结 tokenizer 对完整实际请求重算 `uncached_equivalent_input_tokens`，同时保存 Provider 原始

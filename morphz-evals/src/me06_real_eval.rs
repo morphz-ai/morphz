@@ -30,7 +30,7 @@ const PROFILE: &str = "roadshow-demo-001";
 const PROVIDER: &str = "custom";
 const MODEL: &str = "gpt-5.6-sol";
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
-const MODEL_TIMEOUT: Duration = Duration::from_secs(600);
+const MODEL_TIMEOUT: Duration = Duration::from_secs(900);
 const STAGE_TIMEOUT: Duration = Duration::from_secs(900);
 const COMPACTION_TRIGGER_TOKENS: usize = 10_000;
 
@@ -122,6 +122,7 @@ struct ModelCaller<'a> {
     reasoning: ReasoningEffort,
     arm: Me06Arm,
     fixture_id: &'a str,
+    artifact_root: &'a Path,
 }
 
 struct CellExecution {
@@ -272,6 +273,7 @@ async fn run_controlled_compaction(
         reasoning,
         arm,
         fixture_id: &fixture.visible.fixture_id,
+        artifact_root: &root,
     };
 
     for stage in 1..=fixture.visible.checkpoint_count {
@@ -397,7 +399,7 @@ impl ModelCaller<'_> {
         let input_sha256 = sha256(&serde_json::to_vec(&messages)?);
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let started = Instant::now();
-        let response = tokio::time::timeout(
+        let completion = tokio::time::timeout(
             MODEL_TIMEOUT,
             self.client.create_completion_bound_stream_with_options(
                 self.binding,
@@ -410,8 +412,7 @@ impl ModelCaller<'_> {
                 },
             ),
         )
-        .await
-        .map_err(|_| format!("ME-06 {} {kind} stage {stage} timed out", self.fixture_id))??;
+        .await;
         let mut stream_events = Vec::new();
         let mut usage = ModelUsage::default();
         while let Ok(event) = receiver.try_recv() {
@@ -420,7 +421,60 @@ impl ModelCaller<'_> {
             }
             stream_events.push(event);
         }
-        Ok(Me06CallArtifact {
+        let response = match completion {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                write_json(
+                    &self
+                        .artifact_root
+                        .join(format!("failed_call_stage_{stage:02}_{kind}.json")),
+                    &serde_json::json!({
+                        "fixture_id": self.fixture_id,
+                        "arm": self.arm,
+                        "stage": stage,
+                        "kind": kind,
+                        "classification": "provider_or_service_error",
+                        "error": error.to_string(),
+                        "stream_events": stream_events,
+                        "usage": usage,
+                        "input_sha256": input_sha256,
+                        "prompt_tokens": measurement.as_ref().map(|value| value.tokens),
+                        "wall_clock_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    }),
+                )?;
+                return Err(error);
+            }
+            Err(_) => {
+                let classification = if stream_events.is_empty() {
+                    "service_timeout_without_stream"
+                } else {
+                    "model_timeout_with_stream"
+                };
+                write_json(
+                    &self
+                        .artifact_root
+                        .join(format!("failed_call_stage_{stage:02}_{kind}.json")),
+                    &serde_json::json!({
+                        "fixture_id": self.fixture_id,
+                        "arm": self.arm,
+                        "stage": stage,
+                        "kind": kind,
+                        "classification": classification,
+                        "stream_events": stream_events,
+                        "usage": usage,
+                        "input_sha256": input_sha256,
+                        "prompt_tokens": measurement.as_ref().map(|value| value.tokens),
+                        "wall_clock_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    }),
+                )?;
+                return Err(format!(
+                    "ME-06 {} {kind} stage {stage} timed out ({classification})",
+                    self.fixture_id
+                )
+                .into());
+            }
+        };
+        let artifact = Me06CallArtifact {
             arm: self.arm,
             fixture_id: self.fixture_id.to_string(),
             stage,
@@ -438,7 +492,14 @@ impl ModelCaller<'_> {
             stream_events,
             usage,
             wall_clock_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        })
+        };
+        write_json(
+            &self
+                .artifact_root
+                .join(format!("model_call_stage_{stage:02}_{kind}.json")),
+            &artifact,
+        )?;
+        Ok(artifact)
     }
 }
 
