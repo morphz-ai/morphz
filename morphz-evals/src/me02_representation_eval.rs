@@ -1,8 +1,9 @@
 use chrono::Utc;
 use morphz::config;
 use morphz::llm::{
-    Client, FunctionCall, Message, ModelAttemptBinding, ModelRequestContext, ModelRequestOptions,
-    ModelStreamEvent, ModelUsage, ReasoningEffort, ToolCall, ToolDefinition,
+    provider_continuation_message, Client, FunctionCall, Message, ModelAttemptBinding,
+    ModelRequestContext, ModelRequestOptions, ModelStreamEvent, ModelUsage, ReasoningEffort,
+    ToolCall, ToolDefinition,
 };
 use morphz::provider::build_configured_client;
 use morphz::runtime::MorphzRuntime;
@@ -55,6 +56,7 @@ impl Arm {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Operand {
     Literal { value: String },
+    Boolean { value: bool },
     Reference { binding: String, field: String },
 }
 
@@ -197,6 +199,7 @@ pub struct NoModelGateReport {
     pub semantic_digest_gate: bool,
     pub common_system_contract_gate: bool,
     pub hidden_output_leakage_gate: bool,
+    pub typed_literal_gate: bool,
     pub scorer_positive_gate: bool,
     pub scorer_negative_gate: bool,
     pub ready_for_real_pilot: bool,
@@ -216,7 +219,7 @@ pub struct BindingPreflightReport {
 
 pub fn run_no_model_gate(output_base: &Path) -> Result<NoModelGateReport, DynError> {
     let id = format!(
-        "ME-02-no-model-p1-{}-{}",
+        "ME-02-no-model-p1.1-{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         std::process::id()
     );
@@ -243,11 +246,13 @@ pub fn run_no_model_gate(output_base: &Path) -> Result<NoModelGateReport, DynErr
                 .all(|hidden| !arm.prompt.contains(hidden))
         })
     });
+    let typed_literal_gate = typed_literal_gate(&prompt_bundle);
     let scorer_positive_gate = tasks.iter().all(scorer_accepts_registered_positive);
     let scorer_negative_gate = tasks.iter().all(scorer_rejects_registered_negatives);
     let ready_for_real_pilot = semantic_digest_gate
         && common_system_contract_gate
         && hidden_output_leakage_gate
+        && typed_literal_gate
         && scorer_positive_gate
         && scorer_negative_gate;
 
@@ -264,6 +269,7 @@ pub fn run_no_model_gate(output_base: &Path) -> Result<NoModelGateReport, DynErr
         semantic_digest_gate,
         common_system_contract_gate,
         hidden_output_leakage_gate,
+        typed_literal_gate,
         scorer_positive_gate,
         scorer_negative_gate,
         ready_for_real_pilot,
@@ -278,7 +284,7 @@ pub fn run_no_model_gate(output_base: &Path) -> Result<NoModelGateReport, DynErr
 
 pub async fn run_binding_preflight(output_base: &Path) -> Result<BindingPreflightReport, DynError> {
     let id = format!(
-        "ME-02-binding-preflight-p1-{}-{}",
+        "ME-02-binding-preflight-p1.1-{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         std::process::id()
     );
@@ -309,7 +315,7 @@ pub async fn run_real_pilot(
         return Err("repetitions must be greater than zero".into());
     }
     let id = format!(
-        "ME-02-pilot-p1-{}-{}",
+        "ME-02-pilot-p1.1-{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         std::process::id()
     );
@@ -416,8 +422,15 @@ async fn run_episode(
             stream_events.push(event);
         }
 
-        let response = match completion {
+        let (response, provider_continuation) = match completion {
             Ok(response) => {
+                let provider_continuation = stream_events.iter().rev().find_map(|event| {
+                    if let ModelStreamEvent::ProviderContinuation { continuation } = event {
+                        Some(continuation.clone())
+                    } else {
+                        None
+                    }
+                });
                 requests.push(RequestArtifact {
                     attempt,
                     prompt_measurement: measurement,
@@ -427,7 +440,7 @@ async fn run_episode(
                     usage,
                     error: None,
                 });
-                response
+                (response, provider_continuation)
             }
             Err(error) => {
                 let message = error.to_string();
@@ -461,6 +474,9 @@ async fn run_episode(
                 },
             })
             .collect::<Vec<_>>();
+        if let Some(continuation) = provider_continuation {
+            messages.push(provider_continuation_message(continuation)?);
+        }
         messages.push(Message {
             role: "assistant".to_string(),
             content: response.content,
@@ -676,6 +692,7 @@ fn render_sexpr(program: &Program) -> String {
 fn render_operand(operand: &Operand) -> String {
     match operand {
         Operand::Literal { value } => format!("(literal {})", atom(value)),
+        Operand::Boolean { value } => format!("(boolean {value})"),
         Operand::Reference { binding, field } => {
             format!("(ref {} {})", atom(binding), atom(field))
         }
@@ -738,6 +755,7 @@ fn render_markdown(program: &Program, depth: usize) -> String {
 fn markdown_operand(operand: &Operand) -> String {
     match operand {
         Operand::Literal { value } => format!("LITERAL `{value}`"),
+        Operand::Boolean { value } => format!("BOOLEAN `{value}`"),
         Operand::Reference { binding, field } => format!("REFERENCE `{binding}.{field}`"),
     }
 }
@@ -848,7 +866,7 @@ fn alternating_branches_task() -> EvalTask {
             &routed,
             Program::If {
                 left: reference(&observed, "enabled"),
-                equals: lit("true"),
+                equals: boolean(true),
                 when_true: Box::new(call(
                     "route_true",
                     [
@@ -1088,6 +1106,10 @@ fn lit(value: &str) -> Operand {
     Operand::Literal {
         value: value.to_string(),
     }
+}
+
+fn boolean(value: bool) -> Operand {
+    Operand::Boolean { value }
 }
 
 fn reference(binding: &str, field: &str) -> Operand {
@@ -1576,6 +1598,25 @@ fn hidden_tool_outputs() -> &'static [&'static str] {
     ]
 }
 
+fn typed_literal_gate(bundle: &[PromptTaskArtifact]) -> bool {
+    let Some(task) = bundle
+        .iter()
+        .find(|task| task.task == "alternating_branches")
+    else {
+        return false;
+    };
+    let sexpr = task.arms.iter().find(|arm| arm.arm == "sexpr_ast");
+    let json = task.arms.iter().find(|arm| arm.arm == "json_ast");
+    let markdown = task.arms.iter().find(|arm| arm.arm == "markdown_program");
+    sexpr.is_some_and(|arm| arm.prompt.contains("(boolean true)"))
+        && json.is_some_and(|arm| {
+            arm.prompt.contains("\"kind\": \"boolean\"")
+                && arm.prompt.contains("\"value\": true")
+                && !arm.prompt.contains("\"value\": \"true\"")
+        })
+        && markdown.is_some_and(|arm| arm.prompt.contains("BOOLEAN `true`"))
+}
+
 fn message(role: &str, content: &str) -> Message {
     Message {
         role: role.to_string(),
@@ -1613,6 +1654,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn booleans_retain_the_same_native_type_in_every_renderer() {
+        let bundle = prompt_bundle(&tasks()).unwrap();
+        assert!(typed_literal_gate(&bundle));
+    }
+
+    #[test]
+    fn provider_continuation_is_a_protocol_message_not_visible_text() {
+        let continuation = morphz::llm::ProviderContinuation::OpenaiResponses {
+            reasoning_items: vec![json!({"type":"reasoning","id":"r1"})],
+        };
+        let message = provider_continuation_message(continuation).unwrap();
+        assert_eq!(
+            message.name.as_deref(),
+            Some(morphz::llm::PROVIDER_CONTINUATION_MESSAGE_NAME)
+        );
+        assert_eq!(message.role, "system");
     }
 
     #[test]

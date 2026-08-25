@@ -1,8 +1,8 @@
 # ME-02 等信息递归表示对照协议 p1
 
-> 状态：`protocol-frozen`（Pilot）
+> 状态：`protocol-frozen`（Pilot p1.1）
 >
-> 冻结时间：2026-08-25 18:33 CST
+> 冻结时间：p1 2026-08-25 18:33 CST；p1.1 2026-08-25 18:59 CST
 >
 > 关联研究问题：RQ1
 >
@@ -197,13 +197,13 @@ Runner：`morphz-evals/src/me02_representation_eval.rs`
 CLI：`morphz-evals/src/bin/me02_representation_eval.rs`
 
 No-model Gate：
-`docs/research/paper_evaluation/artifacts/me02_no_model_gate_p1_20260825/`
+`docs/research/paper_evaluation/artifacts/me02_no_model_gate_p11_20260825/`
 
 模型绑定预检：
-`docs/research/paper_evaluation/artifacts/me02_binding_preflight_p1_20260825/`
+`docs/research/paper_evaluation/artifacts/me02_binding_preflight_p11_20260825/`
 
 真实 Pilot artifact root：
-`docs/research/paper_evaluation/artifacts/me02_real_pilot_p1_20260825/`
+`docs/research/paper_evaluation/artifacts/me02_real_pilot_p11_20260825/`
 
 原始模型输出必须追加保存，不覆盖失败轨迹。
 
@@ -231,3 +231,5 @@ No-model Gate：
 | --- | --- | --- | --- |
 | p1 draft | 2026-08-25 | 首次将表示、Kernel 说明强度和任务措辞解耦；规定 Canonical IR 三 renderer | — |
 | p1 frozen | 2026-08-25 | 6×3 No-model Gate 和零 completion 精确物理绑定预检通过；冻结 Pilot | 否 |
+| p1 invalid | 2026-08-25 | 首次真实运行暴露布尔字符串类型错误和缺失 Provider continuation；18 episodes 整体无效并保留 | — |
+| p1.1 frozen | 2026-08-25 | 新增原生 Boolean IR、typed-literal Gate 和 Responses continuation 回传；No-model 与绑定 Gate 重过 | 是：p1 真实 Pilot 不得并入 p1.1 |

@@ -23,7 +23,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
 | ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
-| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F`；No-model Gate 通过 | `protocol-frozen` | [`p1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 运行 6×3 真实模型 Pilot，判定天花板/地板与格式偏置 |
+| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F`；p1.1 No-model Gate 通过；p1 真实运行无效保留 | `protocol-frozen` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 从 p1.1 冻结 commit 重跑完整 6×3 Pilot，判定天花板/地板与格式偏置 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |

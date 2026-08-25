@@ -1,4 +1,4 @@
-# ME-02 等信息表示对照：No-model Gate 与模型绑定预检
+# ME-02 p1.1 等信息表示对照：No-model Gate 与模型绑定预检
 
 > 日期：2026-08-25（Asia/Shanghai）
 >
@@ -6,7 +6,7 @@
 
 ## 1. 结论
 
-ME-02 p1 的实验装置已通过 No-model Gate 和零 completion 精确模型绑定预检，允许启动
+ME-02 p1.1 的实验装置已通过 No-model Gate 和零 completion 精确模型绑定预检，允许启动
 6 tasks × 3 arms × 1 repetition 的真实 Pilot。
 
 | Gate | 结果 |
@@ -14,6 +14,7 @@ ME-02 p1 的实验装置已通过 No-model Gate 和零 completion 精确模型�
 | 6 个任务的三个 renderer 均绑定同一 Canonical Program IR digest | 通过 |
 | 三组使用完全相同的 System Contract | 通过 |
 | 隐藏 Observation 和最终交付值未泄漏到可见 prompt | 通过 |
+| Boolean 在三种 renderer 中均保留原生布尔类型 | 通过 |
 | 6/6 注册正例被 scorer 接受 | 通过 |
 | 6/6 负例族被 scorer 拒绝 | 通过 |
 | 物理模型为 `gpt-5.6-sol` | 通过 |
@@ -22,7 +23,7 @@ ME-02 p1 的实验装置已通过 No-model Gate 和零 completion 精确模型�
 | Reasoning effort 为 `max` | 通过 |
 | 预检 completion calls | 0 |
 
-No-model Gate 的最终字段为 `ready_for_real_pilot=true`。
+No-model Gate 的最终字段为 `typed_literal_gate=true`、`ready_for_real_pilot=true`。
 
 ## 2. 三组表示
 
@@ -52,7 +53,8 @@ completion_calls=0
 
 真实 Pilot 的每个请求还会通过同一个 `ModelAttemptBinding` 调用
 `create_completion_bound_stream_with_options`，并显式携带 `reasoning_effort=max`，避免只在配置层
-声明而实际请求漂移。
+声明而实际请求漂移。工具调用响应产生的 OpenAI Responses reasoning item 使用
+`provider_continuation_message` 在下一轮回传，与生产 Runtime 的协议续接路径一致。
 
 ## 4. Scorer 负例
 
@@ -71,21 +73,22 @@ Gate 验证 scorer 会拒绝：
 No-model Gate：
 
 ```text
-gate_report.json   fbf62b6e709e27546f51d65b7fde1e684cd43bd451a31d6b0534c5e44ebd9e1f
-prompt_bundle.json b3f55c881e4a45f14db34954cd7f6da2686ca703213adf505af9f260bc76ecf9
+gate_report.json   1a68b9acee06372f53bd11dc8e8a8d8c369c6820f83ad70a4ad2b72c8fb24850
+prompt_bundle.json e5fafc98a590d0c13de6bc198f2888ce26046adc16ee5786887835287bfd63e8
 ```
 
 模型绑定预检：
 
 ```text
-binding_preflight.json 18b5a61ae09ceb006dda6de499c78d83ccb5507fd9c245e230d7b10001ba5c2f
+binding_preflight.json 1a7037976c604bf35e4b4d7ef7d770aa8b8b4be17ed45b23f7ab4704bf165efa
 ```
 
 可读入口：
 
 - 协议：[`me_02_equal_information_representation_protocol_p1.md`](./me_02_equal_information_representation_protocol_p1.md)
-- No-model Gate 原始目录：[`artifacts/me02_no_model_gate_p1_20260825`](./artifacts/me02_no_model_gate_p1_20260825/)
-- 绑定预检原始目录：[`artifacts/me02_binding_preflight_p1_20260825`](./artifacts/me02_binding_preflight_p1_20260825/)
+- No-model Gate 原始目录：[`artifacts/me02_no_model_gate_p11_20260825`](./artifacts/me02_no_model_gate_p11_20260825/)
+- 绑定预检原始目录：[`artifacts/me02_binding_preflight_p11_20260825`](./artifacts/me02_binding_preflight_p11_20260825/)
+- p1 无效运行记录：[`me_02_p1_invalid_pilot_2026_08_25.md`](./me_02_p1_invalid_pilot_2026_08_25.md)
 
 ## 6. 结论边界
 

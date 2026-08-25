@@ -1,0 +1,2107 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "alternating_branches",
+  "semantic_digest": "a06a57d8b8bd022b88afcf171e1f01af130e083483d607a3f53c145f8fdf3116",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 10,
+  "prompt_chars": 1375,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "read_case",
+      "arguments": {
+        "case": "C1"
+      },
+      "output": {
+        "enabled": true,
+        "ok": true,
+        "token": "Q-C1-8264"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "route_true",
+      "arguments": {
+        "case": "C1",
+        "token": "Q-C1-8264"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RT-C1"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "read_case",
+      "arguments": {
+        "case": "C2"
+      },
+      "output": {
+        "enabled": false,
+        "ok": true,
+        "token": "Q-C2-2684"
+      }
+    },
+    {
+      "attempt": 4,
+      "name": "route_false",
+      "arguments": {
+        "case": "C2",
+        "token": "Q-C2-2684"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RF-C2"
+      }
+    },
+    {
+      "attempt": 5,
+      "name": "read_case",
+      "arguments": {
+        "case": "C3"
+      },
+      "output": {
+        "enabled": true,
+        "ok": true,
+        "token": "Q-C3-8426"
+      }
+    },
+    {
+      "attempt": 6,
+      "name": "route_true",
+      "arguments": {
+        "case": "C3",
+        "token": "Q-C3-8426"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RT-C3"
+      }
+    },
+    {
+      "attempt": 7,
+      "name": "read_case",
+      "arguments": {
+        "case": "C4"
+      },
+      "output": {
+        "enabled": false,
+        "ok": true,
+        "token": "Q-C4-2846"
+      }
+    },
+    {
+      "attempt": 8,
+      "name": "route_false",
+      "arguments": {
+        "case": "C4",
+        "token": "Q-C4-2846"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RF-C4"
+      }
+    },
+    {
+      "attempt": 9,
+      "name": "verify_routes",
+      "arguments": {
+        "four": "RF-C4",
+        "one": "RT-C1",
+        "three": "RT-C3",
+        "two": "RF-C2"
+      },
+      "output": {
+        "delivery_token": "ROUTES-VERIFIED-2609",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "ROUTES-VERIFIED-2609",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]; actual=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"ROUTES-VERIFIED-2609\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1654,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1654,
+        "calibration_key": 5974628102427680355,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\":\"C1\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"case\":\"C1\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1319,
+            "uncached_input_tokens": 1319,
+            "cached_input_tokens": 0,
+            "output_tokens": 97,
+            "reasoning_tokens": 76,
+            "total_tokens": 1416,
+            "raw": [
+              {
+                "input_tokens": 1319,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 97,
+                "output_tokens_details": {
+                  "reasoning_tokens": 76
+                },
+                "total_tokens": 1416
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXEHtFZfeUizuv_L2G4F8lj2OmEdBDUy90-B7RglCDP5Xevpbbjik_Rzl9gIzvwkcWWzJVaxx-2pLH6HkesbJx67-I9V8WPIstj0hUgr8OFhpz9WjMUun7sW6Nj081M19i1H6yxqldyPDkaWQgLRJa2lvdKJQyBJaKGulivHOFEJTm1scP5vQqXrE58Q1YtMiWuHn6fig_CoyblZVBoxiwXrUlqZ0LJ8n38srzuEFLNbDJjHFNxvjVMti4Zf8Owumal8KL5Wdyf8UCXGCk3yGkITxfg4qDBGn3eg6cJt0b2k8bBiulTv9zuHiEzXJTmBkibKt5-N8ReVAColr84CUtFp4AFytMGE_4o0mBDjmTvn7Orp1r9YcAmXfHKFNUo_7GToRlyiUkMYt8YmrMiLgsJMEa2rRmLv16j9xUOR_N2KQ7kV2wsXXsWMGDLAl-LepchrsVCx7zVfAnjlw2A9ixSeQENjE5V8ybRCKp5zu7i_0KHGvOdiIIzNmbIXBuZHIezhcMI-N6SYSNvMPmNnJYJkMZoDq_VuotSFVDG1D7-6CiSGP6XfatJUAy3P6ObHSH-GZ9SvxmwKEOmZC0TIJsXvd8VKQNEHoxycmYMOwBPcFILJTrdN-EdqybDILPV07u3sGVB6jEw3uBNYPLQH9NKQr6j0tnr3dMvrrr-P6UjmDuUWF_6UuQegG-d64KqAAQtzVtDsXTZLXbRQeS2M4tcXvNe9XU3ZhMe4_TKKfYUO4CWBfvqbkb-LLdiyAxjFuE1sIzWTvraTN0P3LOebGRmLMUOizwYaFW0ACLnhfCScO8A42_q-AIA4LLloncRBsZWKLa0_CRJ3Mumi24ZWohO5Xg_Eo8kXNRPYdpCgMSk5eLBGcuWatjQTFcS8bXTuQEkf1XrQ_4Sk5_nWFTRSOJTanP0fNulE9BzpK8J8U6pEGCgxkoiqST-vP88Yu-7FLYswuBmHp2IJsO_quq748EgSvoN9ZFFdsoOg3sKL1O7GyVTXcl3bx67Zu00uQQWv8uuRnUNgRSTFsjH91a9lYFPALn8vVY_oWd41SvJs5d4mLxIch5TcK0ZUtZ8kr33Glw-5Mtdo3p-b3SbgQazhC8feEBv0JJitLC9tPbCzHQ52hSM--yq30W9a5Csx_o0tRd0b9x5tetZOku7vPECvpFE8ILavD_1puj8XD-lFr2RcdW95Q0XQZRxvDLHXV41v-iSm9RWZM_rSr_VlVwAy7VlNt1Gfkfuc40a-l4tmi02zBQogejVrxhaO3WJsI4AotzqwiBxx2hcFH8x28AB2v5tQreGz2z6xDEaGlAGa0KtcX7dSDbAi7r8FpG_V_OE78yDjAA2mktfo0F_MKO_IpZSFXGkFt7QLnfAwjbE_3QZnNbTrKsVRfu91Yghel_g7_IFmb058PwpY6a-3S23op_Y_QrfiWFNXDH6RceCpr_nnfGJRYmYV457bx0TxkxwTvVjTwsU-U07hnHjBEmGHKmwRsPJIAv0mwKtwzvIpsxthANE8z-6SwA-wnPywd4Qmz7iC9LSVbpEoCoIw_1Uo4ZkI3f-DlhjCFY5ODAKWRWZQl0qzAnI3hvjWb7I8n4VxRFjr_9kTLqwI22jsh2xg97AoRIMO1EmSV54aw9zl9Gmub6QYcaPvslsoAz64aZVwgYiS2c6X7zbLmt82VvrLQmZJF_FWlKQdg7PNE7Kmvw4b2eDa9Dh5Tvq3Ux0fJ50S0zxv6wUqnFNePWWKD-9QuVZZ1g==",
+                "id": "rs_0a21aaba69463d2d016a8d7107dae887d093b7036e75ec7f93",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1319,
+        "uncached_input_tokens": 1319,
+        "cached_input_tokens": 0,
+        "output_tokens": 97,
+        "reasoning_tokens": 76,
+        "total_tokens": 1416,
+        "raw": [
+          {
+            "input_tokens": 1319,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 97,
+            "output_tokens_details": {
+              "reasoning_tokens": 76
+            },
+            "total_tokens": 1416
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1719,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1719,
+        "calibration_key": 9506398047065510675,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+            "type": "function",
+            "func_name": "route_true",
+            "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+          "name": "route_true"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1367,
+            "uncached_input_tokens": 1367,
+            "cached_input_tokens": 0,
+            "output_tokens": 57,
+            "reasoning_tokens": 27,
+            "total_tokens": 1424,
+            "raw": [
+              {
+                "input_tokens": 1367,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 57,
+                "output_tokens_details": {
+                  "reasoning_tokens": 27
+                },
+                "total_tokens": 1424
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXEMm_JWB7RP3YPaorowerdBa90krZ1GjqejxhOMZqkiE84gfU72JkR0wbYANYtMNSzsEkjhiehg4CVgJ11HSq7AQkTe8Om_XyoDhDeigP9aHXZkOWxBV6rxB7x29rg0aTiH9zRUikE1TZ0iX1AQ0Y-kVy8V966mQ79AmVKo0_IJJLj-lES85_3bFOveunpAHG1zkLu7v0gRAkudiKWmeQDRem3ER8ulNJFaPggseT_k1Juq48NdQUvF5lKhjtxfs4TlrufXfpC2-mrDZqv1fgQz48oMTBcMqLo4Sv5FAC6sIenqDlDL6S7ukV40yJG7bC6OF6rDHof8-LKl2NgW37FIYaQ1FAGZ3kQ_MwAq-5kJ2Sd2vlsDaiunm4R2c0Z1PGqHsPmD7D4-wKs_qwdLaIMFr4W65BXtboeKH5MlbxO3JEZZYwokbLwlP8chBzGxHBaaePnwtX0ESCqVCQnOG91gTPUqfsYqjzkuvYKG6YKdZs04qNW8938R3FBckBbXR6rqTA6peozOzawRSwUjVPSjXjOMC9MpIUAbhX5lbBbOamXRrv4-K8GNcvTzNn21Nly86gEyyneW8iqWrEOJHlKLjcLdF7tU6rmWERe4BuBoPsG6ILB1pMl5K9L46d7nyF8ZWLm9AXx-sU5Ai_rRn12hSSHkERCRmU0Eeyxv51kB60XwdrG1PRc7GbWaRyUvdn8HMYYQ9MKdrvJL_GoyPz4WNYvZm-7saiu7xNAOlHt7Etdu_RCdQv1lN150nUvwWVhY0p1XWw7g7e3S9GNQ0f20c-kLr7R8Cmhf8nIjyBDHOZKPREU2Y2vrn56Mlhn79Kp9rGnl7lH9qUXxyr97vX6V_A-v096KW7IlZ7LFm8PLLJQwZ3MQTHiTZ2JXr7a3TFsSLInaTmByan34WK4qW5NPGhkpHsFWbI1-ExtCEt1JkH4R6jEqfXvxmhDy6-iI_5EAShzJuQzDY9vvH5ZkdDv8dKmwYO7JeFt7CYY4IhAsISXjG-FL6L2o-pWR8fISxeynWGbP-AzjgQlPbUbGGlIlEp7NZalWbiq029XFRYanOi_2bQLPIwLVnymt1yDzETOV91-1rkNbxjdjcD_If347mDVx5-vxuAKMHLgJ_39ePLzQFuhjAc2tv-7FA1U_P6gSbgb_dcnqtU_CBj4LGVQYrTVRAdnbNi869b8s58VJm1takxnrtDmQWkwCpYNYJ_Xqc-XGZldVaixmG3Sv-QsDnlpd4Dv6g5fDrMNx1PpCCxL_IMbz9M1ZTUVtk_yQi1NTyI6Maf5vdTaRXdZE4yMVqy3OkTwQzvHMhrZa7AuQcGoMNVdIFzs9BkhVnojzh93PZip6MXBYOFTQjgtcOEddegTPAcrSoGaS1Dzn5928FGBxg9GgH75dYgRB3a9uf4rTyL0BAB1THCwzmJwcBBONeg==",
+                "id": "rs_08c44a28aa33ae74016a8d710c552487d0b3132eb319438b27",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1367,
+        "uncached_input_tokens": 1367,
+        "cached_input_tokens": 0,
+        "output_tokens": 57,
+        "reasoning_tokens": 27,
+        "total_tokens": 1424,
+        "raw": [
+          {
+            "input_tokens": 1367,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 57,
+            "output_tokens_details": {
+              "reasoning_tokens": 27
+            },
+            "total_tokens": 1424
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1785,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1785,
+        "calibration_key": 2676992066931701486,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\":\"C2\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"case\":\"C2\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1417,
+            "uncached_input_tokens": 1417,
+            "cached_input_tokens": 0,
+            "output_tokens": 19,
+            "reasoning_tokens": 0,
+            "total_tokens": 1436,
+            "raw": [
+              {
+                "input_tokens": 1417,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 19,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1436
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1417,
+        "uncached_input_tokens": 1417,
+        "cached_input_tokens": 0,
+        "output_tokens": 19,
+        "reasoning_tokens": 0,
+        "total_tokens": 1436,
+        "raw": [
+          {
+            "input_tokens": 1417,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 19,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1436
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 1849,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1849,
+        "calibration_key": 7873150618418431190,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+            "type": "function",
+            "func_name": "route_false",
+            "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+          "name": "route_false"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1465,
+            "uncached_input_tokens": 1465,
+            "cached_input_tokens": 0,
+            "output_tokens": 28,
+            "reasoning_tokens": 0,
+            "total_tokens": 1493,
+            "raw": [
+              {
+                "input_tokens": 1465,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 28,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1493
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1465,
+        "uncached_input_tokens": 1465,
+        "cached_input_tokens": 0,
+        "output_tokens": 28,
+        "reasoning_tokens": 0,
+        "total_tokens": 1493,
+        "raw": [
+          {
+            "input_tokens": 1465,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 28,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1493
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 5,
+      "prompt_measurement": {
+        "tokens": 1916,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1916,
+        "calibration_key": 4999601495331551514,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\":\"C3\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"case\":\"C3\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1515,
+            "uncached_input_tokens": 1515,
+            "cached_input_tokens": 0,
+            "output_tokens": 19,
+            "reasoning_tokens": 0,
+            "total_tokens": 1534,
+            "raw": [
+              {
+                "input_tokens": 1515,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 19,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1534
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1515,
+        "uncached_input_tokens": 1515,
+        "cached_input_tokens": 0,
+        "output_tokens": 19,
+        "reasoning_tokens": 0,
+        "total_tokens": 1534,
+        "raw": [
+          {
+            "input_tokens": 1515,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 19,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1534
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 6,
+      "prompt_measurement": {
+        "tokens": 1980,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1980,
+        "calibration_key": 1675268186839088369,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C3\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bwAr11LdQSo2AbJZ2Brtj376"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_qmODMyyQj7L6BY9XcIlojM0d",
+            "type": "function",
+            "func_name": "route_true",
+            "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_qmODMyyQj7L6BY9XcIlojM0d",
+          "name": "route_true"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1563,
+            "uncached_input_tokens": 1563,
+            "cached_input_tokens": 0,
+            "output_tokens": 28,
+            "reasoning_tokens": 0,
+            "total_tokens": 1591,
+            "raw": [
+              {
+                "input_tokens": 1563,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 28,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1591
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1563,
+        "uncached_input_tokens": 1563,
+        "cached_input_tokens": 0,
+        "output_tokens": 28,
+        "reasoning_tokens": 0,
+        "total_tokens": 1591,
+        "raw": [
+          {
+            "input_tokens": 1563,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 28,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1591
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 7,
+      "prompt_measurement": {
+        "tokens": 2046,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2046,
+        "calibration_key": 1267313928768680813,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C3\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bwAr11LdQSo2AbJZ2Brtj376"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_qmODMyyQj7L6BY9XcIlojM0d",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+          "name": "route_true",
+          "tool_call_id": "call_qmODMyyQj7L6BY9XcIlojM0d"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_jAQhNOTfpvZexlHPkfPpuoT9",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\":\"C4\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_jAQhNOTfpvZexlHPkfPpuoT9",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"case\":\"C4\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1613,
+            "uncached_input_tokens": 1613,
+            "cached_input_tokens": 0,
+            "output_tokens": 19,
+            "reasoning_tokens": 0,
+            "total_tokens": 1632,
+            "raw": [
+              {
+                "input_tokens": 1613,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 19,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1632
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1613,
+        "uncached_input_tokens": 1613,
+        "cached_input_tokens": 0,
+        "output_tokens": 19,
+        "reasoning_tokens": 0,
+        "total_tokens": 1632,
+        "raw": [
+          {
+            "input_tokens": 1613,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 19,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1632
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 8,
+      "prompt_measurement": {
+        "tokens": 2111,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2111,
+        "calibration_key": 5117311913371346476,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C3\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bwAr11LdQSo2AbJZ2Brtj376"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_qmODMyyQj7L6BY9XcIlojM0d",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+          "name": "route_true",
+          "tool_call_id": "call_qmODMyyQj7L6BY9XcIlojM0d"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_jAQhNOTfpvZexlHPkfPpuoT9",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+          "name": "read_case",
+          "tool_call_id": "call_jAQhNOTfpvZexlHPkfPpuoT9"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_Msj2BhLrAM6QGM5LaDOqj0K5",
+            "type": "function",
+            "func_name": "route_false",
+            "arguments": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_Msj2BhLrAM6QGM5LaDOqj0K5",
+          "name": "route_false"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1661,
+            "uncached_input_tokens": 1661,
+            "cached_input_tokens": 0,
+            "output_tokens": 28,
+            "reasoning_tokens": 0,
+            "total_tokens": 1689,
+            "raw": [
+              {
+                "input_tokens": 1661,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 28,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1689
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1661,
+        "uncached_input_tokens": 1661,
+        "cached_input_tokens": 0,
+        "output_tokens": 28,
+        "reasoning_tokens": 0,
+        "total_tokens": 1689,
+        "raw": [
+          {
+            "input_tokens": 1661,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 28,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1689
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 9,
+      "prompt_measurement": {
+        "tokens": 2177,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2177,
+        "calibration_key": 8198967148265824336,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C3\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bwAr11LdQSo2AbJZ2Brtj376"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_qmODMyyQj7L6BY9XcIlojM0d",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+          "name": "route_true",
+          "tool_call_id": "call_qmODMyyQj7L6BY9XcIlojM0d"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_jAQhNOTfpvZexlHPkfPpuoT9",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+          "name": "read_case",
+          "tool_call_id": "call_jAQhNOTfpvZexlHPkfPpuoT9"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_Msj2BhLrAM6QGM5LaDOqj0K5",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C4\"}",
+          "name": "route_false",
+          "tool_call_id": "call_Msj2BhLrAM6QGM5LaDOqj0K5"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_jJFifPXBiulGzxcff4Nmj4WM",
+            "type": "function",
+            "func_name": "verify_routes",
+            "arguments": "{\"four\":\"RF-C4\",\"one\":\"RT-C1\",\"three\":\"RT-C3\",\"two\":\"RF-C2\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_jJFifPXBiulGzxcff4Nmj4WM",
+          "name": "verify_routes"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\"four\":\"RF-C4\",\"one\":\"RT-C1\",\"three\":\"RT-C3\",\"two\":\"RF-C2\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1711,
+            "uncached_input_tokens": 175,
+            "cached_input_tokens": 1536,
+            "output_tokens": 38,
+            "reasoning_tokens": 0,
+            "total_tokens": 1749,
+            "raw": [
+              {
+                "input_tokens": 1711,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 1536
+                },
+                "output_tokens": 38,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1749
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1711,
+        "uncached_input_tokens": 175,
+        "cached_input_tokens": 1536,
+        "output_tokens": 38,
+        "reasoning_tokens": 0,
+        "total_tokens": 1749,
+        "raw": [
+          {
+            "input_tokens": 1711,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 1536
+            },
+            "output_tokens": 38,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1749
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 10,
+      "prompt_measurement": {
+        "tokens": 2258,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2258,
+        "calibration_key": 17664874916849462139,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (literal true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (literal true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (literal true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (literal true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bK4zyOkmh7XBfKbLyRRRqiWp",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bK4zyOkmh7XBfKbLyRRRqiWp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8sMp26Totl6B2t0MWAoSwMOo",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8sMp26Totl6B2t0MWAoSwMOo"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_QtkBge8h0DZJQ1RHPDAVTx0P",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_QtkBge8h0DZJQ1RHPDAVTx0P"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_O8UcBFZDyWJ4uRY8u3JvkTMp"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_bwAr11LdQSo2AbJZ2Brtj376",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C3\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_bwAr11LdQSo2AbJZ2Brtj376"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_qmODMyyQj7L6BY9XcIlojM0d",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+          "name": "route_true",
+          "tool_call_id": "call_qmODMyyQj7L6BY9XcIlojM0d"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_jAQhNOTfpvZexlHPkfPpuoT9",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\":\"C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+          "name": "read_case",
+          "tool_call_id": "call_jAQhNOTfpvZexlHPkfPpuoT9"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_Msj2BhLrAM6QGM5LaDOqj0K5",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C4\"}",
+          "name": "route_false",
+          "tool_call_id": "call_Msj2BhLrAM6QGM5LaDOqj0K5"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_jJFifPXBiulGzxcff4Nmj4WM",
+              "type": "function",
+              "function": {
+                "name": "verify_routes",
+                "arguments": "{\"four\":\"RF-C4\",\"one\":\"RT-C1\",\"three\":\"RT-C3\",\"two\":\"RF-C2\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ROUTES-VERIFIED-2609\",\"ok\":true}",
+          "name": "verify_routes",
+          "tool_call_id": "call_jJFifPXBiulGzxcff4Nmj4WM"
+        }
+      ],
+      "response": {
+        "content": "ROUTES-VERIFIED-2609",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ROUTES-VERIFIED-2609"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1777,
+            "uncached_input_tokens": 241,
+            "cached_input_tokens": 1536,
+            "output_tokens": 12,
+            "reasoning_tokens": 0,
+            "total_tokens": 1789,
+            "raw": [
+              {
+                "input_tokens": 1777,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 1536
+                },
+                "output_tokens": 12,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1789
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1777,
+        "uncached_input_tokens": 241,
+        "cached_input_tokens": 1536,
+        "output_tokens": 12,
+        "reasoning_tokens": 0,
+        "total_tokens": 1789,
+        "raw": [
+          {
+            "input_tokens": 1777,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 1536
+            },
+            "output_tokens": 12,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1789
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}
