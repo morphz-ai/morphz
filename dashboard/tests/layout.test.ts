@@ -125,6 +125,24 @@ test('context budget control opens above the clipped composer status row', () =>
   )
 })
 
+test('cognitive coordination status exposes authenticated peer health beside its Context gate', () => {
+  assert.match(
+    appSource,
+    /\/api\/experimental\/cognitive-coordination\/status/,
+    'peer health must come from the Runtime coordination status surface',
+  )
+  assert.match(
+    appSource,
+    /coordination-status-popover[\s\S]*?peer\.healthy[\s\S]*?peer\.latency_ms/s,
+    'the status panel must distinguish live handshake health and latency',
+  )
+  assert.match(
+    appCss,
+    /\.coordination-status-popover\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto/s,
+    'the coordination status panel must use viewport coordinates outside the clipped composer row',
+  )
+})
+
 test('identity selectors reserve stable header widths while allowing responsive shrinkage', () => {
   assert.match(
     appCss,

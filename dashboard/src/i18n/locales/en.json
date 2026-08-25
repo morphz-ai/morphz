@@ -1,6 +1,7 @@
 {
   "common": {
-    "shared": "shared"
+    "shared": "shared",
+    "close": "Close"
   },
   "navigation": {
     "label": "Runtime Console navigation",
@@ -832,6 +833,19 @@
     "nextEvaluation": "Only affects subsequent evaluations; active requests are unchanged.",
     "save": "Apply",
     "saving": "Applying…"
+  },
+  "cognitiveCoordination": {
+    "short": "Coordinate",
+    "enableHint": "Enable Cognitive Coordination for this Context. The coordinate tool and its compact capability contract will appear only in subsequent model evaluations.",
+    "disableHint": "Disable Cognitive Coordination for this Context. New evaluations will no longer receive its tool or capability contract.",
+    "unavailable": "Cognitive Coordination is not available in this Runtime. Compile and enable the experimental-cognitive-coordination feature first.",
+    "peerStatus": "Inspect coordination participants",
+    "network": "Coordination network",
+    "networkHint": "Live authenticated handshakes show peer health and the logical model route frozen into new assignments.",
+    "notConfigured": "Local participant not configured",
+    "noPeers": "No enabled static peers.",
+    "localStatus": "{{count}} capabilities · {{active}} active assignments",
+    "refresh": "Refresh"
   },
   "connection": {
     "connected": "connected",

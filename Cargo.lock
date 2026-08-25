@@ -2494,6 +2494,7 @@ dependencies = [
  "icu_segmenter",
  "keyring",
  "libsqlite3-hotbundle",
+ "morphz-cognitive-coordination",
  "nix 0.31.3",
  "portable-pty",
  "pulldown-cmark",
@@ -2525,6 +2526,20 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "serde",
+]
+
+[[package]]
+name = "morphz-cognitive-coordination"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

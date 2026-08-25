@@ -5,8 +5,9 @@ use crate::event::{
 };
 use crate::llm::ModelAttemptBinding;
 use crate::memory::{
-    CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore,
-    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
+    CognitiveClockStore, ContextCapabilityBindingRecord, ContextCapabilityBindingStore,
+    ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore, ExecutionJobFilter,
+    ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetRecord, ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord,
@@ -46,7 +47,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "Runtime Context lifecycle transaction moved from version {} to {}",
+            "Context transaction base version conflict: requested {}, current {}",
             self.requested, self.current
         )
     }
@@ -54,7 +55,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 32;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 33;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -990,6 +991,10 @@ pub struct ContextView {
     /// Runtime-authoritative model delegation surface for this request.
     #[serde(default)]
     pub evaluation_model_policy: EvaluationModelPolicy,
+    /// Operator-bound optional Runtime capabilities projected for this exact
+    /// Context. Disabled bindings remain visible only to the control plane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_bindings: Vec<ContextCapabilityBindingRecord>,
     pub cognitive_clock: ContextCognitiveClock,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
@@ -1281,6 +1286,7 @@ pub struct ContextEngine {
     recall_projection_store: Option<Arc<dyn RecallProjectionStore>>,
     cognitive_clock_store: Option<Arc<dyn CognitiveClockStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
+    capability_binding_store: Option<Arc<dyn ContextCapabilityBindingStore>>,
     execution_job_store: Option<Arc<dyn ExecutionJobStore>>,
     execution_target_store: Option<Arc<dyn ExecutionTargetStore>>,
     execution_target_authorization_store: Option<Arc<dyn ExecutionTargetAuthorizationStore>>,
@@ -1298,6 +1304,7 @@ pub struct ContextEngine {
 struct ContextTransactionAuthority<'a> {
     acting_principal_id: Option<&'a str>,
     allow_runtime_lifecycle_ops: bool,
+    require_exact_base_version: bool,
     causally_protected_ids: &'a BTreeSet<String>,
     transaction_id: Option<&'a str>,
     attribution: Option<&'a ContextTransactionAttribution>,
@@ -1359,6 +1366,7 @@ impl ContextEngine {
             recall_projection_store: None,
             cognitive_clock_store: None,
             objective_store: None,
+            capability_binding_store: None,
             execution_job_store: None,
             execution_target_store: None,
             execution_target_authorization_store: None,
@@ -1375,6 +1383,14 @@ impl ContextEngine {
 
     pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(session_store);
+        self
+    }
+
+    pub fn with_capability_binding_store(
+        mut self,
+        store: Arc<dyn ContextCapabilityBindingStore>,
+    ) -> Self {
+        self.capability_binding_store = Some(store);
         self
     }
 
@@ -1920,8 +1936,63 @@ impl ContextEngine {
             ContextTransactionAuthority {
                 acting_principal_id: None,
                 allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: false,
                 causally_protected_ids: &BTreeSet::new(),
                 transaction_id: None,
+                attribution: None,
+            },
+        )
+        .await
+    }
+
+    /// Applies an ordinary Agent-owned transaction without permitting MVCC
+    /// auto-rebase. Applications use this when an externally certified commit
+    /// is bound to one exact parent Context version.
+    pub async fn apply_context_transaction_strict(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+    ) -> Result<ContextCommit, DynError> {
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            ContextTransactionAuthority {
+                acting_principal_id: None,
+                allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: true,
+                causally_protected_ids: &BTreeSet::new(),
+                transaction_id: None,
+                attribution: None,
+            },
+        )
+        .await
+    }
+
+    /// Strict, idempotent variant for trusted applications which already own
+    /// a stable commit identity. Reusing the identity with different content
+    /// is rejected rather than interpreted as a retry.
+    pub async fn apply_context_transaction_strict_with_id(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+        transaction_id: &str,
+    ) -> Result<ContextCommit, DynError> {
+        if transaction_id.trim().is_empty() {
+            return Err("Context transaction identity must not be empty".into());
+        }
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            ContextTransactionAuthority {
+                acting_principal_id: None,
+                allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: true,
+                causally_protected_ids: &BTreeSet::new(),
+                transaction_id: Some(transaction_id),
                 attribution: None,
             },
         )
@@ -1942,6 +2013,7 @@ impl ContextEngine {
             ContextTransactionAuthority {
                 acting_principal_id: None,
                 allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: false,
                 causally_protected_ids,
                 transaction_id: None,
                 attribution: None,
@@ -1965,6 +2037,7 @@ impl ContextEngine {
             ContextTransactionAuthority {
                 acting_principal_id,
                 allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: false,
                 causally_protected_ids,
                 transaction_id: None,
                 attribution: None,
@@ -1993,6 +2066,7 @@ impl ContextEngine {
             ContextTransactionAuthority {
                 acting_principal_id,
                 allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: false,
                 causally_protected_ids,
                 transaction_id: None,
                 attribution: Some(attribution),
@@ -2023,6 +2097,7 @@ impl ContextEngine {
             ContextTransactionAuthority {
                 acting_principal_id,
                 allow_runtime_lifecycle_ops: false,
+                require_exact_base_version: false,
                 causally_protected_ids,
                 transaction_id: Some(transaction_id),
                 attribution: None,
@@ -2090,6 +2165,20 @@ impl ContextEngine {
         }
         let _guard = self.lock_context(context_id).await;
 
+        let existing = if let Some(transaction_id) = authority.transaction_id {
+            self.store
+                .query(QueryFilter {
+                    event_id: Some(transaction_id.to_string()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next()
+        } else {
+            None
+        };
+
         let referenced_observations = self.transaction_observations(context_id, &parsed).await?;
         let references = ContextReferences::from_events(&referenced_observations);
         resolve_transaction_references(&mut parsed, &references)?;
@@ -2105,9 +2194,12 @@ impl ContextEngine {
             );
         }
         reject_causally_protected_retirements(&parsed, authority.causally_protected_ids)?;
+        if let Some(existing) = existing {
+            return existing_context_commit(&existing, context_id, acting_session_id, &parsed);
+        }
         let current = self.load_current_mind(context_id, None).await?;
         let requested_base_version = parsed.base_version;
-        if authority.allow_runtime_lifecycle_ops && current.version != requested_base_version {
+        if authority.require_exact_base_version && current.version != requested_base_version {
             return Err(Box::new(RuntimeContextVersionConflict {
                 requested: requested_base_version,
                 current: current.version,
@@ -3006,6 +3098,10 @@ impl ContextEngine {
             Some(store) => store.list_context_objectives(context_id, false).await?,
             None => Vec::new(),
         };
+        let capability_bindings = match &self.capability_binding_store {
+            Some(store) => store.list_context_capability_bindings(context_id).await?,
+            None => Vec::new(),
+        };
         let active_activations = match &self.session_store {
             Some(store) => {
                 store
@@ -3623,6 +3719,7 @@ impl ContextEngine {
                     execution_targets: &execution_targets,
                     execution_target_access: &execution_target_access,
                     evaluation_model_policy: &evaluation_model_policy,
+                    capability_bindings: &capability_bindings,
                     cognitive_clock: &cognitive_clock,
                     frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
                     state: &state,
@@ -3660,6 +3757,7 @@ impl ContextEngine {
             execution_targets,
             execution_target_access,
             evaluation_model_policy,
+            capability_bindings,
             cognitive_clock,
             state,
             observations,
@@ -3724,6 +3822,7 @@ impl ContextEngine {
                     ContextTransactionAuthority {
                         acting_principal_id: None,
                         allow_runtime_lifecycle_ops: true,
+                        require_exact_base_version: true,
                         causally_protected_ids: &BTreeSet::new(),
                         transaction_id: None,
                         attribution: None,
@@ -3821,6 +3920,7 @@ impl ContextEngine {
             execution_targets: &view.execution_targets,
             execution_target_access: &view.execution_target_access,
             evaluation_model_policy: &view.evaluation_model_policy,
+            capability_bindings: &view.capability_bindings,
             cognitive_clock: &view.cognitive_clock,
             frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &view.state,
@@ -4007,6 +4107,7 @@ impl ContextEngine {
             execution_targets: &view.execution_targets,
             execution_target_access: &view.execution_target_access,
             evaluation_model_policy: &view.evaluation_model_policy,
+            capability_bindings: &view.capability_bindings,
             cognitive_clock: &view.cognitive_clock,
             frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &view.state,
@@ -5289,6 +5390,94 @@ fn context_resource(event: &Event) -> Option<ContextResource> {
     })
 }
 
+fn existing_context_commit(
+    event: &Event,
+    context_id: &str,
+    session_id: &str,
+    transaction: &ParsedTransaction,
+) -> Result<ContextCommit, DynError> {
+    let payload = &event.payload;
+    let matches_route = event.event_type == TYPE_CONTEXT_TRANSACTION
+        && event.topic == "chat/context_tx_committed"
+        && event.actor == "Agent-Context"
+        && payload
+            .get("context_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(context_id)
+        && payload
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(session_id)
+        && payload
+            .get("transaction_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(event.id.as_str());
+    if !matches_route {
+        return Err(format!(
+            "Context transaction identity '{}' is already used by a different durable fact",
+            event.id
+        )
+        .into());
+    }
+    let before_version = payload
+        .get("before_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("Context transaction '{}' has no before_version", event.id))?;
+    let after_version = payload
+        .get("after_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("Context transaction '{}' has no after_version", event.id))?;
+    let requested_base_version = payload
+        .get("requested_base_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            format!(
+                "Context transaction '{}' has no requested_base_version",
+                event.id
+            )
+        })?;
+    let mut expected = transaction.clone();
+    expected.base_version = before_version;
+    let expected_transaction = render_parsed_transaction(&expected);
+    if requested_base_version != transaction.base_version
+        || payload
+            .get("transaction")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_transaction.as_str())
+    {
+        return Err(format!(
+            "Context transaction identity '{}' cannot be reused with different content",
+            event.id
+        )
+        .into());
+    }
+    let reason = payload
+        .get("reason")
+        .filter(|value| !value.is_null())
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()?;
+    let token_effect = serde_json::from_value(
+        payload
+            .get("token_effect")
+            .cloned()
+            .ok_or_else(|| format!("Context transaction '{}' has no token_effect", event.id))?,
+    )?;
+    let changes = serde_json::from_value(
+        payload
+            .get("changes")
+            .cloned()
+            .ok_or_else(|| format!("Context transaction '{}' has no changes", event.id))?,
+    )?;
+    Ok(ContextCommit {
+        transaction_id: event.id.clone(),
+        before_version,
+        after_version,
+        reason,
+        token_effect,
+        changes,
+    })
+}
+
 fn parse_transaction(input: &str) -> Result<ParsedTransaction, String> {
     let expr = parse(input).map_err(|error| error.to_string())?;
     let list = as_list(&expr, "context transaction")?;
@@ -6429,6 +6618,7 @@ struct ContextRenderInput<'a> {
     execution_targets: &'a [ExecutionTargetRecord],
     execution_target_access: &'a [ExecutionTargetAccessView],
     evaluation_model_policy: &'a EvaluationModelPolicy,
+    capability_bindings: &'a [ContextCapabilityBindingRecord],
     cognitive_clock: &'a ContextCognitiveClock,
     frame_retirement_cooling_ticks: u64,
     state: &'a MindState,
@@ -7332,6 +7522,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         execution_targets,
         execution_target_access,
         evaluation_model_policy,
+        capability_bindings,
         cognitive_clock,
         frame_retirement_cooling_ticks,
         state,
@@ -7870,7 +8061,11 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         SExpr::List(mind),
         session_directory,
         SExpr::List(kernel),
-        list(
+    ];
+    if let Some(capabilities) = render_cognitive_capabilities(capability_bindings) {
+        context.push(capabilities);
+    }
+    context.push(list(
             "evaluation-environment",
             vec![
                 list(
@@ -7912,8 +8107,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 ],
             ),
             ],
-        ),
-    ];
+        ));
     if let Some(evaluation) = activation {
         context.push(render_evaluation_directive(
             evaluation, objectives, references,
@@ -8019,6 +8213,36 @@ fn render_usage(usage: &ContextUsage) -> SExpr {
     list("usage", fields)
 }
 
+fn render_cognitive_capabilities(bindings: &[ContextCapabilityBindingRecord]) -> Option<SExpr> {
+    bindings
+        .iter()
+        .any(|binding| {
+            binding.enabled
+                && binding.capability_id == crate::experimental::COGNITIVE_COORDINATION
+        })
+        .then(|| {
+            list(
+                "cognitive-capabilities",
+                vec![list(
+                    "capability",
+                    vec![
+                        pair("id", atom(crate::experimental::COGNITIVE_COORDINATION)),
+                        pair("tool", atom("coordinate")),
+                        list("operations", vec![atom("evaluate")]),
+                        pair(
+                            "activation",
+                            atom("explicitly invoke only when the task benefits from independent multi-subject evaluation; ordinary dialogue remains local"),
+                        ),
+                        pair(
+                            "contract",
+                            atom("the initiator coordinates this request; participants evaluate independently; Runtime preserves provenance and unresolved alternatives; unavailable membership or transport must be reported, never simulated"),
+                        ),
+                    ],
+                )],
+            )
+        })
+}
+
 fn render_protocol() -> SExpr {
     let yao_language_card = crate::sexpr::parse(crate::yao::LANGUAGE_CARD)
         .expect("canonical Yao Language Card must remain one valid S-expression");
@@ -8046,7 +8270,7 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "physical-order",
-                        atom("protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → evaluation-environment → evaluate"),
+                        atom("protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → optional cognitive-capabilities → evaluation-environment → evaluate"),
                     ),
                     pair(
                         "prefix",
@@ -8054,7 +8278,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "dynamic-tail",
-                        atom("observation-state, mind, session-directory, kernel, evaluation-environment, and evaluate are current evaluation state; evaluate is always the final and sole execution entry"),
+                        atom("observation-state, mind, session-directory, kernel, optional cognitive-capabilities, evaluation-environment, and evaluate are current evaluation state; evaluate is always the final and sole execution entry"),
                     ),
                     pair(
                         "retirement",
@@ -10488,6 +10712,34 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
 
+    #[test]
+    fn cognitive_coordination_card_exists_only_for_an_enabled_context_binding() {
+        let binding = ContextCapabilityBindingRecord {
+            context_id: "context-a".to_string(),
+            capability_id: crate::experimental::COGNITIVE_COORDINATION.to_string(),
+            enabled: true,
+            revision: 1,
+            updated_at: Utc::now(),
+        };
+        let rendered = render_cognitive_capabilities(std::slice::from_ref(&binding))
+            .expect("enabled binding should render")
+            .to_string();
+        assert!(rendered.starts_with("(cognitive-capabilities"));
+        assert!(rendered.contains("(tool coordinate)"));
+        assert!(rendered.contains("(operations evaluate)"));
+        assert!(rendered.contains("ordinary dialogue remains local"));
+        assert!(rendered.contains("never simulated"));
+
+        assert!(render_cognitive_capabilities(&[]).is_none());
+        assert!(
+            render_cognitive_capabilities(&[ContextCapabilityBindingRecord {
+                enabled: false,
+                ..binding
+            }])
+            .is_none()
+        );
+    }
+
     struct AuditRaceEventStore {
         inner: Arc<SqliteStore>,
         inject_once: AtomicBool,
@@ -12330,6 +12582,7 @@ mod tests {
             execution_targets: &[],
             execution_target_access: &[],
             evaluation_model_policy: &evaluation_model_policy,
+            capability_bindings: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -12455,6 +12708,7 @@ mod tests {
             execution_targets: &[],
             execution_target_access: &[],
             evaluation_model_policy: &evaluation_model_policy,
+            capability_bindings: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -12520,6 +12774,7 @@ mod tests {
             execution_targets: &[],
             execution_target_access: &[],
             evaluation_model_policy: &evaluation_model_policy,
+            capability_bindings: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -12562,6 +12817,7 @@ mod tests {
             execution_targets: &[],
             evaluation_model_policy: &evaluation_model_policy,
             execution_target_access: &[],
+            capability_bindings: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -13532,6 +13788,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_context_commit_is_exactly_versioned_and_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("strict-context.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+        let transaction = "(context-tx (base-version 0) (create certified-frame (fact certified)))";
+
+        let committed = engine
+            .apply_context_transaction_strict_with_id(
+                "strict-context",
+                "strict-session",
+                transaction,
+                "certificate-1",
+            )
+            .await
+            .unwrap();
+        let replay = engine
+            .apply_context_transaction_strict_with_id(
+                "strict-context",
+                "strict-session",
+                transaction,
+                "certificate-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.transaction_id, committed.transaction_id);
+        assert_eq!(replay.before_version, committed.before_version);
+        assert_eq!(replay.after_version, committed.after_version);
+        assert_eq!(replay.reason, committed.reason);
+        assert_eq!(replay.token_effect, committed.token_effect);
+        assert_eq!(replay.changes, committed.changes);
+
+        let reused_identity = engine
+            .apply_context_transaction_strict_with_id(
+                "strict-context",
+                "strict-session",
+                "(context-tx (base-version 0) (create different-frame (fact different)))",
+                "certificate-1",
+            )
+            .await
+            .unwrap_err();
+        assert!(reused_identity
+            .to_string()
+            .contains("cannot be reused with different content"));
+
+        let stale = engine
+            .apply_context_transaction_strict_with_id(
+                "strict-context",
+                "strict-session",
+                "(context-tx (base-version 0) (create stale-frame (fact stale)))",
+                "certificate-2",
+            )
+            .await
+            .unwrap_err();
+        assert!(stale
+            .to_string()
+            .contains("Context transaction base version conflict"));
+
+        let state = engine
+            .load_current_mind("strict-context", None)
+            .await
+            .unwrap();
+        assert_eq!(state.version, 1);
+        assert_eq!(state.frames.len(), 1);
+        assert_eq!(state.frames[0].id, "certified-frame");
+        let committed_events = store
+            .query(QueryFilter {
+                topic: Some("chat/context_tx_committed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(committed_events.len(), 1);
+        assert_eq!(committed_events[0].id, "certificate-1");
+    }
+
+    #[tokio::test]
+    async fn identified_auto_rebased_context_commit_replays_from_its_original_request() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("identified-rebase.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+        engine
+            .apply_context_transaction(
+                "identified-rebase-context",
+                "session-a",
+                "(context-tx (base-version 0) (create frame-a (fact a)))",
+            )
+            .await
+            .unwrap();
+        let transaction = "(context-tx (base-version 0) (create frame-b (fact b)))";
+        let committed = engine
+            .apply_context_transaction_protecting_as_principal_with_id(
+                "identified-rebase-context",
+                "session-b",
+                None,
+                transaction,
+                &BTreeSet::new(),
+                "durable-effect-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(committed.before_version, 1);
+        assert_eq!(committed.after_version, 2);
+
+        let replay = engine
+            .apply_context_transaction_protecting_as_principal_with_id(
+                "identified-rebase-context",
+                "session-b",
+                None,
+                transaction,
+                &BTreeSet::new(),
+                "durable-effect-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.transaction_id, committed.transaction_id);
+        assert_eq!(replay.before_version, 1);
+        assert_eq!(replay.after_version, 2);
+        assert_eq!(
+            engine
+                .load_current_mind("identified-rebase-context", None)
+                .await
+                .unwrap()
+                .version,
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn event_recall_payload_is_not_previewed_a_second_time() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("recall-preview.db");
@@ -13965,6 +14363,7 @@ mod tests {
                 ContextTransactionAuthority {
                     acting_principal_id: None,
                     allow_runtime_lifecycle_ops: true,
+                    require_exact_base_version: true,
                     causally_protected_ids: &BTreeSet::new(),
                     transaction_id: None,
                     attribution: None,

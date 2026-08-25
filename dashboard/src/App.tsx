@@ -902,6 +902,62 @@ interface ContextTokenBudget {
   capacity_source: string
 }
 
+interface ContextCapabilityBinding {
+  context_id: string
+  capability_id: string
+  enabled: boolean
+  revision: number
+  updated_at?: string | null
+  feature?: {
+    name: string
+    cargo_feature: string
+    summary: string
+    compiled: boolean
+    enabled: boolean
+    available: boolean
+  } | null
+}
+
+interface CoordinationModelProfile {
+  route: string
+  label: string
+  physical_models?: string[]
+  supported_reasoning_efforts?: string[] | null
+  context_window?: number | null
+  max_output_tokens?: number | null
+}
+
+interface CoordinationParticipant {
+  authority_id: string
+  agent_id: string
+  context_id: string
+  session_id: string
+  capabilities: string[]
+  model_profiles: CoordinationModelProfile[]
+  default_model: { route?: string | null; reasoning_effort?: string | null }
+}
+
+interface CognitiveCoordinationStatus {
+  available: boolean
+  active_assignments: number
+  local?: {
+    participant: CoordinationParticipant
+    operations: string[]
+    issued_at: string
+    expires_at: string
+  } | null
+  peers: Array<{
+    authority_id: string
+    base_url: string
+    enabled: boolean
+    healthy: boolean
+    latency_ms?: number | null
+    participant?: CoordinationParticipant | null
+    error?: string | null
+    checked_at: string
+  }>
+}
+
 interface SessionRecord {
   id: string
   agent_id: string
@@ -3040,6 +3096,11 @@ export default function App() {
   const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
   const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
   const [changingContextTokenBudget, setChangingContextTokenBudget] = useState(false)
+  const [cognitiveCoordination, setCognitiveCoordination] = useState<ContextCapabilityBinding | null>(null)
+  const [changingCognitiveCoordination, setChangingCognitiveCoordination] = useState(false)
+  const [cognitiveCoordinationStatus, setCognitiveCoordinationStatus] = useState<CognitiveCoordinationStatus | null>(null)
+  const [cognitiveCoordinationStatusOpen, setCognitiveCoordinationStatusOpen] = useState(false)
+  const [loadingCognitiveCoordinationStatus, setLoadingCognitiveCoordinationStatus] = useState(false)
   const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
@@ -3099,6 +3160,8 @@ export default function App() {
   const themeSelectorRef = useRef<HTMLDivElement>(null)
   const contextTokenBudgetRef = useRef<HTMLDivElement>(null)
   const contextTokenBudgetPopoverRef = useRef<HTMLDivElement>(null)
+  const cognitiveCoordinationRef = useRef<HTMLDivElement>(null)
+  const cognitiveCoordinationPopoverRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
@@ -3761,6 +3824,40 @@ export default function App() {
     }
   }, [])
 
+  const loadCognitiveCoordination = useCallback(async (contextId: string) => {
+    if (!contextId) {
+      setCognitiveCoordination(null)
+      return
+    }
+    try {
+      const binding = await DASHBOARD_API.get<ContextCapabilityBinding>(
+        `/api/contexts/${encodeURIComponent(contextId)}/capabilities/cognitive-coordination`,
+      )
+      if (selectedScopeRef.current.contextId !== contextId) return
+      setCognitiveCoordination(binding)
+    } catch (reason) {
+      setCognitiveCoordination(null)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
+  const loadCognitiveCoordinationStatus = useCallback(async () => {
+    setLoadingCognitiveCoordinationStatus(true)
+    try {
+      const status = await DASHBOARD_API.get<CognitiveCoordinationStatus>(
+        '/api/experimental/cognitive-coordination/status',
+      )
+      setCognitiveCoordinationStatus(status)
+    } catch {
+      // The status endpoint is intentionally absent when the experiment is
+      // not compiled, enabled, or configured. The Context capability control
+      // remains the user-facing source of that state.
+      setCognitiveCoordinationStatus(null)
+    } finally {
+      setLoadingCognitiveCoordinationStatus(false)
+    }
+  }, [])
+
   const loadEventHistory = useCallback(async (contextId: string, filters: EventHistoryFilters, beforeSequence = '') => {
     if (!contextId) return
     try {
@@ -4174,12 +4271,18 @@ export default function App() {
     if (view === 'overview' && !route.contextId) return
     const contextId = selectedContextId
     const timer = window.setTimeout(
-      () => void loadContextTokenBudget(contextId, selectedSessionId),
+      () => {
+        void loadContextTokenBudget(contextId, selectedSessionId)
+        void loadCognitiveCoordination(contextId)
+        void loadCognitiveCoordinationStatus()
+      },
       0,
     )
     return () => window.clearTimeout(timer)
   }, [
     loadContextTokenBudget,
+    loadCognitiveCoordination,
+    loadCognitiveCoordinationStatus,
     route.contextId,
     selectedContextId,
     selectedSession?.model_alias,
@@ -4689,6 +4792,41 @@ export default function App() {
       window.removeEventListener('scroll', positionContextTokenBudgetPopover, true)
     }
   }, [contextTokenBudgetDraft, contextTokenBudgetOpen, contextTokenBudget, positionContextTokenBudgetPopover])
+
+  const positionCognitiveCoordinationPopover = useCallback(() => {
+    const anchor = cognitiveCoordinationRef.current?.querySelector<HTMLButtonElement>('.coordination-health-button')
+    const popover = cognitiveCoordinationPopoverRef.current
+    if (!anchor || !popover) return
+    const anchorBox = anchor.getBoundingClientRect()
+    const measured = popover.getBoundingClientRect()
+    const viewportPadding = 12
+    const gap = 10
+    const top = Math.max(viewportPadding, anchorBox.top - measured.height - gap)
+    const left = Math.min(
+      Math.max(viewportPadding, anchorBox.right - measured.width),
+      window.innerWidth - measured.width - viewportPadding,
+    )
+    popover.style.top = `${top}px`
+    popover.style.left = `${Math.max(viewportPadding, left)}px`
+  }, [])
+
+  useEffect(() => {
+    const popover = cognitiveCoordinationPopoverRef.current
+    if (!popover) return
+    if (!cognitiveCoordinationStatusOpen) {
+      if (popover.matches(':popover-open')) popover.hidePopover()
+      return
+    }
+    if (!popover.matches(':popover-open')) popover.showPopover()
+    const frame = window.requestAnimationFrame(positionCognitiveCoordinationPopover)
+    window.addEventListener('resize', positionCognitiveCoordinationPopover)
+    window.addEventListener('scroll', positionCognitiveCoordinationPopover, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', positionCognitiveCoordinationPopover)
+      window.removeEventListener('scroll', positionCognitiveCoordinationPopover, true)
+    }
+  }, [cognitiveCoordinationStatus, cognitiveCoordinationStatusOpen, positionCognitiveCoordinationPopover])
 
   const selectedContext = contexts.find(item => item.id === selectedContextId)
   const selectedAgent = agents.find(item => item.id === selectedAgentId)
@@ -6147,6 +6285,40 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setChangingContextTokenBudget(false)
+    }
+  }
+
+  const toggleCognitiveCoordination = async () => {
+    if (!selectedContextId || !cognitiveCoordination || changingCognitiveCoordination) return
+    if (!cognitiveCoordination.feature?.available && !cognitiveCoordination.enabled) {
+      setError(t('cognitiveCoordination.unavailable'))
+      return
+    }
+    setChangingCognitiveCoordination(true)
+    try {
+      const response = await DASHBOARD_API.command<{
+        outcome: 'updated'
+        binding: ContextCapabilityBinding
+      }>(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/capabilities/cognitive-coordination`,
+        'PATCH',
+        {
+          enabled: !cognitiveCoordination.enabled,
+          expected_revision: cognitiveCoordination.revision,
+        },
+      )
+      setCognitiveCoordination({
+        ...response.binding,
+        feature: cognitiveCoordination.feature,
+      })
+      setContextView(null)
+      setContextEncoding(null)
+      setError('')
+    } catch (reason) {
+      await loadCognitiveCoordination(selectedContextId).catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setChangingCognitiveCoordination(false)
     }
   }
 
@@ -8803,6 +8975,86 @@ export default function App() {
                   {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
                 </select>
               </label>
+              <div className="cognitive-coordination-selector" ref={cognitiveCoordinationRef}>
+                <button
+                  className={`composer-policy-control ${cognitiveCoordination?.enabled ? 'is-active' : ''}`}
+                  type="button"
+                  aria-pressed={cognitiveCoordination?.enabled ?? false}
+                  disabled={!selectedContextId || !cognitiveCoordination || changingCognitiveCoordination
+                    || (!cognitiveCoordination.enabled && !cognitiveCoordination.feature?.available)}
+                  title={cognitiveCoordination?.feature?.available
+                    ? t(cognitiveCoordination.enabled
+                      ? 'cognitiveCoordination.disableHint'
+                      : 'cognitiveCoordination.enableHint')
+                    : t('cognitiveCoordination.unavailable')}
+                  onClick={() => void toggleCognitiveCoordination()}
+                >
+                  {changingCognitiveCoordination
+                    ? <LoaderCircle className="is-spinning" size={11} />
+                    : <Brain size={11} />}
+                  <span>{t('cognitiveCoordination.short')}</span>
+                </button>
+                {cognitiveCoordination?.feature?.available && (
+                  <button
+                    className={`composer-policy-control coordination-health-button ${cognitiveCoordinationStatusOpen ? 'is-active' : ''}`}
+                    type="button"
+                    aria-expanded={cognitiveCoordinationStatusOpen}
+                    title={t('cognitiveCoordination.peerStatus')}
+                    onClick={() => {
+                      setCognitiveCoordinationStatusOpen(open => !open)
+                      if (!cognitiveCoordinationStatus) void loadCognitiveCoordinationStatus()
+                    }}
+                  >
+                    {loadingCognitiveCoordinationStatus
+                      ? <LoaderCircle className="is-spinning" size={11} />
+                      : <Radio size={11} />}
+                    <span>{cognitiveCoordinationStatus?.peers.filter(peer => peer.healthy).length ?? '—'}</span>
+                  </button>
+                )}
+                {cognitiveCoordinationStatusOpen && (
+                  <div
+                    className="coordination-status-popover"
+                    popover="auto"
+                    ref={cognitiveCoordinationPopoverRef}
+                    onToggle={event => setCognitiveCoordinationStatusOpen(event.currentTarget.matches(':popover-open'))}
+                  >
+                    <header>
+                      <span>
+                        <small>{t('cognitiveCoordination.network')}</small>
+                        <strong>{cognitiveCoordinationStatus?.local?.participant.authority_id ?? t('cognitiveCoordination.notConfigured')}</strong>
+                        <em>{cognitiveCoordinationStatus?.local?.participant.default_model.route ?? '—'}</em>
+                      </span>
+                      <button type="button" aria-label={t('common.close')} onClick={() => setCognitiveCoordinationStatusOpen(false)}><X size={12} /></button>
+                    </header>
+                    <p>{t('cognitiveCoordination.networkHint')}</p>
+                    <div className="coordination-peer-list">
+                      {(cognitiveCoordinationStatus?.peers ?? []).map(peer => (
+                        <article className={peer.healthy ? 'is-healthy' : 'is-offline'} key={peer.authority_id}>
+                          <span className="coordination-peer-state" />
+                          <span>
+                            <strong>{peer.authority_id}</strong>
+                            <small>{peer.participant?.default_model.route ?? peer.error ?? peer.base_url}</small>
+                          </span>
+                          <em>{peer.latency_ms == null ? '—' : `${peer.latency_ms} ms`}</em>
+                        </article>
+                      ))}
+                      {cognitiveCoordinationStatus && cognitiveCoordinationStatus.peers.length === 0 && (
+                        <small className="coordination-peer-empty">{t('cognitiveCoordination.noPeers')}</small>
+                      )}
+                    </div>
+                    <footer>
+                      <small>{t('cognitiveCoordination.localStatus', {
+                        count: cognitiveCoordinationStatus?.local?.participant.capabilities.length ?? 0,
+                        active: cognitiveCoordinationStatus?.active_assignments ?? 0,
+                      })}</small>
+                      <button type="button" disabled={loadingCognitiveCoordinationStatus} onClick={() => void loadCognitiveCoordinationStatus()}>
+                        <RefreshCw className={loadingCognitiveCoordinationStatus ? 'is-spinning' : ''} size={11} />
+                        {t('cognitiveCoordination.refresh')}
+                      </button>
+                    </footer>
+                  </div>
+                )}
+              </div>
               <div className="context-budget-selector" ref={contextTokenBudgetRef}>
                 <button
                   className={`composer-policy-control context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}

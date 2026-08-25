@@ -188,6 +188,10 @@ async fn main() -> Result<(), AppError> {
     if dispatch_config_command(&invocation, &resolved)? {
         return Ok(());
     }
+    if dispatch_experiment_command(&invocation, &resolved.config)? {
+        return Ok(());
+    }
+    morphz::experimental::require_all_enabled_compiled(&resolved.config.experimental.enabled)?;
     let protected_config_paths = resolved
         .loaded_paths()
         .map(Path::to_path_buf)
@@ -498,6 +502,7 @@ fn dispatch_config_command(
         return Ok(true);
     }
     if command == "config check" {
+        morphz::experimental::require_all_enabled_compiled(&resolved.config.experimental.enabled)?;
         println!("配置有效：{} 个文件层", resolved.layers.len());
         for warning in &resolved.warnings {
             println!("警告：{warning}");
@@ -617,6 +622,7 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
         ("MORPHZ_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
         ("MORPHZ_LLM_REASONING_EFFORT", "llm.reasoning_effort"),
         ("MORPHZ_LANGUAGE", "ui.language"),
+        ("MORPHZ_EXPERIMENTAL_FEATURES", "experimental.enabled"),
     ] {
         if std::env::var_os(variable).is_some() {
             resolved.mark_source(key, format!("environment:{variable}"));
@@ -635,6 +641,11 @@ fn mark_cli_config_sources(invocation: &Invocation, resolved: &mut config::Resol
         ("language", "ui.language"),
         ("network", "permissions.network"),
         ("add-dir", "permissions.read_roots/write_roots"),
+        ("enable-experimental", "experimental.enabled"),
+        (
+            "coordination-mesh",
+            "experimental.cognitive_coordination.mesh",
+        ),
     ] {
         if invocation.has_option(option) {
             resolved.mark_source(key, format!("cli:--{option}"));
@@ -732,12 +743,94 @@ fn apply_cli_config(
             app_config.permissions.write_roots.push(value.clone());
         }
     }
+    if let Some(features) = invocation.option("enable-experimental") {
+        app_config.experimental.enabled.extend(
+            features
+                .occurrences()
+                .iter()
+                .flatten()
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+                .map(str::to_string),
+        );
+    }
+    if let Some(mesh) = option_value(invocation, "coordination-mesh") {
+        let mesh = mesh.trim();
+        if mesh.is_empty() {
+            return Err("--coordination-mesh must not be empty".into());
+        }
+        app_config
+            .experimental
+            .enabled
+            .insert(morphz::experimental::COGNITIVE_COORDINATION.to_string());
+        app_config.experimental.cognitive_coordination.mesh = Some(mesh.to_string());
+        let participant = app_config
+            .experimental
+            .cognitive_coordination
+            .participant
+            .get_or_insert_with(config::CognitiveCoordinationParticipantConfig::default);
+        if let Some(agent_id) = option_value(invocation, "agent") {
+            participant.agent_id = agent_id.to_string();
+        }
+        if let Some(context_id) = option_value(invocation, "context") {
+            participant.context_id = context_id.to_string();
+        }
+        if let Some(session_id) = option_value(invocation, "session") {
+            participant.session_id = session_id.to_string();
+        }
+    }
+    morphz::experimental::validate_enabled(&app_config.experimental.enabled)?;
     if let Some(format) = option_value(invocation, "format") {
         if !matches!(format, "human" | "json") {
             return Err("--format 只支持 human 或 json".into());
         }
     }
     Ok(())
+}
+
+fn dispatch_experiment_command(
+    invocation: &Invocation,
+    app_config: &config::AppConfig,
+) -> Result<bool, AppError> {
+    let command = invocation.command_path().join(" ");
+    if !matches!(
+        command.as_str(),
+        "experiment" | "experiment list" | "experiment check"
+    ) {
+        return Ok(false);
+    }
+
+    let statuses = morphz::experimental::statuses(&app_config.experimental.enabled)?;
+    if command == "experiment check" {
+        let name = invocation
+            .prompt_args()
+            .first()
+            .ok_or("morphz experiment check requires FEATURE")?;
+        let permit = morphz::experimental::require_enabled(&app_config.experimental.enabled, name)?;
+        let feature = permit.feature();
+        if json_output(invocation) {
+            let status = statuses
+                .into_iter()
+                .find(|status| status.name == feature.name)
+                .expect("known feature has a status");
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        } else {
+            println!("{}: available (experimental)", feature.name);
+        }
+        return Ok(true);
+    }
+
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+    } else {
+        for status in statuses {
+            println!(
+                "{}\tcompiled={}\tenabled={}\tavailable={}\t{}",
+                status.name, status.compiled, status.enabled, status.available, status.summary
+            );
+        }
+    }
+    Ok(true)
 }
 
 fn protect_runtime_files(app_config: &mut config::AppConfig, config_paths: &[PathBuf]) {
@@ -3915,6 +4008,7 @@ async fn run_once(
                 harness,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await?;
@@ -4296,6 +4390,7 @@ async fn run_interactive(
                     harness: initial_harness.take(),
                     dispatch_mode: None,
                     model_alias: None,
+                    reasoning_effort: None,
                 },
             )) {
                 if let Ok(mut waiting) = waiting_for_reply.lock() {
@@ -5407,6 +5502,33 @@ mod tests {
             morphz::config::ProviderInstanceConfig::default(),
         );
         assert!(build_client(&setup, &partial, true).is_ok());
+    }
+
+    #[test]
+    fn coordination_mesh_cli_enables_the_experiment_and_defaults_local_identity() {
+        let parser = morphz_command_line_parser();
+        let invocation = parser
+            .parse(["serve", "--coordination-mesh=file:/etc/morphz/mesh.toml"])
+            .unwrap();
+        let mut config = AppConfig::default();
+        apply_cli_config(&invocation, &mut config).unwrap();
+        assert!(config
+            .experimental
+            .enabled
+            .contains(morphz::experimental::COGNITIVE_COORDINATION));
+        assert_eq!(
+            config.experimental.cognitive_coordination.mesh.as_deref(),
+            Some("file:/etc/morphz/mesh.toml")
+        );
+        let participant = config
+            .experimental
+            .cognitive_coordination
+            .participant
+            .as_ref()
+            .unwrap();
+        assert_eq!(participant.agent_id, "default-agent");
+        assert_eq!(participant.context_id, "context-default");
+        assert_eq!(participant.session_id, "session-default");
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 {
   "common": {
-    "shared": "共享"
+    "shared": "共享",
+    "close": "关闭"
   },
   "navigation": {
     "label": "运行时控制台导航",
@@ -832,6 +833,19 @@
     "nextEvaluation": "仅影响后续求值；不会中断当前请求。",
     "save": "应用",
     "saving": "应用中…"
+  },
+  "cognitiveCoordination": {
+    "short": "认知协调",
+    "enableHint": "为当前认知上下文启用认知协调；从下一次模型求值开始，才会注入 coordinate 工具与精简能力契约。",
+    "disableHint": "关闭当前认知上下文的认知协调；新的模型求值将不再看到相关工具和能力契约。",
+    "unavailable": "当前运行时未提供认知协调。请先编译并启用 experimental-cognitive-coordination 实验功能。",
+    "peerStatus": "查看认知协调参与节点",
+    "network": "认知协调网络",
+    "networkHint": "实时认证握手用于显示节点健康状态，以及新 Assignment 将冻结的逻辑模型路由。",
+    "notConfigured": "本地参与节点尚未配置",
+    "noPeers": "没有已启用的静态参与节点。",
+    "localStatus": "{{count}} 项能力 · {{active}} 个活动 Assignment",
+    "refresh": "刷新"
   },
   "connection": {
     "connected": "已连接",

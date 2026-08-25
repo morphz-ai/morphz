@@ -882,6 +882,42 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .theme-swatch.coral { background: #f08a7e; }
 .theme-swatch.mono { border: 1px solid #858791; background: linear-gradient(135deg, #ececf0 50%, #41434b 50%); }
 .context-budget-selector { position: relative; }
+.cognitive-coordination-selector { position: relative; display: inline-flex; gap: 3px; }
+.coordination-health-button { padding-inline: 5px; }
+.coordination-status-popover {
+  position: fixed;
+  inset: auto;
+  z-index: 5;
+  width: min(390px, calc(100vw - 28px));
+  max-height: min(480px, calc(100dvh - 80px));
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--overlay-surface);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(18px);
+  white-space: normal;
+}
+.coordination-status-popover > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.coordination-status-popover > header > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.coordination-status-popover > header small { color: var(--accent); font: 700 8px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.coordination-status-popover > header strong { color: var(--text); font-size: 14px; }
+.coordination-status-popover > header em { color: var(--faint); font: 500 8px/1.4 var(--mono); font-style: normal; }
+.coordination-status-popover > header button { color: var(--faint); }
+.coordination-status-popover > p { margin: 9px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.coordination-peer-list { display: flex; flex-direction: column; gap: 6px; }
+.coordination-peer-list article { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface-soft); }
+.coordination-peer-state { width: 7px; height: 7px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--red-soft); }
+.coordination-peer-list article.is-healthy .coordination-peer-state { background: var(--green); box-shadow: 0 0 0 2px var(--green-soft); }
+.coordination-peer-list article > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.coordination-peer-list strong { overflow: hidden; color: var(--text-soft); font: 650 10px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.coordination-peer-list small { overflow: hidden; color: var(--faint); font: 500 8px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.coordination-peer-list em { color: var(--muted); font: 600 8px/1 var(--mono); font-style: normal; }
+.coordination-peer-empty { padding: 12px; text-align: center; }
+.coordination-status-popover > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
+.coordination-status-popover > footer small { color: var(--faint); font-size: 8px; }
+.coordination-status-popover > footer button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; border: 1px solid var(--accent); border-radius: var(--radius-xs); background: var(--accent-soft); color: var(--accent-strong); font-size: 9px; font-weight: 700; }
 .context-budget-button.is-active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
 .context-budget-popover {
   position: fixed;
