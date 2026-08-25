@@ -18,7 +18,7 @@
 2. 官方 Codex CLI `0.149.1`。
 
 不再运行 v0.5 Harness 或哲学 Mind Frame。两个 Arm 每题一次、`max_retries=0`、每臂
-`n_concurrent=1`，共 98 个正式 trial。两臂并行，总节点最多同时运行两个任务容器。
+`n_concurrent=3`，共 98 个正式 trial。两臂并行，总节点最多同时运行六个任务容器。
 
 ## 3. 冻结身份
 
@@ -50,6 +50,10 @@
 - Provider/Agent/Verifier 异常；
 - Token 与墙钟；
 - 30 秒采样的主机 load、可用内存与活动容器数。
+
+前 40 题的相关两臂各自 `n_concurrent=1`，后 49 题调整为每臂 `n_concurrent=3`。任务容器、
+Context、Session 和数据库仍逐 trial 隔离，两臂并发完全对称；但吞吐与资源竞争条件发生
+变化，因此论文同时报告 40/49 两个分层结果，并把并发变化列为合并 89 题结果的效度威胁。
 
 前 40 和后 49 只有在数据集 digest、模型、权限、Codex 版本、Runtime commit 与 binary
 hash 全部相同时才合并；否则只能分层报告。

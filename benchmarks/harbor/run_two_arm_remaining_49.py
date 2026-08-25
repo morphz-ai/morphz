@@ -27,6 +27,7 @@ EXPECTED_RUNTIME_BINARY_SHA256 = (
     "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67"
 )
 EXPECTED_CODEX_VERSION = "0.149.1"
+CONCURRENCY_PER_ARM = 3
 
 
 def sha256_file(path: Path) -> str:
@@ -93,7 +94,7 @@ def commands(tasks: list[str], jobs_root: Path) -> dict[str, list[str]]:
             "--attempts",
             "1",
             "--concurrency",
-            "1",
+            str(CONCURRENCY_PER_ARM),
             *common,
         ],
         "official-codex": [
@@ -104,7 +105,7 @@ def commands(tasks: list[str], jobs_root: Path) -> dict[str, list[str]]:
             "--jobs-dir",
             str(jobs_root / "official-codex"),
             "--concurrency",
-            "1",
+            str(CONCURRENCY_PER_ARM),
             *common,
         ],
     }
@@ -263,8 +264,8 @@ def main() -> int:
         "task_set_sha256": sha256_file(TASK_SET),
         "tasks": tasks,
         "attempts_per_task": 1,
-        "concurrency_per_arm": 1,
-        "maximum_simultaneous_trials": 2,
+        "concurrency_per_arm": CONCURRENCY_PER_ARM,
+        "maximum_simultaneous_trials": CONCURRENCY_PER_ARM * 2,
         "runtime_commit": EXPECTED_RUNTIME_COMMIT,
         "runtime_binary_sha256": EXPECTED_RUNTIME_BINARY_SHA256,
         "codex_cli_version": EXPECTED_CODEX_VERSION,
