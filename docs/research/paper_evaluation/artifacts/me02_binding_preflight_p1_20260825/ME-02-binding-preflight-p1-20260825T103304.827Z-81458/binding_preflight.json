@@ -1,0 +1,21 @@
+{
+  "id": "ME-02-binding-preflight-p1-20260825T103304.827Z-81458",
+  "created_at": "2026-08-25T10:33:04.902493+00:00",
+  "profile": "roadshow-demo-001",
+  "requested_reasoning_effort": "max",
+  "binding": {
+    "requested_alias": "gpt-5.6-sol",
+    "route_id": "gpt-5.6-sol",
+    "route_revision": "sha256:2b09e972ecac317f15338a29b01d84817f75b1ab29d9a95ccdbc625b93cd6a9a",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "gpt-5.6-sol",
+    "protocol": "openai-responses",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "completion_calls": 0,
+  "passed": true
+}
