@@ -25,7 +25,7 @@
 | ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
-| ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | 多项 `D` 分散存在 | `planned` | — | 建立面向论文主张的覆盖矩阵 |
+| ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
 | ME-07 | Mem2ActBench 外部验证 | RQ5 | P1 | 无 | `planned` | — | 完成许可/环境/适配范围审计 |
@@ -60,6 +60,18 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-04 p1 确定性 Gate 完成：八类 Runtime 权威边界与故障注入全部通过；完整 lib
+  989/989、6 个精确 `attempt_loop` 跨组件测试 6/6、Runtime Store conformance 5/5，
+  模型调用为 0。新增恶意 Observation 正负控制：fake Provider 按恶意文本返回未开放
+  的生产 `write` 调用时，完整 `MorphzRuntime` 没有创建目标文件并留下
+  `executed=false` 的拒绝 receipt；同一生产工具在授权控制组正确创建文件。该结果只
+  支持“文本不能扩大确定性权限边界”，不宣称识别所有 Prompt Injection。每项结果绑定
+  实际执行的固定测试二进制 SHA-256；主工作区后续源码变化不会改变既有二进制结果，
+  因此本轮标记为 `deterministic-gate-complete`，未来 Runtime 版本只需按回归策略运行。
+  协议见
+  [`me_04_runtime_authority_fault_injection_protocol_p1.md`](./me_04_runtime_authority_fault_injection_protocol_p1.md)，
+  结果见
+  [`artifacts/me04_runtime_authority_gate_p1_20260825/RESULT.md`](./artifacts/me04_runtime_authority_gate_p1_20260825/RESULT.md)；
 - ME-01 p1.1 Stage A Pilot 完成：五个预注册任务族 × 三个 arm 共 15 个有效 episode
   全部严格通过。`cross_session_continuity` 的有效重跑证明 Session A 与 Session B 真实挂载
   同一个 Context，完整 Morphz 在 A 中形成并修订的 Frame 出现在 B 的行动投影；首次运行

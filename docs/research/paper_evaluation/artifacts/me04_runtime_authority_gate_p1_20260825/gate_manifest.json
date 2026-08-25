@@ -1,0 +1,79 @@
+{
+  "experiment_id": "ME-04",
+  "protocol": "p1-frozen",
+  "run_date": "2026-08-25",
+  "timezone": "Asia/Shanghai",
+  "model_calls": 0,
+  "source_identity": {
+    "git_head": "818f52e63667bf622ec16ca742b00b9f246063a8",
+    "runtime_baseline_tag": "paper-eval-runtime-v4",
+    "runtime_baseline_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_dirty_diff_sha256_at_library_gate": "b6ff80196d4363190704ed4c9e0c726bc7bd0de6660945d48e4cda40a161bfe2",
+    "runtime_dirty_diff_sha256_at_final_cell_g_gate": "e18347c0937c2914b740990f87c8ca353ed948b8f2b0ad138d71951010da4aa0",
+    "clean_baseline": false,
+    "evidence_bound_to_executed_binary_sha256": true,
+    "paper_reportable_deterministic_evidence": true
+  },
+  "environment": {
+    "os": "macOS 26.5.1 build 25F80",
+    "architecture": "arm64",
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "1.97.1 (c980f4866 2026-06-30)"
+  },
+  "test_binaries": {
+    "morphz_lib_sha256": "cb30cbc0f481d9512040cfb900479f41fd604667a0a0da7cf9c3419906e6448a",
+    "attempt_loop_sha256": "7e05ebd73a361a1d8b223a5de65aa8e0253ce48bbeba975b3caf86393c146b6c",
+    "runtime_store_conformance_sha256": "648a3ca908bda98f4356ca38bc7d94e3f4342f7af8819a5626109ff3209874c1"
+  },
+  "suites": [
+    {
+      "command": "cargo test -p morphz --lib",
+      "passed": 989,
+      "failed": 0,
+      "ignored": 6,
+      "seconds": 62.73
+    },
+    {
+      "command": "cargo test -p morphz --test runtime_store_conformance",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 11.45
+    },
+    {
+      "command": "six exact attempt_loop integration tests",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "tests": [
+        "duplicate_routed_event_creates_one_activation_and_one_reply",
+        "runtime_restart_reuses_persisted_tool_plan_without_reasking_model",
+        "runtime_restart_resumes_context_tx_continuation_until_final_reply",
+        "critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_receipt",
+        "tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply",
+        "adversarial_observation_cannot_expand_the_runtime_tool_boundary"
+      ]
+    },
+    {
+      "command": "cargo clippy -p morphz --test attempt_loop -- -D warnings",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "cells": {
+    "A_tool_and_capability_admission": "pass",
+    "B_expression_type_and_replay_integrity": "pass",
+    "C_version_and_concurrent_commit": "pass",
+    "D_duplicate_and_replay_fencing": "pass",
+    "E_physical_side_effect_crash_boundary": "pass",
+    "F_context_commit_before_reply_restart": "pass",
+    "G_adversarial_observation_cannot_expand_authority": "pass",
+    "H_principal_session_context_isolation": "pass"
+  },
+  "gate": {
+    "deterministic_gate_complete": true,
+    "rerun_required_because_source_changed_after_binary_build": false,
+    "reason": "Each result is bound to the immutable test binary that actually executed. Later source edits cannot mutate prior binary behavior; future Runtime versions use the same suite as regression evidence rather than retroactively invalidating this run."
+  }
+}
