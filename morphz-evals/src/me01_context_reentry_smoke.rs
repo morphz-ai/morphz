@@ -40,6 +40,7 @@ const REASONING: &str = "max";
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
 const MODEL_CALL_TIMEOUT: Duration = Duration::from_secs(480);
 const STAGE_TIMEOUT: Duration = Duration::from_secs(600);
+const DEFAULT_SMOKE_FIXTURE_ID: &str = "me01-p1-delayed-reference-01";
 
 const APPEND_ONLY_SYSTEM: &str = r#"You are participating in the ME-01 controlled memory experiment. Treat every evidence event as carrying an immutable event_id, source, version, timestamp, and content. Preserve source authority, explicit supersession, object identity, and Context boundaries. On non-final stages, acknowledge ingestion without inventing a final action. On the final act stage, return only one JSON object with exactly four string fields: action, object_id, value, evidence_id. Do not use Markdown fences or additional prose."#;
 
@@ -116,8 +117,15 @@ struct ExactClient {
 pub async fn validate_me01_real_smoke_preflight(
     agent_binary: &Path,
 ) -> Result<Me01RealSmokePreflight, DynError> {
+    validate_me01_real_cell_preflight(agent_binary, DEFAULT_SMOKE_FIXTURE_ID).await
+}
+
+pub async fn validate_me01_real_cell_preflight(
+    agent_binary: &Path,
+    fixture_id: &str,
+) -> Result<Me01RealSmokePreflight, DynError> {
     let agent_binary = std::fs::canonicalize(agent_binary)?;
-    let fixture = smoke_fixture()?;
+    let fixture = fixture_by_id(fixture_id)?;
     let exact =
         build_exact_client(&std::env::temp_dir().join("morphz-me01-real-preflight")).await?;
     Ok(Me01RealSmokePreflight {
@@ -141,11 +149,19 @@ pub async fn run_me01_real_smoke_suite(
     base_dir: Option<&Path>,
     agent_binary: &Path,
 ) -> Result<Me01RealSmokeSuiteReport, DynError> {
-    let preflight = validate_me01_real_smoke_preflight(agent_binary).await?;
+    run_me01_real_cell_suite(base_dir, agent_binary, DEFAULT_SMOKE_FIXTURE_ID).await
+}
+
+pub async fn run_me01_real_cell_suite(
+    base_dir: Option<&Path>,
+    agent_binary: &Path,
+    fixture_id: &str,
+) -> Result<Me01RealSmokeSuiteReport, DynError> {
+    let preflight = validate_me01_real_cell_preflight(agent_binary, fixture_id).await?;
     if !preflight.ready_for_real_model_smoke {
         return Err("ME-01 real smoke preflight did not pass".into());
     }
-    let fixture = smoke_fixture()?;
+    let fixture = fixture_by_id(fixture_id)?;
     let base = base_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::temp_dir().join("morphz-me01-real-smoke"));
@@ -808,11 +824,11 @@ fn validate_event_model_bindings(events: &[Event]) -> Result<bool, DynError> {
     }))
 }
 
-fn smoke_fixture() -> Result<Me01FixturePair, DynError> {
+fn fixture_by_id(fixture_id: &str) -> Result<Me01FixturePair, DynError> {
     load_me01_fixtures()?
         .into_iter()
-        .find(|fixture| fixture.visible.family == "delayed_reference")
-        .ok_or_else(|| "ME-01 delayed-reference smoke fixture is missing".into())
+        .find(|fixture| fixture.visible.id == fixture_id)
+        .ok_or_else(|| format!("ME-01 fixture is missing: {fixture_id}").into())
 }
 
 fn render_stage_prompt(stage: &Me01Stage, required_action: &str) -> Result<String, DynError> {
@@ -927,12 +943,19 @@ mod tests {
 
     #[test]
     fn smoke_exposes_the_scored_action_vocabulary() {
-        let fixture = smoke_fixture().unwrap();
+        let fixture = fixture_by_id(DEFAULT_SMOKE_FIXTURE_ID).unwrap();
         assert_eq!(fixture.visible.family, "delayed_reference");
         for stage in &fixture.visible.stages {
             let prompt = render_stage_prompt(stage, &fixture.visible.required_action).unwrap();
             assert!(prompt.contains(&fixture.hidden.expected.action));
         }
+    }
+
+    #[test]
+    fn real_cell_selection_uses_the_requested_fixture() {
+        let fixture = fixture_by_id("me01-p1-supersession-conflict-01").unwrap();
+        assert_eq!(fixture.visible.family, "supersession_conflict");
+        assert_eq!(fixture.hidden.expected.value, "/hooks/v3");
     }
 
     #[test]

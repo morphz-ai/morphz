@@ -4,7 +4,8 @@ use morphz_evals::me01_context_reentry_eval::{
     run_me01_process_probe_phase, run_me01_standalone_process_gate, Me01Arm, Me01ProbePhase,
 };
 use morphz_evals::me01_context_reentry_smoke::{
-    rehash_me01_artifacts, run_me01_real_smoke_suite, validate_me01_real_smoke_preflight,
+    rehash_me01_artifacts, run_me01_real_cell_suite, run_me01_real_smoke_suite,
+    validate_me01_real_cell_preflight, validate_me01_real_smoke_preflight,
 };
 use std::path::Path;
 
@@ -58,6 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let report = validate_me01_real_smoke_preflight(&binary).await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        [command, fixture_id] if command == "real-cell-preflight" => {
+            let binary = default_morphz_agent_binary()?;
+            let report = validate_me01_real_cell_preflight(&binary, fixture_id).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         [command] if command == "real-smoke" => {
             let binary = default_morphz_agent_binary()?;
             let report = run_me01_real_smoke_suite(None, &binary).await?;
@@ -68,12 +74,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let report = run_me01_real_smoke_suite(Some(Path::new(base)), &binary).await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        [command, fixture_id] if command == "real-cell" => {
+            let binary = default_morphz_agent_binary()?;
+            let report = run_me01_real_cell_suite(None, &binary, fixture_id).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        [command, fixture_id, base] if command == "real-cell" => {
+            let binary = default_morphz_agent_binary()?;
+            let report =
+                run_me01_real_cell_suite(Some(Path::new(base)), &binary, fixture_id).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         [command, suite_root] if command == "rehash-artifacts" => {
             rehash_me01_artifacts(Path::new(suite_root))?;
             println!("rehash complete: {suite_root}");
         }
         _ => {
-            return Err("usage:\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- audit-fixtures\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- fake-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- embedded-runtime-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- standalone-process-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- real-smoke-preflight\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- real-smoke [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- rehash-artifacts SUITE_ROOT\n  me01_context_reentry_eval runtime-probe-phase EPISODE_ROOT FIXTURE_ID ARM PHASE".into());
+            return Err("usage:\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- audit-fixtures\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- fake-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- embedded-runtime-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- standalone-process-gate [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- real-smoke-preflight\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- real-smoke [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- real-cell-preflight FIXTURE_ID\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- real-cell FIXTURE_ID [BASE_DIR]\n  cargo run -p morphz-evals --bin me01_context_reentry_eval -- rehash-artifacts SUITE_ROOT\n  me01_context_reentry_eval runtime-probe-phase EPISODE_ROOT FIXTURE_ID ARM PHASE".into());
         }
     }
     Ok(())
