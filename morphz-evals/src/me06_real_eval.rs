@@ -32,7 +32,10 @@ const MODEL: &str = "gpt-5.6-sol";
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
 const MODEL_TIMEOUT: Duration = Duration::from_secs(900);
 const STAGE_TIMEOUT: Duration = Duration::from_secs(900);
-const COMPACTION_TRIGGER_TOKENS: usize = 10_000;
+const CONTROLLED_COMPACTION_STAGE: usize = 6;
+const MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT: usize = 196_608;
+const MORPHZ_CONTEXT_HARD_TOKEN_LIMIT: usize = 262_144;
+const MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS: usize = 3_000;
 
 const BUSINESS_SYSTEM: &str = r#"You are executing the frozen ME-06 long-horizon state task. Evidence events have stable event IDs, source IDs, authority classes, Context IDs, Session IDs, arrival order, and explicit supersession links. Determine current state by approval and source authority before recency. Preserve durable constraints, current facts, their sources, explicit supersession, unfinished work, and uncertainty. Completed diagnostic noise is not current state. A foreign Context is isolated.
 
@@ -158,6 +161,18 @@ pub async fn run_me06_real_pilot(
     )
     .await?;
     write_json(&suite_root.join("model_binding.json"), &binding)?;
+    write_json(
+        &suite_root.join("budget_binding.json"),
+        &serde_json::json!({
+            "budget_semantics": "production_context_capacity_with_fixed_lifecycle_compaction_baseline",
+            "controlled_compaction_stage": CONTROLLED_COMPACTION_STAGE,
+            "morphz_runtime_soft_token_limit": MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT,
+            "morphz_runtime_hard_token_limit": MORPHZ_CONTEXT_HARD_TOKEN_LIMIT,
+            "morphz_runtime_maintenance_reserve_tokens": MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS,
+            "artificial_context_pressure": false,
+            "all_actual_request_tokens_recorded": true,
+        }),
+    )?;
     write_json(
         &suite_root.join("visible_fixtures.json"),
         &fixtures
@@ -291,23 +306,7 @@ async fn run_controlled_compaction(
             &stage_events,
             &fixture.visible.checkpoint_prompts[stage - 1],
         )?;
-        let mut prospective = messages.clone();
-        prospective.push(message("user", &stage_prompt));
-        let measurement = client
-            .count_prompt_tokens(
-                &format!(
-                    "ME-06/{}/controlled/stage-{stage}",
-                    fixture.visible.fixture_id
-                ),
-                &prospective,
-                &[],
-            )
-            .await?;
-        let measured_tokens = measurement
-            .as_ref()
-            .ok_or("ME-06 controlled compaction requires prompt-token measurement")?
-            .tokens;
-        if measured_tokens > COMPACTION_TRIGGER_TOKENS && !post_compaction_events.is_empty() {
+        if stage == CONTROLLED_COMPACTION_STAGE && !post_compaction_events.is_empty() {
             let prior = std::fs::read_to_string(&compact_state_path)?;
             let maintenance_input = format!(
                 "Prior compacted state:\n{prior}\n\nMessages and evidence after that state:\n{}",
@@ -549,15 +548,15 @@ async fn run_full_morphz(
         ("MORPHZ_EXEC_NETWORK".to_string(), "false".to_string()),
         (
             "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT".to_string(),
-            "10000".to_string(),
+            MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT.to_string(),
         ),
         (
             "MORPHZ_CONTEXT_HARD_TOKEN_LIMIT".to_string(),
-            "12000".to_string(),
+            MORPHZ_CONTEXT_HARD_TOKEN_LIMIT.to_string(),
         ),
         (
             "MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS".to_string(),
-            "2000".to_string(),
+            MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS.to_string(),
         ),
         (
             "MORPHZ_CONTEXT_TRANSACTIONS_ENABLED".to_string(),

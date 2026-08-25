@@ -1,6 +1,6 @@
 # ME-06 长程 Structured Context 与受控 Compaction 对照协议 p1
 
-> 状态：`frozen-p1 / real-run-authorized`。协议、数据、模型、预算和两臂边界已经冻结；真实
+> 状态：`frozen-p1.1 / real-run-authorized`。协议、数据、模型、预算和两臂边界已经冻结；真实
 > paired Pilot 已获用户授权。
 >
 > 日期：2026-08-26（Asia/Shanghai）
@@ -85,12 +85,15 @@ Morphz 与官方 Codex 的同环境产品比较归入 ME-07 公开 Benchmark。�
 
 - 主模型、reasoning effort、Provider route、fallback、输出验收上限；
 - 原始事件的正文、稳定 ID、来源、时间、Session、Context、版本和到达顺序；
-- 任务指令、工具、文件、活动输入 Token 上限、召回预算和 wall-clock 上限；
+- 任务指令、工具、文件、生产 Context 容量、召回预算和 wall-clock 上限；
 - 进程重启位置、Session 切换位置、并发调度顺序和隐藏评分器；
 - 每个 paired fixture 的唯一正确当前状态和最终行动。
 
 允许不同的只有状态机制及其必然产生的表示：controlled compaction state 是模型生成的持久
-摘要；Morphz state 是模型在生产 Runtime 中提交的 Structured Context。
+摘要；Morphz state 是模型在生产 Runtime 中提交的 Structured Context。两组均不得通过缩小
+窗口人为制造压力：Morphz 使用生产 Context 容量；controlled baseline 在 S6 这一固定业务
+生命周期边界执行一次 compaction。两组完整实际请求 Token 仍逐次记录，生产 Runtime/工具
+scaffold 是实际架构成本和有效性威胁，不能从成本统计中隐藏。
 
 ## 5. 固定长程事件流
 
@@ -130,19 +133,20 @@ Morphz 与官方 Codex 的同环境产品比较归入 ME-07 公开 Benchmark。�
 
 维护调用另行计数：
 
-- `controlled_compaction`：仅在冻结 Token Gate 触发；
+- `controlled_compaction`：仅在冻结的业务生命周期边界 S6 前触发一次；
 - `full_morphz`：由生产 Runtime 的 notice/warning/critical 机制和模型实际选择触发；
 - 两组的维护输入、输出、repair、召回、Token 和时间均不得隐藏在业务调用之外。
 
-## 7. 活动输入与维护预算候选
+## 7. 活动输入与维护预算
 
 以下数值已经冻结：
 
 | 字段 | Candidate |
 | --- | ---: |
-| 共同活动输入验收上限 | 12,000 tokens |
-| 维护保留预算 | 2,000 tokens |
-| compaction 触发点 | 预计下一业务输入超过 10,000 tokens |
+| controlled baseline 维护触发点 | S6 前固定执行一次 compaction |
+| Morphz Context soft limit | 196,608 tokens（生产配置） |
+| Morphz Context hard limit | 262,144 tokens（256 Ki tokens，生产配置） |
+| Morphz maintenance reserve | 3,000 tokens（生产配置） |
 | compaction state 验收上限 | 3,000 tokens |
 | 单次业务输出验收上限 | 4,096 tokens |
 | 单次维护输出验收上限 | 4,096 tokens |
@@ -151,7 +155,10 @@ Morphz 与官方 Codex 的同环境产品比较归入 ME-07 公开 Benchmark。�
 | 单 fixture wall-clock | 60 分钟，仅用于防止失控 |
 
 冻结 tokenizer 对完整实际请求重算 `uncached_equivalent_input_tokens`，同时保存 Provider 原始
-usage、cached tokens 和实际计费信息。缓存折扣不得被用于夸大架构 Token 优势。
+usage、cached tokens 和实际计费信息。缓存折扣不得被用于夸大架构 Token 优势。本实验不通过
+人为缩小 Morphz Context 窗口制造压力；Morphz 使用生产容量正常运行。受控基线在预注册的
+S6 业务生命周期边界执行一次 compaction，用于观察压缩摘要与持续 Structured Context 在后续
+迁移、并发和恢复阶段的行为，而不是比较谁先被人为挤爆。
 
 ## 8. 主要结果与分层评分
 
@@ -268,6 +275,7 @@ p1 候选固定：
 4. 接受语义结果为主，格式合规率单列；
 5. 接受 p1 先做 1 个两臂 paired smoke，再做 3 个两臂 paired fixtures；
 6. 接受 Sol-only 主比较，模型切换作为后续扩展；
-7. 冻结 12,000/10,000/3,000 Token 预算；真实调用保存请求前测量与 Provider usage；
+7. Morphz 冻结为生产 196,608/262,144/3,000 Context 配置；受控基线在 S6 前固定执行一次
+   compaction；真实调用保存完整请求测量与 Provider usage，且不制造人工 Context 压力；
 8. paired cell 内部并发只用于协议明确要求的 S8/S9 多 Session 冲突场景，批次并发保持 1，
    不把调度吞吐变化引入论文结果。
