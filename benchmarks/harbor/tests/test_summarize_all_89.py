@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmarks.harbor.summarize_all_89 import exact_two_sided, summarize
+from benchmarks.harbor.summarize_all_89 import (
+    exact_two_sided,
+    load_resource_samples,
+    summarize,
+)
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -76,6 +80,42 @@ class SummarizeAll89Test(unittest.TestCase):
             summary["bootstrap"],
             {"seed": 20260826, "repetitions": 10_000},
         )
+
+    def test_resource_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "resources.jsonl"
+            rows = [
+                {
+                    "captured_at": "2026-08-26T00:00:00Z",
+                    "cpu_count": 16,
+                    "docker_running_containers": 2,
+                    "load_1m": 0.1,
+                    "load_5m": 0.2,
+                    "load_15m": 0.3,
+                    "memory_available_kib": 60_000,
+                    "memory_total_kib": 64_000,
+                },
+                {
+                    "captured_at": "2026-08-26T00:00:30Z",
+                    "cpu_count": 16,
+                    "docker_running_containers": 3,
+                    "load_1m": 0.5,
+                    "load_5m": 0.4,
+                    "load_15m": 0.3,
+                    "memory_available_kib": 58_000,
+                    "memory_total_kib": 64_000,
+                },
+            ]
+            path.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            summary = load_resource_samples(path)
+
+        self.assertEqual(summary["sample_count"], 2)
+        self.assertEqual(summary["cpu_count"], 16)
+        self.assertEqual(summary["memory_used_kib"]["max"], 6_000)
+        self.assertEqual(summary["docker_running_containers"]["max"], 3)
 
 
 if __name__ == "__main__":

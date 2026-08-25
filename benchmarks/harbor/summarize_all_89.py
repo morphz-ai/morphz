@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import random
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -112,10 +113,70 @@ def paired_bootstrap_95(differences: list[int]) -> list[float]:
     ]
 
 
+def percentile(values: list[float], fraction: float) -> float:
+    require(values, "percentile requires observations")
+    ordered = sorted(values)
+    position = fraction * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def load_resource_samples(path: Path) -> dict[str, Any]:
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    require(rows, "resource sample file is empty")
+    require(all(isinstance(row, dict) for row in rows), "invalid resource sample row")
+    cpu_counts = {int(row["cpu_count"]) for row in rows}
+    memory_totals = {int(row["memory_total_kib"]) for row in rows}
+    require(len(cpu_counts) == 1, "cpu_count changed during resource sampling")
+    require(len(memory_totals) == 1, "memory_total_kib changed during resource sampling")
+    load_1m = [float(row["load_1m"]) for row in rows]
+    load_5m = [float(row["load_5m"]) for row in rows]
+    memory_used = [
+        int(row["memory_total_kib"]) - int(row["memory_available_kib"])
+        for row in rows
+    ]
+    containers = [int(row["docker_running_containers"]) for row in rows]
+    return {
+        "sample_count": len(rows),
+        "first_captured_at": rows[0]["captured_at"],
+        "last_captured_at": rows[-1]["captured_at"],
+        "cpu_count": next(iter(cpu_counts)),
+        "memory_total_kib": next(iter(memory_totals)),
+        "load_1m": {
+            "mean": statistics.fmean(load_1m),
+            "p95": percentile(load_1m, 0.95),
+            "max": max(load_1m),
+        },
+        "load_5m": {
+            "mean": statistics.fmean(load_5m),
+            "p95": percentile(load_5m, 0.95),
+            "max": max(load_5m),
+        },
+        "memory_used_kib": {
+            "mean": statistics.fmean(memory_used),
+            "p95": percentile([float(value) for value in memory_used], 0.95),
+            "max": max(memory_used),
+        },
+        "docker_running_containers": {
+            "mean": statistics.fmean(containers),
+            "max": max(containers),
+        },
+    }
+
+
 def summarize(
     prior_morphz_path: Path,
     prior_codex_path: Path,
     remaining_path: Path,
+    resource_samples_path: Path | None = None,
 ) -> dict[str, Any]:
     prior_morphz = load_prior_strict(prior_morphz_path)
     prior_codex = load_prior_strict(prior_codex_path)
@@ -137,7 +198,7 @@ def summarize(
     codex_passed = sum(codex.values())
     differences = [morphz[task] - codex[task] for task in tasks]
 
-    return {
+    summary = {
         "protocol": "ME-08-terminal-bench-2.1-all-89-paired-v1",
         "official_verifier_raw_reward_is_primary": True,
         "task_count": 89,
@@ -186,6 +247,10 @@ def summarize(
             "repetitions": BOOTSTRAP_REPETITIONS,
         },
     }
+    if resource_samples_path is not None:
+        summary["host_resources"] = load_resource_samples(resource_samples_path)
+        summary["input_sha256"][str(resource_samples_path)] = sha256(resource_samples_path)
+    return summary
 
 
 def result_markdown(summary: dict[str, Any]) -> str:
@@ -214,10 +279,16 @@ def main() -> int:
     parser.add_argument("--prior-morphz", type=Path, required=True)
     parser.add_argument("--prior-codex", type=Path, required=True)
     parser.add_argument("--remaining-summary", type=Path, required=True)
+    parser.add_argument("--resource-samples", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=False)
-    summary = summarize(args.prior_morphz, args.prior_codex, args.remaining_summary)
+    summary = summarize(
+        args.prior_morphz,
+        args.prior_codex,
+        args.remaining_summary,
+        args.resource_samples,
+    )
     (args.output_dir / "all_89_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=True) + "\n",
         encoding="utf-8",
