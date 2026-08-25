@@ -24,7 +24,7 @@
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
 | ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
-| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
+| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D`（p1.1 No-model Gate） | `protocol-frozen` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 从冻结 commit 运行 3 tasks × 4 conditions × 2 repetitions 真实 Pilot |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
@@ -60,6 +60,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-03 p1.1 协议冻结：三个任务的 Base/Intervention 开放合法集合分别为 6/5、3/3、
+  4/5，所有干预前后集合不相交；每个任务的闭合分数最大值唯一。scorer 对全部合法集合
+  正例以及任意文本、未知候选、错误数量、错误 Context 依据和错误闭合值负例均正确判定。
+  首次候选 Gate 后、真实模型调用前发现任务数量措辞与闭合单选冲突，且开放 Prompt 暴露
+  无关 `closed_score`；p1.1 修正后二次 Gate 全部通过。零 completion 精确绑定为
+  `gpt-5.6-sol`/max/单候选/no-fallback。报告见
+  [`me_03_no_model_gate_2026_08_25.md`](./me_03_no_model_gate_2026_08_25.md)；
 - ME-02 p1.1 真实 Pilot 完成：同一 Canonical Program IR 生成的 S-expression AST、
   JSON AST 和 Markdown Program 在六个任务上均为 6/6 严格通过，共 18/18；96 次模型
   请求、78 次工具调用无 Provider 错误，15 个发生工具调用的 episode 均正确回放

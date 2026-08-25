@@ -35,6 +35,8 @@
 - [ME-02 p1.1 No-model Gate 与绑定预检](./me_02_no_model_gate_2026_08_25.md)：6×3 表示 digest、原生 Boolean、隐藏答案泄漏和 scorer 正负例全部通过；零 completion 确认物理模型为 `gpt-5.6-sol`、reasoning `max`、单候选无 fallback；
 - [ME-02 p1 首次真实 Pilot 无效记录](./me_02_p1_invalid_pilot_2026_08_25.md)：记录布尔值被建模成字符串和缺失 Responses continuation 的装置错误；18 个 episode 全部保留但不得进入论文结果；
 - [ME-02 p1.1 真实 Pilot 结果](./artifacts/me02_real_pilot_p11_20260825/RESULT.md)：6×3 共 18/18 严格通过；支持 S-expression 统一程序/数据表示的可行性和当前条件下不退化，不支持相对 JSON/Markdown 的优越性；
+- [ME-03 受约束开放求值与 Context 干预协议 p1](./me_03_bounded_open_context_intervention_protocol_p1.md)：用多值开放契约、Context 干预和唯一闭合算子对照区分“受约束非唯一求值”与任意文本或强制随机性；
+- [ME-03 p1.1 No-model Gate 与绑定预检](./me_03_no_model_gate_2026_08_25.md)：合法集合多值性、干预集合不相交、闭合唯一值及 scorer 正负例全部通过；零 completion 精确绑定 `gpt-5.6-sol`/max/no-fallback；
 - [ME-01 p1.1 Supersession Conflict](./artifacts/me01_supersession_conflict_p11_20260825/RESULT.md)：三组均正确选择两级 supersession 后的 `/hooks/v3`；累计两个真实 cell、6/6 有效 episode 严格通过，仍只作可行性与非退化证据；
 - [ME-01 p1.1 Source Authority](./artifacts/me01_source_authority_p11_20260825/RESULT.md)：三组均正确保留权威来源的 `R-45`，拒绝更新但未批准的 `R-07/R-90`；累计三个真实 cell、9/9 有效 episode 严格通过；
 - [ME-01 p1.1 Cross-Session Continuity](./artifacts/me01_cross_session_continuity_p11_20260825/RESULT.md)：有效重跑中，Session A/B 真实挂载同一 Context，三组均正确；首次硬编码 Session A 的运行永久标记无效；
