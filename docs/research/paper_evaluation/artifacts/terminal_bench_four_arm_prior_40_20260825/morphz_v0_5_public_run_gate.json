@@ -1,0 +1,1310 @@
+{
+  "gate_version": "terminal-bench-public-run-gate-v2",
+  "integrity_policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/full/jobs/morphz-v0.5/2026-08-25__00-01-36",
+  "expected_trials": 40,
+  "run_identity": {
+    "infrastructure_git_commit": "e7268eaf3aa8c9a3febc6e4e47b3c223e6ee1209",
+    "infrastructure_git_tags": [
+      "terminal-bench-four-arm-prior-40-v1"
+    ],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "paper-eval-runtime-v4",
+    "runtime_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness_mode": "bound",
+    "harness_profile": "minimal-v0.5",
+    "harness": {
+      "id": "terminal-task",
+      "version": "0.5.0",
+      "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+      "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f"
+    },
+    "attempts": 1,
+    "concurrency": 1,
+    "max_retries": 0,
+    "task_filters": [
+      "adaptive-rejection-sampler",
+      "build-cython-ext",
+      "build-pov-ray",
+      "caffe-cifar-10",
+      "circuit-fibsqrt",
+      "cobol-modernization",
+      "compile-compcert",
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-elf",
+      "filter-js-from-html",
+      "fix-ocaml-gc",
+      "gcode-to-text",
+      "gpt2-codegolf",
+      "kv-store-grpc",
+      "llm-inference-batching-scheduler",
+      "log-summary-date-ranges",
+      "make-doom-for-mips",
+      "mcmc-sampling-stan",
+      "merge-diff-arc-agi-task",
+      "model-extraction-relu-logits",
+      "mteb-leaderboard",
+      "mteb-retrieve",
+      "nginx-request-logging",
+      "openssl-selfsigned-cert",
+      "path-tracing",
+      "pypi-server",
+      "pytorch-model-recovery",
+      "qemu-alpine-ssh",
+      "raman-fitting",
+      "regex-chess",
+      "regex-log",
+      "sam-cell-seg",
+      "schemelike-metacircular-eval",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "train-fasttext",
+      "vulnerable-secret",
+      "write-compressor"
+    ]
+  },
+  "checks": {
+    "strict_integrity_gate": true,
+    "trial_count": true,
+    "all_trial_gates": true,
+    "isolation": true,
+    "provider_clean": true,
+    "credential_scan_complete": true,
+    "credential_not_persisted": true
+  },
+  "required_checks": [
+    "strict_integrity_gate",
+    "trial_count",
+    "all_trial_gates",
+    "isolation",
+    "credential_scan_complete",
+    "credential_not_persisted"
+  ],
+  "isolation": {
+    "unique_contexts": true,
+    "unique_sessions": true,
+    "unique_databases": true
+  },
+  "provider_errors": {
+    "usage_limit_reached": 0,
+    "auth_unavailable": 0,
+    "http_429": 0,
+    "http_503": 0,
+    "provider_request_failed": 0
+  },
+  "credential_hit_paths": [],
+  "trials": [
+    {
+      "trial": "adaptive-rejection-sampler__wZZNBov",
+      "task_name": "terminal-bench/adaptive-rejection-sampler",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "b1db1537-b939-4a6d-b369-fff22c1466fb",
+      "session_id": "adaptive-rejection-sampler__wZZNBov__agent",
+      "database_sha256": "c817abf9c1ec949947d3f3f5c23999f947eea2ae167a86e98093eb5055671a0e",
+      "trajectory_sha256": "92d8f503261857cb80f93aeac6c5011ee6762b855c15b01a4bd750df61f03b81",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787604360617933222_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_f9dc3f3b3f04ae9876dd3ce1890928c5b4e3770c5f1482231cc802f1777f82c6"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "build-cython-ext__px4Crd9",
+      "task_name": "terminal-bench/build-cython-ext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "39cd6227-f676-4467-9ad6-8e09d88fa6e4",
+      "session_id": "build-cython-ext__px4Crd9__agent",
+      "database_sha256": "d8dd4e87f2fc673b5b8ef5c51602ba49d41e1cf2a3cdf7504ebb6b6db6d1e6f6",
+      "trajectory_sha256": "462d1175d560858184f859033df1643840f0edc5af70c4922c04118e6807f5f9",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787608204377539615_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_05010f1052986303d166b14fc192b8168336119981a97de10ad145a60eeb88d3"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "build-pov-ray__4PPZ9ho",
+      "task_name": "terminal-bench/build-pov-ray",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "0b147265-e39a-478d-9bad-34b12b3db187",
+      "session_id": "build-pov-ray__4PPZ9ho__agent",
+      "database_sha256": "8c2dcc7cd7f777d9e405d83ebc02fd70192cb33b09601e018a3fd7a317b7c5f0",
+      "trajectory_sha256": "c5316c22992948e22d7c7b90bfc2b7bf8a4c6ceea7bfa3873c26b99a2c79cec6",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787599741155406081_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_611b36268e106aaf2a05021e0d5c58cacaca706dbee22485d512f6b893c82eea"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "caffe-cifar-10__V3r3vs9",
+      "task_name": "terminal-bench/caffe-cifar-10",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "75bb228d-70b9-4331-af1b-42a71a6337fa",
+      "session_id": "caffe-cifar-10__V3r3vs9__agent",
+      "database_sha256": "774d48cf6e7f022f6a16a4e9a14ef28e9263a4c3073eeec2a629aa3574dd7ba6",
+      "trajectory_sha256": "9f413cd37995e0629b1ac8b582d3fd6e2a20f2565829afb4799ac4cbd54f20f8",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787594107752987431_39_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_f802e05d1ff9e07b260d779e37d99a8220bf099abba48f93e56c1c4a6ad03935"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "circuit-fibsqrt__ej8YrM9",
+      "task_name": "terminal-bench/circuit-fibsqrt",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "63db68c5-688f-4075-979b-3a024a552354",
+      "session_id": "circuit-fibsqrt__ej8YrM9__agent",
+      "database_sha256": "ccdc2054075e3d3ef624d0019c1f5b0b4821deaf71ada66dd532e7274627aad2",
+      "trajectory_sha256": "2d0e6ad0a3bf0eb9c3ac5638eccbf755fbd0383dc1746deaef13c539a838a0a7",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787599119727925051_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_5932b523bd0d65804a13e56259f460cf6571c0cc11a8785664be122cbc15f1ee"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "cobol-modernization__tAyWwkx",
+      "task_name": "terminal-bench/cobol-modernization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "8a46eeb1-c76c-4773-91f0-cc4015993a52",
+      "session_id": "cobol-modernization__tAyWwkx__agent",
+      "database_sha256": "d91f3d4945c13bf040002bda0157fed8209eb293408363dbcf6caea111f743fb",
+      "trajectory_sha256": "3b3159f03ca96eb4fa16fa080482accbd08b3c9a5005211a5e2490aa6b44d992",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787600131826097271_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_309ab9a39d5f523db5f2dc2dee1051eac8bebbd42693fbb813d2e5ca3242c2c1"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "compile-compcert__fuCcdLx",
+      "task_name": "terminal-bench/compile-compcert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "896b93b5-02ae-4cd6-a465-bc603f654d28",
+      "session_id": "compile-compcert__fuCcdLx__agent",
+      "database_sha256": "2fcba4b7fd1359145d192afc9115f7d48d4cc6d7003fc0f13bfea77cc71aef02",
+      "trajectory_sha256": "f73b9f05e04e267d7379a5076b0cefbcce7d91550b27d5587d48350d492d8616",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787610264607901057_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_22cea6fb111d019456636de45bb2e9b0ed766610d710afed6cffe11810513167"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "configure-git-webserver__pW6Yav8",
+      "task_name": "terminal-bench/configure-git-webserver",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "5560b846-d2fb-4363-ad22-cf39363b44f3",
+      "session_id": "configure-git-webserver__pW6Yav8__agent",
+      "database_sha256": "7a48b5192973af087342a333a5cea1f83b301bbb71f5152de7a38818d79eed6d",
+      "trajectory_sha256": "7a5ff29d1ba63d0620110b466111e2c1fc769e2d666c1161b8098d3e7d62cf1a",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787607683871313150_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_19afeabb5901002ef8fa252fe0f5083c15ac5de0237363db4544f7851f6bf378"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "dna-assembly__YTQXDci",
+      "task_name": "terminal-bench/dna-assembly",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "d0bd6537-0c04-4c26-a6c2-14d48570ebd3",
+      "session_id": "dna-assembly__YTQXDci__agent",
+      "database_sha256": "ee51f953472c420eedc032c5cb4e4e7e275f56b9fc68ab4c6278de7c2a69ceb5",
+      "trajectory_sha256": "400e267f695b575c0e574cfff3f95d7537cc0d0d656f57b69d7deefdda74ab36",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787589686137655653_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_f5967bc6ff74f6cb2a4e8b022cd138c5418151968b2564b5836351d37bf8cb75"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "dna-insert__TSmnx42",
+      "task_name": "terminal-bench/dna-insert",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "30ee471d-9290-4d80-846c-6f0f993cbd59",
+      "session_id": "dna-insert__TSmnx42__agent",
+      "database_sha256": "1c82744e042d43eac3184400d8a4d52f7624c0a85e2235a06bf4c6a985447ae5",
+      "trajectory_sha256": "4ef98f4485e9c6336c5b10f1a9ba95b60d858453c900dd571e6f21d721fd6eb3",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787612641749947590_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_1345d137784125bc957a45f2f3906b18da5891c6dead62f0b41688aba1da0a3d"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "extract-elf__Bcf9UQN",
+      "task_name": "terminal-bench/extract-elf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "0469cba1-5f1b-475d-897b-7a22b70361d5",
+      "session_id": "extract-elf__Bcf9UQN__agent",
+      "database_sha256": "d41e1810947224dc4d1210b01ecfd7016633c4d21170a38db9b72c03d936c05b",
+      "trajectory_sha256": "b8c7bf247ab92a0ac64eb563161843aa30446f5b7f81808054069847661d6fcd",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787606223335072252_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_7f5aeb411427948869d1022ecc9722d65a4c6e386ac52f4fd7179194c5980c34"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "filter-js-from-html__DNmwAQ2",
+      "task_name": "terminal-bench/filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "d50823c5-d046-4e40-9863-dc8fd0d8db94",
+      "session_id": "filter-js-from-html__DNmwAQ2__agent",
+      "database_sha256": "0a411f8e4a2008248b6462c1089b37a574909191b96b7d02d3ec664265e1e28a",
+      "trajectory_sha256": "d9c716ab169e8f532c42cbf251e20fc1de0123630d2f13c7c139c030e9ac21bf",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787602144628497472_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_5f7ef7c67ea534439097d58509ad6008ba3db0a81cfcfe3895e6234b7e4ae304"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "fix-ocaml-gc__zNrq9bh",
+      "task_name": "terminal-bench/fix-ocaml-gc",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "f437d399-cabe-4d58-b520-f7f1848b4c0f",
+      "session_id": "fix-ocaml-gc__zNrq9bh__agent",
+      "database_sha256": "7a71ff94c5d4d92be7e35589eadff4ff01d92da659e371b35374a6a980cece75",
+      "trajectory_sha256": "c3adfe84167482824a172d414560d728d75fe34c8cc14a0634a410179f766eb5",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787611424962745424_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2354d3e4dea6c4826826211c8126913fc8dea0d5e2c2ec54755bc532f97794eb"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "gcode-to-text__dF6TMRp",
+      "task_name": "terminal-bench/gcode-to-text",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "10cf5212-125c-44cf-a898-2ae3a294f02c",
+      "session_id": "gcode-to-text__dF6TMRp__agent",
+      "database_sha256": "d5c7e7ab2d05e45d731c23ae1cbb7efcf03ab7c3a4587e731bd4bfaaf6c60b75",
+      "trajectory_sha256": "79957aea7c235e5d4a67b3b1c52f9d6f0c518ed3afeee515cda69978f610cfe6",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787612359290460904_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_9a803d8218feb621911a96755011a9789e02bbaad022812f3338deff89d7f905"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "gpt2-codegolf__cnvNpgE",
+      "task_name": "terminal-bench/gpt2-codegolf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "91ec4436-234f-4ecc-930b-31a73061d422",
+      "session_id": "gpt2-codegolf__cnvNpgE__agent",
+      "database_sha256": "37b8e9852e1c96e76e7ff0c0004b4c8f4e9d8cd93fb588f7baa3ed1e47be944b",
+      "trajectory_sha256": "b71faed74dcf72b154b8978e317138dfa2391bbc85dd3cba0ffb1888a5acb546",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787601220353030688_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_6fcab714ba4038d497bbb7f2b69ce8df027454d15cc333a8bdba7fd35b9a20e9"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "kv-store-grpc__sqFGUYw",
+      "task_name": "terminal-bench/kv-store-grpc",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "957cadbd-3526-45fe-a41a-e2e144862c3c",
+      "session_id": "kv-store-grpc__sqFGUYw__agent",
+      "database_sha256": "7e650c3d345edc91a8607955f1b075d0092f53fa0d11fb1509167ba66f34a765",
+      "trajectory_sha256": "1869eff025fc95c75ee757e3ee735f234801dfc96cfc3eaf260da657d4b8c88d",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787589416214599632_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_28e782e56131c880164094db1e4c1a5d6e2466dc8ca5a29942bc3047af83ad5f"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "llm-inference-batching-scheduler__JFufQ5L",
+      "task_name": "terminal-bench/llm-inference-batching-scheduler",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "8b0d4aa8-c1ed-4189-bbb9-56619816a17a",
+      "session_id": "llm-inference-batching-scheduler__JFufQ5L__agent",
+      "database_sha256": "fa7ea14041b72f6cae307d8ff04ad776ddc4fd6ca8898c43694d620350fcfe55",
+      "trajectory_sha256": "4337b16c9e69cee554c3d764ee6436cdb95a54c18232e97cc3881111e8a5b1ff",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787598067099436744_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_e3beb9c4248aea4c442eef45409e118bc7b06782ea973e911eb3268c1705939d"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "log-summary-date-ranges__LWLvNpW",
+      "task_name": "terminal-bench/log-summary-date-ranges",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "07c75a77-f551-4526-8ff8-b7fdbc01d644",
+      "session_id": "log-summary-date-ranges__LWLvNpW__agent",
+      "database_sha256": "4b5b6285ca8617506a45fe53d96d71495d983dc35f8e263160f3acbeb1c2b15b",
+      "trajectory_sha256": "33ef5a66eaa62fe0e8c9ddfd768c62c60dafebc24ed15f712708e80026e9ab57",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787592521888434845_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_9d7f52a5f8f89986ad003b66d275f888d7e08415a4c272a49feaf5cc41be9d30"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "make-doom-for-mips__SJQa8w5",
+      "task_name": "terminal-bench/make-doom-for-mips",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "646acc8d-7aaa-422a-a60b-5299aa9e3097",
+      "session_id": "make-doom-for-mips__SJQa8w5__agent",
+      "database_sha256": "bbaabab06bde3ae1321e614d31cef05f72383205f9a01b527b68a7432cf26ad0",
+      "trajectory_sha256": "ea6b898703a39fce873d145e2020e5b0909c3e74ff88a965e46bb443821f7794",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787606727521042263_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_eb1fa7fe0568aaaa71b3e2bcc3133644d9f4953f3d3c129ab1ca5be6b8388304"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "mcmc-sampling-stan__XegiLKX",
+      "task_name": "terminal-bench/mcmc-sampling-stan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "03a6da85-2e5d-49ce-aaa6-83f138b6d8e5",
+      "session_id": "mcmc-sampling-stan__XegiLKX__agent",
+      "database_sha256": "7cfc120497754ec59d1b96bcf0bba7e57673f4f1affea3bbf7a4ef2d6ced94db",
+      "trajectory_sha256": "ba91e6336275231d2f8b4d7c1896c185f60f027af66a108882476ca475e24aa9",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787600588516822125_39_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_3c21248540e13d75ba1c2987b82bde7d0ac7aa736bcfcb54ba5b494265b2c58c"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "merge-diff-arc-agi-task__nuGAcDm",
+      "task_name": "terminal-bench/merge-diff-arc-agi-task",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "99e6ef30-cc6a-4a6d-a0d7-745c90bb7c5e",
+      "session_id": "merge-diff-arc-agi-task__nuGAcDm__agent",
+      "database_sha256": "ffedbdba4d8f9503d8a5531ca303efb8def8e4711bc89906468ed9299e541b8d",
+      "trajectory_sha256": "1ec2a2b9c27659784853c4389d8d42d6a423562a35d26a13b3edd65ff8889645",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787599519472608123_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_a57cd9c41838a0dc93aa12a59e0a27fe002be0e6c8e0458a589fab796477c180"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "model-extraction-relu-logits__TaqtWDd",
+      "task_name": "terminal-bench/model-extraction-relu-logits",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "4cc75b4b-e89a-408d-a6a5-98860b5e260f",
+      "session_id": "model-extraction-relu-logits__TaqtWDd__agent",
+      "database_sha256": "28563a36ea5d0141991993aa993fff34a4078fca2e4bc22b18a0938c87bf0bb0",
+      "trajectory_sha256": "b95ae68160697abcf49916bb05f8b7a286c2a17b6bc4370486153245ac98040e",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787592611123593982_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_6ca262ae8f7de0f0b6cb4a8f35f3a280e893a6ec725c4db3b4863fa95b8b9a04"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "mteb-leaderboard__ftT9Xez",
+      "task_name": "terminal-bench/mteb-leaderboard",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "fd664f28-ecc0-4593-9f52-5e9197f3a82c",
+      "session_id": "mteb-leaderboard__ftT9Xez__agent",
+      "database_sha256": "53bf171ebb6bc4fc868f21839b8630e71a9babde863d5f8799c00b464b1d162c",
+      "trajectory_sha256": "176fab745321808043a2b3fb0af5ce68e15d76afd0e04b6bfad2d9466449d0ba",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787597559811124171_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_1efce7dab6a1afc133a0ef2438aac75f4fbd6b28a872fde1d8f8aab54a114a3f"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "mteb-retrieve__ks7QRPA",
+      "task_name": "terminal-bench/mteb-retrieve",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "ce50b9e7-0833-4f32-aa60-fa8dcafe09aa",
+      "session_id": "mteb-retrieve__ks7QRPA__agent",
+      "database_sha256": "f9afbb9225e39fb94a729b1a0f3abc62e9afce47272a67fa9bdb1b327699e3d9",
+      "trajectory_sha256": "9b33b6800b51073a17eb3d6c96ad3f4401a4863df67eadbd5cf5f58b4bd19076",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787603866511175415_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2d44ef5dbb350e8f312d7c07412580eba1087597ce804d0d2edec9b6cc2f6f9b"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "nginx-request-logging__pNnP8gx",
+      "task_name": "terminal-bench/nginx-request-logging",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "e343ed6c-455a-47a7-b103-408f39fcf6e0",
+      "session_id": "nginx-request-logging__pNnP8gx__agent",
+      "database_sha256": "65b2b5c536689bb4677ac79883ed97050e1b29a9898dfe0379842bce0134b41c",
+      "trajectory_sha256": "071c8786cdcf3f91263bd97982ba527a11a28a58f4bc4fc691e8e1a794d1b629",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787606573669140314_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_4c7b26e8fdbbbd018f544a46a6a7fb88771029d1c611c42890f632a64763a2a9"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "openssl-selfsigned-cert__BceAcZY",
+      "task_name": "terminal-bench/openssl-selfsigned-cert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "18756039-1ba3-42d3-a464-1d2edeaab44f",
+      "session_id": "openssl-selfsigned-cert__BceAcZY__agent",
+      "database_sha256": "39851c355611ce997d2da05e52e327da2e6d4402a0844cd602f1b56a84bf1641",
+      "trajectory_sha256": "5f0eea231c48c0bbee79daef27f718967eb063a8c30b0c9c3adb1a2dcc53f182",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787591938314160593_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_844ab1cba75eb48e3e40da3ac3991b6df555bc9fd364610a7f85522b8950152c"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "path-tracing__DUfrsh2",
+      "task_name": "terminal-bench/path-tracing",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "2eb2872a-cbe7-4ca0-aa62-17ff2c38c560",
+      "session_id": "path-tracing__DUfrsh2__agent",
+      "database_sha256": "9b281e1b3573d11a8e1a24946aa097ca446bff6cc7cf2d7f5cc3423985ef34a9",
+      "trajectory_sha256": "a48833c3484578103ddfbf3ba6c096d804638a591dd8d5dd6f487580232cf82c",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787593523494318540_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_4bbf90f53d79ce615f40bc66725cee8b4a2298c835ef4fa42da6b5ccf0d7af7a"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "pypi-server__XLS2GAn",
+      "task_name": "terminal-bench/pypi-server",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "80e67b77-7bf5-48a7-9423-e57bf48c39fc",
+      "session_id": "pypi-server__XLS2GAn__agent",
+      "database_sha256": "b63b4f95da57c461afcf6938f9d9157dc48aef7668dfa7d0e6e085170fda68ea",
+      "trajectory_sha256": "5241853e0f9d0e707dae571b8dcb69559a68e6ccd85713a6f51fb50a525f6c56",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787589549876651562_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_5265166338e8189b3ae880af2467e1f65dec2dce75f5cfb6da22d84151ea25f4"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "pytorch-model-recovery__uG7LhCd",
+      "task_name": "terminal-bench/pytorch-model-recovery",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "5ce41f0f-067c-49bf-8ad3-ded6e830642b",
+      "session_id": "pytorch-model-recovery__uG7LhCd__agent",
+      "database_sha256": "cf64a4136e7e9e3cd22fee72e5096f1e8d510f4d15ba359c98b8f6fb94dc67c3",
+      "trajectory_sha256": "89c245e642c00eb668ff0f98b4961f95e3c1abb1b2cbe16d4825b865836f2dc5",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787598501183530962_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_dc4c0000014a6a4cda29f9cf45083809c9741e2ac62d154c89a62612cbda1c22"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "qemu-alpine-ssh__eA5HUau",
+      "task_name": "terminal-bench/qemu-alpine-ssh",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "89c1a7f6-36e2-4e46-80e7-080d41a1f27a",
+      "session_id": "qemu-alpine-ssh__eA5HUau__agent",
+      "database_sha256": "5145313a30304c1fa724faceac0474e35e1694b1ffe310f02a86679d74260869",
+      "trajectory_sha256": "9d9723bd22bb6dbb07475d1fe803d567df0c0643b10e31fc6aebfa222f78325d",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787591519935951672_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_30fbfc62456e9d4a05436da0e7e902121e45c31aaa9a0e0af9079ab746c277ef"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "raman-fitting__MeMG2Pp",
+      "task_name": "terminal-bench/raman-fitting",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "f48e2576-ab1b-4b25-9365-9bcf31bdc8bd",
+      "session_id": "raman-fitting__MeMG2Pp__agent",
+      "database_sha256": "d74288d1f9537f046e904ccda1a9f2d2a591efdb5f0484a4986ec8bfdada4fe0",
+      "trajectory_sha256": "a3d29c54d575da007ded6d46fbfd24c1839fb26eaa539ab149a096ee48c1adea",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787612887196521775_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_660a0d1b99760f025855a9e52635bb5c0cbd5cd00fd87b361877aff0abd49195"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "regex-chess__xLPrxFY",
+      "task_name": "terminal-bench/regex-chess",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "9005d5be-4397-48bb-bb42-107973fcabcd",
+      "session_id": "regex-chess__xLPrxFY__agent",
+      "database_sha256": "4b9f91d946025acee421238e778c55c4493f1143350cd8201357a3111afa489a",
+      "trajectory_sha256": "aade561e44b3ca7b763b77f825c68b4ff945ae37cecd40f6e7775ef35c7f08d6",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787592098933401016_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_a9b736d6585a3f2a4931a146df3a1f41c5f9896abd737b9e2d2d749ab414c060"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "regex-log__XjCAcgX",
+      "task_name": "terminal-bench/regex-log",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "4c7f215d-e171-4160-91b3-98bad21299a5",
+      "session_id": "regex-log__XjCAcgX__agent",
+      "database_sha256": "9c2f789c9ecfdbed890e098d47c0eddae982a07119f9381ec1ba3c83d29bae13",
+      "trajectory_sha256": "4e8657fdfc2e7a29f90de65776b1f02c2f00b2a67a50dfc5e740e938bed64efe",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787593936150611900_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_6a7db91c1122dab006644c28fe485f3c5b25b4d8cb770d18172baf535e914597"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "sam-cell-seg__N5Sbiaq",
+      "task_name": "terminal-bench/sam-cell-seg",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "16857583-8c01-47d3-9c5a-051a94f71f01",
+      "session_id": "sam-cell-seg__N5Sbiaq__agent",
+      "database_sha256": "27cb877174b1ba5fba8ff527906aa71e74bb38395c58eac8bce6ef25935961e5",
+      "trajectory_sha256": "ec51ea09354da7cc78634ccea47d966561a9395df0a5c5e5ef60a4b938fc4a12",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787603163112862339_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_1f5661bf833eb492e4e4ab309a416748d7314a243dd53d8facf51f7cc7ee301f"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "schemelike-metacircular-eval__P8ThyHB",
+      "task_name": "terminal-bench/schemelike-metacircular-eval",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "77fbc9ec-36e5-44cc-819b-0c7f858e0e76",
+      "session_id": "schemelike-metacircular-eval__P8ThyHB__agent",
+      "database_sha256": "020aa203c8f14326b8c17dbe43771f8b4301f01448571584553f64d4866c4f54",
+      "trajectory_sha256": "a652a709536c324c5b96d516dd047c782f0ebafdb27b46a7303376827006e763",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787588831965196902_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_d276b0b4b5ec403cec5a56418da2183e8aa94c02c2f5f7c8403537743cfbc24d"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "torch-pipeline-parallelism__TkdZ6nK",
+      "task_name": "terminal-bench/torch-pipeline-parallelism",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "3fb0827c-c1d2-4923-9c32-4a4f18060862",
+      "session_id": "torch-pipeline-parallelism__TkdZ6nK__agent",
+      "database_sha256": "24cfe2c2a4d92b21981068a31abd0fafa77f599bc8b5c50dbafab38bddd99c78",
+      "trajectory_sha256": "a74eff107f99ec950e5331b95b0010b30c9a05ef521a66fed0db5ef754b47209",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787590405961549495_35_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_fc3ee8b454f7ea99b107a130a6651db4fb0c7d2e3d2750fc5b6a5314ff0a86f9"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "torch-tensor-parallelism__t8ytdVY",
+      "task_name": "terminal-bench/torch-tensor-parallelism",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "c835f6b0-d947-47e3-b551-cf132650ba97",
+      "session_id": "torch-tensor-parallelism__t8ytdVY__agent",
+      "database_sha256": "be7f4540f1ee34b4a4b75209bb210d88f5fb60354eb45301e7469961d54058e5",
+      "trajectory_sha256": "8435fbea4050149737f91428db644f885014724355d28b97f6b5101615b67927",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787587636541694734_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_ee58b116995164cb2aa49afaaf4bdbb3f17ba8e481a913a43ff22caac432caef"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "train-fasttext__kZtqPfM",
+      "task_name": "terminal-bench/train-fasttext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "466b92a0-0bd5-4770-ab18-d802148b4598",
+      "session_id": "train-fasttext__kZtqPfM__agent",
+      "database_sha256": "0a301fee28c49e8e8511d93eb2ce063d0d33cea0ddd5686e7370caf29d189162",
+      "trajectory_sha256": "a8377f559b891567dfc7247e4976405ac48caee0198a6d20eb5333ae1c2fa203",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787608750075692281_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_eed4937df7d1d7506cd17cb7dec8e4c36a48ebf752c3c68e73010ef6b72580f3"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "vulnerable-secret__P5MoURR",
+      "task_name": "terminal-bench/vulnerable-secret",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "a9c7a155-158a-4815-bbff-118be3249d35",
+      "session_id": "vulnerable-secret__P5MoURR__agent",
+      "database_sha256": "2607c05bf5833123171d204e84281e7933382c3db809de31c7513a367f8181c9",
+      "trajectory_sha256": "574556a7a0f6183256e454ab6b1c34e17b1916ec74e13271c6576ed1b93ce11a",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787605301503744806_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2b641457e9cc7dfcbc237db597591f3ffe98abd1e1f2b2b9236ed89357eaf8d4"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "write-compressor__4FYfkzk",
+      "task_name": "terminal-bench/write-compressor",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "350ef4c9-372c-43b3-91ff-f4739f6d7036",
+      "session_id": "write-compressor__4FYfkzk__agent",
+      "database_sha256": "8162f93598eb60b672aea0381dec94985d5ce56fba7425494144995364d98a75",
+      "trajectory_sha256": "e14099d117bc94ad93a9c9eb08b11061619d2c5ca14c352527cff94dd90f83c4",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task",
+        "version": "0.5.0",
+        "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task",
+            "harness_version": "0.5.0",
+            "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+            "evaluation_id": "msg_1787587299952786563_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_54263ee35a84914630fe60d1ad20ed647a82b6abbb7ee832d5d020291a518494"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "gate_passed": true
+}

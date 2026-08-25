@@ -1,0 +1,89 @@
+{
+    "id": "f45fe608-e057-41d1-a5e3-f3fd0e1ffa8d",
+    "started_at": "2026-08-25T00:01:37.814366",
+    "updated_at": "2026-08-25T07:16:40.124697",
+    "finished_at": "2026-08-25T07:16:40.124697",
+    "n_total_trials": 40,
+    "stats": {
+        "n_completed_trials": 40,
+        "n_errored_trials": 5,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "morphz__gpt-5.6-sol__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 39,
+                "n_errors": 5,
+                "metrics": [
+                    {
+                        "mean": 0.575
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "write-compressor__4FYfkzk",
+                            "schemelike-metacircular-eval__P8ThyHB",
+                            "pypi-server__XLS2GAn",
+                            "qemu-alpine-ssh__eA5HUau",
+                            "openssl-selfsigned-cert__BceAcZY",
+                            "log-summary-date-ranges__LWLvNpW",
+                            "model-extraction-relu-logits__TaqtWDd",
+                            "path-tracing__DUfrsh2",
+                            "regex-log__XjCAcgX",
+                            "caffe-cifar-10__V3r3vs9",
+                            "mteb-leaderboard__ftT9Xez",
+                            "llm-inference-batching-scheduler__JFufQ5L",
+                            "circuit-fibsqrt__ej8YrM9",
+                            "merge-diff-arc-agi-task__nuGAcDm",
+                            "cobol-modernization__tAyWwkx",
+                            "mcmc-sampling-stan__XegiLKX",
+                            "mteb-retrieve__ks7QRPA",
+                            "nginx-request-logging__pNnP8gx",
+                            "build-cython-ext__px4Crd9",
+                            "train-fasttext__kZtqPfM",
+                            "compile-compcert__fuCcdLx",
+                            "fix-ocaml-gc__zNrq9bh",
+                            "gcode-to-text__dF6TMRp"
+                        ],
+                        "0.0": [
+                            "kv-store-grpc__sqFGUYw",
+                            "dna-assembly__YTQXDci",
+                            "torch-pipeline-parallelism__TkdZ6nK",
+                            "regex-chess__xLPrxFY",
+                            "pytorch-model-recovery__uG7LhCd",
+                            "build-pov-ray__4PPZ9ho",
+                            "gpt2-codegolf__cnvNpgE",
+                            "filter-js-from-html__DNmwAQ2",
+                            "sam-cell-seg__N5Sbiaq",
+                            "adaptive-rejection-sampler__wZZNBov",
+                            "vulnerable-secret__P5MoURR",
+                            "extract-elf__Bcf9UQN",
+                            "make-doom-for-mips__SJQa8w5",
+                            "configure-git-webserver__pW6Yav8",
+                            "dna-insert__TSmnx42",
+                            "raman-fitting__MeMG2Pp"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "VerifierTimeoutError": [
+                        "torch-tensor-parallelism__t8ytdVY"
+                    ],
+                    "AgentTimeoutError": [
+                        "gpt2-codegolf__cnvNpgE",
+                        "adaptive-rejection-sampler__wZZNBov",
+                        "vulnerable-secret__P5MoURR",
+                        "make-doom-for-mips__SJQa8w5"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 23051730,
+        "n_cache_tokens": 1865216,
+        "n_output_tokens": 559838,
+        "cost_usd": null
+    }
+}

@@ -1,0 +1,447 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/full/jobs/morphz-v0.5/2026-08-25__00-01-36",
+  "run_identity": {
+    "infrastructure_git_commit": "e7268eaf3aa8c9a3febc6e4e47b3c223e6ee1209",
+    "infrastructure_git_tags": [
+      "terminal-bench-four-arm-prior-40-v1"
+    ],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "paper-eval-runtime-v4",
+    "runtime_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness_mode": "bound",
+    "harness_profile": "minimal-v0.5",
+    "harness": {
+      "id": "terminal-task",
+      "version": "0.5.0",
+      "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+      "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f"
+    },
+    "attempts": 1,
+    "concurrency": 1,
+    "max_retries": 0,
+    "task_filters": [
+      "adaptive-rejection-sampler",
+      "build-cython-ext",
+      "build-pov-ray",
+      "caffe-cifar-10",
+      "circuit-fibsqrt",
+      "cobol-modernization",
+      "compile-compcert",
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-elf",
+      "filter-js-from-html",
+      "fix-ocaml-gc",
+      "gcode-to-text",
+      "gpt2-codegolf",
+      "kv-store-grpc",
+      "llm-inference-batching-scheduler",
+      "log-summary-date-ranges",
+      "make-doom-for-mips",
+      "mcmc-sampling-stan",
+      "merge-diff-arc-agi-task",
+      "model-extraction-relu-logits",
+      "mteb-leaderboard",
+      "mteb-retrieve",
+      "nginx-request-logging",
+      "openssl-selfsigned-cert",
+      "path-tracing",
+      "pypi-server",
+      "pytorch-model-recovery",
+      "qemu-alpine-ssh",
+      "raman-fitting",
+      "regex-chess",
+      "regex-log",
+      "sam-cell-seg",
+      "schemelike-metacircular-eval",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "train-fasttext",
+      "vulnerable-secret",
+      "write-compressor"
+    ]
+  },
+  "trial_count": 40,
+  "expected_trial_count": 40,
+  "trial_count_matches": true,
+  "missing_expected_tasks": {},
+  "unexpected_tasks": [],
+  "audit_complete": true,
+  "disqualified_trials": 0,
+  "integrity_gate_passed": true,
+  "raw_mean_reward": 0.575,
+  "strict_mean_reward": 0.575,
+  "trials": [
+    {
+      "trial": "adaptive-rejection-sampler__wZZNBov",
+      "task_name": "terminal-bench/adaptive-rejection-sampler",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-cython-ext__px4Crd9",
+      "task_name": "terminal-bench/build-cython-ext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-pov-ray__4PPZ9ho",
+      "task_name": "terminal-bench/build-pov-ray",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "caffe-cifar-10__V3r3vs9",
+      "task_name": "terminal-bench/caffe-cifar-10",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "circuit-fibsqrt__ej8YrM9",
+      "task_name": "terminal-bench/circuit-fibsqrt",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "cobol-modernization__tAyWwkx",
+      "task_name": "terminal-bench/cobol-modernization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "compile-compcert__fuCcdLx",
+      "task_name": "terminal-bench/compile-compcert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "configure-git-webserver__pW6Yav8",
+      "task_name": "terminal-bench/configure-git-webserver",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "dna-assembly__YTQXDci",
+      "task_name": "terminal-bench/dna-assembly",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "dna-insert__TSmnx42",
+      "task_name": "terminal-bench/dna-insert",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-elf__Bcf9UQN",
+      "task_name": "terminal-bench/extract-elf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "filter-js-from-html__DNmwAQ2",
+      "task_name": "terminal-bench/filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-ocaml-gc__zNrq9bh",
+      "task_name": "terminal-bench/fix-ocaml-gc",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gcode-to-text__dF6TMRp",
+      "task_name": "terminal-bench/gcode-to-text",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gpt2-codegolf__cnvNpgE",
+      "task_name": "terminal-bench/gpt2-codegolf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "kv-store-grpc__sqFGUYw",
+      "task_name": "terminal-bench/kv-store-grpc",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "llm-inference-batching-scheduler__JFufQ5L",
+      "task_name": "terminal-bench/llm-inference-batching-scheduler",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "log-summary-date-ranges__LWLvNpW",
+      "task_name": "terminal-bench/log-summary-date-ranges",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "make-doom-for-mips__SJQa8w5",
+      "task_name": "terminal-bench/make-doom-for-mips",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mcmc-sampling-stan__XegiLKX",
+      "task_name": "terminal-bench/mcmc-sampling-stan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "merge-diff-arc-agi-task__nuGAcDm",
+      "task_name": "terminal-bench/merge-diff-arc-agi-task",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "model-extraction-relu-logits__TaqtWDd",
+      "task_name": "terminal-bench/model-extraction-relu-logits",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mteb-leaderboard__ftT9Xez",
+      "task_name": "terminal-bench/mteb-leaderboard",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mteb-retrieve__ks7QRPA",
+      "task_name": "terminal-bench/mteb-retrieve",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "nginx-request-logging__pNnP8gx",
+      "task_name": "terminal-bench/nginx-request-logging",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "openssl-selfsigned-cert__BceAcZY",
+      "task_name": "terminal-bench/openssl-selfsigned-cert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "path-tracing__DUfrsh2",
+      "task_name": "terminal-bench/path-tracing",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pypi-server__XLS2GAn",
+      "task_name": "terminal-bench/pypi-server",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pytorch-model-recovery__uG7LhCd",
+      "task_name": "terminal-bench/pytorch-model-recovery",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "qemu-alpine-ssh__eA5HUau",
+      "task_name": "terminal-bench/qemu-alpine-ssh",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "raman-fitting__MeMG2Pp",
+      "task_name": "terminal-bench/raman-fitting",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "regex-chess__xLPrxFY",
+      "task_name": "terminal-bench/regex-chess",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "regex-log__XjCAcgX",
+      "task_name": "terminal-bench/regex-log",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sam-cell-seg__N5Sbiaq",
+      "task_name": "terminal-bench/sam-cell-seg",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "schemelike-metacircular-eval__P8ThyHB",
+      "task_name": "terminal-bench/schemelike-metacircular-eval",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "torch-pipeline-parallelism__TkdZ6nK",
+      "task_name": "terminal-bench/torch-pipeline-parallelism",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "torch-tensor-parallelism__t8ytdVY",
+      "task_name": "terminal-bench/torch-tensor-parallelism",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "train-fasttext__kZtqPfM",
+      "task_name": "terminal-bench/train-fasttext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "vulnerable-secret__P5MoURR",
+      "task_name": "terminal-bench/vulnerable-secret",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "write-compressor__4FYfkzk",
+      "task_name": "terminal-bench/write-compressor",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    }
+  ]
+}

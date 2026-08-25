@@ -1,0 +1,95 @@
+{
+  "protocol": "terminal-bench-four-arm-prior-40-v1",
+  "phase": "smoke",
+  "launcher_gate_passed": true,
+  "strict_result_sources": {
+    "morphz-native": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/smoke/jobs/morphz-native/2026-08-24__23-15-18/strict_result.json",
+    "morphz-v0.5": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/smoke/jobs/morphz-v0.5/2026-08-24__23-15-18/strict_result.json",
+    "morphz-dialectical-practice": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/smoke/jobs/morphz-dialectical-practice/2026-08-24__23-15-18/strict_result.json",
+    "official-codex": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/smoke/jobs/official-codex/2026-08-24__23-15-18/strict_result.json"
+  },
+  "arms": {
+    "morphz-native": {
+      "trial_count": 1,
+      "raw_mean_reward": 1.0,
+      "strict_mean_reward": 1.0,
+      "strict_pass_count": 1,
+      "disqualified_trials": 0,
+      "integrity_gate_passed": true
+    },
+    "morphz-v0.5": {
+      "trial_count": 1,
+      "raw_mean_reward": 0.0,
+      "strict_mean_reward": 0.0,
+      "strict_pass_count": 0,
+      "disqualified_trials": 0,
+      "integrity_gate_passed": true
+    },
+    "morphz-dialectical-practice": {
+      "trial_count": 1,
+      "raw_mean_reward": 1.0,
+      "strict_mean_reward": 1.0,
+      "strict_pass_count": 1,
+      "disqualified_trials": 0,
+      "integrity_gate_passed": true
+    },
+    "official-codex": {
+      "trial_count": 1,
+      "raw_mean_reward": 1.0,
+      "strict_mean_reward": 1.0,
+      "strict_pass_count": 1,
+      "disqualified_trials": 0,
+      "integrity_gate_passed": true
+    }
+  },
+  "paired_comparisons": {
+    "morphz-v0.5_minus_morphz-native": {
+      "treatment": "morphz-v0.5",
+      "control": "morphz-native",
+      "treatment_wins": 0,
+      "control_wins": 1,
+      "ties_both_pass": 0,
+      "ties_both_fail": 0,
+      "discordant_pairs": 1,
+      "exact_two_sided_binomial_p": 1.0,
+      "strict_mean_difference": -1.0
+    },
+    "morphz-dialectical-practice_minus_morphz-v0.5": {
+      "treatment": "morphz-dialectical-practice",
+      "control": "morphz-v0.5",
+      "treatment_wins": 1,
+      "control_wins": 0,
+      "ties_both_pass": 0,
+      "ties_both_fail": 0,
+      "discordant_pairs": 1,
+      "exact_two_sided_binomial_p": 1.0,
+      "strict_mean_difference": 1.0
+    },
+    "official-codex_minus_morphz-native": {
+      "treatment": "official-codex",
+      "control": "morphz-native",
+      "treatment_wins": 0,
+      "control_wins": 0,
+      "ties_both_pass": 1,
+      "ties_both_fail": 0,
+      "discordant_pairs": 0,
+      "exact_two_sided_binomial_p": null,
+      "strict_mean_difference": 0.0
+    }
+  },
+  "task_rewards": {
+    "morphz-native": {
+      "caffe-cifar-10": 1.0
+    },
+    "morphz-v0.5": {
+      "caffe-cifar-10": 0.0
+    },
+    "morphz-dialectical-practice": {
+      "caffe-cifar-10": 1.0
+    },
+    "official-codex": {
+      "caffe-cifar-10": 1.0
+    }
+  },
+  "interpretation_scope": "previously observed development tasks; not an unseen estimate or a Terminal-Bench leaderboard score"
+}

@@ -1,0 +1,1310 @@
+{
+  "gate_version": "terminal-bench-public-run-gate-v2",
+  "integrity_policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/four-arm-runs/first-40-v1-20260824/full/jobs/morphz-dialectical-practice/2026-08-25__00-01-36",
+  "expected_trials": 40,
+  "run_identity": {
+    "infrastructure_git_commit": "e7268eaf3aa8c9a3febc6e4e47b3c223e6ee1209",
+    "infrastructure_git_tags": [
+      "terminal-bench-four-arm-prior-40-v1"
+    ],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "paper-eval-runtime-v4",
+    "runtime_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness_mode": "bound",
+    "harness_profile": "dialectical-practice-v0.1",
+    "harness": {
+      "id": "terminal-task-dialectical-practice",
+      "version": "0.1.0",
+      "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+      "source_sha256": "b05d8883928a50be19bb2075761596e97bab19784258a293a30d5c8f0df4ec3a"
+    },
+    "attempts": 1,
+    "concurrency": 1,
+    "max_retries": 0,
+    "task_filters": [
+      "adaptive-rejection-sampler",
+      "build-cython-ext",
+      "build-pov-ray",
+      "caffe-cifar-10",
+      "circuit-fibsqrt",
+      "cobol-modernization",
+      "compile-compcert",
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-elf",
+      "filter-js-from-html",
+      "fix-ocaml-gc",
+      "gcode-to-text",
+      "gpt2-codegolf",
+      "kv-store-grpc",
+      "llm-inference-batching-scheduler",
+      "log-summary-date-ranges",
+      "make-doom-for-mips",
+      "mcmc-sampling-stan",
+      "merge-diff-arc-agi-task",
+      "model-extraction-relu-logits",
+      "mteb-leaderboard",
+      "mteb-retrieve",
+      "nginx-request-logging",
+      "openssl-selfsigned-cert",
+      "path-tracing",
+      "pypi-server",
+      "pytorch-model-recovery",
+      "qemu-alpine-ssh",
+      "raman-fitting",
+      "regex-chess",
+      "regex-log",
+      "sam-cell-seg",
+      "schemelike-metacircular-eval",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "train-fasttext",
+      "vulnerable-secret",
+      "write-compressor"
+    ]
+  },
+  "checks": {
+    "strict_integrity_gate": true,
+    "trial_count": true,
+    "all_trial_gates": true,
+    "isolation": true,
+    "provider_clean": true,
+    "credential_scan_complete": true,
+    "credential_not_persisted": true
+  },
+  "required_checks": [
+    "strict_integrity_gate",
+    "trial_count",
+    "all_trial_gates",
+    "isolation",
+    "credential_scan_complete",
+    "credential_not_persisted"
+  ],
+  "isolation": {
+    "unique_contexts": true,
+    "unique_sessions": true,
+    "unique_databases": true
+  },
+  "provider_errors": {
+    "usage_limit_reached": 0,
+    "auth_unavailable": 0,
+    "http_429": 0,
+    "http_503": 0,
+    "provider_request_failed": 0
+  },
+  "credential_hit_paths": [],
+  "trials": [
+    {
+      "trial": "adaptive-rejection-sampler__qaNr7SD",
+      "task_name": "terminal-bench/adaptive-rejection-sampler",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "1e00b402-596d-4e12-a3cc-06fd966c6507",
+      "session_id": "adaptive-rejection-sampler__qaNr7SD__agent",
+      "database_sha256": "1b1a310758a4154e48b66adcf8acb7cb250c73c0386e8891d9aedb645ffc2fc5",
+      "trajectory_sha256": "8793eece48a945057312d35871bd96c3d3f1c387e88077cebb6e60d215e01ffd",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787605374382193083_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_0c010aba2cd8b77297d9816bc6294edfeffef662861c0e4698f9d294670b4476"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "build-cython-ext__wDTZqDA",
+      "task_name": "terminal-bench/build-cython-ext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "2813b33a-ecf1-4242-a5ac-b3357c68767d",
+      "session_id": "build-cython-ext__wDTZqDA__agent",
+      "database_sha256": "0cee4c2592e81c64f0a61af3a70f71c54ff96d5def6abdb7b6961359e4c12bed",
+      "trajectory_sha256": "d8e81dd9eb6a6d8dbcf90e7e3c40a7c754da31436d73ce65aff90fdc4294692a",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787609042037661766_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_94eeb9c5911452f4783f9359a2b7ebd8be7a78181eab4507f852a4f1036d10fe"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "build-pov-ray__NiqDTxs",
+      "task_name": "terminal-bench/build-pov-ray",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "87869504-bff7-479a-94db-e5b63d19a1bc",
+      "session_id": "build-pov-ray__NiqDTxs__agent",
+      "database_sha256": "397f409d7026be21e7987f2d60ddc1b3966f9b1f46d995a11b01ecb844d6aa53",
+      "trajectory_sha256": "59dc8a6485fcb0133e4e29ec2a2dc14e0871c9789ede09fedd55a4077b73c092",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787600108498319012_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_eeb0129569b0611e386552cd9f7df808c4fe919bd59a7f840737517d1d77c55e"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "caffe-cifar-10__KbBDirG",
+      "task_name": "terminal-bench/caffe-cifar-10",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "bfc57bee-d126-4770-83a4-dcfd81f0633a",
+      "session_id": "caffe-cifar-10__KbBDirG__agent",
+      "database_sha256": "d2135d5afd0f2d03b818a121d8a366763171a0110208434525569827eb082bc9",
+      "trajectory_sha256": "a84b2278493671eea8f5d22e177aa79189c228d5a54af8d52984309540d37acb",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787595329574535077_39_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_b20ad724622ce0555943acaee53627d17383ff2d6dea7abd317df86b16f61daa"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "circuit-fibsqrt__PhVUTXD",
+      "task_name": "terminal-bench/circuit-fibsqrt",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "ee899ec6-b07c-48aa-895b-e2768ed1e9fd",
+      "session_id": "circuit-fibsqrt__PhVUTXD__agent",
+      "database_sha256": "6659d47ff7bb304bd478073e51860e362d9186e1ce7fc715f2f20535e8815ee0",
+      "trajectory_sha256": "ed23912f085ace53be993c3cec2e19835c9d36d75511caceb6ff69e2f168d514",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787599434878478750_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_9c1627ad30122b1f231eb11a2c740e6b2a27be9ef33ce1e60300d3230fb2091b"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "cobol-modernization__is7tt9B",
+      "task_name": "terminal-bench/cobol-modernization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "148d6d8e-31cf-4c8d-a4a5-31f6d162e6a1",
+      "session_id": "cobol-modernization__is7tt9B__agent",
+      "database_sha256": "2cd950942201eb35d5c85bda675c5f2e3239112c10549b8c708439bd3c74226a",
+      "trajectory_sha256": "db951f6983890dee6862d12f21969e048bc4b9bbc5a49a7af46979fdecd584a3",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787600582494866614_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_36a2f9cef09a45bc238467543988d216c6fbc7853387843cac7ebfa4921723e0"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "compile-compcert__Fav2a6T",
+      "task_name": "terminal-bench/compile-compcert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "64628d80-8c9c-40e4-b6e6-3ed6c514aa50",
+      "session_id": "compile-compcert__Fav2a6T__agent",
+      "database_sha256": "09d52534561a3906564b7acbd39727d95a3623b6579160de79bd167d8d34368c",
+      "trajectory_sha256": "9612437b88a8de2c8f96cebcafdfc01f1bd6ee349b321b335b25759e8fdbad0f",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787611424260527720_38_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_443c5718e1aacbc6a6c989e4517ad36c8637e84ecd9e02c82a7f2181e38a9305"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "configure-git-webserver__54apiEF",
+      "task_name": "terminal-bench/configure-git-webserver",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "8cbbe410-6483-4441-bd71-5a6540a84e35",
+      "session_id": "configure-git-webserver__54apiEF__agent",
+      "database_sha256": "b0030976c98716884f8b124624edba4656728ff64526632cb25a31feff4679cb",
+      "trajectory_sha256": "ff99d1d8a2ca3374c1dccab549d5e675b02013fc79d6b3f1ff4fd4296509eb45",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787608814583344952_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_50b2cf03d82fb25d0286a66b7cd51e2f672a541187c46f8eb5209915c4db8403"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "dna-assembly__BLhJWgo",
+      "task_name": "terminal-bench/dna-assembly",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "e1a6d838-1509-4dce-9134-837893ffa85b",
+      "session_id": "dna-assembly__BLhJWgo__agent",
+      "database_sha256": "3515cbcd53a1d4e43e1955511e7b3b4121f3768603c4ade505680ad44b0b063b",
+      "trajectory_sha256": "b7441488b224c18dedf52bd76d5b96bcfeafdbcd9d744b92dc86d4fdea4906dc",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787590248307885947_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_422cda179f2937562b034e88e5919cb38c82fd04b6a28cfe7ac436db8dbe1905"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "dna-insert__oMoN5K8",
+      "task_name": "terminal-bench/dna-insert",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "ba96a5e7-457c-4e02-ab13-24cb7a23355f",
+      "session_id": "dna-insert__oMoN5K8__agent",
+      "database_sha256": "c33c3fea10da426a3029bceb5a8229601c6dbfc6f5653ee0bbb5d78676ec35b1",
+      "trajectory_sha256": "24f9807d5c50094bb2546159d65aced3636a1902d537e4d1b6b5e56759dedc1e",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787613923119336801_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_7d2abc97418d4d0ced523a5cc2fec6c5b59e91220c0be6c8c0f16d3354989e1c"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "extract-elf__dc7TZ3Y",
+      "task_name": "terminal-bench/extract-elf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "f779b56c-c4d8-4268-a863-c98e5d5b22af",
+      "session_id": "extract-elf__dc7TZ3Y__agent",
+      "database_sha256": "f93f20b9eca0fbc6c032256345c24279a8910ee72e46cf1fa5e4d0c592835627",
+      "trajectory_sha256": "ff29d59a4e064fac6416cf97a08f8fdb3c5363ba797e60ca56bb29fad8e07475",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787607085568131728_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_70f167446b76e0488ebe11b4ef2847667f356bcaba6d17351a6f2cafebf1ab7f"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "filter-js-from-html__FkgzziN",
+      "task_name": "terminal-bench/filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "133f5f28-ed98-4f88-9878-a0148d5714c9",
+      "session_id": "filter-js-from-html__FkgzziN__agent",
+      "database_sha256": "b6bfc31db33398b9015c7c7bdcc4db7709387110740308497bf7c88cbd2d8948",
+      "trajectory_sha256": "22f6a0c22e869447fe4689bffb496757ce47b9847751eeee0ffd21a6c1dc2e1f",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787602713728340626_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_b4849c8081618d9c1f56e1ef88f30ad70160ce648c52d5655b7bedf52e2ca116"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "fix-ocaml-gc__BiZicnj",
+      "task_name": "terminal-bench/fix-ocaml-gc",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "635220ec-a1e6-4098-8dd4-0f49661a6772",
+      "session_id": "fix-ocaml-gc__BiZicnj__agent",
+      "database_sha256": "b7e88157087adba20c496d5cb4a59810390c4307d2365926ce1b9b0c3694e179",
+      "trajectory_sha256": "92e426169aa1b0e71c627465d6c9140f185fb410895e47c1ec42b886e2dd4fd8",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787612342793858509_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_dccf5c7072309f83ad787d3a76c6d7f2a34fe4118cca857e1dcd5508e686a1b8"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "gcode-to-text__JG8Ktq2",
+      "task_name": "terminal-bench/gcode-to-text",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "497d9ae4-b206-4d98-9584-7974a9777be7",
+      "session_id": "gcode-to-text__JG8Ktq2__agent",
+      "database_sha256": "936986abecdd3c4f1ab1a18faff1530ea744174aeb15d38615cada891fe56f41",
+      "trajectory_sha256": "96c528ad11629d5fda33497de573cc96401e081ba95b63cbbb2eef61747152da",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787613327236540389_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_8fb663804e0b149eb86ecb7817c4942637252612157eb70190648c9ec42cb6d2"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "gpt2-codegolf__5i8cJeh",
+      "task_name": "terminal-bench/gpt2-codegolf",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "5f697914-ea2e-4013-9421-274e153c3a45",
+      "session_id": "gpt2-codegolf__5i8cJeh__agent",
+      "database_sha256": "c16b4d526132198ae33beb50becc5208c0b59d9f777519942f676dee8841858c",
+      "trajectory_sha256": "f95054af91d760f3bccfc2b9739391bcd57cfa4e2df0303cc8f76bf1a24b64ce",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787601787704023671_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_7eba3450019296001aa4df30341f68b552c5b8cb37ef72d1ec23eec4f8277d0c"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "kv-store-grpc__atA47F2",
+      "task_name": "terminal-bench/kv-store-grpc",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "08d6d6c1-8bec-42db-8948-601871de1c0e",
+      "session_id": "kv-store-grpc__atA47F2__agent",
+      "database_sha256": "b8e6307a73c645614d676af2fc6f233bd5cf8dfdd2c470bcf6a6bbfca597a09b",
+      "trajectory_sha256": "83fc3880cffbe20f88bb40ad0a9b58ed7dcbffce772d589dc64392081e20abe1",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787589947071216261_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_1824145c75aa70820b36e2b1667df29fb80acf9499c036981f91f8b8bf219f1a"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "llm-inference-batching-scheduler__2rRJipS",
+      "task_name": "terminal-bench/llm-inference-batching-scheduler",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "1412c125-c5d8-4335-9093-3a565dab494e",
+      "session_id": "llm-inference-batching-scheduler__2rRJipS__agent",
+      "database_sha256": "ac426f8e82a076feeb176092f84bb45f2a670064fff071b28d0115595cd81e4b",
+      "trajectory_sha256": "c27047ea9a2ead9a1c3270da6e79d1f1595f022338aad27fb19ce9e1bb44549b",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787598648551246222_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_4c8d29d85fa85808e3b572e7e791046a3fbabc66d5f168dd63c6d27840de69ab"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "log-summary-date-ranges__FsGTnWR",
+      "task_name": "terminal-bench/log-summary-date-ranges",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "1284e6bf-e243-44d1-b28c-76691ca775a3",
+      "session_id": "log-summary-date-ranges__FsGTnWR__agent",
+      "database_sha256": "35d27688f19617991a61aa4ed2461c05627fd5de470c1bd2cddb45acecdc461a",
+      "trajectory_sha256": "67f2c09bf8688c25804b06f90f207a6f702ed821e45f4f3d57ea3204e55cdecd",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787593721371494685_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_45719372a0ca277c920ede530f29e5fa50a773c3a7b6aa109e8e908171ec4c60"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "make-doom-for-mips__F5v6da6",
+      "task_name": "terminal-bench/make-doom-for-mips",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "2cb571a8-0fcf-44cc-aba0-a8810b420d05",
+      "session_id": "make-doom-for-mips__F5v6da6__agent",
+      "database_sha256": "7b44d57ef53270b8d81b2d9bdc5ccebf4640f364766b0123949848b13f94078f",
+      "trajectory_sha256": "af7766673fe4eeb1a9b2d26960462eaed1bbde2a5e93dc3d3d737575701c4caf",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787607856845958702_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_e5f3be8f56c3f16cd94d7c07fbb91d132c3c95fce2231219ad96a874f86160cd"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "mcmc-sampling-stan__nRsAkN2",
+      "task_name": "terminal-bench/mcmc-sampling-stan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "e8b6fbf7-2347-4587-a040-2dbf5468e434",
+      "session_id": "mcmc-sampling-stan__nRsAkN2__agent",
+      "database_sha256": "8fa122b5a3f4c305d151b58899cc8806a7545dd3453da693dbaa03f5970d2435",
+      "trajectory_sha256": "e79adabe4c7c14bbfc67623eea97e9a50c45aa974301e318246f333870ba42cd",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787601058335086440_40_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_4e6bc1f791ca1d731768e11b1d3b027968f23ae492de9acf3f82afa64ce45038"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "merge-diff-arc-agi-task__qX6Sf6Y",
+      "task_name": "terminal-bench/merge-diff-arc-agi-task",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "cc5a52be-f74a-4cd6-81e4-4ba61e121025",
+      "session_id": "merge-diff-arc-agi-task__qX6Sf6Y__agent",
+      "database_sha256": "65d9b9fd78fc8e888fa1c862c82df75f7f3bdd42ae520240bff7e2f84cf522fa",
+      "trajectory_sha256": "665d11f96669d6c2c6b186443e18b4eaa3a3ba28406fa629c108bb67b6078213",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787599850101811216_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2a7ee02c6a432ee033f25a4ff92207a1ec0e9e943c2ade92b281f1e209e7e837"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "model-extraction-relu-logits__5H2suEz",
+      "task_name": "terminal-bench/model-extraction-relu-logits",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "caca6b8e-1e9b-42bf-831c-2872855e5ca7",
+      "session_id": "model-extraction-relu-logits__5H2suEz__agent",
+      "database_sha256": "d918d3785f03a0004df8f7d51223e4f5f0add7901d7fa9c542a2a60277f1d60d",
+      "trajectory_sha256": "207ff42f4078f4cb52d3977945ec3955f4c3d872d620f0c7ed99d908672c16b9",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787593843025001986_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_91e43a03c6c0dcc5323d528cab5f68a05fa84cfb16fdcd19cd963f0eeb13913d"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "mteb-leaderboard__8Sua3DT",
+      "task_name": "terminal-bench/mteb-leaderboard",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "c642af2b-cb9c-4d0a-a55b-220fc36fbfc9",
+      "session_id": "mteb-leaderboard__8Sua3DT__agent",
+      "database_sha256": "ecceea26e47314539fcc9190f96cbf6c27b8486e95f13e9ddcbd296a2e963c80",
+      "trajectory_sha256": "2834fbee2d9c6d3656876151058880e6976235e39499684046e4a1e60e645392",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787598191286588058_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2ec310520ca440d78bcb7780801e937ba8b85e63bf1421060fb62aa916f9c1ae"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "mteb-retrieve__PyWMJ7M",
+      "task_name": "terminal-bench/mteb-retrieve",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "99e27e30-dd3e-49d8-a8e8-174965b34b06",
+      "session_id": "mteb-retrieve__PyWMJ7M__agent",
+      "database_sha256": "f1c89ce47cc2ce8aa0e601dbc4faf51554c1b19d376c2c454014b5db8bf51661",
+      "trajectory_sha256": "b786ef5985e61e764b86de75a5889a5fec8d55d34bd90d59075ce6410b442bd3",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787604934248450501_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_7e130e07cba3d90470d28ef32722d8225763c7974462df5bd4c9984bd485d936"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "nginx-request-logging__AR9svPe",
+      "task_name": "terminal-bench/nginx-request-logging",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "9e8fd92a-924e-4b77-9519-71b66bb7b51c",
+      "session_id": "nginx-request-logging__AR9svPe__agent",
+      "database_sha256": "3ac931ecd8aa1cfa1cf21c7a7bfa8affac1e1b76ffd1f297d6d2159916050196",
+      "trajectory_sha256": "72ade2a4e555f19d1293d60874957f315e6911f97826e496efac2d46c909d4a1",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787607713049685260_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_6215d62e902b722770248700b050b9b2ff3c4159b440f830b23b783ccb15d827"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "openssl-selfsigned-cert__zmC4hwv",
+      "task_name": "terminal-bench/openssl-selfsigned-cert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "b7035806-f95b-4f05-977f-9174acaf7cec",
+      "session_id": "openssl-selfsigned-cert__zmC4hwv__agent",
+      "database_sha256": "e96839d09ff523bebf9e3a942dcc3aa678c7d82d45f8092ee06cde3c890b2491",
+      "trajectory_sha256": "95886e327185a8bdd301ae7e2dee8e38ac14fa58624be94f918ef1b55155a5cb",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787592666563864389_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_8f67a37e68f483fa0f8b6343532ab254cdb78ff4cbe709033d835265deaa14d7"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "path-tracing__bwZ53JE",
+      "task_name": "terminal-bench/path-tracing",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "d318b16c-c695-4b0d-888c-5a612529341e",
+      "session_id": "path-tracing__bwZ53JE__agent",
+      "database_sha256": "bde167f5992727d86bffc70925eea0bb896ba9f414f3f4e6e3ed6cf03bf6a6c9",
+      "trajectory_sha256": "467ac0d0018f0e4d0405b1243a9e22f5278abd02dc2ff17ca33d6ff815857b8e",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787594767133575312_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_a74b094d3eda6396fc6768f0ff0af676a78b51ead10f91a06a8bcb7ca4d935e2"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "pypi-server__d5s8abg",
+      "task_name": "terminal-bench/pypi-server",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "0e796fe5-5999-475a-8430-9f457901634a",
+      "session_id": "pypi-server__d5s8abg__agent",
+      "database_sha256": "b79490b6c85fd5a21c4d46a35f0028bc2be22429fc16d2faf4055750489ce481",
+      "trajectory_sha256": "8775c9491f31d9a25b38495f0110582383c7446e741c8419f9a82f12bfcbc12c",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787590089056099515_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_8b89ba4ed3efdfcbbe1a55c8d12ab7864cf4378e5867b43136c9b5768815487a"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "pytorch-model-recovery__SnmqgWS",
+      "task_name": "terminal-bench/pytorch-model-recovery",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "9284794b-d3b5-4f21-b2a4-93b08c6adaac",
+      "session_id": "pytorch-model-recovery__SnmqgWS__agent",
+      "database_sha256": "4459f1d99887cad3a91c93f2be814223ca9542f77a300be6c68edcffd3b458a0",
+      "trajectory_sha256": "2e134422c409b0eeb88f4e7085c7af43884b28861d62515b70655467e66ee10d",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787598918044983479_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_8813e16c7ccba6e9372ddbafa5b4c9f76a1100d6f1c9dbc43d7d9a78c9720e3c"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "qemu-alpine-ssh__ivv6yMv",
+      "task_name": "terminal-bench/qemu-alpine-ssh",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "d7b12cc1-98da-44ad-9208-7ef77f91e332",
+      "session_id": "qemu-alpine-ssh__ivv6yMv__agent",
+      "database_sha256": "94418d8791c690902ae9d3c1df91f2cb6e2a354a94522ca066593ecb3c5e2121",
+      "trajectory_sha256": "75d2eef54fea34636e9d4c1bdea4b6b609a3cae9fc00aa2f624a9d79dc9e5ff8",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787591880756835713_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_e9255cfa76ee5295797749b38ed0c830d40d59a807fb96fa9c45812e207f61b6"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "raman-fitting__UFYSWmA",
+      "task_name": "terminal-bench/raman-fitting",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "1d31e2ee-78c8-4b10-9cd2-10baafc38cc9",
+      "session_id": "raman-fitting__UFYSWmA__agent",
+      "database_sha256": "497be49da3e994e3e8fa8b797e8c3ca32a49211df8f13b47bf858245ce835743",
+      "trajectory_sha256": "e5f30f5104b5ee54c7e3035e7c1802a71cdd2c1a57ca43e27684e23614e1f031",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787614198495547459_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_518ad0e618ae7e8cf4f89365d32f2f9abb3c1e4dadd015541733ab4288c9d8c6"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "regex-chess__2FQLyvy",
+      "task_name": "terminal-bench/regex-chess",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "fc1bf6cf-c9a2-44e7-8560-d0c65cc3a8fd",
+      "session_id": "regex-chess__2FQLyvy__agent",
+      "database_sha256": "bdf8c268dc267b2eafa46a2c57624dd7cacd419c7312bccd29d13c534c4e18d1",
+      "trajectory_sha256": "db7e13335c9fa4b3c2f76cc24b1275389e4e7e7f8e255a718f6e2d31f7652bfe",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787592814302776919_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2551b3f6de26c00c9039e6cbcf2740f9b67154b0602d4b0836ea20302bbac845"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "regex-log__tGEFLuW",
+      "task_name": "terminal-bench/regex-log",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "45cc9c9f-e893-4f49-b43d-79e90a788928",
+      "session_id": "regex-log__tGEFLuW__agent",
+      "database_sha256": "ad84ab6d561f3e4d172673641c4dd6151339d605b38935c094c58a68c6ff2712",
+      "trajectory_sha256": "2f69e51575ea4a4b8d0a857f23bb9c88a9f6702ac78698ba24c0664ce729b74f",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787595089821246178_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_58f38eef079090ca0a6397ab87030499417ee95c5b35b47bcfb97a830ff9edd4"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "sam-cell-seg__Hrb5kuR",
+      "task_name": "terminal-bench/sam-cell-seg",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "13e3eb02-52ea-42a9-abb6-4c859bf9a1d8",
+      "session_id": "sam-cell-seg__Hrb5kuR__agent",
+      "database_sha256": "1c0b00caae37b9714652f7cd0ad87e361329402a700f3cc30cec1c438d4410d9",
+      "trajectory_sha256": "5c5746ea790d531bc566c23a4cd9a3faf557c9071cad04a5b4af26648ee14586",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787603496654614533_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_f8da61e09934cd8e30aa836973f168d0e5b542f08443fa709576e2aaecc75f72"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "schemelike-metacircular-eval__o8L6EHE",
+      "task_name": "terminal-bench/schemelike-metacircular-eval",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "4a25f8fa-4ed6-4923-874a-7e36d6068c0b",
+      "session_id": "schemelike-metacircular-eval__o8L6EHE__agent",
+      "database_sha256": "91d5400a23d4517b2cef0f9b84521fcc4445fe6c66bff9db502ce281bc765fa4",
+      "trajectory_sha256": "582e7076a5a466333f7aa66eabdc3e16f09d0ed2f041aaa903512b7b25982829",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787588925624862673_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_2607dd8f39d8771cbf545028ceda4cc36d77477054b997b23c64c92b2e0a4c38"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "torch-pipeline-parallelism__qu8cU5R",
+      "task_name": "terminal-bench/torch-pipeline-parallelism",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "672066c3-14ff-46c8-8794-41d51e33f4c7",
+      "session_id": "torch-pipeline-parallelism__qu8cU5R__agent",
+      "database_sha256": "3ee36e5c5b14bd7f0b102361e81b53282c791ba162c1772ae732017ca037fd2c",
+      "trajectory_sha256": "57e94d2bb1754bddf843b198ece77f207ddfbabf4d46c26c566c9f972ca2d336",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787591070834823562_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_cabbfd4b31a44c73e6a14dd801d05d88715d792b27fa9e13f33e3d53dcece82a"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "torch-tensor-parallelism__8ibdVkJ",
+      "task_name": "terminal-bench/torch-tensor-parallelism",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "17dd8e98-67b4-4234-beda-1bf592092484",
+      "session_id": "torch-tensor-parallelism__8ibdVkJ__agent",
+      "database_sha256": "c0a6793337b9e909a492912d4e23ed7f0dc762f64518feafc7a94b628cb6cb2e",
+      "trajectory_sha256": "31c720da32b8c5f8eb1be43aadfe3b18214f31ad2dd006768873d1dcb11bdda1",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787587682143373074_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_d3d7c45d8d737c2835e945b9aa4c035573f58ed8d4b5a356fbb0cb91535009da"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "train-fasttext__nSiAuyo",
+      "task_name": "terminal-bench/train-fasttext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "971ad82d-b1af-4974-b93d-adb6901ee0d6",
+      "session_id": "train-fasttext__nSiAuyo__agent",
+      "database_sha256": "963da6591cfc129c6932a1f7181ce75d386a7e1b58565de82591be1e20868949",
+      "trajectory_sha256": "0201b2b5ba900ad49550de68492b8096e925ac58fedd8cdfc50799f010653967",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787609566100089045_37_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_0fa2b9d4b9c5a9c2456419cae2ae50e17e4a0fa7f0e6f3daf962d1cf1deb0870"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "vulnerable-secret__tqUe2DG",
+      "task_name": "terminal-bench/vulnerable-secret",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "context_id": "6a4b5bf8-3ae1-4535-af4e-d0916c48c775",
+      "session_id": "vulnerable-secret__tqUe2DG__agent",
+      "database_sha256": "e47703db98a79c71f86c3991772f26a59bd2757471d21116000f6c50785a5a53",
+      "trajectory_sha256": "59ea08f115c710becd6597aeda404f7da161985cfc1bc137c37aea083871d2c4",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787606163751650943_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_1549a483ea83041d937b954fba8959b76a0649289e085002fb56f0074e01e067"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    },
+    {
+      "trial": "write-compressor__PShExZd",
+      "task_name": "terminal-bench/write-compressor",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "context_id": "7d3f3b56-eb02-4456-8f4c-12f44e9cf7a6",
+      "session_id": "write-compressor__PShExZd__agent",
+      "database_sha256": "dd0a024c65a2b28f9051d9ffb000b98be3b23b65e8341c23989de39352a5db65",
+      "trajectory_sha256": "1eada8e47343b19c9acd3a8a50ceed96a6e6a97d686bf20b0ea4e391496b8caf",
+      "unmatched_tool_observations": 0,
+      "harness": {
+        "id": "terminal-task-dialectical-practice",
+        "version": "0.1.0",
+        "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+        "binding_count": 1,
+        "package_identity_count": 1,
+        "bindings": [
+          {
+            "harness_id": "terminal-task-dialectical-practice",
+            "harness_version": "0.1.0",
+            "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+            "evaluation_id": "msg_1787587299973760224_36_0",
+            "scope": "evaluation",
+            "event_id": "harness_evaluation_binding_65832f719e07a320f1c675653247b078b77381fc5c8a1c42a3b46f2019892abe"
+          }
+        ]
+      },
+      "errors": [],
+      "passed": true
+    }
+  ],
+  "gate_passed": true
+}

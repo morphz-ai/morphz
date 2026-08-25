@@ -1,0 +1,13 @@
+{
+  "protocol": "terminal-bench-four-arm-prior-40-v1",
+  "phase": "full",
+  "started_at": "2026-08-24T16:01:35.537330+00:00",
+  "completed_at": "2026-08-25T00:20:54.425459+00:00",
+  "return_codes": {
+    "morphz-native": 0,
+    "morphz-v0.5": 0,
+    "morphz-dialectical-practice": 0,
+    "official-codex": 3
+  },
+  "gate_passed": false
+}

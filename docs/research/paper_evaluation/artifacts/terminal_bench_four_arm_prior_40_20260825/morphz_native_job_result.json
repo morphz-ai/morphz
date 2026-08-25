@@ -1,0 +1,88 @@
+{
+    "id": "686ee3d0-c301-4dfd-89b7-1ae8a6ac1c1f",
+    "started_at": "2026-08-25T00:01:37.695931",
+    "updated_at": "2026-08-25T08:20:51.508877",
+    "finished_at": "2026-08-25T08:20:51.508877",
+    "n_total_trials": 40,
+    "stats": {
+        "n_completed_trials": 40,
+        "n_errored_trials": 5,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "morphz__gpt-5.6-sol__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 40,
+                "n_errors": 5,
+                "metrics": [
+                    {
+                        "mean": 0.75
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "write-compressor__GJGVU3j",
+                            "torch-tensor-parallelism__9J7QxkQ",
+                            "schemelike-metacircular-eval__aKoJLJW",
+                            "kv-store-grpc__5tg9ako",
+                            "pypi-server__iN7ZbJ4",
+                            "dna-assembly__pFVCpGM",
+                            "torch-pipeline-parallelism__3zkHRMv",
+                            "qemu-alpine-ssh__wT6Vkth",
+                            "openssl-selfsigned-cert__AWyrsgV",
+                            "regex-chess__wZC5PQh",
+                            "log-summary-date-ranges__KstWu54",
+                            "model-extraction-relu-logits__XFGHTzE",
+                            "path-tracing__28qffSG",
+                            "regex-log__KtfPq97",
+                            "caffe-cifar-10__WQcRcdq",
+                            "llm-inference-batching-scheduler__X7wc5ev",
+                            "circuit-fibsqrt__bfjBWTf",
+                            "merge-diff-arc-agi-task__ufUbHFJ",
+                            "build-pov-ray__T5eYDs3",
+                            "cobol-modernization__ikSBPnf",
+                            "mcmc-sampling-stan__6Gub3WA",
+                            "gpt2-codegolf__6VY7Zgm",
+                            "filter-js-from-html__nkVEikw",
+                            "sam-cell-seg__XVHKwZR",
+                            "mteb-retrieve__b9gBYpJ",
+                            "adaptive-rejection-sampler__sXE6hDC",
+                            "nginx-request-logging__juM6Zzc",
+                            "build-cython-ext__RA6h27T",
+                            "compile-compcert__mdskDoU",
+                            "fix-ocaml-gc__H7N5WAM"
+                        ],
+                        "0.0": [
+                            "mteb-leaderboard__shNciFq",
+                            "pytorch-model-recovery__nKoBSTk",
+                            "vulnerable-secret__ncchsoL",
+                            "extract-elf__DxxBnZb",
+                            "make-doom-for-mips__DH3qgoM",
+                            "configure-git-webserver__a4T3GDx",
+                            "train-fasttext__7etrCxh",
+                            "gcode-to-text__nx672KD",
+                            "dna-insert__qv4XqGG",
+                            "raman-fitting__bZaAsir"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "pypi-server__iN7ZbJ4",
+                        "vulnerable-secret__ncchsoL",
+                        "make-doom-for-mips__DH3qgoM",
+                        "compile-compcert__mdskDoU",
+                        "raman-fitting__bZaAsir"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 28920857,
+        "n_cache_tokens": 2260480,
+        "n_output_tokens": 664135,
+        "cost_usd": null
+    }
+}
