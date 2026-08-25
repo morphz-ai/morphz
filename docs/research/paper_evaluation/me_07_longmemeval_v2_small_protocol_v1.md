@@ -1,6 +1,6 @@
 # ME-07：LongMemEval-V2 Small 外部记忆验证协议 v1
 
-> 状态：`frozen / real-smoke-passed / full-run-authorized`
+> 状态：`superseded / full-run-aborted`
 >
 > 日期：2026-08-26（Asia/Shanghai）
 >
@@ -60,6 +60,11 @@ p1 substitute 已在真实调用前冻结：reader 与 judge 均请求
 `temperature=0.6`、`top_p=0.95`、`top_k=20`，judge 使用 `medium` reasoning 参数。多模态
 question image 与 judge 二元输出预检均通过。`gpt-5.6-sol` 的 Chat Completions 线路在预检中
 连续返回上游 TLS handshake 500，因此未进入实验；不修改官方 scorer 去迁就 Responses API。
+
+该 substitute 选择后来被判定为超出用户授权：ME-05 的九模型探测并不授权把 Qwen 设为
+ME-07 的 reader/judge。2026-08-26 启动的完整运行已于 07:12（Asia/Shanghai）终止并保留
+原始目录，不进入论文效果结果。后继协议必须恢复实验总账中的主模型约束，或在更换模型前取得
+用户明确确认；不能仅因某条 route 可用而自行替换模型。
 
 ## 5. 运行与统计
 

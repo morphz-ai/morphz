@@ -28,7 +28,7 @@
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
-| ME-07 | LongMemEval-V2 Small 官方数据与协议的外部记忆验证 | 外部效度/RQ6 | P1 | 451 题 Small tier；Web no-retrieval 7/240；Structured Projection Web 正在生成 | `full-run-active` | [`v1 frozen`](./me_07_longmemeval_v2_small_protocol_v1.md) | 按域串行完成 no-retrieval 与 Morphz 结构化投影双臂；替代 reader/judge 结果不得冒充官方榜单分数 |
+| ME-07 | LongMemEval-V2 Small 官方数据与协议的外部记忆验证 | 外部效度/RQ6 | P1 | Qwen substitute v1 因超出模型授权已中止，部分结果不进入论文 | `reset-required` | [`v1 superseded`](./me_07_longmemeval_v2_small_protocol_v1.md) | 以 `gpt-5.6-sol` / `max` / CLIProxyAPI Responses 解决 reader/judge 适配并重新冻结；不得沿用 Qwen 部分结果 |
 | ME-08 | Terminal-Bench 2.1 剩余 49 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | 前 40 题完成；剩余 49 题已冻结并运行 | `running` | [`remaining-49 protocol`](./me_08_terminal_bench_remaining_49_protocol_v1.md) | 每臂并发 1；完成后合并为 89 题同环境一次配对结果 |
 
 ## 依赖
@@ -60,20 +60,27 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-26
 
-- ME-07 完整运行的 Web no-retrieval cell 已完成，官方任务评分为 7/240（2.92%），符合
+- ME-07 v1 错误地把 ME-05 九模型探测中可用的 Qwen 3.8 Max route 擅自提升为 LongMemEval
+  的 substitute reader/judge；这不属于用户对主实验模型的授权。完整运行已于 07:12
+  （Asia/Shanghai）终止，原目录 `/private/tmp/me07-full-v1-20260826` 保留为中止审计，所有
+  部分分数均撤出论文证据。后继协议必须使用总账规定的 `gpt-5.6-sol` / `max` /
+  CLIProxyAPI Responses，或者在改变模型前取得用户明确确认；
+- 【已撤回的历史记录】ME-07 Qwen substitute 运行的 Web no-retrieval cell 曾完成，官方任务
+  评分为 7/240（2.92%）；该分数因模型选择未获授权而不进入论文。运行时曾观察到
   “没有长期记忆时只能偶然命中”的负对照定位；Provider 报告 73,510 prompt、177,090
   completion、250,600 total tokens。Structured Projection Web 已完成 100 条 trajectory
   的 source-linked Context 建库和 240 题 Prompt 构造；06:10 左右的一次 reader 请求在
   Qwen 上游等待 17m13s 后以 EOF/HTTP 500 结束，官方 harness 的 OpenAI 客户端按冻结的
-  retry policy 自动重试并恢复，未人工重启、删题或改并发。该 Provider incident 将与最终
-  结果共同披露；
+  retry policy 自动重试并恢复，未人工重启、删题或改并发。该 Provider incident 只保留在
+  中止运行审计中；
 - ME-06 p1.1 六个真实 cell 全部完成。受控 compaction 与完整 Morphz 均为 3/3 fixture
   语义成功、24/24 最终状态字段和 3/3 唯一行动；Morphz 额外真实执行 40 次 Frame 事务、
   跨 Session、版本冲突重读、进程恢复、Context 隔离与因果审计。原始字符串评分错误拒绝
   语义等价 decision rule 和具体事件 evidence ID；不调用模型的确定性重评分已修正并同时
   保留原评分。当前 Morphz 实现使用 5,093,621 total tokens，受控基线为 310,336（约
   16.4×），故本实验支持“额外能力且未观察到任务退化”，不支持 token 或准确率优越；
-- ME-07 已冻结 LongMemEval-V2 官方仓库 commit `2cc8c54`、数据 commit `f152293` 与 451 题
+- 【已 supersede 的历史记录】ME-07 v1 曾冻结 LongMemEval-V2 官方仓库 commit `2cc8c54`、
+  数据 commit `f152293` 与 451 题
   Small tier。真实 smoke 的四个 cell 均完成：no-retrieval 与 Morphz 结构化投影分别覆盖
   web/enterprise 首题，reader 和 judge 统一绑定 CLIProxyAPI 的 Qwen 3.8 Max；完整运行按
   每 cell 内部并发 1 启动。由于官方论文的 Qwen3.5-9B reader / GPT-5.2 judge 路线当前不可
