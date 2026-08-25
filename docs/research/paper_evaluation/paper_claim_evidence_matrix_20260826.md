@@ -38,6 +38,11 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
   只能称为 LongMemEval-V2 Small task-suite experiment，不能申报官方排行榜分数；
 - 报告官方分类准确率、abstention、paired win/loss、McNemar 与 bootstrap 95% CI。
 
+当前进度：Web no-retrieval 已完成 7/240（2.92%），Provider 报告 250,600 total tokens；
+Structured Projection Web 已完成 Context 建库与 240 题 Prompt 构造，reader 生成仍在进行。
+一次 Qwen 上游请求等待 17m13s 后 EOF/HTTP 500，由冻结的客户端 retry policy 自动恢复；
+该事件计入失败与延迟审计，不因后续重试成功而删除。
+
 待填：451 题双臂最终分数、分能力结果、统计量、检索/Token/延迟和失败分类。
 
 ### ME-08：Terminal-Bench 2.1 完整 89 题同环境对照

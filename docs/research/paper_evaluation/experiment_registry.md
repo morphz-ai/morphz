@@ -24,11 +24,11 @@
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
 | ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
-| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（开放 12/12；Context shift 6/6；闭合严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
+| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（非确定性合同 12/12；Context shift 6/6；确定性对照严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
-| ME-07 | LongMemEval-V2 Small 官方数据与协议的外部记忆验证 | 外部效度/RQ6 | P1 | 451 题 Small tier；四 cell 真实 smoke 已闭合 | `full-run-active` | [`v1 frozen`](./me_07_longmemeval_v2_small_protocol_v1.md) | 按域串行完成 no-retrieval 与 Morphz 结构化投影双臂；替代 reader/judge 结果不得冒充官方榜单分数 |
+| ME-07 | LongMemEval-V2 Small 官方数据与协议的外部记忆验证 | 外部效度/RQ6 | P1 | 451 题 Small tier；Web no-retrieval 7/240；Structured Projection Web 正在生成 | `full-run-active` | [`v1 frozen`](./me_07_longmemeval_v2_small_protocol_v1.md) | 按域串行完成 no-retrieval 与 Morphz 结构化投影双臂；替代 reader/judge 结果不得冒充官方榜单分数 |
 | ME-08 | Terminal-Bench 2.1 剩余 49 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | 前 40 题完成；剩余 49 题已冻结并运行 | `running` | [`remaining-49 protocol`](./me_08_terminal_bench_remaining_49_protocol_v1.md) | 每臂并发 1；完成后合并为 89 题同环境一次配对结果 |
 
 ## 依赖
@@ -60,6 +60,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-26
 
+- ME-07 完整运行的 Web no-retrieval cell 已完成，官方任务评分为 7/240（2.92%），符合
+  “没有长期记忆时只能偶然命中”的负对照定位；Provider 报告 73,510 prompt、177,090
+  completion、250,600 total tokens。Structured Projection Web 已完成 100 条 trajectory
+  的 source-linked Context 建库和 240 题 Prompt 构造；06:10 左右的一次 reader 请求在
+  Qwen 上游等待 17m13s 后以 EOF/HTTP 500 结束，官方 harness 的 OpenAI 客户端按冻结的
+  retry policy 自动重试并恢复，未人工重启、删题或改并发。该 Provider incident 将与最终
+  结果共同披露；
 - ME-06 p1.1 六个真实 cell 全部完成。受控 compaction 与完整 Morphz 均为 3/3 fixture
   语义成功、24/24 最终状态字段和 3/3 唯一行动；Morphz 额外真实执行 40 次 Frame 事务、
   跨 Session、版本冲突重读、进程恢复、Context 隔离与因果审计。原始字符串评分错误拒绝
