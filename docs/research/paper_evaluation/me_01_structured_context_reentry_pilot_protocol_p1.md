@@ -243,16 +243,16 @@ checksums 和代表性 trace；含凭据或超大原始数据保留在独立 art
 
 真实模型 smoke 前必须全部完成：
 
-- [ ] 三个 arm 的 adapter 都能生成同一 fixture 的可见输入审计；
-- [ ] `full_morphz` fake-provider contract test 通过真实 Context commit 与下游投影链；
-- [ ] `structured_no_direct_reentry` 在 Runtime 层隐藏并拒绝 `context_tx`，成功提交为 0；
-- [ ] `append_only` 完整保留消息、事件字段和 Session 标签；
-- [ ] hidden answer 不位于模型或文件工具可访问目录；
-- [ ] 正例、陈旧值、错误来源、串 Context、非法 JSON 均由 scorer 正确区分；
-- [ ] 三组各自数据库、Context、workspace 和 artifact 互不复用；
-- [ ] 从原始产物重评分得到逐字节一致的 score；
-- [ ] 确认实际 Runtime commit，且工作区状态已记录；
-- [ ] 精确模型、reasoning、fallback 与权限预检通过。
+- [x] 三个 arm 的 adapter 都能生成同一 fixture 的可见输入审计；
+- [x] `full_morphz` fake-provider contract test 通过真实 Context commit 与下游投影链；
+- [x] `structured_no_direct_reentry` 在 Runtime 层隐藏并拒绝 `context_tx`，成功提交为 0；
+- [x] `append_only` 完整保留消息、事件字段和 Session 标签；
+- [x] hidden answer 不位于模型或文件工具可访问目录；
+- [x] 正例、陈旧值、错误来源、串 Context、非法 JSON 均由 scorer 正确区分；
+- [x] 三组各自数据库、Context、workspace 和 artifact 互不复用；
+- [x] 从原始产物重评分得到逐字节一致的 score；
+- [x] 确认实际 Runtime commit，且工作区状态已记录；
+- [x] 精确模型、reasoning、fallback 与权限预检通过。
 
 Pilot 后必须审查：
 

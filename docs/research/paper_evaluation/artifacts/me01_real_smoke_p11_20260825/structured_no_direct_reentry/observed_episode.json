@@ -1,0 +1,25 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-delayed-reference-01",
+  "arm": "structured_no_direct_reentry",
+  "visible_input_sha256": "39daefedf1791ba07c0961ada34aa7ffbec206646c24d5154e2c48904b7ae7a4",
+  "final_response": "{\"action\":\"apply_deployment_channel\",\"object_id\":\"service-orion\",\"value\":\"blue-17\",\"evidence_id\":\"ev-dr-001\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_read_only_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-real-smoke-p11-20260825/ME-01-real-smoke-20260825T042440.916Z-56277/structured_no_direct_reentry/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-delayed-reference-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-delayed-reference-01-session-a": "me01-me01-p1-delayed-reference-01-context-primary"
+    },
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": "8c38c6bc18e102c0ff148e3a1ed5e5d9bde2e53abd24ddccd77e0099b253fb68",
+    "message_transcript_sha256": null
+  }
+}

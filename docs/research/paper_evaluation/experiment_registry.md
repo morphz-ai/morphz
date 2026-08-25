@@ -22,7 +22,7 @@
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 部分既有 runner | `planned` | — | 冻结 manifest、目录、评分与重放规范 |
-| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | 零散 `F` | `runner-gate` | [`p1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 正式二进制/真实 Provider 三臂 smoke Gate |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + 真实 Smoke `F` | `pilot-ready` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 复核 Smoke 后冻结 Pilot 批次与运行顺序 |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | 多项 `D` 分散存在 | `planned` | — | 建立面向论文主张的覆盖矩阵 |
@@ -60,6 +60,18 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-01 p1.1 三组真实模型 Smoke 完成：在不制造 Context 压力的
+  `delayed_reference` 任务上，`append_only`、`structured_no_direct_reentry` 和
+  `full_morphz` 均严格通过并返回完全相同的正确行动。完整 Morphz 使用正式二进制、独立
+  SQLite/Context、`gpt-5.6-sol`/max/no-fallback/full-access，实际产生 2 次
+  `context_tx` 提交、2 个行动前 Frame，并在进程重启后正确引用回流结果；只读组 0 尝试、
+  0 提交。该结果支持真实接线与简单任务非退化，不支持优越性、Token 效率或容量主张；
+  完整 Morphz 的 5 次调用对另两组 3 次调用仅作诊断记录。报告与机器可读证据见
+  [`artifacts/me01_real_smoke_p11_20260825/RESULT.md`](./artifacts/me01_real_smoke_p11_20260825/RESULT.md)；
+- ME-01 首次 p1 真实运行发现评分器构造缺陷：可见输入没有定义精确动作词，而隐藏 scorer
+  要求 `apply_deployment_channel`；模型给出语义正确的 `deploy` 后被误判。该运行完整保留
+  但标记 invalid、永久排除。p1.1 将动作词表对三组等量公开后重新运行；归档时另发现
+  SQLite WAL/SHM 消失竞态，模型运行和评分已完成，校验和修复后全部清单逐项通过；
 - 建立 ME-01 Pilot p1 candidate：冻结候选 `append_only`、
   `structured_no_direct_reentry`、`full_morphz` 三核心 arm，明确 full arm 必须运行生产
   Morphz、真实 SQLite/ContextEngine 与真实 `context_tx`，旧路演的本地 JSON 状态机不得

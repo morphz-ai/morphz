@@ -1,0 +1,21 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-delayed-reference-01",
+  "arm": "append_only",
+  "visible_input_sha256": "28fc52ef5d0d68bc2ce7a04343313315f37415d70ea86595799342589f814a8d",
+  "final_response": "{\"action\":\"deploy\",\"object_id\":\"service-orion\",\"value\":\"blue-17\",\"evidence_id\":\"ev-dr-001\"}",
+  "runtime": {
+    "adapter_kind": "append_only_messages",
+    "production_morphz_runtime": false,
+    "database_path": null,
+    "context_ids": [],
+    "session_mounts": {},
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": null,
+    "message_transcript_sha256": "c4250f29bd1a9cdaa76b32709992688f53eb50e153027ba7acce093721886150"
+  }
+}

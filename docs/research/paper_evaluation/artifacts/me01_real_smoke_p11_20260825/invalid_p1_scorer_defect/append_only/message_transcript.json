@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "You are participating in the ME-01 controlled memory experiment. Treat every evidence event as carrying an immutable event_id, source, version, timestamp, and content. Preserve source authority, explicit supersession, object identity, and Context boundaries. On non-final stages, acknowledge ingestion without inventing a final action. On the final act stage, return only one JSON object with exactly four string fields: action, object_id, value, evidence_id. Do not use Markdown fences or additional prose."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'establish':\n[\n  {\n    \"event_id\": \"ev-dr-001\",\n    \"source\": \"release-board\",\n    \"version\": 7,\n    \"timestamp\": \"2026-08-25T09:00:00+08:00\",\n    \"content\": \"Object service-orion has approved deployment channel blue-17. This decision remains active until explicitly superseded.\"\n  },\n  {\n    \"event_id\": \"ev-dr-002\",\n    \"source\": \"operations\",\n    \"version\": 2,\n    \"timestamp\": \"2026-08-25T09:02:00+08:00\",\n    \"content\": \"Object service-lyra uses deployment channel green-04. It is unrelated to service-orion.\"\n  }\n]\n\nInstruction: Ingest the evidence and preserve any state needed for a later operational decision. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id."
+  },
+  {
+    "role": "assistant",
+    "content": "Evidence ingested. Preserved ev-dr-001 as the active release-board approval for service-orion → blue-17, and ev-dr-002 as separate operations evidence for unrelated service-lyra → green-04. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'revise':\n[\n  {\n    \"event_id\": \"ev-dr-003\",\n    \"source\": \"diagnostics\",\n    \"version\": 1,\n    \"timestamp\": \"2026-08-25T10:00:00+08:00\",\n    \"content\": \"A latency alert for service-orion was resolved. It does not change the approved deployment channel.\"\n  },\n  {\n    \"event_id\": \"ev-dr-004\",\n    \"source\": \"release-board\",\n    \"version\": 3,\n    \"timestamp\": \"2026-08-25T10:05:00+08:00\",\n    \"content\": \"Object service-vega has approved deployment channel blue-71. It is unrelated to service-orion.\"\n  }\n]\n\nInstruction: Incorporate the new evidence while preserving the current authoritative state. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id."
+  },
+  {
+    "role": "assistant",
+    "content": "Evidence ingested. The authoritative state for service-orion remains deployment channel blue-17 from ev-dr-001; ev-dr-003 explicitly makes no change. Preserved ev-dr-004 separately for unrelated service-vega → blue-71. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'act':\n[]\n\nInstruction: Select the currently authorized deployment action for object service-orion. Return only the strict four-field JSON action contract.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id."
+  },
+  {
+    "role": "assistant",
+    "content": "{\"action\":\"deploy\",\"object_id\":\"service-orion\",\"value\":\"blue-17\",\"evidence_id\":\"ev-dr-001\"}"
+  }
+]

@@ -1,0 +1,38 @@
+2026-08-25T12:24:58.816+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 2026-08-25T12:24:58.979+08:00  WARN morphz::orchestrator::orchestrator: Context-transaction budget is exhausted during ordinary work; preserving the physical work budget session_id="me01-me01-p1-delayed-reference-01-session-a" used=0 limit=6 event_code="orchestrator.context_transaction.budget_exhausted"
+
+Evidence ingested and retained for the later decision:
+
+- **service-orion** → approved channel **blue-17**
+- Supporting evidence: **ev-dr-001**, release-board version 7
+- Decision remains active until explicitly superseded
+- **ev-dr-002** concerns unrelated **service-lyra** and will not be used for service-orion
+- Future action vocabulary: **`apply_deployment_channel`**
+- Future output must contain exactly: `action`, `object_id`, `value`, `evidence_id`
+
+No final action emitted.
+
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 2026-08-25T12:25:28.923+08:00  WARN morphz::orchestrator::orchestrator: Context-transaction budget is exhausted during ordinary work; preserving the physical work budget session_id="me01-me01-p1-delayed-reference-01-session-a" used=0 limit=6 event_code="orchestrator.context_transaction.budget_exhausted"
+
+New evidence incorporated while preserving the authoritative state:
+
+- **ev-dr-003:** The resolved latency alert does not change service-orion’s deployment channel.
+- **ev-dr-004:** Applies only to unrelated service-vega and is excluded from the service-orion decision.
+- **Current retained state:** service-orion → **blue-17**
+- **Authoritative evidence:** **ev-dr-001**, release-board version 7
+- No explicit superseding evidence has been provided.
+
+The future action must use `apply_deployment_channel` and exactly the fields `action`, `object_id`, `value`, and `evidence_id`.
+
+No final action emitted.
+
+> 退出 Morphz。
+2026-08-25T12:25:41.958+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... 2026-08-25T12:25:42.012+08:00  WARN morphz::orchestrator::orchestrator: Context-transaction budget is exhausted during ordinary work; preserving the physical work budget session_id="me01-me01-p1-delayed-reference-01-session-a" used=0 limit=6 event_code="orchestrator.context_transaction.budget_exhausted"
+
+{"action":"apply_deployment_channel","object_id":"service-orion","value":"blue-17","evidence_id":"ev-dr-001"}
+
+> 退出 Morphz。

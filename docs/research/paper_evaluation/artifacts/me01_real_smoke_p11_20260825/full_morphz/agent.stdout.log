@@ -1,0 +1,28 @@
+2026-08-25T12:25:48.654+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 
+[工具调用 1/1] context_tx  (call_id=call_DvNMZfP6WDg2zMzEkWyu9t1Q)
+参数:
+{
+  "transaction": "(context-tx (base-version 0) (reason \"Preserve the established deployment-channel decision and deferred final-action contract for later operational use\") (derive me01-service-orion-deployment-state (from @e2) (deployment-decision (object-id \"service-orion\") (approved-channel \"blue-17\") (status active-until-explicitly-superseded) (evidence-id \"ev-dr-001\") (source \"release-board\") (source-version 7) (source-timestamp \"2026-08-25T09:00:00+08:00\")) (unrelated-evidence (evidence-id \"ev-dr-002\") (object-id \"service-lyra\") (channel \"green-04\") (relation-to-service-orion unrelated) (exclude-from-service-orion-decision true))) (derive me01-deferred-action-contract (from @e2) (final-action (status deferred-until-requested) (emit-now false) (exact-fields action object_id value evidence_id) (required-action \"apply_deployment_channel\"))) (protect me01-service-orion-deployment-state me01-deferred-action-contract))"
+}
+
+Evidence ingested and preserved for the later operational decision. The active `service-orion` deployment-channel decision and its evidence reference are retained; the unrelated `service-lyra` record is excluded. The required final-action contract is also preserved. No final action has been emitted.
+
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... ... 
+[工具调用 1/1] context_tx  (call_id=call_WEEtEwwqhOTMcNFEKcQXlckA)
+参数:
+{
+  "transaction": "(context-tx (base-version 1) (reason \"Incorporate the revise-stage evidence while preserving service-orion's active approved channel and keeping the final action deferred\") (revise me01-service-orion-deployment-state (from @e2 @e20) (deployment-decision (object-id \"service-orion\") (approved-channel \"blue-17\") (status active-until-explicitly-superseded) (decision-role current-authoritative-state) (evidence-id \"ev-dr-001\") (source \"release-board\") (source-version 7) (source-timestamp \"2026-08-25T09:00:00+08:00\")) (non-changing-evidence (evidence-id \"ev-dr-003\") (object-id \"service-orion\") (source \"diagnostics\") (source-version 1) (source-timestamp \"2026-08-25T10:00:00+08:00\") (event latency-alert-resolved) (deployment-channel-impact none) (preserves-decision-evidence-id \"ev-dr-001\")) (unrelated-evidence (evidence-id \"ev-dr-002\") (object-id \"service-lyra\") (channel \"green-04\") (relation-to-service-orion unrelated) (exclude-from-service-orion-decision true)) (unrelated-evidence (evidence-id \"ev-dr-004\") (object-id \"service-vega\") (channel \"blue-71\") (source \"release-board\") (source-version 3) (source-timestamp \"2026-08-25T10:05:00+08:00\") (relation-to-service-orion unrelated) (exclude-from-service-orion-decision true))) (revise me01-deferred-action-contract (from @e2 @e20) (final-action (status deferred-until-requested) (emit-now false) (exact-fields action object_id value evidence_id) (required-action \"apply_deployment_channel\"))))"
+}
+
+New evidence incorporated. The resolved latency alert does not alter the deployment decision, and the unrelated `service-vega` record is excluded. `service-orion` retains authoritative channel `blue-17`, supported by `ev-dr-001`. The final action remains deferred and has not been emitted.
+
+> 退出 Morphz。
+2026-08-25T12:27:00.614+08:00  WARN morphz::runtime: Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries event_code="runtime.permissions.full_access_enabled"
+> [多行模式] 单独输入 /send 发送，或输入 /cancel 取消。
+... ... ... ... ... ... ... 
+{"action":"apply_deployment_channel","object_id":"service-orion","value":"blue-17","evidence_id":"ev-dr-001"}
+
+> 退出 Morphz。
