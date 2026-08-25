@@ -161,11 +161,13 @@ pub async fn run_me01_real_smoke_suite(
     write_json(&suite_root.join("visible_fixture.json"), &fixture.visible)?;
 
     let exact = build_exact_client(&suite_root.join("provider-control")).await?;
+    let physical_model = exact.physical_model.clone();
     let mut arms = Vec::new();
     arms.push(run_append_only(&suite_root, &fixture, &exact).await?);
     for arm in [Me01Arm::StructuredNoDirectReentry, Me01Arm::FullMorphz] {
         arms.push(run_morphz_arm(&suite_root, &fixture, arm, agent_binary).await?);
     }
+    drop(exact);
 
     let all_arms_executed = arms.len() == Me01Arm::ALL.len();
     let all_implementation_valid = arms.iter().all(|arm| arm.score.implementation_valid);
@@ -177,7 +179,7 @@ pub async fn run_me01_real_smoke_suite(
         suite_root: suite_root.clone(),
         fixture_id: fixture.visible.id.clone(),
         requested_model: MODEL.to_string(),
-        physical_model: exact.physical_model,
+        physical_model,
         provider: PROVIDER.to_string(),
         reasoning: REASONING.to_string(),
         arms,
@@ -189,6 +191,16 @@ pub async fn run_me01_real_smoke_suite(
     write_json(&suite_root.join("summary.json"), &report)?;
     write_checksums(&suite_root)?;
     Ok(report)
+}
+
+pub fn rehash_me01_artifacts(suite_root: &Path) -> Result<(), DynError> {
+    for arm in Me01Arm::ALL {
+        let arm_root = suite_root.join(arm.as_str());
+        if arm_root.is_dir() {
+            write_checksums(&arm_root)?;
+        }
+    }
+    write_checksums(suite_root)
 }
 
 async fn run_append_only(
@@ -444,6 +456,7 @@ async fn run_morphz_arm(
             message_transcript_sha256: None,
         },
     };
+    drop(store);
     finish_arm(
         run_root,
         fixture,
@@ -684,10 +697,12 @@ async fn load_context_projection(
     session_id: &str,
 ) -> Result<Value, DynError> {
     let store = Arc::new(SqliteStore::new(&database_path.to_string_lossy()).await?);
-    let mut config = OrchestratorConfig::default();
-    config.context_soft_token_limit = 98_304;
-    config.context_hard_token_limit = 131_072;
-    config.context_maintenance_reserve_tokens = 8_192;
+    let config = OrchestratorConfig {
+        context_soft_token_limit: 98_304,
+        context_hard_token_limit: 131_072,
+        context_maintenance_reserve_tokens: 8_192,
+        ..OrchestratorConfig::default()
+    };
     let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
         .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
@@ -876,18 +891,27 @@ fn write_checksums(root: &Path) -> Result<(), DynError> {
     let mut paths = WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file() && entry.path() != checksum_path)
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry.path() != checksum_path
+                && !entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("-wal") || name.ends_with("-shm"))
+        })
         .map(|entry| entry.path().to_path_buf())
         .collect::<Vec<_>>();
     paths.sort();
     let mut output = String::new();
     for path in paths {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
         let relative = path.strip_prefix(root)?;
-        output.push_str(&format!(
-            "{}  {}\n",
-            sha256(&std::fs::read(&path)?),
-            relative.display()
-        ));
+        output.push_str(&format!("{}  {}\n", sha256(&bytes), relative.display()));
     }
     std::fs::write(checksum_path, output)?;
     Ok(())
@@ -916,5 +940,18 @@ mod tests {
         assert!(APPEND_ONLY_SYSTEM.contains("exactly four string fields"));
         assert!(!APPEND_ONLY_SYSTEM.contains("context_tx"));
         assert!(!APPEND_ONLY_SYSTEM.contains("Structured Context"));
+    }
+
+    #[test]
+    fn checksums_exclude_transient_sqlite_sidecars() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("stable.json"), b"{}\n").unwrap();
+        std::fs::write(root.path().join("morphz.db-wal"), b"transient").unwrap();
+        std::fs::write(root.path().join("morphz.db-shm"), b"transient").unwrap();
+        write_checksums(root.path()).unwrap();
+        let manifest = std::fs::read_to_string(root.path().join("checksums.sha256")).unwrap();
+        assert!(manifest.contains("stable.json"));
+        assert!(!manifest.contains("morphz.db-wal"));
+        assert!(!manifest.contains("morphz.db-shm"));
     }
 }
