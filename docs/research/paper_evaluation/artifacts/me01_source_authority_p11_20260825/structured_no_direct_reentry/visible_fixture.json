@@ -1,0 +1,52 @@
+{
+  "id": "me01-p1-source-authority-01",
+  "family": "source_authority",
+  "title": "Authority before recency",
+  "required_action": "set_retention_tier",
+  "stages": [
+    {
+      "id": "establish",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-sa-001",
+          "source": "security-review-board",
+          "version": 5,
+          "timestamp": "2026-08-25T08:00:00+08:00",
+          "content": "Approved policy for object audit-export: retention tier R-45. The board is the authority for retention changes."
+        }
+      ],
+      "instruction": "Ingest the authoritative evidence and preserve any source constraints required for a later decision. Do not emit the final action yet."
+    },
+    {
+      "id": "revise",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-sa-002",
+          "source": "individual-draft",
+          "version": 6,
+          "timestamp": "2026-08-25T12:00:00+08:00",
+          "content": "Unapproved draft proposes retention tier R-07 for audit-export. It has no board approval and does not supersede existing policy."
+        },
+        {
+          "event_id": "ev-sa-003",
+          "source": "chat-rumor",
+          "version": 1,
+          "timestamp": "2026-08-25T12:05:00+08:00",
+          "content": "A rumor claims audit-export might move to R-90. This is not an approved decision."
+        }
+      ],
+      "instruction": "Incorporate the later but non-authoritative evidence without treating recency as authority. Do not emit the final action yet."
+    },
+    {
+      "id": "act",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [],
+      "instruction": "Select the authorized retention action for object audit-export. Return only the strict four-field JSON action contract."
+    }
+  ]
+}

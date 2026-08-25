@@ -1,0 +1,25 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-source-authority-01",
+  "arm": "structured_no_direct_reentry",
+  "visible_input_sha256": "d83c9e23ecb8a3d7e5a21cdbcfd9826b2dbb0d90dffe3196ee7c55da86552c3e",
+  "final_response": "{\"action\":\"set_retention_tier\",\"object_id\":\"audit-export\",\"value\":\"R-45\",\"evidence_id\":\"ev-sa-001\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_read_only_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T063035.871Z-60579/structured_no_direct_reentry/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-source-authority-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-source-authority-01-session-a": "me01-me01-p1-source-authority-01-context-primary"
+    },
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": "a48a8b0c95cec28d7faf4dc0056bf2b6d1f30078559c087afea5749e97ea8eeb",
+    "message_transcript_sha256": null
+  }
+}

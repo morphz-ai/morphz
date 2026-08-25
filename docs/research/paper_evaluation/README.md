@@ -31,6 +31,7 @@
 - [ME-01 fixture 与评分器无模型 Gate](./me_01_no_model_fixture_scorer_gate_2026_08_25.md)：15/15 正例、5/5 负例、生产只读 Context capability；尚未允许真实模型 smoke；
 - [ME-01 p1.1 三组真实模型 Smoke](./artifacts/me01_real_smoke_p11_20260825/RESULT.md)：三组 3/3 严格通过；完整 Morphz 实际完成两次 Context 事务、Frame 回流、进程重启和正确行动；该简单任务只支持机制真实性与非退化结论；
 - [ME-01 p1.1 Supersession Conflict](./artifacts/me01_supersession_conflict_p11_20260825/RESULT.md)：三组均正确选择两级 supersession 后的 `/hooks/v3`；累计两个真实 cell、6/6 有效 episode 严格通过，仍只作可行性与非退化证据；
+- [ME-01 p1.1 Source Authority](./artifacts/me01_source_authority_p11_20260825/RESULT.md)：三组均正确保留权威来源的 `R-45`，拒绝更新但未批准的 `R-07/R-90`；累计三个真实 cell、9/9 有效 episode 严格通过；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

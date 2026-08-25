@@ -1,0 +1,32 @@
+{
+  "arm": "full_morphz",
+  "run_root": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T063035.871Z-60579/full_morphz",
+  "observed_episode_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T063035.871Z-60579/full_morphz/observed_episode.json",
+  "score_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T063035.871Z-60579/full_morphz/score.json",
+  "score": {
+    "protocol_id": "me01-context-reentry-p1.1-candidate",
+    "fixture_id": "me01-p1-source-authority-01",
+    "arm": "full_morphz",
+    "parsed_action": {
+      "action": "set_retention_tier",
+      "object_id": "audit-export",
+      "value": "R-45",
+      "evidence_id": "ev-sa-001"
+    },
+    "json_contract_valid": true,
+    "action_matches": true,
+    "object_matches": true,
+    "value_matches": true,
+    "evidence_matches": true,
+    "stale_value_reused": false,
+    "foreign_value_reused": false,
+    "task_success": true,
+    "implementation_valid": true,
+    "strict_success": true,
+    "integrity_violations": []
+  },
+  "provider_calls": 5,
+  "model_bindings_valid": true,
+  "process_restart_proven": true,
+  "passed": true
+}

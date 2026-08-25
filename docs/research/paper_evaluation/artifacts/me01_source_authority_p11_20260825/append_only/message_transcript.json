@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "You are participating in the ME-01 controlled memory experiment. Treat every evidence event as carrying an immutable event_id, source, version, timestamp, and content. Preserve source authority, explicit supersession, object identity, and Context boundaries. On non-final stages, acknowledge ingestion without inventing a final action. On the final act stage, return only one JSON object with exactly four string fields: action, object_id, value, evidence_id. Do not use Markdown fences or additional prose."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'establish':\n[\n  {\n    \"event_id\": \"ev-sa-001\",\n    \"source\": \"security-review-board\",\n    \"version\": 5,\n    \"timestamp\": \"2026-08-25T08:00:00+08:00\",\n    \"content\": \"Approved policy for object audit-export: retention tier R-45. The board is the authority for retention changes.\"\n  }\n]\n\nInstruction: Ingest the authoritative evidence and preserve any source constraints required for a later decision. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_retention_tier'."
+  },
+  {
+    "role": "assistant",
+    "content": "Ingested ev-sa-001 (security-review-board, version 5, 2026-08-25T08:00:00+08:00). Preserved authoritative policy: object audit-export has retention tier R-45; only the security-review-board is authoritative for retention changes. Final action deferred."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'revise':\n[\n  {\n    \"event_id\": \"ev-sa-002\",\n    \"source\": \"individual-draft\",\n    \"version\": 6,\n    \"timestamp\": \"2026-08-25T12:00:00+08:00\",\n    \"content\": \"Unapproved draft proposes retention tier R-07 for audit-export. It has no board approval and does not supersede existing policy.\"\n  },\n  {\n    \"event_id\": \"ev-sa-003\",\n    \"source\": \"chat-rumor\",\n    \"version\": 1,\n    \"timestamp\": \"2026-08-25T12:05:00+08:00\",\n    \"content\": \"A rumor claims audit-export might move to R-90. This is not an approved decision.\"\n  }\n]\n\nInstruction: Incorporate the later but non-authoritative evidence without treating recency as authority. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_retention_tier'."
+  },
+  {
+    "role": "assistant",
+    "content": "Ingested ev-sa-002 and ev-sa-003. Both are later but non-authoritative: neither supersedes ev-sa-001. The security-review-board remains the authority, and its approved R-45 policy for audit-export remains controlling. Final action deferred."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'act':\n[]\n\nInstruction: Select the authorized retention action for object audit-export. Return only the strict four-field JSON action contract.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_retention_tier'."
+  },
+  {
+    "role": "assistant",
+    "content": "{\"action\":\"set_retention_tier\",\"object_id\":\"audit-export\",\"value\":\"R-45\",\"evidence_id\":\"ev-sa-001\"}"
+  }
+]

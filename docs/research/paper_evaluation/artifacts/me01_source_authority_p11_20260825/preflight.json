@@ -1,0 +1,15 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-source-authority-01",
+  "agent_binary": "/Users/shafreeck/Codes/Morphz/target/debug/morphz",
+  "profile": "roadshow-demo-001",
+  "requested_model": "gpt-5.6-sol",
+  "physical_model": "gpt-5.6-sol",
+  "provider": "custom",
+  "protocol": "openai-responses",
+  "reasoning": "max",
+  "fallback": false,
+  "hidden_answer_outside_run_workspace": true,
+  "real_model_called": false,
+  "ready_for_real_model_smoke": true
+}

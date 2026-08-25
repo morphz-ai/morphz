@@ -60,6 +60,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-01 p1.1 第三个真实 cell `source_authority` 完成：三组均严格保留正式权威来源的
+  `R-45 / ev-sa-001`，拒绝较新的未批准草案 `R-07` 和传闻 `R-90`；两个 Morphz arms
+  的进程重启成立。完整 Morphz 的 2 次事务和 revision 2 权威政策 Frame 只作为机制轨迹，
+  前两组该能力为“不适用”。任务可见输入明确给出了来源权威边界，因此结果支持等语义路径
+  的有效性与非退化，不支持优越性。当前三个真实 cell 共 9/9 有效 episode 严格通过，
+  天花板效应进一步明确；报告见
+  [`artifacts/me01_source_authority_p11_20260825/RESULT.md`](./artifacts/me01_source_authority_p11_20260825/RESULT.md)；
 - ME-01 p1.1 第二个真实 cell `supersession_conflict` 完成：三组均严格选择最终权威值
   `/hooks/v3` 和 `ev-sc-003`，没有复用已被取代的 `/hooks/v1` 或 `/hooks/v2`；两个
   Morphz arms 的进程重启成立。完整 Morphz 的 2 次事务和 4 个行动前 Frame 只作为真实

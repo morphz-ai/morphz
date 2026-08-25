@@ -1,0 +1,257 @@
+[
+  {
+    "id": "model_usage_work_3e28936af70b66574aeaaa1a",
+    "sequence": 6,
+    "timestamp": "2026-08-25T06:31:37.132227Z",
+    "actor": "Model-Provider",
+    "type": "runtime_control",
+    "topic": "runtime/model_usage",
+    "payload": {
+      "activation_id": "work_3e28936af70b66574aeaaa1a",
+      "attempt_id": "work_3e28936af70b66574aeaaa1a",
+      "calibration_key": 17792542159119518979,
+      "calibration_shape": 11309901677854205298,
+      "caused_by": "msg_1787639460662039000_60594_0",
+      "configured_reasoning_effort": "max",
+      "context_id": "me01-me01-p1-source-authority-01-context-primary",
+      "context_snapshot_version": 0,
+      "context_token_budget": {
+        "capacity_source": "runtime-default",
+        "context_id": "me01-me01-p1-source-authority-01-context-primary",
+        "critical_token_limit": 114688,
+        "effective_hard_token_limit": 131072,
+        "maintenance_reserve_tokens": 16384,
+        "max_output_tokens": null,
+        "model": "gpt-5.6-sol",
+        "physical_context_window_tokens": null,
+        "physical_prompt_token_limit": 131072,
+        "provider": "custom",
+        "requested_hard_token_limit": null,
+        "soft_token_limit": 98304,
+        "token_budget_revision": 0
+      },
+      "counter_accuracy": "heuristic-estimate",
+      "counter_source": "openai-responses-serialized-request-estimate",
+      "effective_reasoning_effort": "max",
+      "local_base_estimate_tokens": 21752,
+      "model": "gpt-5.6-sol",
+      "model_binding": {
+        "auth_account_id": "custom-default",
+        "capabilities": [],
+        "endpoint": "http://mini-m4.local:8317/v1",
+        "physical_model": "gpt-5.6-sol",
+        "protocol": "openai-responses",
+        "provider_adapter": "protocol-compatible",
+        "provider_adapter_version": "1",
+        "provider_instance_id": "custom",
+        "requested_alias": "gpt-5.6-sol",
+        "route_id": "gpt-5.6-sol",
+        "route_revision": "sha256:2b09e972ecac317f15338a29b01d84817f75b1ab29d9a95ccdbc625b93cd6a9a"
+      },
+      "model_route_id": "gpt-5.6-sol",
+      "predicted_input_tokens": 21752,
+      "principal_id": "me01-principal-me01-p1-source-authority-01",
+      "prompt_measurement_model": "gpt-5.6-sol",
+      "requested_model": "gpt-5.6-sol",
+      "root_turn_id": "msg_1787639460662039000_60594_0",
+      "session_id": "me01-me01-p1-source-authority-01-session-a",
+      "thread_id": "thread_3e28936af70b66574aeaaa1a",
+      "thread_kind": "dialogue_turn",
+      "trigger_event_id": "msg_1787639460662039000_60594_0",
+      "trigger_sequence": 2,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 16697,
+        "output_tokens": 1110,
+        "raw": [
+          {
+            "input_tokens": 16697,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 1110,
+            "output_tokens_details": {
+              "reasoning_tokens": 1034
+            },
+            "total_tokens": 17807
+          }
+        ],
+        "reasoning_tokens": 1034,
+        "total_tokens": 17807,
+        "uncached_input_tokens": 16697
+      },
+      "usage_schema_version": 2
+    }
+  },
+  {
+    "id": "model_usage_work_e45c2bebdfdbca25d1018e9d",
+    "sequence": 15,
+    "timestamp": "2026-08-25T06:31:53.746482Z",
+    "actor": "Model-Provider",
+    "type": "runtime_control",
+    "topic": "runtime/model_usage",
+    "payload": {
+      "activation_id": "work_e45c2bebdfdbca25d1018e9d",
+      "attempt_id": "work_e45c2bebdfdbca25d1018e9d",
+      "calibration_key": 17792542159119518979,
+      "calibration_shape": 11309901677854205298,
+      "caused_by": "msg_1787639497310249000_60594_1",
+      "configured_reasoning_effort": "max",
+      "context_id": "me01-me01-p1-source-authority-01-context-primary",
+      "context_snapshot_version": 0,
+      "context_token_budget": {
+        "capacity_source": "runtime-default",
+        "context_id": "me01-me01-p1-source-authority-01-context-primary",
+        "critical_token_limit": 114688,
+        "effective_hard_token_limit": 131072,
+        "maintenance_reserve_tokens": 16384,
+        "max_output_tokens": null,
+        "model": "gpt-5.6-sol",
+        "physical_context_window_tokens": null,
+        "physical_prompt_token_limit": 131072,
+        "provider": "custom",
+        "requested_hard_token_limit": null,
+        "soft_token_limit": 98304,
+        "token_budget_revision": 0
+      },
+      "counter_accuracy": "usage-calibrated-estimate",
+      "counter_source": "openai-responses-serialized-request-estimate+durable-usage-anchor",
+      "effective_reasoning_effort": "max",
+      "local_base_estimate_tokens": 22573,
+      "model": "gpt-5.6-sol",
+      "model_binding": {
+        "auth_account_id": "custom-default",
+        "capabilities": [],
+        "endpoint": "http://mini-m4.local:8317/v1",
+        "physical_model": "gpt-5.6-sol",
+        "protocol": "openai-responses",
+        "provider_adapter": "protocol-compatible",
+        "provider_adapter_version": "1",
+        "provider_instance_id": "custom",
+        "requested_alias": "gpt-5.6-sol",
+        "route_id": "gpt-5.6-sol",
+        "route_revision": "sha256:2b09e972ecac317f15338a29b01d84817f75b1ab29d9a95ccdbc625b93cd6a9a"
+      },
+      "model_route_id": "gpt-5.6-sol",
+      "predicted_input_tokens": 17518,
+      "principal_id": "me01-principal-me01-p1-source-authority-01",
+      "prompt_measurement_model": "gpt-5.6-sol",
+      "requested_model": "gpt-5.6-sol",
+      "root_turn_id": "msg_1787639497310249000_60594_1",
+      "session_id": "me01-me01-p1-source-authority-01-session-a",
+      "thread_id": "thread_e45c2bebdfdbca25d1018e9d",
+      "thread_kind": "dialogue_turn",
+      "trigger_event_id": "msg_1787639497310249000_60594_1",
+      "trigger_sequence": 11,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 17636,
+        "output_tokens": 404,
+        "raw": [
+          {
+            "input_tokens": 17636,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 404,
+            "output_tokens_details": {
+              "reasoning_tokens": 292
+            },
+            "total_tokens": 18040
+          }
+        ],
+        "reasoning_tokens": 292,
+        "total_tokens": 18040,
+        "uncached_input_tokens": 17636
+      },
+      "usage_schema_version": 2
+    }
+  },
+  {
+    "id": "model_usage_work_fecfabab8d6275234820ad23",
+    "sequence": 25,
+    "timestamp": "2026-08-25T06:32:01.169245Z",
+    "actor": "Model-Provider",
+    "type": "runtime_control",
+    "topic": "runtime/model_usage",
+    "payload": {
+      "activation_id": "work_fecfabab8d6275234820ad23",
+      "attempt_id": "work_fecfabab8d6275234820ad23",
+      "calibration_key": 4584943577073669460,
+      "calibration_shape": 2199003185057360530,
+      "caused_by": "msg_1787639513998095000_60620_0",
+      "configured_reasoning_effort": "max",
+      "context_id": "me01-me01-p1-source-authority-01-context-primary",
+      "context_snapshot_version": 0,
+      "context_token_budget": {
+        "capacity_source": "runtime-default",
+        "context_id": "me01-me01-p1-source-authority-01-context-primary",
+        "critical_token_limit": 114688,
+        "effective_hard_token_limit": 131072,
+        "maintenance_reserve_tokens": 16384,
+        "max_output_tokens": null,
+        "model": "gpt-5.6-sol",
+        "physical_context_window_tokens": null,
+        "physical_prompt_token_limit": 131072,
+        "provider": "custom",
+        "requested_hard_token_limit": null,
+        "soft_token_limit": 98304,
+        "token_budget_revision": 0
+      },
+      "counter_accuracy": "usage-calibrated-estimate",
+      "counter_source": "openai-responses-serialized-request-estimate+durable-usage-anchor",
+      "effective_reasoning_effort": "max",
+      "local_base_estimate_tokens": 22589,
+      "model": "gpt-5.6-sol",
+      "model_binding": {
+        "auth_account_id": "custom-default",
+        "capabilities": [],
+        "endpoint": "http://mini-m4.local:8317/v1",
+        "physical_model": "gpt-5.6-sol",
+        "protocol": "openai-responses",
+        "provider_adapter": "protocol-compatible",
+        "provider_adapter_version": "1",
+        "provider_instance_id": "custom",
+        "requested_alias": "gpt-5.6-sol",
+        "route_id": "gpt-5.6-sol",
+        "route_revision": "sha256:2b09e972ecac317f15338a29b01d84817f75b1ab29d9a95ccdbc625b93cd6a9a"
+      },
+      "model_route_id": "gpt-5.6-sol",
+      "predicted_input_tokens": 17652,
+      "principal_id": "me01-principal-me01-p1-source-authority-01",
+      "prompt_measurement_model": "gpt-5.6-sol",
+      "requested_model": "gpt-5.6-sol",
+      "root_turn_id": "msg_1787639513998095000_60620_0",
+      "session_id": "me01-me01-p1-source-authority-01-session-a",
+      "thread_id": "thread_fecfabab8d6275234820ad23",
+      "thread_kind": "dialogue_turn",
+      "trigger_event_id": "msg_1787639513998095000_60620_0",
+      "trigger_sequence": 21,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 17650,
+        "output_tokens": 103,
+        "raw": [
+          {
+            "input_tokens": 17650,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 103,
+            "output_tokens_details": {
+              "reasoning_tokens": 67
+            },
+            "total_tokens": 17753
+          }
+        ],
+        "reasoning_tokens": 67,
+        "total_tokens": 17753,
+        "uncached_input_tokens": 17650
+      },
+      "usage_schema_version": 2
+    }
+  }
+]
