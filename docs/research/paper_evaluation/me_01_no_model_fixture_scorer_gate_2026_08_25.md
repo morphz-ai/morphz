@@ -37,6 +37,8 @@ cargo run -q -p morphz-evals --bin me01_context_reentry_eval -- \
   fake-gate /private/tmp/morphz-me01-20260825
 cargo run -q -p morphz-evals --bin me01_context_reentry_eval -- \
   embedded-runtime-gate /private/tmp/morphz-me01-20260825
+cargo run -q -p morphz-evals --bin me01_context_reentry_eval -- \
+  standalone-process-gate /private/tmp/morphz-me01-standalone-20260825-r2
 cargo test -p morphz --lib \
   disabled_context_transactions_are_unavailable_even_with_unused_budget
 cargo test -p morphz --lib \
@@ -51,8 +53,14 @@ cargo clippy -p morphz --lib -- -D warnings
 | 可见 fixture | 5/5 通过结构与引用审计 |
 | 三组正例 | 15/15 strict pass |
 | 故意负例 | 5/5 被拒绝 |
-| ME-01 单元测试 | 5 passed |
+| ME-01 单元测试 | 6 passed |
 | 生产 Runtime 内嵌因果链测试 | 1 passed |
+| 三臂独立进程接线正例 | 15/15 strict pass |
+| 两个 Morphz arms 的进程重启恢复 | 10/10 通过 |
+| 两个 Morphz arms 的独立 SQLite | 10/10 通过 |
+| 原始产物重评分 | 15/15 逐字节一致 |
+| 跨 Session 同 Context 挂载 | 通过 |
+| 不同 Context 隔离 | 通过 |
 | Runtime 只读 Context 定向测试 | 2 passed |
 | `morphz-evals` Clippy | 通过 |
 | `morphz` Clippy | 通过 |
@@ -97,6 +105,28 @@ Context 投影：
 两组最终都按 fake Provider 的固定响应返回正确 JSON。该结果不衡量模型能力，只证明三组
 实验所要求的 capability 差异已经落在生产 Runtime 路径上，而不是落在 fixture 声明中。
 
+独立进程 Gate 输出：
+
+```text
+/private/tmp/morphz-me01-standalone-20260825-r2/
+  ME-01-standalone-process-gate-20260825T034133.078Z-52861/
+```
+
+该 Gate 对 5 个 fixture 分别运行三组。`append_only` 保存完整消息 transcript；两个
+Morphz arms 的 `establish/revise` 与 `act` 由两个不同 OS 进程执行，并在中间只保留同一
+episode 的 SQLite，不把状态复制进 act prompt。10 个 Morphz episode 使用 10 个不同
+数据库路径；跨 Session fixture 的 A/B Session 实际挂载同一 Context；隔离 fixture 的
+foreign/primary Session 实际挂载不同 Context，primary act 投影不含 foreign 值。
+
+15 个 `observed_episode.json` 均重新读取并由同一确定性 scorer 重放，重建的
+`score.json` 与初次评分逐字节一致。仓库内脱敏归档与临时数据库位置见
+[`artifacts/ME01_NO_MODEL_GATES_20260825.md`](./artifacts/ME01_NO_MODEL_GATES_20260825.md)。
+
+这里的子进程运行的是链接实际 `MorphzRuntime`、Registry、SQLite、EventBus、
+Orchestrator 和 ContextEngine 的评测探针。它已经证明 OS 进程边界与恢复链，但真实模型
+smoke 仍必须换成冻结 commit 构建的正式 `morphz` 二进制和真实 Provider；因此本 Gate
+仍不把 `ready_for_real_model_smoke` 置为 true。
+
 ## 4. 负例覆盖
 
 评分器已确认会拒绝：
@@ -127,10 +157,15 @@ Event History、重启和 Context inspection 模式。
 - `fixture_and_scorer_gate=true`；
 - `read_only_runtime_capability_gate=true`；
 - `embedded_production_runtime_causal_gate=true`；
-- `standalone_process_arm_adapters_complete=false`；
+- `standalone_process_arm_adapters_complete=true`（无模型评测探针）；
+- `cross_session_mount_gate=true`；
+- `context_isolation_gate=true`；
+- `process_restart_recovery_gate=true`；
+- `raw_artifact_rescore_gate=true`；
 - `ready_for_real_model_smoke=false`；
 - `model_calls_this_gate=0`。
 
-下一步必须完成两个独立进程 Morphz adapter 和一个完整消息 adapter，并验证跨 Session
-mount、每 episode 数据库隔离、进程重启、原始请求留存和原始产物重评分。只有这些 Gate
-全部通过，才允许三组各 1 个真实 smoke；不得从本报告直接跳到 15 episode Pilot。
+下一步只补真实调用层：冻结正式 `morphz` 二进制与精确 Provider/model/reasoning/
+fallback/full-access 预检，实现 append-only 的同 Provider 直连 adapter，并让两个 Morphz
+arms 记录真实请求、响应和 usage。完成一次无模型预检后，才允许三组各 1 个真实 smoke；
+不得从本报告直接跳到 15 episode Pilot。

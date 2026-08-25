@@ -1,0 +1,22 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-delayed-reference-01",
+  "arm": "append_only",
+  "parsed_action": {
+    "action": "apply_deployment_channel",
+    "object_id": "service-orion",
+    "value": "blue-17",
+    "evidence_id": "ev-dr-001"
+  },
+  "json_contract_valid": true,
+  "action_matches": true,
+  "object_matches": true,
+  "value_matches": true,
+  "evidence_matches": true,
+  "stale_value_reused": false,
+  "foreign_value_reused": false,
+  "task_success": true,
+  "implementation_valid": true,
+  "strict_success": true,
+  "integrity_violations": []
+}

@@ -1,0 +1,12 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "created_at": "2026-08-25T03:20:11.705481+00:00",
+  "fixture_count": 5,
+  "positive_episode_count": 15,
+  "positive_strict_passes": 15,
+  "negative_case_count": 5,
+  "negative_cases_rejected": 5,
+  "output_root": "/private/tmp/morphz-me01-20260825/ME-01-fake-gate-20260825T032011.702Z-50872",
+  "ready_for_runtime_adapter_implementation": true,
+  "ready_for_real_model_smoke": false
+}

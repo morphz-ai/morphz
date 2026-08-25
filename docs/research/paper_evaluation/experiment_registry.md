@@ -22,7 +22,7 @@
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | ME-00 | 实验基础设施与校准 | 全部 | P0 | 部分既有 runner | `planned` | — | 冻结 manifest、目录、评分与重放规范 |
-| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | 零散 `F` | `protocol-candidate` | [`p1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 无模型三 arm 真实性、隔离与重评分 Gate |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | 零散 `F` | `runner-gate` | [`p1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 正式二进制/真实 Provider 三臂 smoke Gate |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | 多项 `D` 分散存在 | `planned` | — | 建立面向论文主张的覆盖矩阵 |
@@ -76,7 +76,15 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   实际 `MorphzRuntime → context_tx → SQLite commit → act projection` 产生 1 次尝试和
   1 次提交，提交 Frame 同时出现在 act 请求与最终 Context；同一生产路径的只读 arm
   对 Provider 隐藏该工具，0 尝试、0 提交、0 Frame。该结果只证明接线真实性，不是模型
-  成绩；独立进程 adapter、跨 Session、重启和重评分 Gate 仍未完成；
+  成绩；该阶段尚未覆盖独立进程、跨 Session、重启和重评分，随后由下一 Gate 补齐；
+- ME-01 独立进程 Gate 完成：5 个 fixture × 3 arms 的 15/15 接线正例通过；两个
+  Morphz arms 的 10/10 episode 均用不同 PID 执行重启前后阶段、从 10 个相互独立的
+  SQLite 恢复，跨 Session 同 Context 和双 Context 隔离通过，15/15 原始 observed
+  episode 重评分逐字节一致。该 Gate 使用 deterministic fake Provider，真实模型调用为
+  0，尚不能作为效果数据；脱敏原始 JSON 与证据索引见
+  [`artifacts/ME01_NO_MODEL_GATES_20260825.md`](./artifacts/ME01_NO_MODEL_GATES_20260825.md)。
+  下一 Gate 是正式 `morphz` 二进制、精确 Sol/max/no-fallback/full-access 与同 Provider
+  append-only adapter 的三臂真实 smoke；
 - 完成 `terminal-bench-four-arm-prior-40-v1` 四臂正式运行，160/160 trial 均保留。以
   Harbor/Terminal-Bench 官方评分器为对外主口径：原生 Morphz 30/40（75.0%）、官方
   Codex CLI 28/40（70.0%）、Morphz+v0.5 23/40（57.5%）、Morphz+辩证实践 Mind

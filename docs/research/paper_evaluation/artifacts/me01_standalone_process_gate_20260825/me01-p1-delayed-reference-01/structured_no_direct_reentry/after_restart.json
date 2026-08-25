@@ -1,0 +1,23 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-delayed-reference-01",
+  "arm": "structured_no_direct_reentry",
+  "phase": "after_restart",
+  "process_id": 52959,
+  "database_path": "/private/tmp/morphz-me01-standalone-20260825-r2/ME-01-standalone-process-gate-20260825T034133.078Z-52861/me01-p1-delayed-reference-01/structured_no_direct_reentry/morphz.db",
+  "context_ids": [
+    "me01-me01-p1-delayed-reference-01-context-primary"
+  ],
+  "session_mounts": {
+    "me01-me01-p1-delayed-reference-01-session-a": "me01-me01-p1-delayed-reference-01-context-primary"
+  },
+  "fake_provider_calls": 1,
+  "context_tx_tool_seen_by_provider": false,
+  "context_tx_attempts": 0,
+  "context_tx_commits": 0,
+  "committed_frame_visible_in_act_request": false,
+  "committed_frame_visible_in_primary_context": false,
+  "foreign_value_absent_from_primary_context": false,
+  "structured_context_snapshot_sha256": "6ce96b94920c07c161b97d6775c78044c6ab21f332e52b0034655776a219e99c",
+  "final_response": "{\"action\":\"apply_deployment_channel\",\"object_id\":\"service-orion\",\"value\":\"blue-17\",\"evidence_id\":\"ev-dr-001\"}"
+}

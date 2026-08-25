@@ -1,0 +1,27 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-context-isolation-01",
+  "arm": "structured_no_direct_reentry",
+  "visible_input_sha256": "d0aa027520dda042a509675f81c1d344df3b68198b9a9f462fdc411f37741485",
+  "final_response": "{\"action\":\"set_delivery_target\",\"object_id\":\"report-daily\",\"value\":\"blue-archive\",\"evidence_id\":\"ev-ci-002\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_read_only_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-standalone-20260825-r2/ME-01-standalone-process-gate-20260825T034133.078Z-52861/me01-p1-context-isolation-01/structured_no_direct_reentry/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-context-isolation-01-context-foreign",
+      "me01-me01-p1-context-isolation-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-context-isolation-01-session-foreign": "me01-me01-p1-context-isolation-01-context-foreign",
+      "me01-me01-p1-context-isolation-01-session-primary": "me01-me01-p1-context-isolation-01-context-primary"
+    },
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": "776b5876f051a344518ea58b4583d72fd42553d13e4c1a3898c2b9e460c52ebc",
+    "message_transcript_sha256": null
+  }
+}

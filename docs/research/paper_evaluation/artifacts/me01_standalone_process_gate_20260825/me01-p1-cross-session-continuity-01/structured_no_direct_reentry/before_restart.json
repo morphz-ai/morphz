@@ -1,0 +1,24 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-cross-session-continuity-01",
+  "arm": "structured_no_direct_reentry",
+  "phase": "before_restart",
+  "process_id": 52914,
+  "database_path": "/private/tmp/morphz-me01-standalone-20260825-r2/ME-01-standalone-process-gate-20260825T034133.078Z-52861/me01-p1-cross-session-continuity-01/structured_no_direct_reentry/morphz.db",
+  "context_ids": [
+    "me01-me01-p1-cross-session-continuity-01-context-primary"
+  ],
+  "session_mounts": {
+    "me01-me01-p1-cross-session-continuity-01-session-a": "me01-me01-p1-cross-session-continuity-01-context-primary",
+    "me01-me01-p1-cross-session-continuity-01-session-b": "me01-me01-p1-cross-session-continuity-01-context-primary"
+  },
+  "fake_provider_calls": 2,
+  "context_tx_tool_seen_by_provider": false,
+  "context_tx_attempts": 0,
+  "context_tx_commits": 0,
+  "committed_frame_visible_in_act_request": false,
+  "committed_frame_visible_in_primary_context": false,
+  "foreign_value_absent_from_primary_context": true,
+  "structured_context_snapshot_sha256": "a90d57e52f134e430fc5f3d5199552fd5495a6a3eae1e6b9f696a28e07892f78",
+  "final_response": ""
+}

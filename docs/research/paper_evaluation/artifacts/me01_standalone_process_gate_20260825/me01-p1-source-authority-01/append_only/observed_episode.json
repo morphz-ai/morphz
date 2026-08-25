@@ -1,0 +1,21 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-source-authority-01",
+  "arm": "append_only",
+  "visible_input_sha256": "a954962ab61ee512650871d79fcc70435fe283fd35faa1e2410cbdcfa6b6e39a",
+  "final_response": "{\"action\":\"set_retention_tier\",\"object_id\":\"audit-export\",\"value\":\"R-45\",\"evidence_id\":\"ev-sa-001\"}",
+  "runtime": {
+    "adapter_kind": "append_only_messages",
+    "production_morphz_runtime": false,
+    "database_path": null,
+    "context_ids": [],
+    "session_mounts": {},
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": null,
+    "message_transcript_sha256": "9a7ddb76d40f923822449036a452acce778e9106d6afb0301350812bc0e111a1"
+  }
+}

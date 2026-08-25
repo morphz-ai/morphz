@@ -1,0 +1,21 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "arm": "append_only",
+  "visible_input_sha256": "de81d30980ffb0b4779d3c4437b4e0e54074ef793d79aef1f2188aedcf4b3ac0",
+  "final_response": "{\"action\":\"route_webhook\",\"object_id\":\"billing-webhook\",\"value\":\"/hooks/v3\",\"evidence_id\":\"ev-sc-003\"}",
+  "runtime": {
+    "adapter_kind": "append_only_messages",
+    "production_morphz_runtime": false,
+    "database_path": null,
+    "context_ids": [],
+    "session_mounts": {},
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": null,
+    "message_transcript_sha256": "84e3e22bd0d78f52c428a389890582f5c6715450472fddd1624062f941f7b5be"
+  }
+}

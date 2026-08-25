@@ -1,0 +1,12 @@
+{
+  "arm": "full_morphz",
+  "database_path": "/private/tmp/morphz-me01-20260825/ME-01-embedded-runtime-gate-20260825T032957.382Z-51675/full_morphz/morphz.db",
+  "fake_provider_calls": 4,
+  "context_tx_tool_seen_by_provider": true,
+  "context_tx_attempts": 1,
+  "context_tx_commits": 1,
+  "committed_frame_visible_in_act_request": true,
+  "committed_frame_visible_in_final_context": true,
+  "final_response": "{\"action\":\"apply_deployment_channel\",\"object_id\":\"service-orion\",\"value\":\"blue-17\",\"evidence_id\":\"ev-dr-001\"}",
+  "passed": true
+}

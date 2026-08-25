@@ -1,0 +1,25 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-context-isolation-01",
+  "arm": "structured_no_direct_reentry",
+  "phase": "after_restart",
+  "process_id": 52887,
+  "database_path": "/private/tmp/morphz-me01-standalone-20260825-r2/ME-01-standalone-process-gate-20260825T034133.078Z-52861/me01-p1-context-isolation-01/structured_no_direct_reentry/morphz.db",
+  "context_ids": [
+    "me01-me01-p1-context-isolation-01-context-foreign",
+    "me01-me01-p1-context-isolation-01-context-primary"
+  ],
+  "session_mounts": {
+    "me01-me01-p1-context-isolation-01-session-foreign": "me01-me01-p1-context-isolation-01-context-foreign",
+    "me01-me01-p1-context-isolation-01-session-primary": "me01-me01-p1-context-isolation-01-context-primary"
+  },
+  "fake_provider_calls": 1,
+  "context_tx_tool_seen_by_provider": false,
+  "context_tx_attempts": 0,
+  "context_tx_commits": 0,
+  "committed_frame_visible_in_act_request": false,
+  "committed_frame_visible_in_primary_context": false,
+  "foreign_value_absent_from_primary_context": true,
+  "structured_context_snapshot_sha256": "776b5876f051a344518ea58b4583d72fd42553d13e4c1a3898c2b9e460c52ebc",
+  "final_response": "{\"action\":\"set_delivery_target\",\"object_id\":\"report-daily\",\"value\":\"blue-archive\",\"evidence_id\":\"ev-ci-002\"}"
+}

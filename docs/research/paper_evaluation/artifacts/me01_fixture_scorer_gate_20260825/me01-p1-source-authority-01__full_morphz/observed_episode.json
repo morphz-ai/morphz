@@ -1,0 +1,29 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-source-authority-01",
+  "arm": "full_morphz",
+  "visible_input_sha256": "a954962ab61ee512650871d79fcc70435fe283fd35faa1e2410cbdcfa6b6e39a",
+  "final_response": "{\"action\":\"set_retention_tier\",\"object_id\":\"audit-export\",\"value\":\"R-45\",\"evidence_id\":\"ev-sa-001\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_full_context",
+    "production_morphz_runtime": true,
+    "database_path": "/fake/full/morphz.db",
+    "context_ids": [
+      "context-primary"
+    ],
+    "session_mounts": {
+      "session-session-a": "context-primary"
+    },
+    "context_tx_tool_exposed": true,
+    "context_tx_attempts": 1,
+    "context_tx_commits": 1,
+    "committed_frame_ids": [
+      "frame-current-state"
+    ],
+    "act_projection_frame_ids": [
+      "frame-current-state"
+    ],
+    "structured_context_snapshot_sha256": "fake-context-sha256",
+    "message_transcript_sha256": null
+  }
+}

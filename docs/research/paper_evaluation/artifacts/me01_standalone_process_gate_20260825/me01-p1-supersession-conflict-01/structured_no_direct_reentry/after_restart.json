@@ -1,0 +1,23 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-supersession-conflict-01",
+  "arm": "structured_no_direct_reentry",
+  "phase": "after_restart",
+  "process_id": 53031,
+  "database_path": "/private/tmp/morphz-me01-standalone-20260825-r2/ME-01-standalone-process-gate-20260825T034133.078Z-52861/me01-p1-supersession-conflict-01/structured_no_direct_reentry/morphz.db",
+  "context_ids": [
+    "me01-me01-p1-supersession-conflict-01-context-primary"
+  ],
+  "session_mounts": {
+    "me01-me01-p1-supersession-conflict-01-session-a": "me01-me01-p1-supersession-conflict-01-context-primary"
+  },
+  "fake_provider_calls": 1,
+  "context_tx_tool_seen_by_provider": false,
+  "context_tx_attempts": 0,
+  "context_tx_commits": 0,
+  "committed_frame_visible_in_act_request": false,
+  "committed_frame_visible_in_primary_context": false,
+  "foreign_value_absent_from_primary_context": true,
+  "structured_context_snapshot_sha256": "b351817cd20d6f6785f3c28f4759ce599f699aa719fb721e3fb45b55ab551d4d",
+  "final_response": "{\"action\":\"route_webhook\",\"object_id\":\"billing-webhook\",\"value\":\"/hooks/v3\",\"evidence_id\":\"ev-sc-003\"}"
+}

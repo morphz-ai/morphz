@@ -1,0 +1,27 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-context-isolation-01",
+  "arm": "structured_no_direct_reentry",
+  "visible_input_sha256": "d0aa027520dda042a509675f81c1d344df3b68198b9a9f462fdc411f37741485",
+  "final_response": "{\"action\":\"set_delivery_target\",\"object_id\":\"report-daily\",\"value\":\"blue-archive\",\"evidence_id\":\"ev-ci-002\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_read_only_context",
+    "production_morphz_runtime": true,
+    "database_path": "/fake/read-only/morphz.db",
+    "context_ids": [
+      "context-foreign",
+      "context-primary"
+    ],
+    "session_mounts": {
+      "session-session-foreign": "context-foreign",
+      "session-session-primary": "context-primary"
+    },
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": "fake-context-sha256",
+    "message_transcript_sha256": null
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "protocol_id": "me01-context-reentry-p1-candidate",
+  "fixture_id": "me01-p1-source-authority-01",
+  "arm": "structured_no_direct_reentry",
+  "phase": "after_restart",
+  "process_id": 52995,
+  "database_path": "/private/tmp/morphz-me01-standalone-20260825-r2/ME-01-standalone-process-gate-20260825T034133.078Z-52861/me01-p1-source-authority-01/structured_no_direct_reentry/morphz.db",
+  "context_ids": [
+    "me01-me01-p1-source-authority-01-context-primary"
+  ],
+  "session_mounts": {
+    "me01-me01-p1-source-authority-01-session-a": "me01-me01-p1-source-authority-01-context-primary"
+  },
+  "fake_provider_calls": 1,
+  "context_tx_tool_seen_by_provider": false,
+  "context_tx_attempts": 0,
+  "context_tx_commits": 0,
+  "committed_frame_visible_in_act_request": false,
+  "committed_frame_visible_in_primary_context": false,
+  "foreign_value_absent_from_primary_context": false,
+  "structured_context_snapshot_sha256": "7602771b3ee1749e183218726433af5a3e24fbf1c634b07dd16c06125a1494af",
+  "final_response": "{\"action\":\"set_retention_tier\",\"object_id\":\"audit-export\",\"value\":\"R-45\",\"evidence_id\":\"ev-sa-001\"}"
+}
