@@ -1,6 +1,6 @@
 # ME-07：LongMemEval-V2 Small 外部记忆验证协议 v1
 
-> 状态：`frozen / adapter-gate`
+> 状态：`frozen / real-smoke-passed / full-run-authorized`
 >
 > 日期：2026-08-26（Asia/Shanghai）
 >
@@ -68,3 +68,6 @@ question image 与 judge 二元输出预检均通过。`gpt-5.6-sol` 的 Chat Co
 - query latency、reader Token、memory-context Token 和 Context Frame 数量单列；
 - 模型、adapter、service、harness、data 和 scorer 失败分开分类，所有失败保留原始产物；
 - 先做每个 domain 各 1 题无模型/真实 reader smoke；通过后仍使用同一冻结协议完成全量。
+
+2026-08-26 的四 cell 真实 smoke 已通过运行完整性 Gate，结果见
+`me_07_real_smoke_report_20260826.md`。Smoke 分数只用于确认路径可运行，不作为论文主结果。
