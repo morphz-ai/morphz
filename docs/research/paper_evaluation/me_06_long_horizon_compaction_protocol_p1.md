@@ -1,13 +1,15 @@
 # ME-06 长程 Structured Context 与受控 Compaction 对照协议 p1
 
-> 状态：`candidate-phase-a-gate-passed`。本文只冻结候选研究设计，不授权真实模型运行。
+> 状态：`frozen-p1 / real-run-authorized`。协议、数据、模型、预算和两臂边界已经冻结；真实
+> paired Pilot 已获用户授权。
 >
 > 日期：2026-08-26（Asia/Shanghai）
 >
 > 关联研究问题：RQ6
 >
-> 当前门槛：两臂设计和 120-event 事件流的第一阶段无模型 Gate 已通过；在两套真实模型
-> adapter、精确 Token 预算和产物重放 Gate 完成前，不得运行真实 smoke。
+> 当前门槛：两臂设计、120-event 事件流、隐藏评分器、真实模型 adapter、生产二进制适配器、
+> 精确请求前 Token 测量和产物重放合同均已实现并通过无模型 Gate。按第一 paired cell 作为
+> smoke Gate；若未修改协议，其原始结果直接保留为三 fixture Pilot 的第一 cell。
 
 ## 1. 实验要回答什么
 
@@ -134,7 +136,7 @@ Morphz 与官方 Codex 的同环境产品比较归入 ME-07 公开 Benchmark。�
 
 ## 7. 活动输入与维护预算候选
 
-以下数值只是 p1 候选，用户确认后才冻结：
+以下数值已经冻结：
 
 | 字段 | Candidate |
 | --- | ---: |
@@ -241,22 +243,22 @@ p1 候选固定：
 
 真实模型 smoke 前必须完成并通过：
 
-- [ ] 冻结 120-event fixture 生成器、3 个独立 fixture 和 hidden expected hash；
-- [ ] 两组看到相同原始事件、来源、Session、顺序和任务指令；
-- [ ] compaction baseline 真正持久化 summary revision，并能重启及跨 Session 读取；
-- [ ] compaction baseline 的 recall 与 Morphz recall 具有相同查询和预算边界；
-- [ ] full Morphz 使用生产二进制、真实 SQLite 和真实 Context 事务链；
-- [ ] 独立进程重启 Gate，禁止 prompt 状态复制；
-- [ ] 并发调度、CAS 冲突、Frame 级重放和静默丢更新负例通过；
-- [ ] scorer 能区分语义正确、格式错误、陈旧值、来源错误、污染和缺失输出；
-- [ ] 从不可变原始产物重评分逐字节一致；
-- [ ] planner 给出每 fixture/arm 的请求数和 Token 上界；
-- [ ] 精确模型、reasoning、fallback、数据库隔离和本地节点预检通过；
-- [ ] Cargo 目标测试、Clippy `-D warnings` 和 `git diff --check` 通过。
+- [x] 冻结 120-event fixture 生成器、3 个独立 fixture 和 hidden expected hash；
+- [x] 两组看到相同原始事件、来源、Session、顺序和任务指令；
+- [x] compaction baseline 真正持久化 summary revision，并能重启及跨 Session 读取；
+- [x] compaction baseline 的 recall 与 Morphz recall 具有相同查询和预算边界；
+- [x] full Morphz 使用生产二进制、真实 SQLite 和真实 Context 事务链；
+- [x] 独立进程重启 Gate，禁止 prompt 状态复制；
+- [x] 并发调度、CAS 冲突、Frame 级重放和静默丢更新负例通过；
+- [x] scorer 能区分语义正确、格式错误、陈旧值、来源错误、污染和缺失输出；
+- [x] 从不可变原始产物重评分逐字节一致；
+- [x] planner 给出每 fixture/arm 的请求数和 Token 上界；
+- [x] 精确模型、reasoning、fallback、数据库隔离和本地节点预检通过；
+- [x] Cargo 目标测试、Clippy `-D warnings` 和 `git diff --check` 通过。
 
-## 13. 用户确认项
+## 13. 冻结决策记录
 
-在实现 runner 前需要确认：
+用户已确认：
 
 1. 接受 `controlled_compaction` 与 `full_morphz` 作为仅有的两组机制对照；Codex 只进入
    ME-07 公开 Benchmark；
@@ -265,4 +267,6 @@ p1 候选固定：
 4. 接受语义结果为主，格式合规率单列；
 5. 接受 p1 先做 1 个两臂 paired smoke，再做 3 个两臂 paired fixtures；
 6. 接受 Sol-only 主比较，模型切换作为后续扩展；
-7. 确认 12,000/10,000/3,000 Token 候选预算，或在无模型 planner 后再调整。
+7. 冻结 12,000/10,000/3,000 Token 预算；真实调用保存请求前测量与 Provider usage；
+8. paired cell 内部并发只用于协议明确要求的 S8/S9 多 Session 冲突场景，批次并发保持 1，
+   不把调度吞吐变化引入论文结果。

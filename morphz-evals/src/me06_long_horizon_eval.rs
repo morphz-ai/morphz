@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const ME06_PROTOCOL_ID: &str = "me06-long-horizon-compaction-p1-candidate";
+pub const ME06_PROTOCOL_ID: &str = "me06-long-horizon-compaction-p1-frozen";
 pub const ME06_EVENT_COUNT: usize = 120;
 pub const ME06_CHECKPOINT_COUNT: usize = 12;
 
