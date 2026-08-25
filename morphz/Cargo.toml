@@ -5,6 +5,10 @@ edition = "2021"
 rust-version.workspace = true
 default-run = "morphz"
 
+[features]
+default = []
+experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
+
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
@@ -51,6 +55,7 @@ clap = "4.5"
 clap_complete = "4.5"
 tempfile = "3.8"
 yao-lang = { path = "../yao" }
+morphz-cognitive-coordination = { path = "../experiments/morphz-cognitive-coordination", optional = true, default-features = false }
 
 [lints]
 workspace = true

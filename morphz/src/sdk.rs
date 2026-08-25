@@ -28,19 +28,21 @@ use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
 pub use crate::memory::MessageDispatchMode;
 use crate::memory::{
     ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream,
-    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionNodeMutation,
-    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetAuthorizationScope, ExecutionTargetFilter, ExecutionTargetKind,
-    ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
-    ExecutionTargetStatus, NewCognitiveContext, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewSession, ObjectiveRecord,
-    PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate, ThreadControlAction,
-    ThreadMutation,
+    CapabilityLeaseRecord, CognitiveContextRecord, ContextCapabilityBindingRecord, ContextUpdate,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
+    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, NewCognitiveContext,
+    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective,
+    NewSession, ObjectiveRecord, PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
+    ThreadControlAction, ThreadMutation,
 };
-use crate::orchestrator::context::{ContextTokenBudget, MindProjectionAudit};
+use crate::orchestrator::context::{
+    ContextCommit, ContextTokenBudget, ContextView, MindProjectionAudit,
+};
 use crate::provider::auth::{
     OAuthAccountMetadata, OAuthLoginChallenge, OAuthLoginCompletion, OAuthLoginProgress,
     ProviderSubscriptionUsage,
@@ -52,11 +54,11 @@ use crate::provider::control::{
 use crate::provider::routing::EffectiveProviderCatalog;
 use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, AttentionAcknowledgementsPage,
-    ContextOverview, ContextOverviewQuery, ContextTokenBudgetUpdate, DialogueTurnRetryReceipt,
-    EventHistoryPage, EventHistoryQuery, MessageIngressError, MessageIngressErrorKind,
-    MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime, RuntimeEventStream,
-    RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
-    SessionMessageOptions, ThreadDetail,
+    ContextCapabilityBindingUpdate, ContextOverview, ContextOverviewQuery,
+    ContextTokenBudgetUpdate, DialogueTurnRetryReceipt, EventHistoryPage, EventHistoryQuery,
+    MessageIngressError, MessageIngressErrorKind, MessageReceipt, ModelUsagePage, ModelUsageQuery,
+    MorphzRuntime, RuntimeEventStream, RuntimeOverview, RuntimeOverviewQuery, RuntimeStatus,
+    SchedulerQuery, SchedulerSnapshot, SessionMessageOptions, ThreadDetail,
 };
 use crate::trajectory::{
     derive_training_episode, verify_bundle, verify_training_episode, AgentTrajectoryExporter,
@@ -333,6 +335,10 @@ pub struct SendMessageCommand {
     /// this message. It does not mutate the Session default.
     #[serde(default)]
     pub model_alias: Option<String>,
+    /// Optional one-shot reasoning level for this Evaluation. It does not
+    /// mutate the Session default and is validated against the selected route.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2053,6 +2059,42 @@ impl MorphzSdk {
             .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
     }
 
+    /// Compiles the same bounded Context Projection used by an Evaluation.
+    /// Network adapters must authorize both Context and Session before calling
+    /// this trusted-host administrative surface.
+    pub async fn context_projection_as_operator(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> SdkResult<ContextView> {
+        self.runtime
+            .context_projection(context_id, session_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    /// Applies one ordinary version-fenced Context transaction through the
+    /// Runtime's sole state boundary. This method does not grant Union or
+    /// quorum semantics; applications must validate their own authority before
+    /// invoking it.
+    pub async fn apply_context_transaction_as_operator(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        transaction: &str,
+        transaction_id: &str,
+    ) -> SdkResult<ContextCommit> {
+        self.runtime
+            .apply_context_transaction_strict_with_id(
+                context_id,
+                session_id,
+                transaction,
+                transaction_id,
+            )
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
+    }
+
     /// Installs one validated, versioned Harness package through the shared
     /// application boundary used by CLI and future HTTP/embedded adapters.
     pub async fn install_harness_package(
@@ -2255,6 +2297,35 @@ impl MorphzSdk {
     ) -> SdkResult<ContextTokenBudgetUpdate> {
         self.runtime
             .update_context_token_budget(context_id, requested_hard_token_limit, expected_revision)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+    ) -> SdkResult<Option<ContextCapabilityBindingRecord>> {
+        self.runtime
+            .context_capability_binding(context_id, capability_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn update_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+        enabled: bool,
+        expected_revision: u64,
+    ) -> SdkResult<ContextCapabilityBindingUpdate> {
+        self.runtime
+            .update_context_capability_binding(
+                context_id,
+                capability_id,
+                enabled,
+                expected_revision,
+            )
             .await
             .map_err(SdkError::internal)
     }
@@ -3489,6 +3560,7 @@ impl MorphzSdk {
                     references: command.references,
                     dispatch_mode: command.dispatch_mode,
                     model_alias: command.model_alias,
+                    reasoning_effort: command.reasoning_effort,
                 },
             )
             .await
@@ -3867,6 +3939,7 @@ mod tests {
                     harness: None,
                     dispatch_mode: Some(MessageDispatchMode::Parallel),
                     model_alias: None,
+                    reasoning_effort: None,
                 },
             )
             .await
@@ -3928,6 +4001,7 @@ mod tests {
                     harness: None,
                     dispatch_mode: None,
                     model_alias: None,
+                    reasoning_effort: None,
                 },
             )
             .await
@@ -3961,6 +4035,7 @@ mod tests {
                     harness: None,
                     dispatch_mode: None,
                     model_alias: None,
+                    reasoning_effort: None,
                 },
             )
             .await

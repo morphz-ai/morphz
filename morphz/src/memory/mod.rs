@@ -565,6 +565,25 @@ pub enum ContextTokenBudgetMutation {
     NotFound,
 }
 
+/// Operator-owned binding of one optional Runtime capability to a Cognitive
+/// Context. Capability bindings are control-plane state: they do not become
+/// Mind Frames and are projected into model input only while enabled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCapabilityBindingRecord {
+    pub context_id: String,
+    pub capability_id: String,
+    pub enabled: bool,
+    pub revision: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ContextCapabilityBindingMutation {
+    Updated(ContextCapabilityBindingRecord),
+    Conflict(ContextCapabilityBindingRecord),
+    NotFound,
+}
+
 /// Rebuildable online materialization of one Cognitive Context's current Mind.
 ///
 /// The persistence layer deliberately treats `state` as opaque canonical JSON:
@@ -7318,6 +7337,31 @@ pub trait StorageMaintenanceStore: Send + Sync {
     ) -> Result<StorageMaintenanceReport, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Durable Context-scoped optional capability bindings. This is deliberately
+/// separate from Session routing metadata and from the Agent-owned Mind.
+#[async_trait::async_trait]
+pub trait ContextCapabilityBindingStore: Send + Sync {
+    async fn list_context_capability_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ContextCapabilityBindingRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+    ) -> Result<Option<ContextCapabilityBindingRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Compare-and-swap one binding. A missing binding has revision zero.
+    async fn update_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+        enabled: bool,
+        expected_revision: u64,
+    ) -> Result<ContextCapabilityBindingMutation, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Complete durable authority required by one Morphz Runtime worker.
 ///
 /// This capability composition keeps Runtime assembly independent from a
@@ -7344,6 +7388,7 @@ pub trait RuntimeStore:
     + ProviderAccountStateStore
     + ProviderModelCatalogStore
     + StorageMaintenanceStore
+    + ContextCapabilityBindingStore
     + crate::scheduler::SchedulerDependencyStore
     + Send
     + Sync

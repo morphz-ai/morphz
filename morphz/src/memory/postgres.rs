@@ -10,19 +10,20 @@
 use crate::event::Event;
 use crate::memory::{
     causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
-    ContextCognitiveClock, ContextEncodingProjectionSnapshot, EventAppend, EventStore,
-    MindProjectionCommit, MindProjectionHead, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, NewThread,
-    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord,
-    ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
-    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
-    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, StorageMaintenanceReport,
-    StorageMaintenanceStore, TimerStore, TransientStorageRetention,
+    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
+    ContextCapabilityBindingStore, ContextCognitiveClock, ContextEncodingProjectionSnapshot,
+    EventAppend, EventStore, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
+    MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer,
+    NewThread, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts,
+    ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, ProviderAccountAffinityRecord, ProviderAccountStateMutation,
+    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
+    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord,
+    ProviderRouteAccountStateRecord, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore,
+    StorageMaintenanceReport, StorageMaintenanceStore, TimerStore, TransientStorageRetention,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -558,6 +559,14 @@ impl PostgresStore {
                 token_budget_revision BIGINT NOT NULL DEFAULT 0
                     CONSTRAINT cognitive_contexts_token_budget_revision_nonnegative
                     CHECK(token_budget_revision >= 0)
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS context_capability_bindings (
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                capability_id TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                revision BIGINT NOT NULL CHECK(revision >= 1),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(context_id, capability_id)
             )"#,
             r#"CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -2304,6 +2313,122 @@ impl ProviderAccountStateStore for PostgresStore {
 impl crate::memory::RuntimeStore for PostgresStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
         crate::memory::WorkerCoordinationMode::SharedLeases
+    }
+}
+
+fn context_capability_binding_from_pg_row(
+    row: &PgRow,
+) -> Result<ContextCapabilityBindingRecord, StoreError> {
+    Ok(ContextCapabilityBindingRecord {
+        context_id: row.get("context_id"),
+        capability_id: row.get("capability_id"),
+        enabled: row.get("enabled"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        updated_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?
+            .with_timezone(&Utc),
+    })
+}
+
+#[async_trait::async_trait]
+impl ContextCapabilityBindingStore for PostgresStore {
+    async fn list_context_capability_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ContextCapabilityBindingRecord>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT context_id, capability_id, enabled, revision, updated_at \
+             FROM context_capability_bindings WHERE context_id = $1 ORDER BY capability_id",
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(context_capability_binding_from_pg_row)
+            .collect()
+    }
+
+    async fn get_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+    ) -> Result<Option<ContextCapabilityBindingRecord>, StoreError> {
+        let row = sqlx::query(
+            "SELECT context_id, capability_id, enabled, revision, updated_at \
+             FROM context_capability_bindings WHERE context_id = $1 AND capability_id = $2",
+        )
+        .bind(context_id)
+        .bind(capability_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref()
+            .map(context_capability_binding_from_pg_row)
+            .transpose()
+    }
+
+    async fn update_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+        enabled: bool,
+        expected_revision: u64,
+    ) -> Result<ContextCapabilityBindingMutation, StoreError> {
+        if capability_id.trim().is_empty() {
+            return Err("capability_id must not be empty".into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let changed = if expected_revision == 0 {
+            sqlx::query(
+                "INSERT INTO context_capability_bindings \
+                 (context_id, capability_id, enabled, revision, updated_at) \
+                 SELECT $1, $2, $3, 1, $4 WHERE EXISTS \
+                 (SELECT 1 FROM cognitive_contexts WHERE id = $1) \
+                 ON CONFLICT(context_id, capability_id) DO NOTHING \
+                 RETURNING context_id, capability_id, enabled, revision, updated_at",
+            )
+            .bind(context_id)
+            .bind(capability_id)
+            .bind(enabled)
+            .bind(&now)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE context_capability_bindings SET enabled = $1, revision = revision + 1, updated_at = $2 \
+                 WHERE context_id = $3 AND capability_id = $4 AND revision = $5 \
+                 RETURNING context_id, capability_id, enabled, revision, updated_at",
+            )
+            .bind(enabled)
+            .bind(&now)
+            .bind(context_id)
+            .bind(capability_id)
+            .bind(i64::try_from(expected_revision)?)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        if let Some(row) = changed.as_ref() {
+            return Ok(ContextCapabilityBindingMutation::Updated(
+                context_capability_binding_from_pg_row(row)?,
+            ));
+        }
+        if let Some(current) = self
+            .get_context_capability_binding(context_id, capability_id)
+            .await?
+        {
+            return Ok(ContextCapabilityBindingMutation::Conflict(current));
+        }
+        let context_exists =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM cognitive_contexts WHERE id = $1")
+                .bind(context_id)
+                .fetch_one(&self.pool)
+                .await?
+                > 0;
+        if context_exists {
+            return Err(format!(
+                "Context capability binding revision conflict: expected {expected_revision}, current 0"
+            )
+            .into());
+        }
+        Ok(ContextCapabilityBindingMutation::NotFound)
     }
 }
 

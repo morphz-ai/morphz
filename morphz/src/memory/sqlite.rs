@@ -14,7 +14,8 @@ use crate::memory::{
     ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    CognitiveClockStore, CognitiveContextRecord, ContextCapabilityBindingMutation,
+    ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
     ContextEncodingProjectionSnapshot, ContextSessionCount, ContextTokenBudgetMutation,
     ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
     DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
@@ -491,6 +492,16 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_contexts_agent_updated
             ON cognitive_contexts(agent_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS context_capability_bindings (
+            context_id TEXT NOT NULL,
+            capability_id TEXT NOT NULL,
+            enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(context_id, capability_id),
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE
+        );
 
         CREATE TABLE IF NOT EXISTS context_cognitive_clocks (
             context_id TEXT PRIMARY KEY,
@@ -3660,6 +3671,124 @@ impl ProviderAccountStateStore for SqliteStore {
 impl crate::memory::RuntimeStore for SqliteStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
         crate::memory::WorkerCoordinationMode::SharedHostLeases
+    }
+}
+
+fn context_capability_binding_from_sqlite_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ContextCapabilityBindingRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ContextCapabilityBindingRecord {
+        context_id: row.get("context_id"),
+        capability_id: row.get("capability_id"),
+        enabled: row.get::<i64, _>("enabled") != 0,
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        updated_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?
+            .with_timezone(&Utc),
+    })
+}
+
+#[async_trait::async_trait]
+impl ContextCapabilityBindingStore for SqliteStore {
+    async fn list_context_capability_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ContextCapabilityBindingRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            "SELECT context_id, capability_id, enabled, revision, updated_at \
+             FROM context_capability_bindings WHERE context_id = ? ORDER BY capability_id",
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(context_capability_binding_from_sqlite_row)
+            .collect()
+    }
+
+    async fn get_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+    ) -> Result<Option<ContextCapabilityBindingRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let row = sqlx::query(
+            "SELECT context_id, capability_id, enabled, revision, updated_at \
+             FROM context_capability_bindings WHERE context_id = ? AND capability_id = ?",
+        )
+        .bind(context_id)
+        .bind(capability_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref()
+            .map(context_capability_binding_from_sqlite_row)
+            .transpose()
+    }
+
+    async fn update_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+        enabled: bool,
+        expected_revision: u64,
+    ) -> Result<ContextCapabilityBindingMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if capability_id.trim().is_empty() {
+            return Err("capability_id must not be empty".into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let changed = if expected_revision == 0 {
+            sqlx::query(
+                "INSERT INTO context_capability_bindings \
+                 (context_id, capability_id, enabled, revision, updated_at) \
+                 SELECT ?, ?, ?, 1, ? WHERE EXISTS \
+                 (SELECT 1 FROM cognitive_contexts WHERE id = ?) \
+                 ON CONFLICT(context_id, capability_id) DO NOTHING \
+                 RETURNING context_id, capability_id, enabled, revision, updated_at",
+            )
+            .bind(context_id)
+            .bind(capability_id)
+            .bind(if enabled { 1_i64 } else { 0_i64 })
+            .bind(&now)
+            .bind(context_id)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE context_capability_bindings SET enabled = ?, revision = revision + 1, updated_at = ? \
+                 WHERE context_id = ? AND capability_id = ? AND revision = ? \
+                 RETURNING context_id, capability_id, enabled, revision, updated_at",
+            )
+            .bind(if enabled { 1_i64 } else { 0_i64 })
+            .bind(&now)
+            .bind(context_id)
+            .bind(capability_id)
+            .bind(i64::try_from(expected_revision)?)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        if let Some(row) = changed.as_ref() {
+            return Ok(ContextCapabilityBindingMutation::Updated(
+                context_capability_binding_from_sqlite_row(row)?,
+            ));
+        }
+        if let Some(current) = self
+            .get_context_capability_binding(context_id, capability_id)
+            .await?
+        {
+            return Ok(ContextCapabilityBindingMutation::Conflict(current));
+        }
+        let context_exists =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM cognitive_contexts WHERE id = ?")
+                .bind(context_id)
+                .fetch_one(&self.pool)
+                .await?
+                > 0;
+        if context_exists {
+            return Err(format!(
+                "Context capability binding revision conflict: expected {expected_revision}, current 0"
+            )
+            .into());
+        }
+        Ok(ContextCapabilityBindingMutation::NotFound)
     }
 }
 
@@ -33458,6 +33587,82 @@ mod tests {
             .unwrap();
         assert_eq!(persisted.requested_hard_token_limit, None);
         assert_eq!(persisted.token_budget_revision, 2);
+    }
+
+    #[tokio::test]
+    async fn context_capability_binding_is_revision_checked_and_persistent() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_string_lossy().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "context-capability-cas".to_string(),
+                agent_id: "agent-main".to_string(),
+                title: "Capability CAS".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert!(store
+            .get_context_capability_binding("context-capability-cas", "cognitive-coordination",)
+            .await
+            .unwrap()
+            .is_none());
+
+        let created = store
+            .update_context_capability_binding(
+                "context-capability-cas",
+                "cognitive-coordination",
+                true,
+                0,
+            )
+            .await
+            .unwrap();
+        let ContextCapabilityBindingMutation::Updated(created) = created else {
+            panic!("expected a created capability binding");
+        };
+        assert!(created.enabled);
+        assert_eq!(created.revision, 1);
+
+        let stale = store
+            .update_context_capability_binding(
+                "context-capability-cas",
+                "cognitive-coordination",
+                false,
+                0,
+            )
+            .await
+            .unwrap();
+        let ContextCapabilityBindingMutation::Conflict(current) = stale else {
+            panic!("expected a capability revision conflict");
+        };
+        assert!(current.enabled);
+        assert_eq!(current.revision, 1);
+
+        let disabled = store
+            .update_context_capability_binding(
+                "context-capability-cas",
+                "cognitive-coordination",
+                false,
+                1,
+            )
+            .await
+            .unwrap();
+        let ContextCapabilityBindingMutation::Updated(disabled) = disabled else {
+            panic!("expected the capability binding to be disabled");
+        };
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.revision, 2);
+
+        drop(store);
+        let reopened = SqliteStore::new(&path).await.unwrap();
+        let persisted = reopened
+            .get_context_capability_binding("context-capability-cas", "cognitive-coordination")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!persisted.enabled);
+        assert_eq!(persisted.revision, 2);
     }
 
     #[tokio::test]

@@ -5412,6 +5412,7 @@ async fn submit_prompt(
                 harness,
                 dispatch_mode,
                 model_alias: None,
+                reasoning_effort: None,
             },
         )
         .await

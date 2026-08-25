@@ -47,7 +47,7 @@ use axum::{
 };
 use base64::Engine;
 use futures_util::StreamExt;
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -266,6 +266,12 @@ struct UpdateContextTokenBudgetRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct UpdateContextCapabilityBindingRequest {
+    enabled: bool,
+    expected_revision: u64,
+}
+
+#[derive(serde::Deserialize)]
 struct UpdateSessionRequest {
     title: Option<String>,
     status: Option<SessionStatus>,
@@ -290,6 +296,9 @@ struct SendMessageRequest {
     /// not change the Session's default model.
     #[serde(default)]
     model_alias: Option<String>,
+    /// Optional one-shot reasoning level for this message's Evaluation.
+    #[serde(default)]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1031,6 +1040,35 @@ impl Server {
             .route(
                 "/api/contexts/:context_id/token-budget",
                 get(handle_get_context_token_budget).patch(handle_update_context_token_budget),
+            )
+            .route(
+                "/api/contexts/:context_id/capabilities/:capability_id",
+                get(handle_get_context_capability_binding)
+                    .patch(handle_update_context_capability_binding),
+            )
+            .route(
+                "/api/experimental/cognitive-coordination/status",
+                get(handle_cognitive_coordination_status),
+            )
+            .route(
+                "/api/experimental/cognitive-coordination/identity",
+                get(handle_cognitive_coordination_identity),
+            )
+            .route(
+                "/api/experimental/cognitive-coordination/handshake",
+                post(handle_cognitive_coordination_handshake),
+            )
+            .route(
+                "/api/experimental/cognitive-coordination/projection",
+                post(handle_cognitive_coordination_projection),
+            )
+            .route(
+                "/api/experimental/cognitive-coordination/evaluate",
+                post(handle_cognitive_coordination_evaluate),
+            )
+            .route(
+                "/api/experimental/cognitive-coordination/cancel",
+                post(handle_cognitive_coordination_cancel),
             )
             .route(
                 "/api/execution-targets",
@@ -5308,6 +5346,613 @@ async fn handle_update_context_token_budget(
     }
 }
 
+async fn handle_get_context_capability_binding(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, capability_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let feature = match crate::experimental::feature(&capability_id) {
+        Ok(feature) => feature,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state.runtime.get_context(&context_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context does not exist"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+    let feature_status = match state.runtime.experimental_feature_statuses() {
+        Ok(statuses) => statuses
+            .into_iter()
+            .find(|status| status.name == feature.name),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    match state
+        .sdk
+        .context_capability_binding(&context_id, feature.name)
+        .await
+    {
+        Ok(binding) => Json(json!({
+            "context_id": context_id,
+            "capability_id": feature.name,
+            "enabled": binding.as_ref().is_some_and(|binding| binding.enabled),
+            "revision": binding.as_ref().map_or(0, |binding| binding.revision),
+            "updated_at": binding.as_ref().map(|binding| binding.updated_at),
+            "feature": feature_status,
+        }))
+        .into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_update_context_capability_binding(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, capability_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateContextCapabilityBindingRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let feature = match crate::experimental::feature(&capability_id) {
+        Ok(feature) => feature,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
+    match state
+        .sdk
+        .update_context_capability_binding(
+            &context_id,
+            feature.name,
+            request.enabled,
+            request.expected_revision,
+        )
+        .await
+    {
+        Ok(crate::runtime::ContextCapabilityBindingUpdate::Updated(binding)) => {
+            Json(json!({ "outcome": "updated", "binding": binding })).into_response()
+        }
+        Ok(crate::runtime::ContextCapabilityBindingUpdate::Conflict(binding)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "outcome": "conflict",
+                "error": "Context capability binding was updated by another writer",
+                "binding": binding,
+            })),
+        )
+            .into_response(),
+        Ok(crate::runtime::ContextCapabilityBindingUpdate::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Context does not exist")
+        }
+        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+async fn handle_cognitive_coordination_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    {
+        let Some(service) = state.runtime.cognitive_coordination_network() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Cognitive Coordination has no configured local participant",
+            );
+        };
+        let local = match build_cognitive_coordination_advertisement(&state, &service).await {
+            Ok(advertisement) => Some(advertisement),
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        let peers = service.refresh_peer_statuses().await;
+        Json(json!({
+            "available": true,
+            "local": local,
+            "active_assignments": service.active_assignment_count(),
+            "peers": peers,
+        }))
+        .into_response()
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        "Cognitive Coordination was not compiled into this Runtime",
+    )
+}
+
+async fn handle_cognitive_coordination_handshake(
+    State(state): State<Arc<AppState>>,
+    Json(value): Json<Value>,
+) -> Response {
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    let _ = (&state, &value);
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    {
+        use crate::experimental::cognitive_coordination_network::{
+            AuthenticatedEnvelope, HandshakeRequest,
+        };
+        let Some(service) = state.runtime.cognitive_coordination_network() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Cognitive Coordination participant is not configured",
+            );
+        };
+        let envelope: AuthenticatedEnvelope<HandshakeRequest> = match serde_json::from_value(value)
+        {
+            Ok(envelope) => envelope,
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+        if let Err(error) = service
+            .verify_incoming_handshake(&envelope, envelope.payload.sender_endpoint.as_deref())
+            .await
+        {
+            return error_response(StatusCode::UNAUTHORIZED, error.to_string());
+        }
+        let local_authority = match service.local_authority_id() {
+            Ok(authority) => authority,
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        if (envelope.payload.expected_authority_id != local_authority
+            && !(service.mesh_enabled() && envelope.payload.expected_authority_id.is_empty()))
+            || envelope.payload.protocol_version
+                != crate::experimental::cognitive_coordination::EXPERIMENT_SPEC_VERSION
+        {
+            return error_response(
+                StatusCode::CONFLICT,
+                "Cognitive Coordination target Authority or protocol version mismatch",
+            );
+        }
+        let advertisement = match build_cognitive_coordination_advertisement(&state, &service).await
+        {
+            Ok(advertisement) => advertisement,
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        return match service.sign_response_to(&envelope.authority_id, advertisement) {
+            Ok(response) => Json(response).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        "Cognitive Coordination was not compiled into this Runtime",
+    )
+}
+
+async fn handle_cognitive_coordination_identity(State(state): State<Arc<AppState>>) -> Response {
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    {
+        let Some(service) = state.runtime.cognitive_coordination_network() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Coordination Mesh is not configured",
+            );
+        };
+        return match service.identity_advertisement() {
+            Ok(advertisement) => Json(advertisement).into_response(),
+            Err(error) => error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
+        };
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    {
+        let _ = state;
+        error_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "Cognitive Coordination was not compiled into this Runtime",
+        )
+    }
+}
+
+async fn handle_cognitive_coordination_projection(
+    State(state): State<Arc<AppState>>,
+    Json(value): Json<Value>,
+) -> Response {
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    let _ = (&state, &value);
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    {
+        use crate::experimental::cognitive_coordination::stable_digest;
+        use crate::experimental::cognitive_coordination_network::{
+            AuthenticatedEnvelope, ProjectionRequest,
+        };
+        let Some(service) = state.runtime.cognitive_coordination_network() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "participant is not configured",
+            );
+        };
+        let envelope: AuthenticatedEnvelope<ProjectionRequest> = match serde_json::from_value(value)
+        {
+            Ok(envelope) => envelope,
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        };
+        if let Err(error) = service.verify_incoming(&envelope) {
+            return error_response(StatusCode::UNAUTHORIZED, error.to_string());
+        }
+        let participant = match service.participant_config() {
+            Ok(participant) => participant,
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        if envelope.payload.target_authority_id != participant.authority_id {
+            return error_response(StatusCode::CONFLICT, "projection target Authority mismatch");
+        }
+        let projection = match state
+            .sdk
+            .context_projection_as_operator(&participant.context_id, &participant.session_id)
+            .await
+        {
+            Ok(projection) => projection,
+            Err(error) => return sdk_error_response(error),
+        };
+        let digest = match stable_digest(&projection) {
+            Ok(digest) => digest,
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        };
+        let snapshot = crate::experimental::cognitive_coordination::ProjectionSnapshot {
+            context_id: participant.context_id.clone(),
+            session_id: participant.session_id.clone(),
+            context_version: projection.state.version,
+            digest,
+        };
+        return match service.sign_response_to(&envelope.authority_id, snapshot) {
+            Ok(response) => Json(response).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        "Cognitive Coordination was not compiled into this Runtime",
+    )
+}
+
+async fn handle_cognitive_coordination_evaluate(
+    State(state): State<Arc<AppState>>,
+    Json(value): Json<Value>,
+) -> Response {
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    let _ = (&state, &value);
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    {
+        use crate::experimental::cognitive_coordination::CognitiveEvaluationTransport as _;
+        use crate::experimental::cognitive_coordination_network::{
+            AuthenticatedEnvelope, RemoteEvaluationRequest, RemoteEvaluationResponse,
+        };
+        let Some(service) = state.runtime.cognitive_coordination_network() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "participant is not configured",
+            );
+        };
+        let envelope: AuthenticatedEnvelope<RemoteEvaluationRequest> =
+            match serde_json::from_value(value) {
+                Ok(envelope) => envelope,
+                Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+            };
+        if let Err(error) = service.verify_incoming(&envelope) {
+            return error_response(StatusCode::UNAUTHORIZED, error.to_string());
+        }
+        let sender_authority_id = envelope.authority_id.clone();
+        let participant = match service.participant_config() {
+            Ok(participant) => participant.clone(),
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        let mut assignment = envelope.payload.assignment;
+        if assignment.participant.authority_id != participant.authority_id
+            || assignment.participant.agent_id != participant.agent_id
+            || assignment.participant.context_id != participant.context_id
+            || assignment.participant.session_id != participant.session_id
+        {
+            return error_response(
+                StatusCode::CONFLICT,
+                "Evaluation Assignment does not match this participant's advertised identity",
+            );
+        }
+        let advertisement = match build_cognitive_coordination_advertisement(&state, &service).await
+        {
+            Ok(advertisement) => advertisement,
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        if let Err(error) = validate_remote_model_request(
+            &assignment.model,
+            &advertisement.participant.model_profiles,
+        ) {
+            return error_response(StatusCode::BAD_REQUEST, error);
+        }
+        let ephemeral_session_id = coordination_evaluation_session_id(&assignment.assignment_id);
+        if let Err(error) = state
+            .runtime
+            .ensure_session(NewSession {
+                id: ephemeral_session_id.clone(),
+                agent_id: participant.agent_id.clone(),
+                context_id: participant.context_id.clone(),
+                parent_session_id: Some(participant.session_id.clone()),
+                title: format!("Coordination {}", assignment.assignment_id),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+        {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
+        if let Err(error) = state
+            .sdk
+            .bind_existing_session(state.sdk.default_principal().clone(), &ephemeral_session_id)
+            .await
+        {
+            return sdk_error_response(error);
+        }
+        assignment.participant.session_id = ephemeral_session_id.clone();
+        assignment.projection.session_id = ephemeral_session_id.clone();
+        service.register_active_assignment(&assignment.assignment_id, &ephemeral_session_id);
+        let permit = match crate::experimental::require_enabled(
+            &state.runtime.config().experimental.enabled,
+            crate::experimental::COGNITIVE_COORDINATION,
+        ) {
+            Ok(permit) => permit,
+            Err(error) => {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        };
+        let transport =
+            crate::experimental::cognitive_coordination_sdk::SdkEvaluationTransport::new(
+                permit,
+                state.sdk.clone(),
+                state.sdk.default_principal().clone(),
+                service.request_timeout(),
+            );
+        let evaluated = transport.evaluate(&assignment).await;
+        service.finish_active_assignment(&assignment.assignment_id);
+        let draft = match evaluated {
+            Ok(draft) => draft,
+            Err(error) => {
+                let _ = state
+                    .runtime
+                    .cancel_session_durable(
+                        &ephemeral_session_id,
+                        "remote Cognitive Coordination Evaluation failed or timed out",
+                    )
+                    .await;
+                return error_response(StatusCode::BAD_GATEWAY, error.to_string());
+            }
+        };
+        let response = RemoteEvaluationResponse {
+            draft,
+            effective_model: assignment.model,
+        };
+        return match service.sign_response_to(&sender_authority_id, response) {
+            Ok(response) => Json(response).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        "Cognitive Coordination was not compiled into this Runtime",
+    )
+}
+
+async fn handle_cognitive_coordination_cancel(
+    State(state): State<Arc<AppState>>,
+    Json(value): Json<Value>,
+) -> Response {
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    let _ = (&state, &value);
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    {
+        use crate::experimental::cognitive_coordination_network::{
+            AuthenticatedEnvelope, CancelEvaluationRequest, CancelEvaluationResponse,
+        };
+        let Some(service) = state.runtime.cognitive_coordination_network() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "participant is not configured",
+            );
+        };
+        let envelope: AuthenticatedEnvelope<CancelEvaluationRequest> =
+            match serde_json::from_value(value) {
+                Ok(envelope) => envelope,
+                Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+            };
+        if let Err(error) = service.verify_incoming(&envelope) {
+            return error_response(StatusCode::UNAUTHORIZED, error.to_string());
+        }
+        let sender_authority_id = envelope.authority_id.clone();
+        if service.local_authority_id().ok() != Some(envelope.payload.target_authority_id.as_str())
+        {
+            return error_response(
+                StatusCode::CONFLICT,
+                "cancellation target Authority mismatch",
+            );
+        }
+        let cancelled = if let Some(session_id) =
+            service.active_assignment_session(&envelope.payload.assignment_id)
+        {
+            match state
+                .runtime
+                .cancel_session_durable(
+                    &session_id,
+                    "remote coordinator cancelled this Cognitive Evaluation",
+                )
+                .await
+            {
+                Ok(_) => true,
+                Err(error) => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                }
+            }
+        } else {
+            false
+        };
+        service.finish_active_assignment(&envelope.payload.assignment_id);
+        return match service.sign_response_to(
+            &sender_authority_id,
+            CancelEvaluationResponse {
+                assignment_id: envelope.payload.assignment_id,
+                cancelled,
+            },
+        ) {
+            Ok(response) => Json(response).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        "Cognitive Coordination was not compiled into this Runtime",
+    )
+}
+
+#[cfg(feature = "experimental-cognitive-coordination")]
+async fn build_cognitive_coordination_advertisement(
+    state: &AppState,
+    service: &crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService,
+) -> Result<
+    crate::experimental::cognitive_coordination_network::HandshakeAdvertisement,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    use crate::experimental::cognitive_coordination::{
+        ModelExecutionProfile, ParticipantDescriptor, EXPERIMENT_SPEC_VERSION,
+    };
+    let participant = service.participant_config()?;
+    let session = state
+        .runtime
+        .get_session(&participant.session_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "participant Session '{}' does not exist",
+                participant.session_id
+            )
+        })?;
+    if session.agent_id != participant.agent_id || session.context_id != participant.context_id {
+        return Err("configured participant Agent/Context/Session identity is inconsistent".into());
+    }
+    let effective_default = session
+        .model_alias
+        .clone()
+        .unwrap_or_else(|| state.runtime.model());
+    let mut allowed = participant.allowed_model_routes.clone();
+    allowed.insert(effective_default);
+    let max_output_tokens = state.runtime.config().llm.max_output_tokens.map(u64::from);
+    let model_profiles = state
+        .runtime
+        .inference_model_options()
+        .await?
+        .into_iter()
+        .filter(|option| allowed.contains(&option.id))
+        .map(|option| ModelExecutionProfile {
+            route: option.id,
+            label: option.label,
+            physical_models: option.physical_models,
+            supported_reasoning_efforts: option.supported_reasoning_efforts,
+            context_window: None,
+            max_output_tokens,
+        })
+        .collect();
+    let issued_at = chrono::Utc::now();
+    let expires_at =
+        issued_at + chrono::Duration::seconds(i64::try_from(service.config().handshake_ttl_secs)?);
+    Ok(
+        crate::experimental::cognitive_coordination_network::HandshakeAdvertisement {
+            protocol_version: EXPERIMENT_SPEC_VERSION.to_string(),
+            supported_operations: vec!["evaluate".to_string(), "cancel".to_string()],
+            participant: ParticipantDescriptor {
+                authority_id: participant.authority_id.clone(),
+                agent_id: participant.agent_id.clone(),
+                context_id: participant.context_id.clone(),
+                session_id: participant.session_id.clone(),
+                capabilities: participant.capabilities.clone(),
+                model_profiles,
+                default_model:
+                    crate::experimental::cognitive_coordination::EvaluationModelRequest {
+                        route: Some(
+                            session
+                                .model_alias
+                                .clone()
+                                .unwrap_or_else(|| state.runtime.model()),
+                        ),
+                        reasoning_effort: session.reasoning_effort.clone().or_else(|| {
+                            state
+                                .runtime
+                                .effective_reasoning_effort()
+                                .map(|effort| effort.as_str().to_string())
+                        }),
+                    },
+                max_token_budget: participant.max_token_budget,
+                priority: participant.priority,
+                enabled: true,
+            },
+            issued_at,
+            expires_at,
+        },
+    )
+}
+
+#[cfg(feature = "experimental-cognitive-coordination")]
+fn validate_remote_model_request(
+    request: &crate::experimental::cognitive_coordination::EvaluationModelRequest,
+    profiles: &[crate::experimental::cognitive_coordination::ModelExecutionProfile],
+) -> Result<(), String> {
+    if request.is_default() {
+        return Ok(());
+    }
+    let eligible = profiles
+        .iter()
+        .filter(|profile| {
+            request
+                .route
+                .as_deref()
+                .is_none_or(|route| profile.route == route)
+        })
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        return Err("requested model route is not advertised by this participant".to_string());
+    }
+    if let Some(effort) = request.reasoning_effort.as_deref() {
+        if !eligible.iter().any(|profile| {
+            profile
+                .supported_reasoning_efforts
+                .as_ref()
+                .is_some_and(|levels| levels.iter().any(|level| level == effort))
+        }) {
+            return Err(format!(
+                "reasoning effort '{effort}' is not advertised by the requested model route"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "experimental-cognitive-coordination")]
+fn coordination_evaluation_session_id(assignment_id: &str) -> String {
+    let digest = Sha256::digest(assignment_id.as_bytes());
+    format!(
+        "coord-eval-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest[..18])
+    )
+}
+
 async fn handle_create_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5755,6 +6400,7 @@ async fn handle_send_message(
                 harness: request.harness,
                 dispatch_mode: request.dispatch_mode,
                 model_alias: request.model_alias,
+                reasoning_effort: request.reasoning_effort,
             },
         )
         .await
@@ -8283,6 +8929,7 @@ mod tests {
                 harness: None,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             }),
         )
         .await
@@ -8531,6 +9178,7 @@ mod tests {
                 harness: None,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             }),
         )
         .await
@@ -10911,6 +11559,135 @@ account = "xai-account"
         assert_eq!(automatic_json["budget"]["token_budget_revision"], json!(2));
     }
 
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    #[tokio::test]
+    async fn context_cognitive_coordination_http_control_is_gated_and_revision_fenced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let mut config = AppConfig::default();
+        config.llm.provider = Some("fixture-provider".to_string());
+        config.llm.model = "fixture-model".to_string();
+        config.llm.models.push("fixture-model".to_string());
+        config.providers.insert(
+            "fixture-provider".to_string(),
+            crate::config::ProviderConfig {
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: "http://localhost:8317/v1".to_string(),
+                ..crate::config::ProviderConfig::default()
+            },
+        );
+        config
+            .experimental
+            .enabled
+            .insert(crate::experimental::COGNITIVE_COORDINATION.to_string());
+        let (state, runtime) =
+            test_state_at_with_config_auth_and_secrets(&database_path, true, config, None, None)
+                .await;
+
+        let initial = handle_get_context_capability_binding(
+            State(Arc::clone(&state)),
+            Path((
+                "context-test".to_string(),
+                crate::experimental::COGNITIVE_COORDINATION.to_string(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial_body = axum::body::to_bytes(initial.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let initial_json: serde_json::Value = serde_json::from_slice(&initial_body).unwrap();
+        assert_eq!(initial_json["enabled"], json!(false));
+        assert_eq!(initial_json["revision"], json!(0));
+        assert_eq!(initial_json["feature"]["available"], json!(true));
+
+        let enabled = handle_update_context_capability_binding(
+            State(Arc::clone(&state)),
+            Path((
+                "context-test".to_string(),
+                crate::experimental::COGNITIVE_COORDINATION.to_string(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextCapabilityBindingRequest {
+                enabled: true,
+                expected_revision: 0,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(enabled.status(), StatusCode::OK);
+        let enabled_body = axum::body::to_bytes(enabled.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let enabled_json: serde_json::Value = serde_json::from_slice(&enabled_body).unwrap();
+        assert_eq!(enabled_json["binding"]["enabled"], json!(true));
+        assert_eq!(enabled_json["binding"]["revision"], json!(1));
+
+        let session = runtime
+            .create_session(crate::memory::NewSession {
+                id: "coordination-context-session".to_string(),
+                agent_id: "agent-test".to_string(),
+                context_id: "context-test".to_string(),
+                parent_session_id: None,
+                title: "Coordination Context".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let enabled_projection = runtime
+            .context_encoding("context-test", &session.id)
+            .await
+            .unwrap();
+        assert!(enabled_projection.sexpr.contains("(cognitive-capabilities"));
+        assert!(enabled_projection.sexpr.contains("(tool coordinate)"));
+
+        let stale = handle_update_context_capability_binding(
+            State(Arc::clone(&state)),
+            Path((
+                "context-test".to_string(),
+                crate::experimental::COGNITIVE_COORDINATION.to_string(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextCapabilityBindingRequest {
+                enabled: false,
+                expected_revision: 0,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+        let disabled = handle_update_context_capability_binding(
+            State(state),
+            Path((
+                "context-test".to_string(),
+                crate::experimental::COGNITIVE_COORDINATION.to_string(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextCapabilityBindingRequest {
+                enabled: false,
+                expected_revision: 1,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(disabled.status(), StatusCode::OK);
+        let disabled_projection = runtime
+            .context_encoding("context-test", &session.id)
+            .await
+            .unwrap();
+        assert!(!disabled_projection
+            .sexpr
+            .contains("(cognitive-capabilities"));
+        assert!(!disabled_projection.sexpr.contains("(tool coordinate)"));
+    }
+
     #[tokio::test]
     async fn session_message_endpoint_is_idempotent_and_routes_to_session() {
         let (state, runtime) = test_state().await;
@@ -10965,6 +11742,7 @@ account = "xai-account"
                 harness: None,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             }),
         )
         .await
@@ -10996,6 +11774,7 @@ account = "xai-account"
                     harness: None,
                     dispatch_mode: Some(crate::memory::MessageDispatchMode::Parallel),
                     model_alias: None,
+                    reasoning_effort: None,
                 }),
             )
             .await
@@ -11022,6 +11801,7 @@ account = "xai-account"
                 harness: None,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             }),
         )
         .await
@@ -11172,6 +11952,7 @@ account = "xai-account"
                 harness: None,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             }),
         )
         .await
@@ -11358,6 +12139,7 @@ account = "xai-account"
                 harness: None,
                 dispatch_mode: None,
                 model_alias: None,
+                reasoning_effort: None,
             }),
         )
         .await

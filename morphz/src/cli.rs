@@ -61,6 +61,8 @@ const VALUE_OPTIONS: &[&str] = &[
     "max-events",
     "objective-id",
     "trajectory-profile",
+    "enable-experimental",
+    "coordination-mesh",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -94,6 +96,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "harness",
     "objective",
     "trajectory",
+    "experiment",
     "job",
     "config",
     "doctor",
@@ -278,6 +281,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             harness_command(locale),
             objective_command(locale),
             trajectory_command(locale),
+            experiment_command(locale),
             job_command(locale),
             config_command(locale),
             Command::new("doctor")
@@ -521,6 +525,16 @@ fn global_args(locale: Locale) -> Vec<Arg> {
             ),
         )
         .value_parser(["human", "json"]),
+        value_arg(
+            "enable-experimental",
+            "enable-experimental",
+            "FEATURE",
+            locale.text(
+                "Enable one compiled experimental feature for this process",
+                "为当前进程启用一个已编译的实验功能",
+            ),
+        )
+        .action(ArgAction::Append),
         switch_arg(
             "tui",
             "tui",
@@ -654,8 +668,17 @@ fn serve_command(locale: Locale) -> Command {
                 "bind",
                 "ADDR",
                 locale.text("Listen address", "监听地址"),
+            ))
+            .arg(local_value_arg(
+                "coordination-mesh",
+                "coordination-mesh",
+                "SOURCE",
+                locale.text(
+                    "Join a Coordination Mesh from static:URL,URL or file:PATH",
+                    "使用 static:URL,URL 或 file:PATH 加入 Coordination Mesh",
+                ),
             )),
-        "Examples:\n  morphz serve\n  morphz serve --bind=127.0.0.1:9090\n  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:8080",
+        "Examples:\n  morphz serve\n  morphz serve --bind=127.0.0.1:9090\n  morphz serve --coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080\n  morphz serve --coordination-mesh=file:/etc/morphz/mesh.toml\n  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:8080",
     )
 }
 
@@ -2267,6 +2290,41 @@ fn config_command(locale: Locale) -> Command {
         ))
 }
 
+fn experiment_command(locale: Locale) -> Command {
+    Command::new("experiment")
+        .about(locale.text(
+            "Inspect and verify explicitly gated experimental features",
+            "检查并验证显式门控的实验功能",
+        ))
+        .subcommands([
+            output_examples(
+                locale,
+                Command::new("list").about(locale.text(
+                    "List compiled and enabled experimental features",
+                    "列出实验功能的编译与启用状态",
+                )),
+                "Example:\n  morphz experiment list --format=json",
+            ),
+            output_examples(
+                locale,
+                Command::new("check")
+                    .about(locale.text(
+                        "Require one experiment to be compiled and enabled",
+                        "确认一个实验功能已经编译并启用",
+                    ))
+                    .arg(prompt_arg("FEATURE", 1, Some(1)).help(locale.text(
+                        "Experimental feature name",
+                        "实验功能名称",
+                    ))),
+                "Example:\n  morphz experiment check cognitive-coordination --enable-experimental cognitive-coordination",
+            ),
+        ])
+        .after_help(locale.text(
+            "Experiments are disabled by default and carry no stability promise.",
+            "实验功能默认关闭，不提供稳定性承诺。",
+        ))
+}
+
 fn command_path(matches: &ArgMatches) -> Vec<String> {
     let mut path = Vec::new();
     let mut current = matches;
@@ -2520,6 +2578,26 @@ mod tests {
         ]);
         assert_eq!(episode.command_path(), ["trajectory", "episode"]);
         assert_eq!(episode.prompt_args(), ["trajectory.json"]);
+    }
+
+    #[test]
+    fn experimental_features_use_an_explicit_repeatable_process_gate() {
+        let invocation = parse(&[
+            "experiment",
+            "check",
+            "cognitive-coordination",
+            "--enable-experimental",
+            "cognitive-coordination",
+        ]);
+        assert_eq!(invocation.command_path(), ["experiment", "check"]);
+        assert_eq!(invocation.prompt_args(), ["cognitive-coordination"]);
+        assert_eq!(
+            invocation
+                .option("enable-experimental")
+                .unwrap()
+                .occurrences(),
+            [Some("cognitive-coordination".to_string())]
+        );
     }
 
     #[test]
@@ -2807,6 +2885,19 @@ mod tests {
         let list = parse(&["harness", "list", "--format=json"]);
         assert_eq!(list.command_path(), ["harness", "list"]);
         assert_eq!(list.option("format").unwrap().last_value(), Some("json"));
+    }
+
+    #[test]
+    fn serve_accepts_one_coordination_mesh_source() {
+        let invocation = parse(&[
+            "serve",
+            "--coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080",
+        ]);
+        assert_eq!(invocation.command_path(), ["serve"]);
+        assert_eq!(
+            invocation.option("coordination-mesh").unwrap().last_value(),
+            Some("static:http://10.0.0.11:8080,http://10.0.0.12:8080")
+        );
     }
 
     #[test]

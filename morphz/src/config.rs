@@ -1382,6 +1382,104 @@ pub struct UiConfig {
     pub language: UiLanguage,
 }
 
+/// Operator opt-ins for code which has no stability or compatibility promise.
+/// Compilation alone never enables an experiment.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExperimentalConfig {
+    pub enabled: BTreeSet<String>,
+    /// Experimental Cognitive Coordination participant and Mesh settings.
+    /// Empty configuration keeps the feature visible but fail-closed.
+    pub cognitive_coordination: CognitiveCoordinationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CognitiveCoordinationConfig {
+    /// One Coordination Mesh discovery source. Supported v0 forms are
+    /// `static:URL,URL` and `file:/absolute/or/relative/path.toml`.
+    /// Discovery is advisory and never gates local Runtime startup.
+    pub mesh: Option<String>,
+    pub participant: Option<CognitiveCoordinationParticipantConfig>,
+    pub peers: Vec<CognitiveCoordinationPeerConfig>,
+    pub request_timeout_secs: u64,
+    pub handshake_timeout_secs: u64,
+    pub handshake_ttl_secs: u64,
+    pub heartbeat_interval_secs: u64,
+    pub max_clock_skew_secs: u64,
+}
+
+impl Default for CognitiveCoordinationConfig {
+    fn default() -> Self {
+        Self {
+            mesh: None,
+            participant: None,
+            peers: Vec::new(),
+            request_timeout_secs: 180,
+            handshake_timeout_secs: 10,
+            handshake_ttl_secs: 60,
+            heartbeat_interval_secs: 10,
+            max_clock_skew_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CognitiveCoordinationParticipantConfig {
+    pub authority_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub capabilities: BTreeSet<String>,
+    pub max_token_budget: u64,
+    pub priority: i32,
+    /// Legacy explicit-peer mode only: environment variable holding the
+    /// node's HMAC secret. Mesh mode uses the node identity in Secret Store.
+    pub token_env: String,
+    /// Empty means only the participant Session's effective default route may
+    /// be used remotely. Additional routes require explicit operator consent.
+    pub allowed_model_routes: BTreeSet<String>,
+}
+
+impl Default for CognitiveCoordinationParticipantConfig {
+    fn default() -> Self {
+        Self {
+            authority_id: String::new(),
+            agent_id: "default-agent".to_string(),
+            context_id: "context-default".to_string(),
+            session_id: "session-default".to_string(),
+            capabilities: BTreeSet::from(["general-reasoning".to_string()]),
+            max_token_budget: 32_768,
+            priority: 0,
+            token_env: "MORPHZ_COORDINATION_TOKEN".to_string(),
+            allowed_model_routes: BTreeSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CognitiveCoordinationPeerConfig {
+    pub authority_id: String,
+    pub base_url: String,
+    /// Environment variable holding the pairwise HMAC secret shared with this
+    /// Authority. Both sides of a pairing must configure the same secret.
+    pub token_env: String,
+    pub enabled: bool,
+}
+
+impl Default for CognitiveCoordinationPeerConfig {
+    fn default() -> Self {
+        Self {
+            authority_id: String::new(),
+            base_url: String::new(),
+            token_env: "MORPHZ_COORDINATION_TOKEN".to_string(),
+            enabled: true,
+        }
+    }
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
@@ -1415,6 +1513,7 @@ pub struct AppConfig {
     pub background_task: BackgroundTaskConfig,
     pub edge_execution: EdgeExecutionConfig,
     pub managed_ssh: ManagedSshConfig,
+    pub experimental: ExperimentalConfig,
     pub ui: UiConfig,
     pub tui: TuiConfig,
 }
@@ -3452,6 +3551,15 @@ impl AppConfig {
                     format!("MORPHZ_CONTEXT_TRANSACTIONS_ENABLED is not a valid boolean: {value}")
                 })?;
         }
+        if let Ok(value) = std::env::var("MORPHZ_EXPERIMENTAL_FEATURES") {
+            self.experimental.enabled.extend(
+                value
+                    .split(|character: char| character == ',' || character.is_whitespace())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string),
+            );
+        }
         if let Ok(value) = std::env::var("MORPHZ_EVAL_CALLABLE_TOOLS") {
             let mut tools = Vec::new();
             for name in value
@@ -4244,6 +4352,20 @@ mod tests {
         let config = toml::from_str::<AppConfig>("[ui]\nlanguage='zh-CN'\n").unwrap();
         assert_eq!(config.ui.language, UiLanguage::SimplifiedChinese);
         assert!(toml::from_str::<AppConfig>("[ui]\nlanguage='fr'\n").is_err());
+    }
+
+    #[test]
+    fn experimental_features_are_explicit_and_disabled_by_default() {
+        let default = toml::from_str::<AppConfig>("").unwrap();
+        assert!(default.experimental.enabled.is_empty());
+
+        let configured =
+            toml::from_str::<AppConfig>("[experimental]\nenabled=['cognitive-coordination']\n")
+                .unwrap();
+        assert_eq!(
+            configured.experimental.enabled,
+            BTreeSet::from(["cognitive-coordination".to_string()])
+        );
     }
 
     #[test]

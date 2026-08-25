@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "executor",
+    "experiments/morphz-cognitive-coordination",
     "extensions/morphz-memory-vector",
     "morphz",
     "morphz-evals",

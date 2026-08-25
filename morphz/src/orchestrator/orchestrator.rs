@@ -1072,6 +1072,18 @@ fn restrict_tools_to_scope(tools: &mut Vec<ToolDefinition>, scope: Option<&HashS
     }
 }
 
+fn retain_context_bound_capability_tools(
+    tools: &mut Vec<ToolDefinition>,
+    bindings: &[crate::memory::ContextCapabilityBindingRecord],
+) {
+    let cognitive_coordination_enabled = bindings.iter().any(|binding| {
+        binding.enabled && binding.capability_id == crate::experimental::COGNITIVE_COORDINATION
+    });
+    if !cognitive_coordination_enabled {
+        tools.retain(|tool| tool.name != "coordinate");
+    }
+}
+
 fn is_objective_bound_tool(name: &str) -> bool {
     name == "objective_update"
 }
@@ -9725,6 +9737,19 @@ impl Orchestrator {
                     .filter(|model| !model.is_empty())
                     .map(ToOwned::to_owned)
             });
+        let trigger_reasoning_effort = self
+            .context_engine
+            .find_event(&activation.context_id, &activation.trigger_event_id)
+            .await?
+            .and_then(|event| {
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|effort| !effort.is_empty())
+                    .map(ToOwned::to_owned)
+            });
         let session_record = session_store.get_session(session_id).await?;
         let session_model_alias = session_record
             .as_ref()
@@ -9758,6 +9783,7 @@ impl Orchestrator {
         let desired_reasoning_effort = activation
             .reasoning_effort
             .clone()
+            .or_else(|| trigger_reasoning_effort.clone())
             .or_else(|| {
                 session_record
                     .as_ref()
@@ -10069,6 +10095,7 @@ impl Orchestrator {
             measurement_messages.push(message);
         }
         let mut measurement_tools = self.tool_definitions.clone();
+        retain_context_bound_capability_tools(&mut measurement_tools, &context.capability_bindings);
         if thread_kind == "delivery" {
             measurement_tools.clear();
         }
@@ -10204,6 +10231,7 @@ impl Orchestrator {
         }
 
         let mut tools = self.tool_definitions.clone();
+        retain_context_bound_capability_tools(&mut tools, &context.capability_bindings);
         if thread_kind == "delivery" {
             tools.clear();
         }
@@ -10794,6 +10822,7 @@ impl Orchestrator {
                     ];
                     protocol_messages = base_protocol_messages.clone();
                     tools = self.tool_definitions.clone();
+                    retain_context_bound_capability_tools(&mut tools, &context.capability_bindings);
                     if !objective_control_available {
                         tools.retain(|tool| !is_objective_bound_tool(&tool.name));
                     }
@@ -19520,14 +19549,15 @@ mod tests {
         production_system_prompt_inspection, provider_delivery_retry_delay,
         recover_action_group_from_durable_events, recovered_action_group_settled_event,
         recovery_owns_activation, render_harness_context, render_system_contract,
-        restrict_tools_to_scope, retain_context_maintenance_tools,
-        retain_final_reply_control_tools, retain_pending_continuation_calls, scheduler_audit_event,
-        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
-        should_force_final_for_maintenance, tool_call_activity_preview,
-        validate_final_reply_response, validate_objective_closure_review_response,
-        validate_objective_completion_call, ContextEngine, DialogueThreadGate, DialogueThreadLease,
-        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        restrict_tools_to_scope, retain_context_bound_capability_tools,
+        retain_context_maintenance_tools, retain_final_reply_control_tools,
+        retain_pending_continuation_calls, scheduler_audit_event, semantic_sexpr_vm_system_prompt,
+        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
+        tool_call_activity_preview, validate_final_reply_response,
+        validate_objective_closure_review_response, validate_objective_completion_call,
+        ContextEngine, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
+        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
+        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
         ModelVisibleAttachmentReference, NoReplyMode, ProviderCircuitAdmission,
         ProviderCircuitPhase, ProviderCircuitState, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
@@ -19545,11 +19575,11 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationStore,
-        AttentionAcknowledgementRecord, EventAppend, EventStore, NewActionGroup,
-        NewActionGroupMember, NewAgent, NewCognitiveContext, NewObjective, NewSession, NewThread,
-        NewThreadActivation, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
-        ObjectiveWaitCondition, QueryFilter, SessionDirectoryStore, SessionMountKind,
-        ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadStore,
+        AttentionAcknowledgementRecord, ContextCapabilityBindingRecord, EventAppend, EventStore,
+        NewActionGroup, NewActionGroupMember, NewAgent, NewCognitiveContext, NewObjective,
+        NewSession, NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveStatus,
+        ObjectiveStore, ObjectiveWaitCondition, QueryFilter, SessionDirectoryStore,
+        SessionMountKind, ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadStore,
         WorkerCoordinationMode,
     };
 
@@ -20901,6 +20931,46 @@ mod tests {
                 parameters: json!({"type": "object"}),
             })
             .collect()
+    }
+
+    #[test]
+    fn coordinate_tool_is_visible_only_when_the_context_binding_is_enabled() {
+        let mut disabled = named_tools(&["exec", "coordinate"]);
+        retain_context_bound_capability_tools(&mut disabled, &[]);
+        assert_eq!(
+            disabled
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["exec"]
+        );
+
+        let binding = ContextCapabilityBindingRecord {
+            context_id: "context-a".to_string(),
+            capability_id: crate::experimental::COGNITIVE_COORDINATION.to_string(),
+            enabled: true,
+            revision: 1,
+            updated_at: chrono::Utc::now(),
+        };
+        let mut enabled = named_tools(&["exec", "coordinate"]);
+        retain_context_bound_capability_tools(&mut enabled, std::slice::from_ref(&binding));
+        assert_eq!(
+            enabled
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["exec", "coordinate"]
+        );
+
+        let mut explicitly_disabled = named_tools(&["coordinate"]);
+        retain_context_bound_capability_tools(
+            &mut explicitly_disabled,
+            &[ContextCapabilityBindingRecord {
+                enabled: false,
+                ..binding
+            }],
+        );
+        assert!(explicitly_disabled.is_empty());
     }
 
     #[test]

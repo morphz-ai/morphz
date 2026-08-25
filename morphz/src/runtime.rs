@@ -36,26 +36,27 @@ use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
-    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
-    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
-    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, MessageClaim, MessageDispatchMode, MindProjectionHead,
-    MindProjectionStore, NewAgent, NewArtifactTransferExecution, NewCognitiveContext,
-    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
-    NewObjective, NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
-    ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
-    SessionRecord, SessionStatus, SessionStore, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextTokenBudgetMutation,
+    ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMonitorRecord, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
+    MessageDispatchMode, MindProjectionHead, MindProjectionStore, NewAgent,
+    NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
+    NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
+    RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
+    SessionContextSharing, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
+    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -119,6 +120,13 @@ pub type RuntimeError = Box<dyn std::error::Error + Send + Sync>;
 pub enum ContextTokenBudgetUpdate {
     Updated(ContextTokenBudget),
     Conflict(ContextTokenBudget),
+    NotFound,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ContextCapabilityBindingUpdate {
+    Updated(ContextCapabilityBindingRecord),
+    Conflict(ContextCapabilityBindingRecord),
     NotFound,
 }
 
@@ -1146,6 +1154,9 @@ impl MorphzRuntimeBuilder {
                 self.config.orchestrator.clone(),
             )
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_capability_binding_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::ContextCapabilityBindingStore>
+            )
             .with_principal_first_seen_cues(self.principal_first_seen_cues)
             .with_model_context_capacity(Arc::clone(&model_context_capacity))
             .with_model_context_capacities(Arc::clone(&model_context_capacities))
@@ -1300,6 +1311,29 @@ impl MorphzRuntimeBuilder {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
         );
         background_scheduler.register_timer_handler()?;
+        #[cfg(feature = "experimental-cognitive-coordination")]
+        let cognitive_coordination_network = if let Ok(permit) =
+            crate::experimental::require_enabled(
+                &self.config.experimental.enabled,
+                crate::experimental::COGNITIVE_COORDINATION,
+            ) {
+            let coordination = &self.config.experimental.cognitive_coordination;
+            (coordination.participant.is_some() || coordination.mesh.is_some())
+                    .then(|| {
+                        crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService::new_with_secret_store(
+                            permit,
+                            self.config
+                                .experimental
+                                .cognitive_coordination
+                                .clone(),
+                            secret_store.as_ref(),
+                        )
+                        .map(Arc::new)
+                    })
+                    .transpose()?
+        } else {
+            None
+        };
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
             context_engine: &context_engine,
@@ -1307,6 +1341,8 @@ impl MorphzRuntimeBuilder {
             objective_evaluations: &objective_evaluations,
             harness_registry: &harness_registry,
             event_store: &(Arc::clone(&store) as Arc<dyn EventStore>),
+            capability_binding_store: Arc::clone(&store)
+                as Arc<dyn crate::memory::ContextCapabilityBindingStore>,
             permissions: &permissions,
             bus: &bus,
             thread_scheduler: &thread_scheduler,
@@ -1315,6 +1351,8 @@ impl MorphzRuntimeBuilder {
             secret_store: &secret_store,
             config: &self.config,
             policy: self.tool_policy,
+            #[cfg(feature = "experimental-cognitive-coordination")]
+            cognitive_coordination_network: cognitive_coordination_network.clone(),
         });
         registry.register(Arc::new(crate::execution_target::ListTargetsTool::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
@@ -1564,6 +1602,8 @@ impl MorphzRuntimeBuilder {
                 provider_auth_manager,
                 timer_engine,
                 human_approval_hub,
+                #[cfg(feature = "experimental-cognitive-coordination")]
+                cognitive_coordination_network,
                 runtime_instance_id: new_runtime_instance_id(),
                 process_started_at: chrono::Utc::now(),
                 recovery: std::sync::RwLock::new(RuntimeRecoveryStatus::default()),
@@ -1581,6 +1621,7 @@ struct DefaultToolDependencies<'a> {
     objective_evaluations: &'a Arc<ObjectiveEvaluationRegistry>,
     harness_registry: &'a Arc<DomainHarnessRegistry>,
     event_store: &'a Arc<dyn EventStore>,
+    capability_binding_store: Arc<dyn crate::memory::ContextCapabilityBindingStore>,
     permissions: &'a Arc<PermissionBroker>,
     bus: &'a Arc<InMemoryEventBus>,
     thread_scheduler: &'a Arc<ThreadScheduler>,
@@ -1589,6 +1630,12 @@ struct DefaultToolDependencies<'a> {
     secret_store: &'a Arc<SecretStore>,
     config: &'a AppConfig,
     policy: RuntimeToolPolicy,
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    cognitive_coordination_network: Option<
+        Arc<
+            crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService,
+        >,
+    >,
 }
 
 fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
@@ -1599,6 +1646,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         objective_evaluations,
         harness_registry,
         event_store,
+        capability_binding_store,
         permissions,
         bus,
         thread_scheduler,
@@ -1607,9 +1655,34 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         secret_store,
         config,
         policy,
+        #[cfg(feature = "experimental-cognitive-coordination")]
+        cognitive_coordination_network,
     } = dependencies;
     if config.orchestrator.context_transactions_enabled {
         registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
+    }
+    #[cfg(not(feature = "experimental-cognitive-coordination"))]
+    let _ = capability_binding_store;
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    if let Ok(permit) = crate::experimental::require_enabled(
+        &config.experimental.enabled,
+        crate::experimental::COGNITIVE_COORDINATION,
+    ) {
+        let backend: Arc<
+            dyn crate::experimental::cognitive_coordination_sdk::CognitiveCoordinationBackend,
+        > = match cognitive_coordination_network {
+            Some(service) => Arc::new(service),
+            None => Arc::new(
+                crate::experimental::cognitive_coordination_sdk::UnavailableCognitiveCoordinationBackend,
+            ),
+        };
+        registry.register(Arc::new(
+            crate::experimental::cognitive_coordination_sdk::CoordinateTool::new(
+                permit,
+                capability_binding_store,
+                backend,
+            ),
+        ));
     }
     // The evaluator reaches other tools through the same Registry it is
     // registered in, so it is constructed with a handle to it rather than with
@@ -1768,6 +1841,12 @@ struct RuntimeInner {
     provider_auth_manager: Arc<crate::provider::auth::ProviderAuthManager>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    cognitive_coordination_network: Option<
+        Arc<
+            crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService,
+        >,
+    >,
     runtime_instance_id: String,
     process_started_at: chrono::DateTime<chrono::Utc>,
     recovery: std::sync::RwLock<RuntimeRecoveryStatus>,
@@ -2562,12 +2641,27 @@ impl MorphzRuntime {
                 drop(runtime);
             }
         });
+        #[cfg(feature = "experimental-cognitive-coordination")]
+        if let Some(service) = self.inner.cognitive_coordination_network.clone() {
+            service.start_heartbeat();
+        }
         self.inner.started.store(true, Ordering::Release);
         Ok(())
     }
 
     pub fn config(&self) -> &AppConfig {
         &self.inner.config
+    }
+
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    pub fn cognitive_coordination_network(
+        &self,
+    ) -> Option<
+        Arc<
+            crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService,
+        >,
+    >{
+        self.inner.cognitive_coordination_network.clone()
     }
 
     pub fn artifact_transfer_stages(&self) -> &crate::artifact::ArtifactTransferStageStore {
@@ -3508,6 +3602,54 @@ impl MorphzRuntime {
             )),
             ContextTokenBudgetMutation::NotFound => Ok(ContextTokenBudgetUpdate::NotFound),
         }
+    }
+
+    pub async fn context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+    ) -> Result<Option<ContextCapabilityBindingRecord>, RuntimeError> {
+        self.inner
+            .store
+            .get_context_capability_binding(context_id, capability_id)
+            .await
+    }
+
+    pub fn experimental_feature_statuses(
+        &self,
+    ) -> Result<Vec<crate::experimental::ExperimentalFeatureStatus>, RuntimeError> {
+        crate::experimental::statuses(&self.inner.config.experimental.enabled)
+            .map_err(|error| error.into())
+    }
+
+    pub async fn update_context_capability_binding(
+        &self,
+        context_id: &str,
+        capability_id: &str,
+        enabled: bool,
+        expected_revision: u64,
+    ) -> Result<ContextCapabilityBindingUpdate, RuntimeError> {
+        let feature = crate::experimental::feature(capability_id)?;
+        if enabled {
+            crate::experimental::require_enabled(
+                &self.inner.config.experimental.enabled,
+                feature.name,
+            )?;
+        }
+        let mutation = self
+            .inner
+            .store
+            .update_context_capability_binding(context_id, feature.name, enabled, expected_revision)
+            .await?;
+        Ok(match mutation {
+            ContextCapabilityBindingMutation::Updated(binding) => {
+                ContextCapabilityBindingUpdate::Updated(binding)
+            }
+            ContextCapabilityBindingMutation::Conflict(binding) => {
+                ContextCapabilityBindingUpdate::Conflict(binding)
+            }
+            ContextCapabilityBindingMutation::NotFound => ContextCapabilityBindingUpdate::NotFound,
+        })
     }
 
     pub async fn set_reasoning_effort(
@@ -8240,6 +8382,36 @@ impl MorphzRuntime {
             .apply_context_transaction(context_id, acting_session_id, transaction)
             .await
     }
+
+    pub async fn apply_context_transaction_strict(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+    ) -> Result<crate::orchestrator::context::ContextCommit, RuntimeError> {
+        self.inner
+            .context_engine
+            .apply_context_transaction_strict(context_id, acting_session_id, transaction)
+            .await
+    }
+
+    pub async fn apply_context_transaction_strict_with_id(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+        transaction_id: &str,
+    ) -> Result<crate::orchestrator::context::ContextCommit, RuntimeError> {
+        self.inner
+            .context_engine
+            .apply_context_transaction_strict_with_id(
+                context_id,
+                acting_session_id,
+                transaction,
+                transaction_id,
+            )
+            .await
+    }
 }
 
 fn new_runtime_instance_id() -> String {
@@ -8592,6 +8764,9 @@ pub struct SessionMessageOptions {
     /// Unlike the Session binding, this value is persisted on the root Event
     /// and frozen on the resulting Activation only.
     pub model_alias: Option<String>,
+    /// One-shot reasoning level persisted on the root Event and frozen on the
+    /// resulting Activation without mutating the Session default.
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8745,6 +8920,7 @@ impl SessionHandle {
             references,
             dispatch_mode,
             model_alias,
+            reasoning_effort,
         } = options;
         let session = self
             .runtime
@@ -8799,6 +8975,44 @@ impl SessionHandle {
                 )));
             }
             Some(model_alias)
+        } else {
+            None
+        };
+        let reasoning_effort = if let Some(reasoning_effort) = reasoning_effort {
+            let reasoning_effort = reasoning_effort.trim();
+            let parsed = crate::llm::ReasoningEffort::parse(reasoning_effort).ok_or_else(|| {
+                Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    format!("unsupported reasoning effort '{reasoning_effort}'"),
+                )) as RuntimeError
+            })?;
+            let effective_model = model_alias
+                .as_deref()
+                .or(session.model_alias.as_deref())
+                .unwrap_or_else(|| self.runtime.inner.config.llm.model.as_str());
+            if let Some(supported) = self
+                .runtime
+                .inference_model_options()
+                .await?
+                .iter()
+                .find(|option| option.id == effective_model)
+                .and_then(|option| option.supported_reasoning_efforts.as_ref())
+            {
+                if !supported
+                    .iter()
+                    .any(|candidate| candidate == parsed.as_str())
+                {
+                    return Err(Box::new(MessageIngressError::new(
+                        MessageIngressErrorKind::InvalidArgument,
+                        format!(
+                            "reasoning effort '{}' is not supported by model '{}'",
+                            parsed.as_str(),
+                            effective_model
+                        ),
+                    )));
+                }
+            }
+            Some(parsed.as_str().to_string())
         } else {
             None
         };
@@ -8910,6 +9124,9 @@ impl SessionHandle {
         ]);
         if let Some(model_alias) = model_alias {
             payload.insert("model_alias".to_string(), json!(model_alias));
+        }
+        if let Some(reasoning_effort) = reasoning_effort {
+            payload.insert("reasoning_effort".to_string(), json!(reasoning_effort));
         }
         if !canonical_references.is_empty() {
             payload.insert("references".to_string(), Value::Array(canonical_references));
@@ -11207,6 +11424,7 @@ mod tests {
                 Some("client-one-shot-model".to_string()),
                 SessionMessageOptions {
                     model_alias: Some("one-shot-route".to_string()),
+                    reasoning_effort: Some("high".to_string()),
                     ..SessionMessageOptions::default()
                 },
             )
@@ -11221,6 +11439,7 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload["model_alias"], "one-shot-route");
+        assert_eq!(events[0].payload["reasoning_effort"], "high");
         assert_eq!(
             runtime
                 .get_session(&session.id)
@@ -11230,6 +11449,16 @@ mod tests {
                 .model_alias,
             None,
             "a one-shot Evaluation model must not mutate the Session default"
+        );
+        assert_eq!(
+            runtime
+                .get_session(&session.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .reasoning_effort,
+            None,
+            "a one-shot reasoning effort must not mutate the Session default"
         );
 
         let error = session

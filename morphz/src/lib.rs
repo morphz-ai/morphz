@@ -19,6 +19,7 @@ pub mod edge_node;
 pub mod event;
 pub mod execution;
 pub mod execution_target;
+pub mod experimental;
 pub mod extension;
 pub mod harness;
 pub mod harness_package;
