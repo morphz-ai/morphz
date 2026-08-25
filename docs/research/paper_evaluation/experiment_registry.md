@@ -27,7 +27,7 @@
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（开放 12/12；Context shift 6/6；闭合严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
-| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
+| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | [`F + D`（Phase A Gate）](./artifacts/me06_phase_a_no_model_gate_20260826/RESULT.md) | `protocol-candidate` | [`p1 candidate`](./me_06_long_horizon_compaction_protocol_p1.md) | 完成两套真实 adapter 与精确 Token 预算；用户复核后才允许真实 smoke |
 | ME-07 | 公开 Benchmark 外部验证（A: Terminal-Bench；B: Mem2ActBench） | 外部效度 | P1 | Terminal-Bench 前 40 题四臂 `P` | `pilot-complete` | [`ME-07A 结果`](./artifacts/terminal_bench_four_arm_prior_40_20260825/RESULT.md) | 保留 40 题为系统能力 Pilot；ME-07B 完成许可/环境/适配范围审计 |
 | ME-08 | 第二公开 Benchmark | RQ5/RQ6 | P2 | 无 | `planned` | — | ME-07 后选择 |
 

@@ -196,6 +196,7 @@ pub mod me01_context_reentry_smoke;
 pub mod me02_representation_eval;
 pub mod me03_bounded_open_eval;
 pub mod me05_model_target;
+pub mod me06_long_horizon_eval;
 pub mod principal_identity_eval;
 pub mod roadshow_demo_001;
 pub mod roadshow_demo_001_adapter;
