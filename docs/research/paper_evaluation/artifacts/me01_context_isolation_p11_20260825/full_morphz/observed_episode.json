@@ -1,0 +1,31 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-context-isolation-01",
+  "arm": "full_morphz",
+  "visible_input_sha256": "f0986aa37d66a2d0c37dd8ebfaba4ddffa7d42f6958853071e9d6b1b7e862576",
+  "final_response": "{\"action\":\"set_delivery_target\",\"object_id\":\"report-daily\",\"value\":\"blue-archive\",\"evidence_id\":\"ev-ci-002\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_full_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T075545.033Z-64678/full_morphz/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-context-isolation-01-context-foreign",
+      "me01-me01-p1-context-isolation-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-context-isolation-01-session-foreign": "me01-me01-p1-context-isolation-01-context-foreign",
+      "me01-me01-p1-context-isolation-01-session-primary": "me01-me01-p1-context-isolation-01-context-primary"
+    },
+    "context_tx_tool_exposed": true,
+    "context_tx_attempts": 2,
+    "context_tx_commits": 2,
+    "committed_frame_ids": [
+      "tenant-blue-report-daily-delivery"
+    ],
+    "act_projection_frame_ids": [
+      "tenant-blue-report-daily-delivery"
+    ],
+    "structured_context_snapshot_sha256": "540b54777d7539b9ccbe340137189cd323355e2ce6140c7174be7fdbd5c32b29",
+    "message_transcript_sha256": null
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "id": "me01-p1-cross-session-continuity-01",
+  "family": "cross_session_continuity",
+  "title": "Cross-session fulfillment state",
+  "required_action": "set_fulfillment_mode",
+  "stages": [
+    {
+      "id": "establish",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-cs-001",
+          "source": "customer-contract",
+          "version": 21,
+          "timestamp": "2026-08-25T09:00:00+08:00",
+          "content": "Object order-nova-82 must use fulfillment mode bonded-express. This contractual mode remains active until a signed amendment."
+        }
+      ],
+      "instruction": "Session A received the contract. Preserve the operative state for later work by another Session in the same Context. Do not emit the final action yet."
+    },
+    {
+      "id": "revise",
+      "context_key": "primary",
+      "session_key": "session-a",
+      "events": [
+        {
+          "event_id": "ev-cs-002",
+          "source": "warehouse-status",
+          "version": 8,
+          "timestamp": "2026-08-25T10:00:00+08:00",
+          "content": "Bonded express capacity is available for order-nova-82. This observation confirms feasibility but does not create the contractual choice."
+        }
+      ],
+      "instruction": "Incorporate the feasibility evidence while preserving the authoritative source. Do not emit the final action yet."
+    },
+    {
+      "id": "act",
+      "context_key": "primary",
+      "session_key": "session-b",
+      "events": [],
+      "instruction": "Session B must now select the fulfillment action for object order-nova-82 using the shared cognitive state. Return only the strict four-field JSON action contract."
+    }
+  ]
+}

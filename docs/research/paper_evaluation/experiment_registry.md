@@ -21,8 +21,8 @@
 
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| ME-00 | 实验基础设施与校准 | 全部 | P0 | 部分既有 runner | `planned` | — | 冻结 manifest、目录、评分与重放规范 |
-| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + 真实 Smoke `F` | `pilot-ready` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 复核 Smoke 后冻结 Pilot 批次与运行顺序 |
+| ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
 | ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
 | ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | 多项 `D` 分散存在 | `planned` | — | 建立面向论文主张的覆盖矩阵 |
@@ -60,6 +60,25 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-25
 
+- ME-01 p1.1 Stage A Pilot 完成：五个预注册任务族 × 三个 arm 共 15 个有效 episode
+  全部严格通过。`cross_session_continuity` 的有效重跑证明 Session A 与 Session B 真实挂载
+  同一个 Context，完整 Morphz 在 A 中形成并修订的 Frame 出现在 B 的行动投影；首次运行
+  因 runner 把全部阶段硬编码到 Session A 而永久标记无效。`context_isolation` 证明两个
+  Session 分别挂载两个不同 Context，三个 arm 均选择 primary 的 `blue-archive`，未复用
+  foreign 的 `red-vault`；完整 Morphz 在两个 Context 分别提交 tenant-scoped Frame。
+  runner/scorer 修复提交为 `0e4e643`，新增完整 Session/Context 集合校验，11 项目标测试、
+  Clippy 和无模型独立进程 Gate 全部通过。报告见
+  [`artifacts/me01_cross_session_continuity_p11_20260825/RESULT.md`](./artifacts/me01_cross_session_continuity_p11_20260825/RESULT.md)
+  与
+  [`artifacts/me01_context_isolation_p11_20260825/RESULT.md`](./artifacts/me01_context_isolation_p11_20260825/RESULT.md)；
+- p1.1 的 15/15 结果构成明确天花板效应。它支持生产机制真实成立、无 Context 压力时未观察
+  到最终行动退化，以及跨 Session/Context 隔离能力；不支持优越性、统计非劣效或 Token
+  效率结论。停止对同类简单 fixture 机械扩样；现代 Agent compaction 的强基线只放入
+  ME-06 长程实验，不加入 ME-01 基础能力 Pilot；
+- ME-00 已实际支撑精确模型绑定、独立 SQLite/Context、原始轨迹、确定性评分、校验和与
+  Git 归档，因此由 `planned` 更新为 `protocol-draft`。尚未关闭的实质缺口是 manifest 未
+  自动记录 Runtime/runner commit、dirty diff hash 和持久备份身份；当前 `morphz --version`
+  仍报告 `git unknown`，本轮以二进制 SHA-256 与人工报告补足，不虚假标记为完成；
 - ME-01 p1.1 第三个真实 cell `source_authority` 完成：三组均严格保留正式权威来源的
   `R-45 / ev-sa-001`，拒绝较新的未批准草案 `R-07` 和传闻 `R-90`；两个 Morphz arms
   的进程重启成立。完整 Morphz 的 2 次事务和 revision 2 权威政策 Frame 只作为机制轨迹，

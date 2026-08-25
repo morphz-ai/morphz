@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "You are participating in the ME-01 controlled memory experiment. Treat every evidence event as carrying an immutable event_id, source, version, timestamp, and content. Preserve source authority, explicit supersession, object identity, and Context boundaries. On non-final stages, acknowledge ingestion without inventing a final action. On the final act stage, return only one JSON object with exactly four string fields: action, object_id, value, evidence_id. Do not use Markdown fences or additional prose."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'establish':\n[\n  {\n    \"event_id\": \"ev-cs-001\",\n    \"source\": \"customer-contract\",\n    \"version\": 21,\n    \"timestamp\": \"2026-08-25T09:00:00+08:00\",\n    \"content\": \"Object order-nova-82 must use fulfillment mode bonded-express. This contractual mode remains active until a signed amendment.\"\n  }\n]\n\nInstruction: Session A received the contract. Preserve the operative state for later work by another Session in the same Context. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_fulfillment_mode'."
+  },
+  {
+    "role": "assistant",
+    "content": "Ingested event ev-cs-001 from customer-contract, version 21, timestamp 2026-08-25T09:00:00+08:00. Preserved operative state in this Context: order-nova-82 requires bonded-express until superseded by a signed amendment. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'revise':\n[\n  {\n    \"event_id\": \"ev-cs-002\",\n    \"source\": \"warehouse-status\",\n    \"version\": 8,\n    \"timestamp\": \"2026-08-25T10:00:00+08:00\",\n    \"content\": \"Bonded express capacity is available for order-nova-82. This observation confirms feasibility but does not create the contractual choice.\"\n  }\n]\n\nInstruction: Incorporate the feasibility evidence while preserving the authoritative source. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_fulfillment_mode'."
+  },
+  {
+    "role": "assistant",
+    "content": "Ingested ev-cs-002 as feasibility evidence for order-nova-82. It confirms bonded-express capacity but does not alter the contractual choice. Ev-cs-001 remains the authoritative operative evidence. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'act':\n[]\n\nInstruction: Session B must now select the fulfillment action for object order-nova-82 using the shared cognitive state. Return only the strict four-field JSON action contract.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_fulfillment_mode'."
+  },
+  {
+    "role": "assistant",
+    "content": "{\"action\":\"set_fulfillment_mode\",\"object_id\":\"order-nova-82\",\"value\":\"bonded-express\",\"evidence_id\":\"ev-cs-001\"}"
+  }
+]

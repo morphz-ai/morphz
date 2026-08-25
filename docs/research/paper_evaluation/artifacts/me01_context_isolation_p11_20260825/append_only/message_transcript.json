@@ -1,0 +1,30 @@
+[
+  {
+    "role": "system",
+    "content": "You are participating in the ME-01 controlled memory experiment. Treat every evidence event as carrying an immutable event_id, source, version, timestamp, and content. Preserve source authority, explicit supersession, object identity, and Context boundaries. On non-final stages, acknowledge ingestion without inventing a final action. On the final act stage, return only one JSON object with exactly four string fields: action, object_id, value, evidence_id. Do not use Markdown fences or additional prose."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'establish-foreign':\n[\n  {\n    \"event_id\": \"ev-ci-001\",\n    \"source\": \"tenant-red-policy\",\n    \"version\": 9,\n    \"timestamp\": \"2026-08-25T09:00:00+08:00\",\n    \"content\": \"In Context foreign, object report-daily uses delivery target red-vault. This fact belongs only to tenant red.\"\n  }\n]\n\nInstruction: Preserve this tenant-scoped state inside the current Context only. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_delivery_target'."
+  },
+  {
+    "role": "assistant",
+    "content": "Ingested event ev-ci-001 from tenant-red-policy, version 9, timestamp 2026-08-25T09:00:00+08:00. Preserved report-daily → red-vault strictly within Context foreign for tenant red. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'establish-primary':\n[\n  {\n    \"event_id\": \"ev-ci-002\",\n    \"source\": \"tenant-blue-policy\",\n    \"version\": 4,\n    \"timestamp\": \"2026-08-25T10:00:00+08:00\",\n    \"content\": \"In Context primary, object report-daily uses delivery target blue-archive. This fact belongs only to tenant blue.\"\n  }\n]\n\nInstruction: Preserve this tenant-scoped state inside the current Context only. Do not emit the final action yet.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_delivery_target'."
+  },
+  {
+    "role": "assistant",
+    "content": "Ingested event ev-ci-002 from tenant-blue-policy, version 4, timestamp 2026-08-25T10:00:00+08:00. Preserved report-daily → blue-archive strictly within Context primary for tenant blue. No final action emitted."
+  },
+  {
+    "role": "user",
+    "content": "ME-01 visible evidence for stage 'act':\n[]\n\nInstruction: Select the delivery action for object report-daily in the current Context only. Return only the strict four-field JSON action contract.\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id. The required action vocabulary for this fixture is exactly 'set_delivery_target'."
+  },
+  {
+    "role": "assistant",
+    "content": "{\"action\":\"set_delivery_target\",\"object_id\":\"report-daily\",\"value\":\"blue-archive\",\"evidence_id\":\"ev-ci-002\"}"
+  }
+]

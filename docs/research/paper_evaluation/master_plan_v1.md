@@ -81,12 +81,14 @@ ME-00 完成前可以继续做工程探针，但不得启动正式确认性批�
 候选 arms：
 
 1. `append_only`：完整或受预算限制的消息历史；
-2. `fixed_window`：固定最近窗口；
-3. `runtime_compaction`：由系统摘要或压缩历史；
-4. `retrieval_only`：按需检索原始事件，不建立权威结构化认知对象；
-5. `json_memory`：非类型化 JSON 状态；
-6. `structured_no_direct_reentry`：存在结构化对象，但后续仍通过文本重解释；
-7. `full_morphz`：稳定标识、版本、来源、直接绑定/帧引用与事务提交。
+2. `retrieval_only`：按需检索原始事件，不建立权威结构化认知对象；
+3. `json_memory`：非类型化 JSON 状态；
+4. `structured_no_direct_reentry`：存在结构化对象，但后续仍通过文本重解释；
+5. `full_morphz`：稳定标识、版本、来源、直接绑定/帧引用与事务提交。
+
+ME-01 的基础能力 Pilot 不制造 Context 长度压力，也不把简单窗口截断作为现代 Agent 的
+主要基线。周期性 `runtime_compaction` 与 Morphz 增量式认知维护的公平比较只在 ME-06
+长程固定事件流中执行。
 
 任务族：
 
@@ -156,6 +158,11 @@ ME-00 完成前可以继续做工程探针，但不得启动正式确认性批�
 - 模型切换；
 - 并发 Context 更新；
 - 正迁移、负迁移和主体隔离。
+
+主要对照为同模型、同任务的现代 Agent 周期性 `runtime_compaction` 与 Morphz 增量式
+Structured Context 维护；不使用“直接丢弃旧消息”作为主基线。最终正确率首先检验 Morphz
+在获得跨 Session、事务、并发、恢复和审计能力后是否退化；compaction 停顿、维护调用、
+Token 和延迟作为机制与成本诊断，不预设 Morphz 必须在每项上胜出。
 
 主要指标：最终隐藏行动/状态正确率。次要指标：陈旧状态率、污染率、Frame 增长、Context 压力、恢复正确率和累计成本。
 

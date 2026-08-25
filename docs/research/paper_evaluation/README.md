@@ -1,6 +1,6 @@
 # Morphz 论文实验中心
 
-> 状态：执行阶段（ME-01 真实模型 Smoke 已完成）
+> 状态：执行阶段（ME-01 p1.1 Stage A Pilot 已完成，15/15）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
@@ -32,6 +32,8 @@
 - [ME-01 p1.1 三组真实模型 Smoke](./artifacts/me01_real_smoke_p11_20260825/RESULT.md)：三组 3/3 严格通过；完整 Morphz 实际完成两次 Context 事务、Frame 回流、进程重启和正确行动；该简单任务只支持机制真实性与非退化结论；
 - [ME-01 p1.1 Supersession Conflict](./artifacts/me01_supersession_conflict_p11_20260825/RESULT.md)：三组均正确选择两级 supersession 后的 `/hooks/v3`；累计两个真实 cell、6/6 有效 episode 严格通过，仍只作可行性与非退化证据；
 - [ME-01 p1.1 Source Authority](./artifacts/me01_source_authority_p11_20260825/RESULT.md)：三组均正确保留权威来源的 `R-45`，拒绝更新但未批准的 `R-07/R-90`；累计三个真实 cell、9/9 有效 episode 严格通过；
+- [ME-01 p1.1 Cross-Session Continuity](./artifacts/me01_cross_session_continuity_p11_20260825/RESULT.md)：有效重跑中，Session A/B 真实挂载同一 Context，三组均正确；首次硬编码 Session A 的运行永久标记无效；
+- [ME-01 p1.1 Context Isolation](./artifacts/me01_context_isolation_p11_20260825/RESULT.md)：两个真实 Context 保持隔离，三组均选择 primary 的 `blue-archive`；五任务族累计 15/15 严格通过，p1.1 因天花板关闭同类扩样；
 - [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
 - [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；

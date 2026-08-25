@@ -1,0 +1,21 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-context-isolation-01",
+  "arm": "append_only",
+  "visible_input_sha256": "f0986aa37d66a2d0c37dd8ebfaba4ddffa7d42f6958853071e9d6b1b7e862576",
+  "final_response": "{\"action\":\"set_delivery_target\",\"object_id\":\"report-daily\",\"value\":\"blue-archive\",\"evidence_id\":\"ev-ci-002\"}",
+  "runtime": {
+    "adapter_kind": "append_only_messages",
+    "production_morphz_runtime": false,
+    "database_path": null,
+    "context_ids": [],
+    "session_mounts": {},
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": null,
+    "message_transcript_sha256": "e867d0ee31eea7eea6ecc9aa76a891f011770ea960f43ce687be16213cdf07b4"
+  }
+}

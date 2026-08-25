@@ -1,12 +1,16 @@
 # ME-01 结构化 Context 与结果直接回流 Pilot 协议 p1
 
-> 状态：`protocol-candidate`，尚未冻结，禁止据此启动确认性批次
+> 状态：`pilot-complete`；p1.1 Stage A 已完成，确认性 p2 尚未冻结
 >
 > 日期：2026-08-25（Asia/Shanghai）
 >
 > 关联研究问题：RQ2
 >
 > 证据目标：`P`（Pilot）；通过 Gate 后另行冻结确认性协议 p2
+
+> 运行结果：5 个任务族 × 3 arms = 15 个有效 episode 全部严格通过，形成明显天花板。
+> p1.1 不再对同类简单任务扩样；结果只支持机制真实性和当前范围内未观察到退化。
+> 长程 compaction 对照属于 ME-06，不加入本协议的无压力基础任务。
 
 ## 1. 假设与结论边界
 
@@ -254,14 +258,14 @@ checksums 和代表性 trace；含凭据或超大原始数据保留在独立 art
 - [x] 确认实际 Runtime commit，且工作区状态已记录；
 - [x] 精确模型、reasoning、fallback 与权限预检通过。
 
-Pilot 后必须审查：
+Pilot 后审查：
 
-- [ ] 没有明显天花板或地板效应；
-- [ ] 主要指标无需主观 judge；
-- [ ] 两个 Morphz arms 除 capability policy 外使用同一生产路径；
-- [ ] full arm 的成功行动存在可追溯的直接回流因果链；
-- [ ] 失败分类可复核；
-- [ ] 根据 Pilot 冻结确认性任务与样本量。
+- [x] 已检查天花板/地板：15/15 全部通过，存在明确天花板；
+- [x] 主要指标无需主观 judge；
+- [x] 两个 Morphz arms 除 capability policy 外使用同一生产路径；
+- [x] full arm 的成功行动存在可追溯的直接回流因果链；
+- [x] 失败分类可复核，跨 Session 首次接线假阳性已保留并永久排除；
+- [ ] 不直接冻结同类确认性扩样；先修订论文主张，再决定 p2 是否仍有必要。
 
 ## 11. 协议版本记录
 
@@ -269,3 +273,4 @@ Pilot 后必须审查：
 | --- | --- | --- | --- |
 | p1 candidate | 2026-08-25 | 初始三 arm、五任务族、两级低成本 Pilot 与真实性 Gate | — |
 | p1.1 candidate | 2026-08-25 | 将精确动作词表移入可见 fixture，修复隐藏字符串评分缺陷 | 是；p1 真实 smoke 不可计分 |
+| p1.1 runner fix | 2026-08-25 | 按 fixture 路由真实 Session/Context，并要求挂载集合完整匹配 | 仅使错误硬编码的跨 Session 首次运行无效；其他既有 cell 不受影响 |

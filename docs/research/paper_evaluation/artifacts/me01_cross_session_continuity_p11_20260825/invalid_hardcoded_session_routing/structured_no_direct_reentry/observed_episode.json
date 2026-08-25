@@ -1,0 +1,25 @@
+{
+  "protocol_id": "me01-context-reentry-p1.1-candidate",
+  "fixture_id": "me01-p1-cross-session-continuity-01",
+  "arm": "structured_no_direct_reentry",
+  "visible_input_sha256": "d6ad820f9eb326f36d676dd277c50ad64a54e9715c1edaa4e0efb7ad5c014d33",
+  "final_response": "{\"action\":\"set_fulfillment_mode\",\"object_id\":\"order-nova-82\",\"value\":\"bonded-express\",\"evidence_id\":\"ev-cs-001\"}",
+  "runtime": {
+    "adapter_kind": "production_morphz_read_only_context",
+    "production_morphz_runtime": true,
+    "database_path": "/private/tmp/morphz-me01-real-cells-20260825/ME-01-real-smoke-20260825T073155.372Z-63212/structured_no_direct_reentry/morphz.db",
+    "context_ids": [
+      "me01-me01-p1-cross-session-continuity-01-context-primary"
+    ],
+    "session_mounts": {
+      "me01-me01-p1-cross-session-continuity-01-session-a": "me01-me01-p1-cross-session-continuity-01-context-primary"
+    },
+    "context_tx_tool_exposed": false,
+    "context_tx_attempts": 0,
+    "context_tx_commits": 0,
+    "committed_frame_ids": [],
+    "act_projection_frame_ids": [],
+    "structured_context_snapshot_sha256": "87466be6c95388900e8263dcbd7d07a20062a67b354e5ebb4e6a2c16e15046cd",
+    "message_transcript_sha256": null
+  }
+}
