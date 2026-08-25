@@ -85,6 +85,11 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   [`artifacts/ME01_NO_MODEL_GATES_20260825.md`](./artifacts/ME01_NO_MODEL_GATES_20260825.md)。
   下一 Gate 是正式 `morphz` 二进制、精确 Sol/max/no-fallback/full-access 与同 Provider
   append-only adapter 的三臂真实 smoke；
+- ME-01 精确模型绑定零调用预检通过：当前 `roadshow-demo-001` Profile 仍解析为
+  `custom` CLIProxyAPI 路由、逻辑/物理模型均为 `gpt-5.6-sol`、reasoning=`max`、单候选
+  且 `fallback=false`；本次 completion 调用数为 0。记录见
+  [`me_01_model_binding_preflight_2026_08_25.md`](./me_01_model_binding_preflight_2026_08_25.md)。
+  该检查不替代正式二进制、full-access 与真实请求 usage 审计；
 - 完成 `terminal-bench-four-arm-prior-40-v1` 四臂正式运行，160/160 trial 均保留。以
   Harbor/Terminal-Bench 官方评分器为对外主口径：原生 Morphz 30/40（75.0%）、官方
   Codex CLI 28/40（70.0%）、Morphz+v0.5 23/40（57.5%）、Morphz+辩证实践 Mind

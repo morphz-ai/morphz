@@ -1,0 +1,13 @@
+{
+  "checked_at": "2026-08-25",
+  "logical_model": "gpt-5.6-sol",
+  "morphz_profile_loaded": true,
+  "passed": true,
+  "physical_model": "gpt-5.6-sol",
+  "profile": "roadshow-demo-001",
+  "provider": "custom",
+  "route_candidate_count": 1,
+  "route_fallback": false,
+  "real_model_called": false,
+  "reasoning": "max"
+}
