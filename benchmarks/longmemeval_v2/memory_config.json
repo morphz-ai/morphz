@@ -1,0 +1,8 @@
+{
+  "memory_type": "morphz_structured_projection",
+  "memory_params": {
+    "top_state_count": 20,
+    "max_states_per_trajectory": 3,
+    "snippet_token_count": 192
+  }
+}
