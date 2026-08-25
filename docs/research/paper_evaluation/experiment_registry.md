@@ -72,6 +72,11 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   移除 `context_tx` 并在 Context 协议中报告不可用。当前仍未实现生产 arm adapters，
   `ready_for_real_model_smoke=false`，本 Gate 没有模型调用。完整记录见
   [`me_01_no_model_fixture_scorer_gate_2026_08_25.md`](./me_01_no_model_fixture_scorer_gate_2026_08_25.md)；
+- ME-01 生产 Runtime 内嵌因果 Gate 通过：deterministic fake Provider 下，full arm 通过
+  实际 `MorphzRuntime → context_tx → SQLite commit → act projection` 产生 1 次尝试和
+  1 次提交，提交 Frame 同时出现在 act 请求与最终 Context；同一生产路径的只读 arm
+  对 Provider 隐藏该工具，0 尝试、0 提交、0 Frame。该结果只证明接线真实性，不是模型
+  成绩；独立进程 adapter、跨 Session、重启和重评分 Gate 仍未完成；
 - 完成 `terminal-bench-four-arm-prior-40-v1` 四臂正式运行，160/160 trial 均保留。以
   Harbor/Terminal-Bench 官方评分器为对外主口径：原生 Morphz 30/40（75.0%）、官方
   Codex CLI 28/40（70.0%）、Morphz+v0.5 23/40（57.5%）、Morphz+辩证实践 Mind

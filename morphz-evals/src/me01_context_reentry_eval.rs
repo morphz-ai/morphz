@@ -1,8 +1,16 @@
 use chrono::Utc;
+use morphz::config::AppConfig;
+use morphz::event::Event;
+use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
+use morphz::memory::{NewSession, QueryFilter, SessionMountKind};
+use morphz::runtime::{MorphzRuntime, RuntimeToolPolicy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -150,6 +158,32 @@ pub struct Me01FakeGateSummary {
     pub negative_cases_rejected: usize,
     pub output_root: PathBuf,
     pub ready_for_runtime_adapter_implementation: bool,
+    pub ready_for_real_model_smoke: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Me01EmbeddedRuntimeArmGate {
+    pub arm: Me01Arm,
+    pub database_path: PathBuf,
+    pub fake_provider_calls: usize,
+    pub context_tx_tool_seen_by_provider: bool,
+    pub context_tx_attempts: usize,
+    pub context_tx_commits: usize,
+    pub committed_frame_visible_in_act_request: bool,
+    pub committed_frame_visible_in_final_context: bool,
+    pub final_response: String,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Me01EmbeddedRuntimeGateSummary {
+    pub protocol_id: String,
+    pub created_at: String,
+    pub output_root: PathBuf,
+    pub full_morphz: Me01EmbeddedRuntimeArmGate,
+    pub structured_no_direct_reentry: Me01EmbeddedRuntimeArmGate,
+    pub all_passed: bool,
+    pub real_model_called: bool,
     pub ready_for_real_model_smoke: bool,
 }
 
@@ -326,6 +360,46 @@ pub fn run_me01_fake_gate(base_dir: Option<&Path>) -> Result<Me01FakeGateSummary
     Ok(summary)
 }
 
+pub async fn run_me01_embedded_runtime_gate(
+    base_dir: Option<&Path>,
+) -> Result<Me01EmbeddedRuntimeGateSummary, DynError> {
+    let fixture = load_me01_fixtures()?
+        .into_iter()
+        .find(|fixture| fixture.visible.family == "delayed_reference")
+        .ok_or("ME-01 delayed-reference fixture is missing")?;
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-me01-runtime-gates"));
+    std::fs::create_dir_all(&base)?;
+    let output_root = base.join(format!(
+        "ME-01-embedded-runtime-gate-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&output_root)?;
+
+    let full_morphz = run_embedded_runtime_arm(&output_root, &fixture, Me01Arm::FullMorphz).await?;
+    let structured_no_direct_reentry =
+        run_embedded_runtime_arm(&output_root, &fixture, Me01Arm::StructuredNoDirectReentry)
+            .await?;
+    let all_passed = full_morphz.passed && structured_no_direct_reentry.passed;
+    let summary = Me01EmbeddedRuntimeGateSummary {
+        protocol_id: ME01_PROTOCOL_ID.to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        output_root: output_root.clone(),
+        full_morphz,
+        structured_no_direct_reentry,
+        all_passed,
+        real_model_called: false,
+        ready_for_real_model_smoke: false,
+    };
+    std::fs::write(
+        output_root.join("summary.json"),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    Ok(summary)
+}
+
 fn validate_fixture_pair(
     visible: &Me01VisibleFixture,
     hidden: &Me01HiddenFixture,
@@ -367,6 +441,261 @@ fn validate_fixture_pair(
         .into());
     }
     Ok(())
+}
+
+struct EmbeddedRuntimeFakeClient {
+    expected_action: Me01Action,
+    calls: AtomicUsize,
+    context_tx_tool_seen: AtomicBool,
+    frame_seen_in_act: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Client for EmbeddedRuntimeFakeClient {
+    async fn create_completion(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<Response, DynError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let prompt = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context_tx_exposed = tools.iter().any(|tool| tool.name == "context_tx");
+        self.context_tx_tool_seen
+            .fetch_or(context_tx_exposed, Ordering::SeqCst);
+
+        if prompt.contains("Return only the strict four-field JSON action contract") {
+            self.frame_seen_in_act
+                .fetch_or(prompt.contains("service-orion-current"), Ordering::SeqCst);
+            return Ok(Response {
+                content: serde_json::to_string(&self.expected_action)?,
+                tool_calls: Vec::new(),
+            });
+        }
+
+        if context_tx_exposed
+            && prompt.contains("ev-dr-001")
+            && !prompt.contains("service-orion-current")
+        {
+            let source_ref = observation_ref_before(&prompt, "ev-dr-001").unwrap_or("@e1");
+            let version = kernel_context_version(&prompt).unwrap_or(0);
+            let transaction = format!(
+                "(context-tx (base-version {version}) (reason \"ME-01 deterministic fake-provider contract gate\") (derive service-orion-current (from {source_ref}) (state (object-id service-orion) (deployment-channel blue-17) (authoritative-evidence ev-dr-001))))"
+            );
+            return Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "me01-context-tx-1".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: serde_json::json!({"transaction": transaction}).to_string(),
+                }],
+            });
+        }
+
+        Ok(Response {
+            content: "ME-01 stage state accepted.".to_string(),
+            tool_calls: Vec::new(),
+        })
+    }
+}
+
+async fn run_embedded_runtime_arm(
+    output_root: &Path,
+    fixture: &Me01FixturePair,
+    arm: Me01Arm,
+) -> Result<Me01EmbeddedRuntimeArmGate, DynError> {
+    if arm == Me01Arm::AppendOnly {
+        return Err("embedded Runtime gate does not run the append-only adapter".into());
+    }
+    let arm_root = output_root.join(arm.as_str());
+    let workspace_root = arm_root.join("workspace");
+    let artifact_root = arm_root.join("artifacts");
+    std::fs::create_dir_all(&workspace_root)?;
+    std::fs::create_dir_all(&artifact_root)?;
+    let database_path = arm_root.join("morphz.db");
+
+    let client = Arc::new(EmbeddedRuntimeFakeClient {
+        expected_action: fixture.hidden.expected.clone(),
+        calls: AtomicUsize::new(0),
+        context_tx_tool_seen: AtomicBool::new(false),
+        frame_seen_in_act: AtomicBool::new(false),
+    });
+    let mut config = AppConfig::default();
+    config.permissions.workspace_root = workspace_root.to_string_lossy().to_string();
+    config.background_task.artifact_dir = artifact_root.to_string_lossy().to_string();
+    config.orchestrator.context_transactions_enabled = arm == Me01Arm::FullMorphz;
+    let runtime = MorphzRuntime::builder(config, Arc::clone(&client) as Arc<dyn Client>)
+        .database_path(database_path.to_string_lossy())
+        .tool_policy(RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        })
+        .build()
+        .await?;
+    let mut replies = runtime.subscribe("chat/reply", 16);
+    runtime.start().await?;
+    let session_id = format!("me01-{}-session-a", arm.as_str());
+    let session = runtime
+        .ensure_session(NewSession {
+            id: session_id.clone(),
+            agent_id: runtime.identity().agent_id.clone(),
+            context_id: runtime.identity().context_id.clone(),
+            parent_session_id: None,
+            title: format!("ME-01 {} embedded Runtime gate", arm.as_str()),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await?;
+
+    let mut final_response = String::new();
+    for stage in &fixture.visible.stages {
+        let prompt = render_stage_prompt(stage)?;
+        session
+            .send(
+                prompt,
+                "ME-01-Fixture",
+                Some(format!("me01-{}-{}", arm.as_str(), stage.id)),
+            )
+            .await?;
+        let reply = wait_for_session_reply(&mut replies, &session_id).await?;
+        if stage.id == "act" {
+            final_response = reply;
+        }
+    }
+
+    let events = runtime
+        .query_events(QueryFilter {
+            context_id: Some(runtime.identity().context_id.clone()),
+            ..QueryFilter::default()
+        })
+        .await?;
+    let context_tx_attempts = count_context_tx_attempts(&events);
+    let context_tx_commits = events
+        .iter()
+        .filter(|event| event.topic == "chat/context_tx_committed")
+        .count();
+    let final_context = runtime
+        .context_encoding(&runtime.identity().context_id, &session_id)
+        .await?;
+    let committed_frame_visible_in_final_context =
+        final_context.sexpr.contains("service-orion-current");
+    let fake_provider_calls = client.calls.load(Ordering::SeqCst);
+    let context_tx_tool_seen_by_provider = client.context_tx_tool_seen.load(Ordering::SeqCst);
+    let committed_frame_visible_in_act_request = client.frame_seen_in_act.load(Ordering::SeqCst);
+    let task_action_valid = serde_json::from_str::<Me01Action>(&final_response)
+        .is_ok_and(|action| action == fixture.hidden.expected);
+    let passed = match arm {
+        Me01Arm::FullMorphz => {
+            context_tx_tool_seen_by_provider
+                && context_tx_attempts >= 1
+                && context_tx_commits >= 1
+                && committed_frame_visible_in_act_request
+                && committed_frame_visible_in_final_context
+                && task_action_valid
+        }
+        Me01Arm::StructuredNoDirectReentry => {
+            !context_tx_tool_seen_by_provider
+                && context_tx_attempts == 0
+                && context_tx_commits == 0
+                && !committed_frame_visible_in_act_request
+                && !committed_frame_visible_in_final_context
+                && task_action_valid
+        }
+        Me01Arm::AppendOnly => false,
+    };
+    let report = Me01EmbeddedRuntimeArmGate {
+        arm,
+        database_path,
+        fake_provider_calls,
+        context_tx_tool_seen_by_provider,
+        context_tx_attempts,
+        context_tx_commits,
+        committed_frame_visible_in_act_request,
+        committed_frame_visible_in_final_context,
+        final_response,
+        passed,
+    };
+    std::fs::write(
+        arm_root.join("gate.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    Ok(report)
+}
+
+fn render_stage_prompt(stage: &Me01Stage) -> Result<String, DynError> {
+    Ok(format!(
+        "ME-01 visible evidence for stage '{}':\n{}\n\nInstruction: {}\n\nThe final action contract, when requested, has exactly the fields action, object_id, value, and evidence_id.",
+        stage.id,
+        serde_json::to_string_pretty(&stage.events)?,
+        stage.instruction
+    ))
+}
+
+async fn wait_for_session_reply(
+    replies: &mut morphz::runtime::RuntimeEventStream,
+    session_id: &str,
+) -> Result<String, DynError> {
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return Err(format!("ME-01 embedded Runtime did not reply to {session_id}").into()),
+            event = replies.recv() => {
+                let event = event.ok_or("ME-01 reply stream closed")?;
+                if event.payload.get("session_id").and_then(serde_json::Value::as_str) == Some(session_id) {
+                    return Ok(event.payload.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().to_string());
+                }
+            }
+        }
+    }
+}
+
+fn count_context_tx_attempts(events: &[Event]) -> usize {
+    events
+        .iter()
+        .filter(|event| event.topic == "chat/assistant_call")
+        .filter(|event| {
+            event
+                .payload
+                .get("continuation_tool_calls")
+                .or_else(|| event.payload.get("transcript_tool_calls"))
+                .or_else(|| event.payload.get("tool_calls"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|calls| {
+                    calls.iter().any(|call| {
+                        call.get("function")
+                            .and_then(|function| function.get("name"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("context_tx")
+                    })
+                })
+        })
+        .count()
+}
+
+fn observation_ref_before<'a>(prompt: &'a str, marker: &str) -> Option<&'a str> {
+    let marker_index = prompt.find(marker)?;
+    let prefix = &prompt[..marker_index];
+    let start = prefix.rfind("@e")?;
+    let end = prefix[start + 2..]
+        .find(|character: char| !character.is_ascii_digit())
+        .map(|offset| start + 2 + offset)
+        .unwrap_or(prefix.len());
+    (end > start + 2).then_some(&prefix[start..end])
+}
+
+fn kernel_context_version(prompt: &str) -> Option<u64> {
+    let kernel = prompt.rfind("(kernel")?;
+    let suffix = &prompt[kernel..];
+    let version = suffix.find("(version ")? + "(version ".len();
+    let digits = suffix[version..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
 }
 
 fn implementation_violations(
@@ -646,6 +975,17 @@ mod tests {
         assert_eq!(summary.positive_strict_passes, 15);
         assert_eq!(summary.negative_cases_rejected, summary.negative_case_count);
         assert!(summary.ready_for_runtime_adapter_implementation);
+        assert!(!summary.ready_for_real_model_smoke);
+    }
+
+    #[tokio::test]
+    async fn embedded_production_runtime_commits_and_projects_only_in_the_full_arm() {
+        let directory = tempfile::tempdir().unwrap();
+        let summary = run_me01_embedded_runtime_gate(Some(directory.path()))
+            .await
+            .unwrap();
+        assert!(summary.all_passed, "{summary:?}");
+        assert!(!summary.real_model_called);
         assert!(!summary.ready_for_real_model_smoke);
     }
 }

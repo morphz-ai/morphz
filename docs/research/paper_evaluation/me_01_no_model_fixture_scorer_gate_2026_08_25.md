@@ -35,6 +35,8 @@ cargo test -p morphz-evals --lib me01_context_reentry_eval
 cargo clippy -p morphz-evals --lib -- -D warnings
 cargo run -q -p morphz-evals --bin me01_context_reentry_eval -- \
   fake-gate /private/tmp/morphz-me01-20260825
+cargo run -q -p morphz-evals --bin me01_context_reentry_eval -- \
+  embedded-runtime-gate /private/tmp/morphz-me01-20260825
 cargo test -p morphz --lib \
   disabled_context_transactions_are_unavailable_even_with_unused_budget
 cargo test -p morphz --lib \
@@ -50,6 +52,7 @@ cargo clippy -p morphz --lib -- -D warnings
 | 三组正例 | 15/15 strict pass |
 | 故意负例 | 5/5 被拒绝 |
 | ME-01 单元测试 | 5 passed |
+| 生产 Runtime 内嵌因果链测试 | 1 passed |
 | Runtime 只读 Context 定向测试 | 2 passed |
 | `morphz-evals` Clippy | 通过 |
 | `morphz` Clippy | 通过 |
@@ -74,6 +77,25 @@ cargo clippy -p morphz --lib -- -D warnings
   "ready_for_real_model_smoke": false
 }
 ```
+
+生产 Runtime 内嵌 Gate 输出：
+
+```text
+/private/tmp/morphz-me01-20260825/
+  ME-01-embedded-runtime-gate-20260825T032957.382Z-51675/
+```
+
+该 Gate 使用 deterministic fake Provider，但其余路径为实际 `MorphzRuntime`、实际生产
+工具 Registry、实际 SQLite、实际 EventBus/Orchestrator、实际 ContextEngine 和实际
+Context 投影：
+
+| Arm | Fake Provider 调用 | Provider 看到 `context_tx` | tx attempts | tx commits | 提交 Frame 出现在 act 请求/最终 Context |
+| --- | ---: | --- | ---: | ---: | --- |
+| `full_morphz` | 4 | 是 | 1 | 1 | 是 / 是 |
+| `structured_no_direct_reentry` | 3 | 否 | 0 | 0 | 否 / 否 |
+
+两组最终都按 fake Provider 的固定响应返回正确 JSON。该结果不衡量模型能力，只证明三组
+实验所要求的 capability 差异已经落在生产 Runtime 路径上，而不是落在 fixture 声明中。
 
 ## 4. 负例覆盖
 
@@ -104,12 +126,11 @@ Event History、重启和 Context inspection 模式。
 
 - `fixture_and_scorer_gate=true`；
 - `read_only_runtime_capability_gate=true`；
-- `production_arm_adapters_complete=false`；
+- `embedded_production_runtime_causal_gate=true`；
+- `standalone_process_arm_adapters_complete=false`；
 - `ready_for_real_model_smoke=false`；
 - `model_calls_this_gate=0`。
 
-下一步必须实现两个生产 Morphz adapter 和一个完整消息 adapter，并用 deterministic fake
-Provider 验证真实 `context_tx → SQLite commit → act projection` 因果链、跨 Session mount、
-每 episode 数据库隔离和原始产物重评分。只有这些 Gate 全部通过，才允许三组各 1 个真实
-smoke；不得从本报告直接跳到 15 episode Pilot。
-
+下一步必须完成两个独立进程 Morphz adapter 和一个完整消息 adapter，并验证跨 Session
+mount、每 episode 数据库隔离、进程重启、原始请求留存和原始产物重评分。只有这些 Gate
+全部通过，才允许三组各 1 个真实 smoke；不得从本报告直接跳到 15 episode Pilot。
