@@ -16,15 +16,16 @@
 | 项目 | 当前状态 | 发布要求 |
 | --- | --- | --- |
 | ME-01～ME-06 | 已完成并进入中英文稿 | 保持冻结数字、协议边界和限制条件 |
-| ME-07 | v2 Morphz/Letta/Mem0 adapter、持久化重载、精确模型绑定与三臂 scored smoke Gate 已通过；九份正式训练快照正在云端闭合，正式批次尚未启动 | 不报告旧 LongMemEval 或 A-MEM v1 局部结果；正式统计及人工校准闭合前只写方法、Gate 与预注册边界 |
+| ME-07 | v2 Morphz/Letta/Mem0 adapter、持久化重载、精确模型绑定、九份训练快照与三臂 scored smoke Gate 已通过；单次正式批次正在运行，目标为每 arm 150、总计 450 个 trial | 不报告旧 LongMemEval 或 A-MEM v1 局部结果；450 个终态结果、正式统计及人工校准闭合前只写方法、Gate 与预注册边界 |
 | ME-08 前 40 题 | 已冻结，Morphz 30/40、official Codex 28/40 | 只作冻结子集历史，不作为最终主结果 |
 | ME-08 后 49 题 | 已完成，Morphz 40/49、official Codex 45/49 | 与前 40 的身份和任务集合核验后合并 |
 | ME-08 历史完整 89 题 | 已完成，Morphz 70/89、Codex 73/89；差 −3.37pp，`p=0.678` | 保留为原始 Runtime、并发 1 的同环境 paired 历史结果；不得与后修复运行拼接 |
-| ME-08 `ad60e` Runtime 完整 89 题 | Morphz-only、并发 8、每题一次的独立刷新正在运行；Codex 不重跑；该冻结二进制包含 Objective 收敛修复，但早于随后发现的 `ac3344e` terminal handoff 修复 | 必须按官方 verifier `raw_reward` 闭合全部 89 题并通过唯一性、身份、哈希及失败保留 Gate；受 handoff 缺陷影响的任务只能另作 post-fix 诊断，不能改写原始 89 题 reward；历史 Codex 只能作为非同期参考 |
+| ME-08 `ad60e` Runtime 完整 89 题 | Morphz-only、并发 8、每题一次的独立刷新已完成，为 73/89；Codex 未同期重跑 | 作为非同期工程刷新单独报告；不得替换历史 paired 结果或据此重算显著性 |
+| ME-08 `4bbc3d63` Runtime 完整 89 题 | 纳入后续通用 Runtime 修复的 Morphz-only、并发 8、每题一次、零重试独立刷新正在运行；Codex 不重跑 | 必须按官方 verifier `raw_reward` 闭合全部 89 题并通过唯一性、Runtime/binary hash 及失败保留 Gate；历史 Codex 只能作为非同期参考 |
 
 ## 3. 最终结果必须同步的位置
 
-历史完整 89 题结果已生成，`ad60e` Runtime 的 Morphz-only 完整刷新尚未闭合；中英文稿必须在新结果通过 Gate 后同时更新：
+历史完整 89 题和 `ad60e` Morphz-only 刷新已生成；`4bbc3d63` Runtime 的 Morphz-only 完整刷新尚未闭合。中英文稿必须在新结果通过 Gate 后同时更新：
 
 1. 稿件状态与进度行；
 2. 摘要中的 Terminal-Bench 数字和边界结论；
@@ -96,8 +97,9 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。本轮 `ad60e` Runtime
 
 - [x] 历史 ME-08 49 题 launcher 与两臂 official results 完整；本地扫描误报不覆盖官方评分；
 - [x] 历史合并 89 题时验证任务集合不重叠且并集恰为 89；
-- [ ] `ad60e` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
-- [ ] ME-07 九份快照、三臂正式批次、统计与盲评材料闭合；
+- [x] `ad60e` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
+- [ ] `4bbc3d63` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
+- [ ] ME-07 九份快照、450-trial 三臂正式批次、统计与盲评材料闭合；
 - [ ] 新结果进入主张—证据矩阵、实验登记及中英文摘要/正文/结论，且数字一致；
 - [ ] 最终全文无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；
 - [ ] 作者元数据由用户确认；

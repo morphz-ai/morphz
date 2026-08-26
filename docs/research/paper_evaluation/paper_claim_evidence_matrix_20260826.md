@@ -30,7 +30,7 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 
 ## 3. 正在完成的证据
 
-### ME-07：v2 公开 Agent 系统对照已冻结并进入云端训练，尚无正式效果证据
+### ME-07：v2 公开 Agent 系统对照已冻结并进入单次正式批次，尚无最终效果证据
 
 旧 ME-07 LongMemEval-V2 Small 运行使用了未经用户授权的替代 reader/judge 模型，已终止并
 保留审计记录；任何局部数量、分数或延迟均不进入本文证据。替代方案已选择 STATE-Bench
@@ -40,25 +40,28 @@ reference agent；no-memory 不作为正式实验臂。A-MEM v1 的 adapter/产�
 Prompt、状态表示与调度作为端到端系统差异保留。评测器改为盲化的 GPT-5.6 Sol/max 更新版
 协议；结果不会与历史 GPT-5.4 官方榜直接比较。
 
-三臂 adapter、持久化重载、精确物理模型绑定和同题 scored smoke 已通过；Letta 三领域及
-Morphz/Mem0 的本机完整领域快照已经生成并上传。Morphz 与 Mem0 的剩余云端训练、九份快照
-assembly、正式 smoke、2,250 个 trial、聚类统计和盲评包仍在自动流水线中，因此当前仍不提供
-ME-07 效果结论。正式 Runtime 使用组合 commit
+三臂 adapter、持久化重载、精确物理模型绑定、九份训练快照 assembly 和同题 scored smoke
+已通过。成本修订在查看任何正式效果量之前冻结：保留三个领域全部 150 个 held-out task，
+每题运行一次，即每 arm 150、合计 450 个 trial；原五次队列已完成的前 31 个 cell 恰好是该
+单次队列的前缀并原样保留。正式批次、聚类统计和盲评包尚未闭合，因此当前仍不提供 ME-07
+效果结论。正式 Runtime 使用组合 commit
 `2249878536ce5f7a8d7449add2f5c8743395b69b`，其中包含 durable request—reply fence 与
 terminal commit—delivery/SQLite cancellation-safe 修复；Linux 二进制已通过无模型交付 Gate。
 
-### ME-08：`ad60e` Runtime Morphz-only 89 题刷新进行中
+### ME-08：最新通用修复基线的 Morphz-only 89 题刷新进行中
 
-历史 70/89 对 73/89 仍是唯一同期 paired 证据。新运行使用包含 Objective 收敛契约的
-`ad60e` Morphz Runtime、并发 8、每题一次及零重试，只刷新 Morphz，不重跑 Codex。该二进制
-早于运行期间随后确认的 `ac3344e` terminal commit—delivery/SQLite cancellation-safe 修复；
-冻结运行中的原始 reward 不追改，受影响任务只允许在修复后另作诊断。它必须作为新的
-Morphz-only 系统能力测量独立报告；历史 Codex 只能作为不同并发、不同时间的非同期参考。
-在 89 个官方 verifier reward 与身份/唯一性/哈希 Gate 闭合前，不写入新效果数字。
+历史 70/89 对 73/89 仍是唯一同期 paired 证据；`ad60e` 的 Morphz-only 89 题刷新已得 73/89，
+但不替代历史 paired 结果。当前正式刷新使用组合 commit
+`4bbc3d63f4bda09947dc79dc5656edc71f8c02fa` 及固定 release binary
+`31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`，纳入随后确认的通用
+终态交付、SQLite 取消安全、永久安全拒绝分类及视觉 Context 计量/投影修复；并发 8、每题
+一次、零重试，只刷新 Morphz，不重跑 Codex。它仍必须作为独立的 Morphz-only 系统能力测量
+报告；历史 Codex 只能作为不同时间、不同并发的非同期参考。在 89 个官方 verifier reward 与
+身份/唯一性/哈希 Gate 闭合前，不写入新效果数字。
 
-论文放置规则已经冻结：历史 Morphz↔Codex 同期、同并发 89 题对照保留为摘要和正文的主外部
-效度结果；`ad60e` Morphz-only 刷新只进入 ME-08 小节的系统迭代补充或附录，不替换 paired
-主结果，也不重新计算 paired 显著性；`ac3344e` 后受影响题复测只进入 Runtime 失败诊断。
+论文放置规则已经冻结：历史 Morphz↔Codex 同期、同并发 89 题对照保留为主外部效度结果；
+`ad60e` 与 `4bbc3d63` Morphz-only 刷新只进入 ME-08 小节的系统迭代补充或附录，不替换
+paired 主结果，也不重新计算 paired 显著性。
 
 ## 4. 论文结果组织
 
