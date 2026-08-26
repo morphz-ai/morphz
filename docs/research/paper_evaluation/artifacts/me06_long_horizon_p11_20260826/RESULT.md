@@ -64,11 +64,12 @@ checkpoint 都处于 normal pressure，后续报告以实际 `runtime/model_usag
 | controlled compaction | 39 | 286,907 | 23,429 | 310,336 |
 | full Morphz | 97 | 4,923,739 | 169,882 | 5,093,621 |
 
-本轮完整 Morphz 的总 token 是基线约 `16.4×`，主要来自生产系统提示、工具 schema、完整 Context
-投影和 52 次认知维护调用。这是明显的效率代价，不能隐藏，也不能从本 Pilot 宣称 Token 优势。
-它同时指出了后续工程优化方向：更小的任务投影、减少无变化 checkpoint 的维护调用、压缩工具
-schema 和避免重复重写大型 Frame。论文应把“获得额外状态/事务能力”与“当前实现的调用成本”
-同时报告。
+本轮完整 Morphz 的总 token 是受控参照约 `16.4×`，主要来自生产系统提示、工具 schema、完整
+Context 投影和 52 次认知维护调用。这个原始差异必须报告，但不能越界解释：受控参照是为隔离
+状态机制构造的精简实现，不是 Codex、Claude Code 或另一套完整 Agent Runtime；两组 system
+scaffold 也不相同。因此该比例是本协议下的工程画像，不是 Structured Context 成本的因果估计，
+更不是完整 Agent 产品间的效率排名。它仍指出了后续可测的优化方向：更小的任务投影、减少
+无变化 checkpoint 的维护调用、压缩工具 schema 和避免重复重写大型 Frame。
 
 ## 有效性边界
 
@@ -94,8 +95,10 @@ schema 和避免重复重写大型 Frame。论文应把“获得额外状态/事
 > Across three paired long-horizon fixtures, Morphz and a controlled-compaction baseline both
 > achieved 3/3 semantic task success and 24/24 correct final state fields. Morphz additionally
 > exercised persistent cross-session Context, versioned Frame transactions, restart recovery,
-> Context isolation, and causal audit, but incurred substantially higher token cost in the current
-> implementation.
+> Context isolation, and causal audit. Its full production path recorded substantially more tokens
+> than the purpose-built controlled reference, but the non-isomorphic scaffolds do not support a
+> competitive efficiency conclusion against complete Agents.
 
-不能写：Morphz 在准确率或 token 上优于 compaction、三个 fixture 构成统计显著性、当前实现
-已经优化到生产成本下限，或本实验代表公开长期记忆榜单成绩。
+不能写：Morphz 在准确率或 Token 上优于完整 Agent，或因这项原始比例而劣于完整 Agent；也不能
+写三个 fixture 构成统计显著性、当前实现已经优化到生产成本下限，或本实验代表公开长期记忆
+榜单成绩。

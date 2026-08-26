@@ -3,6 +3,7 @@
 > 日期：2026-08-26
 > 状态：`complete`
 > 主口径：Terminal-Bench 官方 verifier `raw_reward`
+> Morphz Runtime：`5e4b0ffcd89245f19d84ec3569605ae27a44e02b`（历史 pre-fix 基线）
 
 ## 结论
 
@@ -22,7 +23,9 @@ Codex-only 通过 13 题、两者都通过 60 题、两者都失败 6 题。disc
 因此，本轮没有检测到两者的统计显著差异。描述性结果是 Morphz 低 3 题；区间仍较宽，不能
 据此宣称 Morphz 严格非劣、等价或优于 Codex。可以支持的克制结论是：Morphz 在获得
 Structured Context、持久事务、跨 Session 与恢复等额外机制后，在这次同环境完整公开任务
-对照中表现与 Codex 处于同一量级，未观察到灾难性通用能力退化。
+对照中表现与 Codex 处于同一量级，未观察到灾难性通用能力退化。该 Morphz commit 早于
+后续确认的 terminal-handoff、永久 safety-refusal、视觉输入计量等修复，因而本报告是有效冻结的
+历史对照，不代表当前 post-fix Runtime 的分数或效率。
 
 ## 冻结子集
 
@@ -42,11 +45,16 @@ Morphz 二进制、Codex 版本、数据集 digest、模型、权限、并发和
 | Provider-reported input tokens | 51,876,233 | 72,086,336 |
 | Provider-reported cache tokens | 4,196,352 | 66,423,296 |
 | Provider-reported output tokens | 1,329,856 | 1,160,938 |
+| Provider-reported input + output | 53,206,089 | 73,247,274 |
+| 每已尝试任务 input + output | 597,821 | 823,003 |
 | 两个子集各自墙钟之和 | 58,191.9 s | 49,177.8 s |
 | Harbor errored trials | 13 | 9 |
 
-输入与 cache 的记账方式受两个 Agent 的请求组织和 Provider 缓存影响；这些是描述性
-provider usage，不能单独证明 Morphz 的结构化 Context 更省 Token。Harbor 给 Codex 计算的
+在这次历史 pre-fix 运行中，Morphz 的报告总逻辑 Token 少 `27.4%`，累计墙钟长 `18.3%`。
+这只是该冻结运行的端到端工程画像，不估计当前 post-fix Runtime，也不能把任一差异因果归于
+Structured Context。缓存命中率不是架构效率评分：被任务投影省略的 Token 成本为零，而 cached Token
+仍会被传输、计量并按折扣价格收费。因此同任务下先报告总逻辑 Token，cache 只作为传输/计费分解，
+墙钟另列。Harbor 给 Codex 计算的
 72.44 美元是名义 API 价格估计；实际运行使用订阅/OAuth 路线，不是开发者 API 账单。
 部分被 Harbor 标记 errored 的 trial 仍留下 verifier 通过产物，因此异常数也不等于失败数。
 
