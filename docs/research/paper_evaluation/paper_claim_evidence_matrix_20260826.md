@@ -1,7 +1,7 @@
 # Morphz 论文主张—证据矩阵（2026-08-26）
 
 > 用途：作为中英文论文改稿的唯一数字与主张入口。最终论文可以压缩表达，但不得越过本表
-> 记录的证据边界。ME-08 历史完整 89 题结果与统计已经闭合；新 Runtime 的 Morphz-only
+> 记录的证据边界。ME-08 历史完整 89 题结果与统计已经闭合；`ad60e` Runtime 的 Morphz-only
 > 89 题刷新仍在运行。失败和无效启动不从审计记录删除，不把不同 Runtime 或并发条件的运行
 > 拼接成新的同期 paired 结果。
 
@@ -47,10 +47,12 @@ ME-07 效果结论。正式 Runtime 使用组合 commit
 `2249878536ce5f7a8d7449add2f5c8743395b69b`，其中包含 durable request—reply fence 与
 terminal commit—delivery/SQLite cancellation-safe 修复；Linux 二进制已通过无模型交付 Gate。
 
-### ME-08：新 Runtime Morphz-only 89 题刷新进行中
+### ME-08：`ad60e` Runtime Morphz-only 89 题刷新进行中
 
-历史 70/89 对 73/89 仍是唯一同期 paired 证据。新运行使用包含最新 Objective 收敛契约的
-Morphz Runtime、并发 8、每题一次及零重试，只刷新 Morphz，不重跑 Codex。它必须作为新的
+历史 70/89 对 73/89 仍是唯一同期 paired 证据。新运行使用包含 Objective 收敛契约的
+`ad60e` Morphz Runtime、并发 8、每题一次及零重试，只刷新 Morphz，不重跑 Codex。该二进制
+早于运行期间随后确认的 `ac3344e` terminal commit—delivery/SQLite cancellation-safe 修复；
+冻结运行中的原始 reward 不追改，受影响任务只允许在修复后另作诊断。它必须作为新的
 Morphz-only 系统能力测量独立报告；历史 Codex 只能作为不同并发、不同时间的非同期参考。
 在 89 个官方 verifier reward 与身份/唯一性/哈希 Gate 闭合前，不写入新效果数字。
 
@@ -60,7 +62,7 @@ Morphz-only 系统能力测量独立报告；历史 Codex 只能作为不同并�
 2. **非确定性认知求值及其边界：** ME-03、ME-05；
 3. **确定性权威与额外系统能力：** ME-04、ME-06；
 4. **长期状态与额外状态语义：** ME-06；
-5. **完整 Agent 外部系统效度：** ME-08 的历史 89 题同环境配对结果，以及单独报告的新 Runtime
+5. **完整 Agent 外部系统效度：** ME-08 的历史 89 题同环境配对结果，以及单独报告的 `ad60e` Runtime
    Morphz-only 刷新；
 6. **共同结论：** Morphz 改变状态与求值机制并获得持久、可寻址、可事务、跨 Session、恢复
    和审计能力；已有简单和外部任务证据未显示灾难性通用能力代价，但 ME-08 的宽区间不足以
@@ -76,6 +78,7 @@ Morphz-only 系统能力测量独立报告；历史 Codex 只能作为不同并�
   已通过，但正式批次和人工校准完成前不得报告效果；任何中止运行或旧 arm 的局部结果都不作为
   v2 论文效果证据；
 - ME-08 每题只运行一次，能够进行同环境 paired 描述和检验，但不能估计同题采样方差；
-- ME-08 新 Runtime 只刷新 Morphz，不能据此重算与历史 Codex 的同期 paired 显著性；
+- ME-08 `ad60e` Runtime 只刷新 Morphz，且早于 `ac3344e` handoff 修复；不能据此重算与历史
+  Codex 的同期 paired 显著性，也不能用 post-fix 单题诊断改写原始总分；
 - Provider refusal、timeout、Runtime 和 harness failure 必须分层，不按对某组有利的方向删除；
 - Program-valued `infer`、任意动态交替和“无限寿命 Agent”仍是未来能力。
