@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen post-fix ME-08 all-89 Morphz official-score refresh."""
+"""Run the frozen final-fix ME-08 all-89 Morphz official-score refresh."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from typing import Any
 from benchmarks.harbor.run_benchmark import LOCK_PATH, REPO_ROOT
 
 
-PROTOCOL = "me08-terminal-bench-postfix-all89-morphz-v2"
+PROTOCOL = "me08-terminal-bench-finalfix-all89-morphz-v3"
 FIRST_40_PATH = Path(__file__).with_name("first_40_tasks_v1.json")
 REMAINING_49_PATH = Path(__file__).with_name("remaining_49_tasks_v1.json")
-EXPECTED_RUNTIME_COMMIT = "ad60e300f115fe84e03a8cd3ab70940deb06ae68"
+EXPECTED_RUNTIME_COMMIT = "a00296e1d2bb95d0b1effeb040911b386a18106f"
 EXPECTED_RUNTIME_BINARY_SHA256 = (
-    "af41ba739096f1970a5439d97d21e7ea237937278a7b2c689d990990b00ab0a6"
+    "4c845f9c0cd47394d11b3233de7d77b3052ae54a26b027b33647788da27d5029"
 )
 CONCURRENCY_PER_ARM = 8
 RUN_ARMS = ("morphz-native",)
@@ -71,7 +71,7 @@ def load_tasks() -> tuple[list[str], dict[str, Any], dict[str, Any]]:
         raise RuntimeError("task manifest source commit differs from toolchain lock")
     runtime = lock["runtime"]
     if runtime.get("git_commit") != EXPECTED_RUNTIME_COMMIT:
-        raise RuntimeError("toolchain lock is not pinned to the post-fix Runtime")
+        raise RuntimeError("toolchain lock is not pinned to the final-fix Runtime")
     if runtime.get("binary_sha256") != EXPECTED_RUNTIME_BINARY_SHA256:
         raise RuntimeError("toolchain lock has an unexpected Runtime binary")
     model = lock["model"]
@@ -262,7 +262,7 @@ def summarize(
         "maximum_simultaneous_trials": CONCURRENCY_PER_ARM,
         "run_arms": list(RUN_ARMS),
         "codex_rerun_performed": False,
-        "historical_codex_reference_must_be_reported_as_noncontemporaneous": True,
+        "external_codex_pair_required": True,
         "return_codes": return_codes,
         "arms": {
             "morphz-native": {
@@ -297,6 +297,7 @@ def main() -> int:
                     "maximum_simultaneous_trials": CONCURRENCY_PER_ARM,
                     "run_arms": list(RUN_ARMS),
                     "codex_rerun_performed": False,
+                    "external_codex_pair_required": True,
                     "runtime_commit": EXPECTED_RUNTIME_COMMIT,
                     "runtime_binary_sha256": EXPECTED_RUNTIME_BINARY_SHA256,
                     "commands": commands,
@@ -332,6 +333,7 @@ def main() -> int:
         "maximum_simultaneous_trials": CONCURRENCY_PER_ARM,
         "run_arms": list(RUN_ARMS),
         "codex_rerun_performed": False,
+        "external_codex_pair_required": True,
         "runtime_commit": EXPECTED_RUNTIME_COMMIT,
         "runtime_binary_sha256": EXPECTED_RUNTIME_BINARY_SHA256,
         "model": "gpt-5.6-sol",
