@@ -1,6 +1,6 @@
 # ME-07 云端正式执行交接记录（2026-08-26）
 
-> 状态：`local-training-complete / local-artifacts-uploaded / cloud-finalizer-active / formal-not-started`
+> 状态：`local-training-complete / local-artifacts-uploaded / runtime-release-r3-passed / cloud-finalizer-active / formal-not-started`
 >
 > 协议：`ME-07-STATE-Bench-public-agent-systems-v2`
 
@@ -107,3 +107,11 @@ exit code 0 退出并已卸载，因此从这一时刻起，云端剩余训练�
 `eb4129efbfdf7381a575f994ca09f74fc8bcc9695b3e91885ab75084a30bb667`，升级过程没有中断两条
 训练服务。正式批次将在新 Runtime 通过发布 Gate、九份快照通过 assembly Gate 且节点释放后
 由 finalizer 启动。
+
+23:03 前，release Gate 已闭合：adapter 与通用修复合并 commit 为 `2249878`，Linux binary
+SHA-256 为 `7b0c63cd685f4b4420f362bea1f986fa4546ad27482802aec5af3c9cbdbb356e`。本机组合分支
+通过 Morphz lib 1004 项和 Evals 87+3 项测试；云端无模型 Gate 进一步验证一次且仅一次
+durable reply、`thread_outcomes.delivered_at` 非空、进程退出后可立即重新取得 SQLite
+`BEGIN IMMEDIATE` 写事务，且 model calls 为 0。machine-readable release receipt
+SHA-256 为 `95e339110a085b03e7166f11353020a50909270f42b331fd937fc6bd234ff072`。finalizer 已可读取
+该 receipt，但仍按顺序等待两条训练服务闭合；发布门没有中断或改写正在形成的训练快照。
