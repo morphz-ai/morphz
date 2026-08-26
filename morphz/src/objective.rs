@@ -40,7 +40,20 @@ pub const TYPE_OBJECTIVE_CONTROL: &str = "objective_control";
 /// it.
 pub const MODEL_CONFIGURATION_RESOURCE: &str = "model-configuration";
 pub const TYPE_MODEL_CONFIGURATION_CHANGED: &str = "runtime/model_configuration_changed";
-const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = "Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.";
+const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = r#"Continue working autonomously toward the full stated Objective. Ending one Evaluation does not narrow, redefine, or complete the Objective.
+
+Work from authoritative current state. Previous conversation and Mind may locate work, but files, tool results, persisted Runtime state, external state, and verified artifacts decide what is true now.
+
+Before choosing the next action, classify the previous Objective Evaluation:
+- progress: it changed authoritative state, completed real work, or produced evidence that changes the next action. An exploration that finds no confirming evidence still counts when it eliminates a live hypothesis or materially changes the search frontier;
+- verified-wait: it is waiting on a specific process, Session, Job, tool handle, scheduler dependency, external event, permission, resource, or deadline whose nonterminal state is currently verified;
+- no-progress: it only restated status or plans, reread unchanged evidence, repeated an equivalent action, or ended without changing state, evidence, the search frontier, or the next action.
+
+After no-progress, revalidate the relevant state and take the next materially different safe action. Do not repeat an equivalent investigation merely because its wording differs. If no action is possible because the same genuine blocker remains, preserve that blocker across Evaluations. Mark blocked only after the same blocker has been confirmed in at least three consecutive Objective Evaluations and neither an exact Runtime wait nor another reliable progress path exists.
+
+Use objective_update(status=active, wait_condition=...) for an exact verifiable wait. Do not use ordinary text, a plan, or intent as a substitute for a durable wait.
+
+Before completion, derive every explicit requirement, named artifact, command, test, invariant, and deliverable from the original Objective. Inspect authoritative evidence for each item and treat missing, weak, indirect, or merely compatible evidence as incomplete. Do not redefine success around existing work, a smaller scope, or what is easiest to verify. When evidence proves every required item and no required work remains, call objective_update(status=completed) before the complete final report."#;
 const OBJECTIVE_RECONCILE_BATCH: usize = 128;
 const OBJECTIVE_RECONCILE_DIRTY_CONTEXT_BATCH: usize = 32;
 const OBJECTIVE_RECONCILE_FALLBACK_INTERVAL: std::time::Duration =
@@ -706,7 +719,7 @@ impl Tool for ObjectiveUpdateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_update".to_string(),
-            description: "Explicitly submit Runtime control state for the current long-term Objective. completed first persists finalizing intent, then the Runtime asks you for a complete final reply in the same Activation; the Objective, Activation, and Thread complete atomically only when that reply is committed. completed requires a truthful reason and existing evidence refs. Keep status active with wait_condition when waiting for a definite event. Use blocked only when the Runtime cannot wait automatically and no reliable path remains. The Agent cannot pause or cancel through this tool.".to_string(),
+            description: "Explicitly submit Runtime control state for the current long-term Objective. completed first persists finalizing intent, then the Runtime asks you for a complete final reply in the same Activation; the Objective, Activation, and Thread complete atomically only when that reply is committed. completed requires a truthful reason and existing evidence refs. Keep status active with wait_condition when waiting for a definite event. Use blocked only after the same genuine blocker has been confirmed in at least three consecutive Objective Evaluations and the Runtime cannot wait automatically and no reliable progress path remains. The Agent cannot pause or cancel through this tool.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -5980,13 +5993,49 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(continuations.iter().any(|event| {
-            event
+        let continuation = continuations
+            .iter()
+            .find(|event| {
+                event
+                    .payload
+                    .get("objective_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(resumed.id.as_str())
+            })
+            .expect("Objective wake must persist one continuation");
+        assert_eq!(
+            continuation
                 .payload
-                .get("tool_name")
-                .and_then(serde_json::Value::as_str)
-                == Some("objective_supervisor")
-        }));
+                .get("wake_source")
+                .and_then(serde_json::Value::as_str),
+            Some("active-no-wait")
+        );
+        let text = continuation
+            .payload
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .expect("Objective continuation must carry its semantic contract");
+        assert!(text.contains("classify the previous Objective Evaluation"));
+        assert!(text.contains("eliminates a live hypothesis"));
+        assert!(text.contains("take the next materially different safe action"));
+        assert!(text.contains("at least three consecutive Objective Evaluations"));
+        assert!(text.contains("call objective_update(status=completed)"));
+    }
+
+    #[test]
+    fn continuation_contract_distinguishes_exploration_from_repetition() {
+        let contract = OBJECTIVE_CONTINUATION_INSTRUCTION;
+
+        assert!(contract.contains("progress:"));
+        assert!(contract.contains("verified-wait:"));
+        assert!(contract.contains("no-progress:"));
+        assert!(contract.contains("finds no confirming evidence still counts"));
+        assert!(contract.contains("eliminates a live hypothesis"));
+        assert!(contract.contains("repeated an equivalent action"));
+        assert!(contract.contains("same blocker has been confirmed"));
+        assert!(contract.contains("every explicit requirement"));
+        assert!(contract.contains("missing, weak, indirect"));
+        assert!(!contract.contains("token budget"));
     }
 
     #[tokio::test]
