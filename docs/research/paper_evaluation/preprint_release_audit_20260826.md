@@ -7,6 +7,7 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
+- 双语结果整合提交：`morphz-ai-biz@3158104`
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 
@@ -84,5 +85,5 @@
 - [x] 主张—证据矩阵、实验登记、中英文摘要/正文/结论数字一致；
 - [x] 无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；
 - [ ] 作者元数据由用户确认；
-- [ ] `git diff --check`、引用集合、Markdown 结构和限定范围提交通过；
+- [x] `git diff --check`、引用集合、Markdown 结构和限定范围提交通过；
 - [ ] 最终中英文稿由用户人工通读后再公开。
