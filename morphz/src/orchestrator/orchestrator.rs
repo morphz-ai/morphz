@@ -10489,7 +10489,11 @@ impl Orchestrator {
                     lease.release();
                 }
                 self.refill_activation_admission_queue().await?;
-                self.execute_tool_calls(
+                // `run_attempt_inner` already carries a large async state
+                // machine. Keep the coordination tool executor behind a heap
+                // boundary so enabling this optional path does not increase
+                // every ordinary Evaluation's stack requirement.
+                Box::pin(self.execute_tool_calls(
                     session_id,
                     &attempt_id,
                     response,
@@ -10506,7 +10510,7 @@ impl Orchestrator {
                         model_attempt_id: None,
                         provider_continuation: None,
                     },
-                )
+                ))
                 .await?;
                 return Ok(());
             }
