@@ -1,0 +1,93 @@
+{
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "status": "candidate / letta-adapter-and-artifact-gate-pending / updated-evaluator-gate-pending",
+  "supersedes": "ME-07-STATE-Bench-strong-memory-v1",
+  "formal_arms": [
+    "morphz",
+    "letta",
+    "mem0"
+  ],
+  "forbidden_formal_arms": [
+    "amem",
+    "no_memory",
+    "messages_only"
+  ],
+  "upstreams": {
+    "state_bench": {
+      "repository": "https://github.com/microsoft/STATE-Bench",
+      "commit": "5644b1838d96bc4483da29642d058ecaa6f80f7f",
+      "version": "0.8.1",
+      "license": "MIT"
+    },
+    "letta": {
+      "repository": "https://github.com/letta-ai/letta",
+      "tag": "0.16.8",
+      "commit": "1131535716e8a31c9a437f8695e25ac98f203a24",
+      "version": "0.16.8",
+      "license": "Apache-2.0",
+      "scope": "complete_agent_runtime"
+    },
+    "mem0": {
+      "repository": "https://github.com/mem0ai/mem0",
+      "tag": "v2.0.19",
+      "commit": "dc82354e143c2581d505d581a00286d6ef8c3605",
+      "version": "2.0.19",
+      "license": "Apache-2.0",
+      "scope": "memory_layer_with_frozen_reference_agent"
+    },
+    "morphz": {
+      "candidate_runtime_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
+      "runner_commit": null,
+      "scope": "complete_agent_runtime",
+      "replacement_requires_new_lock": true
+    }
+  },
+  "reasoning_model": {
+    "route": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider": "cliproxyapi",
+    "api": "responses",
+    "fallback": false
+  },
+  "updated_evaluation_model": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider": "cliproxyapi",
+    "api": "responses",
+    "roles": [
+      "user_simulator",
+      "task_requirements_judge",
+      "ux_judge"
+    ],
+    "arm_identity_blinded": true,
+    "official_leaderboard_comparable": false,
+    "human_validation_required": true
+  },
+  "dataset": {
+    "domains": [
+      "travel",
+      "customer_support",
+      "shopping_assistant"
+    ],
+    "train_trajectories_per_domain": 100,
+    "heldout_tasks_per_domain": 50,
+    "heldout_oracle_access": false
+  },
+  "formal_run": {
+    "num_runs": 5,
+    "trials_per_arm": 750,
+    "total_trials": 2250,
+    "heldout_snapshot_isolation": true,
+    "training_and_memory_costs_counted": true
+  },
+  "statistics": {
+    "primary_metric": "updated_protocol_pass_at_1",
+    "paired_contrasts": [
+      "morphz_minus_letta",
+      "morphz_minus_mem0"
+    ],
+    "cluster_unit": "heldout_task",
+    "multiple_comparison_correction": "holm"
+  }
+}

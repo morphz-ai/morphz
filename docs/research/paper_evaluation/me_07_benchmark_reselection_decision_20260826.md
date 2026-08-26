@@ -1,5 +1,9 @@
 # ME-07 公开 Benchmark 重选决策（2026-08-26）
 
+> **后续修订：** 本文记录第一次 STATE-Bench 方案选择。A-MEM 与 Azure GPT-5.4 边界已被
+> [`me_07_state_bench_protocol_v2.md`](./me_07_state_bench_protocol_v2.md) 取代；当前正式
+> 候选为 Morphz、Letta、Mem0-backed reference agent 和更新版 GPT-5.6 Sol 评测协议。
+
 > 决策状态：`benchmark-selected / strong-baseline-protocol-frozen / no-model-adapter-gate-complete / locked-eval-access-gated`
 >
 > 结论：以 **STATE-Bench Agent Learning Track** 取代已取消的

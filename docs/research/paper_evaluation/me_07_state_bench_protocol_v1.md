@@ -1,5 +1,9 @@
 # ME-07 STATE-Bench 强记忆系统对照协议 v1
 
+> **历史协议，已由 v2 取代。** A-MEM 及其已完成的构建/重载 Gate 仅保留为审计历史，
+> 不再属于 ME-07 的当前正式对照。当前方案见
+> [`me_07_state_bench_protocol_v2.md`](./me_07_state_bench_protocol_v2.md)。
+
 > 状态：`protocol-frozen / artifact-build-and-reload-gate-complete / locked-eval-access-gated`
 >
 > 协议 ID：`ME-07-STATE-Bench-strong-memory-v1`

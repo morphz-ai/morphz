@@ -1,5 +1,9 @@
 # ME-07 锁定评测器访问 Gate（2026-08-26）
 
+> **历史 v1 Gate。** v2 不再等待 Azure GPT-5.4；当前更新版评测边界见
+> [`me_07_state_bench_protocol_v2.md`](./me_07_state_bench_protocol_v2.md)。本文件只保留
+> 旧协议为什么没有启动评分的审计事实。
+
 > 状态：`failed-closed / no-model-call / no-formal-trial`
 
 ## 结论

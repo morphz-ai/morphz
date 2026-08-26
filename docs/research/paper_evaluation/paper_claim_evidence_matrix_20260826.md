@@ -28,14 +28,16 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 
 ## 3. 正在完成的证据
 
-### ME-07：真实学习产物 Gate 已完成，尚无效果证据
+### ME-07：v2 公开 Agent 系统对照已选，尚无效果证据
 
 旧 ME-07 LongMemEval-V2 Small 运行使用了未经用户授权的替代 reader/judge 模型，已终止并
 保留审计记录；任何局部数量、分数或延迟均不进入本文证据。替代方案已选择 STATE-Bench
-Agent Learning，在同一 reasoning model、相同 train trajectories 与相同只读检索合同下比较
-生产 Morphz、A-MEM 和 Mem0；no-memory 不作为正式实验臂。三臂 adapter、真实学习、冻结、
-关闭后重载与检索 Gate 已全部通过。锁定的 GPT-5.4 Azure evaluation client 和完整 9 份领域
-学习产物尚未完成，因此 ME-07 仍不提供任何效果结论。
+Agent Learning。v2 比较生产 Morphz、完整开源 Agent Runtime Letta 与 Mem0-backed frozen
+reference agent；no-memory 不作为正式实验臂。A-MEM v1 的 adapter/产物 Gate 已归档，不能
+冒充 Letta Gate。v2 固定相同训练轨迹、基础模型、领域工具、任务、外部评分器和预算，内部
+Prompt、状态表示与调度作为端到端系统差异保留。评测器改为盲化的 GPT-5.6 Sol/max 更新版
+协议；结果不会与历史 GPT-5.4 官方榜直接比较。Letta adapter、三组真实产物和 scored smoke
+尚未完成，因此 ME-07 仍不提供任何效果结论。
 
 ## 4. 论文结果组织
 
@@ -54,8 +56,8 @@ Agent Learning，在同一 reasoning model、相同 train trajectories 与相同
 - ME-01/02/03 是 Pilot，部分 cell 存在天花板效应；
 - ME-05 的严格合同分与语义诊断分回答不同问题，二者都必须报告；
 - ME-06 只有 3 个 paired fixtures，不作统计显著性宣称；
-- ME-07 旧 LongMemEval 运行已取消；STATE-Bench 仅完成真实学习产物 Gate、尚无官方效果
-  结果；任何中止运行的局部结果都不作为论文效果证据；
+- ME-07 旧 LongMemEval 运行已取消；STATE-Bench v1 A-MEM Gate 也只作为历史，v2 Letta
+  Gate 尚未完成；任何中止运行或旧 arm 的局部结果都不作为 v2 论文效果证据；
 - ME-08 每题只运行一次，能够进行同环境 paired 描述和检验，但不能估计同题采样方差；
 - Provider refusal、timeout、Runtime 和 harness failure 必须分层，不按对某组有利的方向删除；
 - Program-valued `infer`、任意动态交替和“无限寿命 Agent”仍是未来能力。

@@ -6,9 +6,10 @@
 > 原则：先证明核心机制，再证明外部任务适用性；先做预实验（Pilot），再做确认性运行。
 
 > 2026-08-26 实施解释更新：旧 LongMemEval 方案因未经授权模型运行而取消，不提供任何效果
-> 证据。ME-07 随后重选 STATE-Bench Agent Learning，候选正式对照为生产 Morphz、A-MEM、
-> Mem0 三种都有长期学习能力的系统；no-memory 不作为正式实验臂。当前只完成 Benchmark 与
-> 研究问题选择，强基线版本、adapter 和锁定 GPT-5.4 评测访问尚未通过 Gate。ME-06 承担真实
+> 证据。ME-07 随后重选 STATE-Bench Agent Learning；2026-08-26 的 v2 又将冷门 A-MEM
+> 替换为完整开源 Agent Runtime Letta，当前正式对照为生产 Morphz、Letta 与 Mem0-backed
+> reference agent；no-memory 不作为正式实验臂。Letta adapter、真实产物和 GPT-5.6 Sol
+> 更新版评测器尚未通过 Gate。ME-06 承担真实
 > Morphz 长程状态证据，ME-08 Terminal-Bench 承担公开完整 Agent 外部验证。
 
 本文所称“预实验（Pilot）”，是正式实验前的小规模试跑，用于检查任务难度、评分器、方差、成本和样本量设计。预实验期间允许修改协议，因此其样本与冻结协议后的确认性实验隔离，不用于论文的最终显著性结论。
@@ -180,19 +181,21 @@ LongMemEval-V2 Small 旧方案及未经授权替代模型运行继续作为已�
 可复用认知是否改善 held-out 企业工具任务，而不是只测长期材料问答。
 
 正式实验不使用“无记忆 vs 有记忆”作为主对照，因为它只能证明记忆有用，不能区分 Morphz
-的独特价值。三个 arms 分别为生产 Morphz Structured Learning、A-MEM 和 Mem0；三者都从
-相同的三个领域各 100 条 train trajectory 形成学习产物，并经同一只读
-`retrieve_learnings(top_k=3)` 工具合同进入 held-out Agent。三臂使用同一
-`gpt-5.6-sol`/max reasoning Agent、同一工具和任务协议；方法自身的写入、索引、检索、模型
+的独特价值。三个 arms 分别为生产 Morphz、完整开源 Agent Runtime Letta 和 Mem0-backed
+frozen reference agent；三者都从相同的三个领域各 100 条 train trajectory 形成学习产物。
+Morphz 与 Letta 各自运行完整 Agent 工具循环，Mem0 通过冻结 reference Agent 进入 held-out
+任务。三臂固定同一 `gpt-5.6-sol`/max 基础模型、同一领域工具、任务、外部评分器与预算；
+内部 Prompt、状态表示与调度属于被测系统，不强行统一。方法自身的写入、索引、检索、模型
 调用和成本作为被测系统组成完整记录。
 
 正式协议为三个领域各 50 个 held-out tasks、每题 5 runs，即每臂 750、合计 2,250 trials。
-官方 user simulator/judge 必须使用 STATE-Bench 锁定的 GPT-5.4 Azure eval client；取得该
-访问并通过三臂 adapter/fake-client/隔离 Gate 前，不启动真实模型运行，也不允许使用其他
-可用模型替代。
+user simulator/judge 使用冻结的 `gpt-5.6-sol`/max 更新版 evaluator。任务、评分维度、
+确定性 scorer 与 judge Prompt 保持上游一致，但该结果不再与历史 GPT-5.4 官方榜直接可比，
+必须称为 STATE-Bench-derived updated-evaluator result。Letta adapter、快照隔离、精确模型
+绑定和人工抽样复核 Gate 通过前，不启动正式运行。
 
 协议与候选比较见
-[`me_07_benchmark_reselection_decision_20260826.md`](./me_07_benchmark_reselection_decision_20260826.md)。
+[`me_07_state_bench_protocol_v2.md`](./me_07_state_bench_protocol_v2.md)。
 
 ### ME-08：Terminal-Bench 2.1 完整 Agent 外部系统验证
 

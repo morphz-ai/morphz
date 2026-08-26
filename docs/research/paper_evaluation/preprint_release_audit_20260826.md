@@ -16,7 +16,7 @@
 | 项目 | 当前状态 | 发布要求 |
 | --- | --- | --- |
 | ME-01～ME-06 | 已完成并进入中英文稿 | 保持冻结数字、协议边界和限制条件 |
-| ME-07 | STATE-Bench 三强记忆臂协议、adapter 与真实学习产物构建/重载 Gate 已完成；锁定评测访问未完成 | 不报告旧 LongMemEval 局部结果；没有官方效果结果前只写方法与预注册边界 |
+| ME-07 | v2 已选 Morphz/Letta/Mem0 公开 Agent 系统；Letta adapter、真实产物与更新评测器 Gate 未完成 | 不报告旧 LongMemEval 或 A-MEM v1 局部结果；v2 完成前只写方法与预注册边界 |
 | ME-08 前 40 题 | 已冻结，Morphz 30/40、official Codex 28/40 | 只作冻结子集历史，不作为最终主结果 |
 | ME-08 后 49 题 | 已完成，Morphz 40/49、official Codex 45/49 | 与前 40 的身份和任务集合核验后合并 |
 | ME-08 完整 89 题 | 已完成，Morphz 70/89、Codex 73/89；差 −3.37pp，`p=0.678` | 同环境 paired 主结果；每题每 arm 一次；不得声称采样方差、形式化非劣或普遍优越 |
@@ -62,9 +62,9 @@
 - “开放求值 / open evaluation”只用于说明为何不采用该宽泛术语；
 - 两稿均明确 S-Expression 是当前表示选择，不是贡献本身；
 - 两稿均明确 Program-valued `infer` 是未来工作；
-- 两稿不报告 ME-07 效果分数；旧 LongMemEval-V2 只作为取消历史。STATE-Bench 三个强记忆
-  arms 的协议、adapter 与真实学习产物 Gate 可作为预注册/复现材料，但在锁定 evaluator 和
-  正式运行完成前不得写入效果数字。
+- 两稿不报告 ME-07 效果分数；旧 LongMemEval-V2 与 A-MEM v1 只作为取消/取代历史。
+  STATE-Bench v2 的 Morphz/Letta/Mem0 协议可作为预注册材料，但 Letta Gate、更新评测器
+  验证和正式运行完成前不得写入效果数字。
 
 ## 6. 尚需用户提供的发布元数据
 

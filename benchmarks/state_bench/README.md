@@ -1,13 +1,21 @@
 # Morphz × STATE-Bench Agent Learning
 
-This directory contains the frozen ME-07 integration layer. The formal
-comparison has three **strong-memory** arms:
+> **Current plan:** ME-07 v2 compares the public Agent systems Morphz, Letta,
+> and a Mem0-backed frozen reference agent. See
+> `protocol_lock_v2_candidate.json` and
+> `docs/research/paper_evaluation/me_07_state_bench_protocol_v2.md`.
+>
+> The A-MEM integration below belongs to superseded v1. It remains in the
+> repository only for historical reproducibility and MUST NOT be used as a v2
+> arm or described as a completed Letta Gate.
+
+The existing v1 integration layer had three **strong-memory** arms:
 
 1. production Morphz Structured Context / Mind Frames;
 2. the A-MEM-compatible implementation pinned from MemGym;
 3. Mem0 OSS.
 
-There is deliberately no no-memory arm. Such a control only establishes that
+V2 retains the deliberate exclusion of a no-memory arm. Such a control only establishes that
 past experience is useful and does not distinguish Morphz from ordinary memory
 systems. Public STATE-Bench no-memory rows may be cited as background, but no
 project budget is spent reproducing them.

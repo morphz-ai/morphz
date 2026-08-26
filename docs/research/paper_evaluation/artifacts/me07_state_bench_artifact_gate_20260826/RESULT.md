@@ -1,5 +1,8 @@
 # ME-07 STATE-Bench 三强记忆学习产物 Gate
 
+> **历史 v1 A-MEM Gate。** 该结果不能替代当前 v2 的 Letta adapter、学习产物或重载 Gate，
+> 也不提供任何效果分数。
+
 > 日期：2026-08-26
 > 状态：`artifact-build-and-reload-gate-complete / official-evaluation-not-run`
 > 性质：运行资格与持久化真实性验证，不是效果实验

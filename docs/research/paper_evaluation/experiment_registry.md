@@ -5,7 +5,15 @@
 
 ## Runtime 基线
 
-论文、路演和公开 Benchmark 的新实验当前默认 Runtime 源码基线为 [`paper-eval-runtime-v4`](./runtime_baseline_v4.md)，对应完整 commit `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`。历史 v3 继续对应 [`f875b93869282a14b738edec2f3a4069fd003600`](./runtime_baseline_v3.md)，历史 v2 对应 [`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
+新实验当前默认 Runtime 源码基线为完整 commit
+`ad60e300f115fe84e03a8cd3ab70940deb06ae68`，其中包含 Harbor workspace/exec drain
+修复和 Objective 通用收敛契约。已完成的 ME-06 与原始 ME-08 仍保留其历史
+[`paper-eval-runtime-v4`](./runtime_baseline_v4.md) 基线
+`5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；历史 v3 继续对应
+[`f875b93869282a14b738edec2f3a4069fd003600`](./runtime_baseline_v3.md)，历史 v2 对应
+[`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应
+[`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录
+实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
 
 ## 新实验统一运行约束
 
@@ -28,7 +36,7 @@
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
-| ME-07 | STATE-Bench Agent Learning 上的生产 Morphz/强记忆基线验证 | 外部效度/RQ5/RQ6 | P1 | 三强记忆臂协议、adapter 与真实学习产物构建/重载 Gate 全过；尚无效果结果 | `protocol-frozen / artifact-gate-complete / access-gated` | [`v1`](./me_07_state_bench_protocol_v1.md) | 构建 9 份完整领域学习产物；取得锁定 GPT-5.4 Azure eval client 后才允许 scored smoke |
+| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 Agent 集合与更新版评测边界已选，尚无 Letta Gate 或效果结果 | `v2-selected / letta-gate-pending / updated-evaluator-gate-pending` | [`v2 candidate`](./me_07_state_bench_protocol_v2.md) | 实现并验证 Letta 完整 Runtime adapter、三组真实产物与 GPT-5.6 Sol 更新评测器 smoke |
 | ME-08 | Terminal-Bench 2.1 完整 89 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | Morphz 70/89，Codex 73/89；差 −3.37pp，配对 `p=0.678` | `external-complete` | [`result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md) | 写入论文；保留单次采样、宽区间和非 leaderboard 边界，不选择性补跑 |
 
 ## 依赖
@@ -38,7 +46,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-02 ───────────┤
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
-       ├─> ME-07 (STATE-Bench；锁定评测访问 Gate)
+       ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
        └─> ME-08
 ```
 
@@ -61,6 +69,13 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-26
 
+- ME-07 v2 将 A-MEM 从正式 arm 中移除，改为公开 Agent Runtime Letta 0.16.8。当前正式
+  系统为 Morphz、Letta 与 Mem0-backed frozen reference agent；无记忆组继续排除。该变化
+  把主问题提升为公开 Agent 系统端到端对照，Morphz–Letta 差异不能被解释为单一记忆算法
+  的纯因果效应。历史 A-MEM adapter/产物 Gate 继续保留但不进入 v2。v2 同时放弃把 Azure
+  GPT-5.4 当作不可替换评测边界，改用盲化的 GPT-5.6 Sol/max 更新版 STATE-Bench 协议；
+  因此结果只能称为更新协议本地结果，不能与官方历史榜数字直接比较；
+
 - ME-08 后 49 题双臂批次正常结束，并与冻结的前 40 题合并为完整 89 题：Morphz
   70/89（78.65%），official Codex 73/89（82.02%）；Morphz-only/Codex-only 为 10/13，
   both-pass/both-fail 为 60/6，配对差 −3.37pp，双侧精确 `p=0.677639`，配对 bootstrap
@@ -68,12 +83,12 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   `-path /tests -prune` 排除表达式，认定为误报；按预注册规则仍以官方 verifier raw reward
   为主。后 49 题整机 942 个样本显示 16 logical CPU 的 1m load 平均 0.727、内存平均
   1.88 GiB/峰值 4.95 GiB，64 GiB 节点明显过量；
-- ME-07 三臂真实学习产物 Gate 完成。Morphz 通过生产 `context_tx`、checkpoint、Recall
+- 【v1 历史记录】ME-07 A-MEM 三臂真实学习产物 Gate 完成。Morphz 通过生产 `context_tx`、checkpoint、Recall
   audit 和新进程检索；A-MEM 与 Mem0 分别通过原生模型归纳、持久化关闭与新实例检索。
   三组使用同一官方训练轨迹并核验 `gpt-5.6-sol`/max。Mem0 adapter 修正了 procedural
   memory 必须按 `agent_id` 而非 `user_id` 检索的静默空结果问题。该 Gate 只证明三臂不是
-  fixture，不提供效果结论；完整领域产物和锁定 Azure GPT-5.4 官方评测仍为 access Gate；
-- ME-07 重选为 STATE-Bench Agent Learning Track。该 Track 使用历史 train trajectories 形成
+  fixture，不提供效果结论；该 Gate 已被 Letta v2 取代，不能作为当前三臂 Gate；
+- 【v1 历史决策】ME-07 当时重选为 STATE-Bench Agent Learning Track。该 Track 使用历史 train trajectories 形成
   可复用 learnings，并在 held-out 企业工具任务上评分，允许 custom `BaseAgent`/client 与
   只读 `retrieve_learnings(top_k=3)`，因此比 LongMemEval-V2 的长期问答投影更贴合
   “认知改变后续行动”的论文主张。初始 no-learning control 设计经用户审查后撤回：它只能
@@ -81,7 +96,7 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   三个都有长期学习能力的 arms；Agent 均使用 `gpt-5.6-sol`/max/CLIProxyAPI，官方
   simulator/judge 必须使用协议锁定的 GPT-5.4 Azure client。正式规模为每臂 750 trials、
   合计 2,250 trials；
-  当前因缺少锁定 eval client 保持 `access-gated`，不得擅自替换模型或启动真实运行。原
+  该 v1 决策随后已被上文 Morphz/Letta/Mem0 与更新评测器的 v2 协议取代。原
   LongMemEval-V2 方案继续作为已取消历史保留，不提供效果证据；
 - ME-07 方法边界复核确认：`morphz_structured_projection` 是有意隔离结构化记忆表示与投影
   方法的 reference implementation，而不是生产 Morphz 产品替身。它实现稳定 Frame、来源
