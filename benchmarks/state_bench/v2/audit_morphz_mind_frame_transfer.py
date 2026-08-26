@@ -8,6 +8,7 @@ created by the corresponding domain-training session.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
 from collections import Counter, defaultdict
@@ -41,7 +42,8 @@ def _audit_db(path: Path, domain: str, task_id: str) -> dict[str, Any]:
         ).fetchall()
         if len(projection) != 1:
             raise RuntimeError(f"{path}: expected one Mind projection")
-        state = json.loads(str(projection[0]["state_json"]))
+        state_json = str(projection[0]["state_json"])
+        state = json.loads(state_json)
         revision = int(projection[0]["revision"])
 
         training_commits = int(
@@ -94,6 +96,7 @@ def _audit_db(path: Path, domain: str, task_id: str) -> dict[str, Any]:
         "task_id": task_id,
         "runtime_db": str(path),
         "context_id": str(projection[0]["context_id"]),
+        "projection_state_sha256": hashlib.sha256(state_json.encode()).hexdigest(),
         "final_context_revision": revision,
         "training_context_transactions": training_commits,
         "active_mind_frames": len(frames),
@@ -160,6 +163,9 @@ def main() -> int:
             "final_context_revisions": sorted(
                 {row["final_context_revision"] for row in domain_records}
             ),
+            "projection_state_sha256s": sorted(
+                {row["projection_state_sha256"] for row in domain_records}
+            ),
             "active_mind_frames_range": _range(
                 [row["active_mind_frames"] for row in domain_records]
             ),
@@ -173,14 +179,36 @@ def main() -> int:
 
     failure_reasons = Counter()
     for record in records:
+        if record["context_id"] != f"me07-{record['domain']}-context":
+            failure_reasons["unexpected_context_id"] += 1
         if record["training_context_transactions"] != 100:
             failure_reasons["training_context_transactions_not_100"] += 1
         if record["final_context_revision"] != 100:
             failure_reasons["final_context_revision_not_100"] += 1
         if record["training_attributed_active_frames"] != record["active_mind_frames"]:
             failure_reasons["active_frame_without_training_attribution"] += 1
+        if record["active_mind_frames"] == 0:
+            failure_reasons["no_active_mind_frames"] += 1
+        if record["active_relations"] == 0:
+            failure_reasons["no_active_relations"] += 1
         if not record["all_held_out_calls_use_final_context"]:
             failure_reasons["held_out_call_not_on_final_context"] += 1
+    for summary in domain_summary.values():
+        if len(summary["context_ids"]) != 1:
+            failure_reasons["domain_has_multiple_context_ids"] += 1
+        if summary["final_context_revisions"] != [100]:
+            failure_reasons["domain_has_nonfinal_context_revision"] += 1
+        if len(summary["projection_state_sha256s"]) != 1:
+            failure_reasons["held_out_clones_do_not_share_one_frozen_mind"] += 1
+
+    unique_domain_snapshots = {
+        domain: {
+            "active_mind_frames": rows[0]["active_mind_frames"],
+            "active_relations": rows[0]["active_relations"],
+            "retired_objects": rows[0]["retired_objects"],
+        }
+        for domain, rows in sorted(by_domain.items())
+    }
 
     result = {
         "protocol_id": PROTOCOL_ID,
@@ -191,6 +219,11 @@ def main() -> int:
         "all_tasks_pass_trace_gate": not failure_reasons,
         "failure_reasons": dict(failure_reasons),
         "domain_summary": domain_summary,
+        "unique_domain_snapshot_counts": unique_domain_snapshots,
+        "unique_domain_snapshot_totals": {
+            key: sum(snapshot[key] for snapshot in unique_domain_snapshots.values())
+            for key in ("active_mind_frames", "active_relations", "retired_objects")
+        },
         "records": records,
         "interpretation_boundary": {
             "supports": (
@@ -220,6 +253,13 @@ def main() -> int:
             f"- Held-out tasks audited: **{len(records)}**",
             f"- All tasks passed the trace gate: **{not failure_reasons}**",
             "- Audit mode: read-only; no model calls and no rescoring",
+            (
+                "- Unique frozen domain snapshots: "
+                f"**{len(unique_domain_snapshots)}**; active Mind Frames: "
+                f"**{result['unique_domain_snapshot_totals']['active_mind_frames']}**; "
+                "Relations: "
+                f"**{result['unique_domain_snapshot_totals']['active_relations']}**"
+            ),
             "",
             "| Domain | Tasks | Context revision | Active Frames | Relations | Retired objects |",
             "| --- | ---: | --- | --- | --- | --- |",
