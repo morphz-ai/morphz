@@ -15,7 +15,7 @@
 | 项目 | 当前状态 | 发布要求 |
 | --- | --- | --- |
 | ME-01～ME-06 | 已完成并进入中英文稿 | 保持冻结数字、协议边界和限制条件 |
-| ME-07 | STATE-Bench 强记忆对照已选；访问与 adapter Gate 未完成 | 不报告旧 LongMemEval 局部结果；新实验完成前不写任何 ME-07 效果结论 |
+| ME-07 | STATE-Bench 三强记忆臂协议与无模型 adapter Gate 已完成；真实 artifact/锁定评测访问未完成 | 不报告旧 LongMemEval 局部结果；新实验完成前不写任何 ME-07 效果结论 |
 | ME-08 前 40 题 | 已冻结，Morphz 30/40、official Codex 28/40 | 最终稿不得把子集结果冒充完整 89 题或官方榜分 |
 | ME-08 剩余 49 题 | 冻结运行中 | 必须校验 launcher、两臂 strict result 和官方 verifier reward 后再合并 |
 | ME-08 完整 89 题 | 待生成 | 同环境 paired 主结果；每题每 arm 一次；不得声称采样方差或普遍优越 |
@@ -61,8 +61,9 @@
 - “开放求值 / open evaluation”只用于说明为何不采用该宽泛术语；
 - 两稿均明确 S-Expression 是当前表示选择，不是贡献本身；
 - 两稿均明确 Program-valued `infer` 是未来工作；
-- 两稿不报告 ME-07 效果分数；旧 LongMemEval-V2 只作为取消历史，STATE-Bench 三个强记忆
-  arms 只作为尚未完成的实验计划。
+- 两稿不报告 ME-07 效果分数；旧 LongMemEval-V2 只作为取消历史。STATE-Bench 三个强记忆
+  arms 的协议与 adapter Gate 可作为预注册/复现材料，但在真实 artifact、锁定 evaluator 和
+  正式运行完成前不得写入效果数字。
 
 ## 6. 尚需用户提供的发布元数据
 

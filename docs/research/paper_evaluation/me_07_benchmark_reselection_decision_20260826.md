@@ -1,6 +1,6 @@
 # ME-07 公开 Benchmark 重选决策（2026-08-26）
 
-> 决策状态：`benchmark-selected / strong-baseline-protocol-candidate / locked-eval-access-gated`
+> 决策状态：`benchmark-selected / strong-baseline-protocol-frozen / no-model-adapter-gate-complete / locked-eval-access-gated`
 >
 > 结论：以 **STATE-Bench Agent Learning Track** 取代已取消的
 > LongMemEval-V2 Small 方案；在锁定评测客户端凭据通过前，不启动真实模型运行。
@@ -123,12 +123,18 @@ ME-07 **不单独证明**：
 
 任何 Gate 失败都保留原始产物；不得静默替换模型、跳题、选择性补跑或调整评分口径。
 
-当前仅冻结 Benchmark 与三臂研究问题，**尚未冻结强基线软件版本**。已核对的候选来源为
-STATE-Bench commit `5644b1838d96bc4483da29642d058ecaa6f80f7f` 和 MemGym commit
-`50b404e6ae4e1fcd453d3e07963eb3e6312cbded`。后者的 Mem0 依赖仍写作
-`mem0ai[extras]>=0.1.0`，且其复现审计明确记录 A-MEM 依赖尚未完成复现；因此二者都不能直接
-当作已冻结、已验证的正式 adapter。进入第 2 项 Gate 时必须另行固定 A-MEM/Mem0 的精确
-上游版本、许可证、模型/embedding 配置与安装锁文件，并通过各自的最小真实写入—检索测试。
+强基线软件身份现已冻结。A-MEM arm 使用 MemGym commit
+`50b404e6ae4e1fcd453d3e07963eb3e6312cbded` 中可序列化的 A-MEM-compatible 实现，并在论文中
+明确披露它不是 agiresearch 原包；原始 A-MEM 参考 commit 固定为
+`ceffb860f0712bbae97b184d440df62bc910ca8d`。Mem0 固定为 v2.0.19 / commit
+`dc82354e143c2581d505d581a00286d6ef8c3605`，不采用 MemGym 的宽范围依赖。
+`all-MiniLM-L6-v2` 固定 revision
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`。机器可读版本与运行边界见
+[`../../../benchmarks/state_bench/protocol_lock.json`](../../../benchmarks/state_bench/protocol_lock.json)。
+
+无模型 adapter Gate 已通过，但这只证明协议、官方 300 条 train trajectory、extension
+discovery、共同 retrieval 合同与固定 `top_k=3` 闭环。三个真实学习 artifact 的构建/重载
+测试和 Azure GPT-5.4 evaluation client 绑定仍未完成，因此当前仍无 ME-07 效果结果。
 
 ## 8. 备选触发条件
 

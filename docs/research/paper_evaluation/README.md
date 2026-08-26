@@ -1,7 +1,8 @@
 # Morphz 论文实验中心
 
 > 状态：论文收口阶段（ME-01～ME-06 已完成；ME-07 已重选 STATE-Bench Agent Learning，
-> 当前处于锁定评测访问 Gate；ME-08 完整 89 题同环境 paired 对照正在闭合）
+> 三强记忆臂协议与无模型 adapter Gate 已完成，当前等待真实 artifact 与锁定评测访问；
+> ME-08 完整 89 题同环境 paired 对照正在闭合）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
@@ -19,7 +20,9 @@
 - [Runtime 实验基线 v4](./runtime_baseline_v4.md)：ME-06 与 ME-08 使用的冻结 Runtime 源码基线；
 - [ME-05 九模型跨模型结果](./artifacts/me05_nine_model_p1_20260826/RESULT.md)：144/144 完整，严格合同与事后语义诊断分开报告；
 - [ME-06 长程 paired 结果](./artifacts/me06_long_horizon_p11_20260826/RESULT.md)：两臂 3/3 fixture、24/24 最终字段、3/3 行动；Morphz 额外状态语义与 16.4× token 成本；
-- [ME-07 Benchmark 重选决策](./me_07_benchmark_reselection_decision_20260826.md)：选择 STATE-Bench Agent Learning，以生产 Morphz、A-MEM、Mem0 三个强记忆 arms 固定同一 reasoning model；no-memory 不作为主实验臂，锁定 GPT-5.4 Azure eval client 可用前不运行；
+- [ME-07 冻结协议](./me_07_state_bench_protocol_v1.md)：STATE-Bench Agent Learning 上生产 Morphz、A-MEM-compatible、Mem0 三个强记忆 arms；固定版本、同一 reasoning Agent、同一 retrieval 合同和锁定 GPT-5.4 Azure 评测边界；
+- [ME-07 无模型 Adapter Gate](./artifacts/me07_state_bench_adapter_gate_20260826/RESULT.md)：官方 300 条训练轨迹、版本锁、extension discovery、检索往返与固定 top-k 全部通过；模型调用为 0，不作为效果结果；
+- [ME-07 Benchmark 重选决策](./me_07_benchmark_reselection_decision_20260826.md)：记录为什么取消无记忆组并选择三种强记忆系统；锁定 GPT-5.4 Azure eval client 可用前不运行真实评分；
 - [ME-07 superseded LongMemEval 协议与取消边界](./me_07_longmemeval_v2_small_protocol_v1.md)：未经授权替代模型运行已中止，任何局部结果均不引用；
 - [ME-08 剩余 49 题冻结协议](./me_08_terminal_bench_remaining_49_protocol_v1.md)：与前 40 题合并为完整 89 题 Morphz/Codex 同环境一次配对结果；
 

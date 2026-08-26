@@ -28,7 +28,7 @@
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
-| ME-07 | STATE-Bench Agent Learning 上的生产 Morphz/强记忆基线验证 | 外部效度/RQ5/RQ6 | P1 | Benchmark 重选完成；三臂强基线纠偏完成；尚无效果结果 | `benchmark-selected / access-gated` | [`重选决策`](./me_07_benchmark_reselection_decision_20260826.md) | 实现 Morphz/A-MEM/Mem0 无模型 adapter Gate；取得官方锁定 GPT-5.4 Azure eval client 后才允许 smoke |
+| ME-07 | STATE-Bench Agent Learning 上的生产 Morphz/强记忆基线验证 | 外部效度/RQ5/RQ6 | P1 | 三强记忆臂协议冻结；无模型 adapter Gate 全过；尚无效果结果 | `protocol-frozen / adapter-gate-complete / access-gated` | [`v1`](./me_07_state_bench_protocol_v1.md) | 构建并冻结三种真实学习 artifact；取得锁定 GPT-5.4 Azure eval client 后才允许 smoke |
 | ME-08 | Terminal-Bench 2.1 剩余 49 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | 前 40 题完成；剩余 49 题已冻结并运行 | `running` | [`remaining-49 protocol`](./me_08_terminal_bench_remaining_49_protocol_v1.md) | 每臂并发 1；完成后合并为 89 题同环境一次配对结果 |
 
 ## 依赖
