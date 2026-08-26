@@ -73,7 +73,9 @@ def _numeric(value: object, default: float = 0.0) -> float:
 
 def _job_score(job: dict[str, Any]) -> dict[str, float]:
     trajectory = job.get("trajectory")
-    if not isinstance(trajectory, dict):
+    if job.get("official_score_eligible") is not True or not isinstance(
+        trajectory, dict
+    ):
         return {
             "completion": 0.0,
             "state": 0.0,

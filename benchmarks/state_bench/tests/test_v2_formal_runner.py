@@ -94,6 +94,7 @@ def test_formal_statistics_are_paired_and_failures_count_as_zero(monkeypatch) ->
     scored = _job_score(
         {
             "elapsed_seconds": 12,
+            "official_score_eligible": True,
             "trajectory": {
                 "task_completion_pass": 1,
                 "state_requirements_met": 1,

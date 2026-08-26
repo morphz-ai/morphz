@@ -44,6 +44,10 @@ ARMS = {
     "mem0": Mem0PublicReferenceAgent,
 }
 QUEUE_SEED = 20_260_826
+EXPECTED_STATE_BENCH_COMMIT = "5644b1838d96bc4483da29642d058ecaa6f80f7f"
+EXPECTED_MORPHZ_BINARY_SHA256 = (
+    "92efe2c3a54887136909366b9437de0b47e7b41f676dae6858cd702189983edd"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -210,6 +214,31 @@ def _run_job(
         judge_client.close()
 
     trajectory = _trajectory_summary(trajectory_path)
+    evaluator_receipts = [*simulator_client.receipts, *judge_client.receipts]
+    successful_scoring = (
+        runner_result.get("status") == "OK"
+        and runner_result.get("scoring_status") == "OK"
+    )
+    integrity_checks = {
+        "trajectory_present": trajectory is not None,
+        "trajectory_task_matches": trajectory is not None
+        and trajectory.get("task_id") == task_id,
+        "trajectory_arm_matches": trajectory is not None
+        and trajectory.get("agent_metadata_arm") == arm,
+        "score_present": trajectory is not None
+        and trajectory.get("task_completion_pass") in {0, 1}
+        and trajectory.get("ux_score") is not None,
+        "updated_evaluator_receipts_present": bool(simulator_client.receipts)
+        and bool(judge_client.receipts),
+        "all_evaluator_calls_exact_sol_max": bool(evaluator_receipts)
+        and all(
+            receipt.get("model") == "gpt-5.6-sol"
+            and receipt.get("applied_reasoning_effort") == "max"
+            and receipt.get("fallback") is False
+            for receipt in evaluator_receipts
+        ),
+    }
+    integrity_passed = all(integrity_checks.values()) if successful_scoring else False
     result = {
         "protocol_id": PROTOCOL_ID,
         "terminal": True,
@@ -227,6 +256,12 @@ def _run_job(
             "user_simulator": simulator_client.receipts,
             "judge": judge_client.receipts,
         },
+        "integrity": {
+            "checks": integrity_checks,
+            "passed": integrity_passed,
+            "successful_scoring_required": True,
+        },
+        "official_score_eligible": successful_scoring and integrity_passed,
         "unhandled_error_type": unhandled_error,
         "elapsed_seconds": round(time.monotonic() - started, 3),
     }
@@ -266,9 +301,11 @@ def _progress(output: Path, queue: list[dict[str, Any]]) -> dict[str, Any]:
                 succeeded += 1
                 by_arm[arm]["succeeded"] += 1
             trajectory = value.get("trajectory")
-            if isinstance(trajectory, dict) and trajectory.get(
-                "task_completion_pass"
-            ) in {0, 1}:
+            if (
+                value.get("official_score_eligible") is True
+                and isinstance(trajectory, dict)
+                and trajectory.get("task_completion_pass") in {0, 1}
+            ):
                 scored += 1
                 by_arm[arm]["scored"] += 1
     expected = len(queue) * len(ARMS)
@@ -315,7 +352,19 @@ def main() -> int:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required from cloud_proxy_exec.py")
+    state_bench_commit = _git_head(state_bench_root)
+    if state_bench_commit != EXPECTED_STATE_BENCH_COMMIT:
+        raise RuntimeError(
+            "STATE-Bench commit mismatch: "
+            f"{state_bench_commit} != {EXPECTED_STATE_BENCH_COMMIT}"
+        )
     morphz_binary = args.morphz_binary.resolve(strict=True)
+    morphz_binary_sha256 = _sha256(morphz_binary)
+    if morphz_binary_sha256 != EXPECTED_MORPHZ_BINARY_SHA256:
+        raise RuntimeError(
+            "Morphz formal binary mismatch: "
+            f"{morphz_binary_sha256} != {EXPECTED_MORPHZ_BINARY_SHA256}"
+        )
     morphz_home = args.morphz_home.resolve(strict=True)
     morphz_snapshots = args.morphz_snapshot_dir.resolve(strict=True)
     letta_snapshots = args.letta_snapshot_dir.resolve(strict=True)
@@ -364,7 +413,7 @@ def main() -> int:
             "reportable_score": True,
             "state_bench": {
                 "root": str(state_bench_root),
-                "commit": _git_head(state_bench_root),
+                "commit": state_bench_commit,
             },
             "model": {
                 "route": "gpt-5.6-sol",
@@ -376,7 +425,7 @@ def main() -> int:
             },
             "runtime_binary": {
                 "path": str(morphz_binary),
-                "sha256": _sha256(morphz_binary),
+                "sha256": morphz_binary_sha256,
             },
             "snapshots": {
                 domain: {
