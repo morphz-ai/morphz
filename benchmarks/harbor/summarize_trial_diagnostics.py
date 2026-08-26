@@ -10,6 +10,7 @@ trial from the primary score.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import statistics
@@ -52,6 +53,12 @@ def number(value: Any, default: int = 0) -> int:
     if isinstance(value, (int, float)):
         return int(value)
     return default
+
+
+def text_sha256(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def reward(payload: dict[str, Any]) -> int:
@@ -122,7 +129,7 @@ def load_trial(path: Path) -> dict[str, Any]:
         "task": task,
         "reward": reward(payload),
         "exception_type": exception.get("exception_type"),
-        "exception_message": exception.get("exception_message"),
+        "exception_message_sha256": text_sha256(exception.get("exception_message")),
         "agent_execution_seconds": interval_seconds(payload.get("agent_execution")),
         "total_trial_seconds": total_seconds,
         "input_tokens": number(agent_result.get("n_input_tokens")),

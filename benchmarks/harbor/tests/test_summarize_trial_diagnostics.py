@@ -102,6 +102,11 @@ class SummarizeTrialDiagnosticsTest(unittest.TestCase):
                 report["arms"]["morphz-native"]["exception_counts"],
                 {"AgentTimeoutError": 1},
             )
+            self.assertNotIn("exception_message", report["per_task"][1]["morphz"])
+            self.assertEqual(
+                len(report["per_task"][1]["morphz"]["exception_message_sha256"]),
+                64,
+            )
             self.assertEqual(report["arms"]["morphz-native"]["tokens"]["input"], 500)
             self.assertEqual(report["paired_execution"]["morphz_faster"], 1)
             self.assertEqual(report["paired_execution"]["codex_faster"], 1)
