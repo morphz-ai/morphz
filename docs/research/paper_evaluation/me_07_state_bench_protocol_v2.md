@@ -23,7 +23,8 @@ reference agent 三种公开 Agent 系统，哪一种能更可靠地把历史经
 | `letta` | Letta 0.16.8 完整开源 Agent Runtime | 同一领域 Agent 顺序读取训练轨迹，使用 Letta 原生 core/recall/archival memory 与 Agent 自管理记忆能力 | 每个 task 从冻结 Letta Agent/数据库快照创建隔离克隆，由 Letta 执行完整工具循环 |
 | `mem0` | 冻结 reference Agent + Mem0 OSS 记忆层 | Mem0 add-time 抽取、更新/冲突处理与持久化向量索引 | reference Agent 通过 Mem0 `search(top_k=3)` 取得学习内容并执行相同领域工具 |
 
-本轮 Mem0 配置固定为本地 Qdrant、`nomic-embed-text:latest`（768 维）和向量检索；未安装
+本轮 Mem0 配置固定为本地 Qdrant、`nomic-embed-text:latest`（768 维；Ollama blob digest
+`0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f`）和向量检索；未安装
 可选的 spaCy lemma/full model 与 fastembed BM25 扩展，启动时的 optional-feature warning 原样
 保留。因此对外必须称为 **Mem0-backed vector reference agent**，不能解释为覆盖 Mem0 的全部
 可选混合检索能力。该边界对三个领域一致，运行中不再补装扩展或改变已有快照。
