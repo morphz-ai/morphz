@@ -15064,7 +15064,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detached_execution_uses_completion_inbox_then_singleton_passthrough() {
+    async fn detached_execution_delivers_exactly_once_after_completion_inbox_wake() {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
@@ -15132,8 +15132,26 @@ mod tests {
                 }
             };
         assert_eq!(reply.payload["text"], "detached execution complete");
-        assert_eq!(reply.payload["delivery_strategy"], "passthrough");
-        assert_eq!(reply.payload["delivery_kind"], "thread_delivery");
+        match reply.payload.get("delivery_kind").and_then(Value::as_str) {
+            // The resumed Execution Thread can finish its post-commit handoff
+            // before the Delivery Timer snapshots it.
+            Some("turn_reply") => {
+                assert_eq!(reply.payload.get("thread_kind"), Some(&json!("execution")));
+                assert!(reply.payload.get("delivery_strategy").is_none());
+            }
+            // If the Delivery Timer wins that race, the same singleton result
+            // is forwarded without another model evaluation.
+            Some("thread_delivery") => {
+                assert_eq!(
+                    reply.payload.get("delivery_strategy"),
+                    Some(&json!("passthrough"))
+                );
+            }
+            other => panic!(
+                "unexpected detached delivery kind {other:?}: {:?}",
+                reply.payload
+            ),
+        }
         assert_eq!(client.calls.load(Ordering::SeqCst), 3);
         let jobs = runtime
             .inner
@@ -15146,6 +15164,19 @@ mod tests {
             .await
             .unwrap();
         assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
+
+        // Both scheduling orders are valid, but they must converge on one
+        // durable user-visible reply rather than racing into duplicate output.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let durable_replies = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(durable_replies.len(), 1, "duplicate detached replies");
     }
 
     #[tokio::test]
