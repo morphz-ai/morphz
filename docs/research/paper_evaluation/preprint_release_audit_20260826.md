@@ -7,7 +7,7 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
-- 双语结果当前隔离分支：`codex/paper-final-20260826@60a8247`；已加入冻结 ME-07 研究问题与方法，最终效果结果尚未形成定稿提交
+- 双语结果当前隔离分支：`codex/paper-final-20260826@a5044a1`；已加入冻结 ME-07 研究问题与方法，并明确 ME-08 `ad60e`/`ac3344e` 边界，最终效果结果尚未形成定稿提交
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 
