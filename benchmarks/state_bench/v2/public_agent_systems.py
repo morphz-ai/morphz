@@ -14,7 +14,9 @@ import secrets
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, is_dataclass
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +34,50 @@ from benchmarks.state_bench.v2.mem0_reference import (
 )
 
 PROTOCOL_ID = "ME-07-STATE-Bench-public-agent-systems-v2"
+
+_TRIAL_RUNTIME: ContextVar[dict[str, Any] | None] = ContextVar(
+    "me07_trial_runtime", default=None
+)
+
+
+@contextmanager
+def bind_trial_runtime(
+    *, output_dir: Path, run_idx: int, trial_id: str
+) -> Iterator[None]:
+    """Bind per-trial metadata missing from STATE-Bench ``_run_single``.
+
+    STATE-Bench v0.8.1 constructs ``AgentRuntimeContext`` without the batch
+    run index or output directory.  That is harmless for a one-task smoke but
+    would make repeated public-system runs reuse artifact names.  A
+    ``ContextVar`` keeps the metadata isolated when the three paired arms run
+    in parallel without mutating process-global environment variables.
+    """
+
+    if run_idx < 1:
+        raise ValueError("ME-07 run_idx must be positive")
+    token = _TRIAL_RUNTIME.set(
+        {
+            "output_dir": str(output_dir.resolve()),
+            "run_idx": run_idx,
+            "trial_id": _safe_component(trial_id),
+        }
+    )
+    try:
+        yield
+    finally:
+        _TRIAL_RUNTIME.reset(token)
+
+
+def _apply_trial_runtime(runtime_context: AgentRuntimeContext) -> None:
+    bound = _TRIAL_RUNTIME.get()
+    if bound is None:
+        return
+    runtime_context.output_dir = str(bound["output_dir"])
+    runtime_context.run_idx = int(bound["run_idx"])
+    runtime_context.config = {
+        **runtime_context.config,
+        "me07_trial_id": str(bound["trial_id"]),
+    }
 
 
 def _safe_component(value: str) -> str:
@@ -191,6 +237,7 @@ class MorphzPublicRuntimeAgent(BaseAgent):
         _validate_reasoning_effort(agent_reasoning_effort)
         if runtime_context is None:
             raise ValueError("Morphz ME-07 arm requires AgentRuntimeContext")
+        _apply_trial_runtime(runtime_context)
         self._context = runtime_context
         self._closed = False
         self._last_usage = {
@@ -203,9 +250,16 @@ class MorphzPublicRuntimeAgent(BaseAgent):
 
         binary = Path(os.environ["MORPHZ_ME07_BINARY"]).resolve(strict=True)
         task_root = Path(os.environ["MORPHZ_ME07_TASK_ROOT"]).resolve()
-        source_database = Path(os.environ["MORPHZ_ME07_LEARNING_DATABASE"]).resolve(
-            strict=True
-        )
+        snapshot_dir_value = os.environ.get("MORPHZ_ME07_SNAPSHOT_DIR")
+        if snapshot_dir_value:
+            source_database = (
+                Path(snapshot_dir_value)
+                / f"{_safe_component(runtime_context.domain)}.sqlite"
+            ).resolve(strict=True)
+        else:
+            source_database = Path(os.environ["MORPHZ_ME07_LEARNING_DATABASE"]).resolve(
+                strict=True
+            )
         profile = os.environ["MORPHZ_ME07_PROFILE"]
         deterministic_gate = os.environ.get("MORPHZ_ME07_DETERMINISTIC_GATE") == "1"
         run_name = "-".join(
@@ -458,6 +512,7 @@ class LettaPublicRuntimeAgent(BaseAgent):
         _validate_reasoning_effort(agent_reasoning_effort)
         if runtime_context is None:
             raise ValueError("Letta ME-07 arm requires AgentRuntimeContext")
+        _apply_trial_runtime(runtime_context)
         self._context = runtime_context
         self._system_prompt = system_prompt
         self._handlers = tool_handlers
@@ -669,6 +724,7 @@ class Mem0PublicReferenceAgent(BaseAgent):
         _validate_reasoning_effort(agent_reasoning_effort)
         if runtime_context is None:
             raise ValueError("Mem0 ME-07 arm requires AgentRuntimeContext")
+        _apply_trial_runtime(runtime_context)
         self._context = runtime_context
         self._system_prompt = system_prompt
         self._tools = tools
@@ -841,4 +897,5 @@ __all__ = [
     "ME07NoopClient",
     "Mem0PublicReferenceAgent",
     "MorphzPublicRuntimeAgent",
+    "bind_trial_runtime",
 ]
