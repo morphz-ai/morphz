@@ -17971,19 +17971,43 @@ async fn durable_activation_revocation_reason(
             "Activation '{activation_id}' no longer exists in durable state"
         )));
     };
+    Ok(durable_activation_revocation_reason_for_record(
+        &current,
+        runtime_claimant_id,
+    ))
+}
+
+fn durable_activation_revocation_reason_for_record(
+    current: &ThreadActivationRecord,
+    runtime_claimant_id: &str,
+) -> Option<String> {
+    // A successful or failed status can be the outcome committed by this
+    // exact evaluation future.  The future still owns required post-commit
+    // work (persisted Event dispatch, completion-delivery timer arming and
+    // supervisor wakes), so treating its own terminal commit as revocation
+    // cancels the durable/live handoff halfway through.  Duplicate work from
+    // a stale owner remains fenced by the immutable activation outcome.
+    if matches!(
+        current.status,
+        ThreadActivationStatus::Succeeded | ThreadActivationStatus::Failed
+    ) {
+        return None;
+    }
     if current.status != ThreadActivationStatus::Running {
-        return Ok(Some(format!(
+        return Some(format!(
             "Activation '{activation_id}' durable status changed to {}",
-            current.status.as_str()
-        )));
+            current.status.as_str(),
+            activation_id = current.id,
+        ));
     }
     if current.claimed_by.as_deref() != Some(runtime_claimant_id) {
-        return Ok(Some(format!(
+        return Some(format!(
             "Activation '{activation_id}' durable ownership moved from Runtime '{runtime_claimant_id}' to '{}'",
-            current.claimed_by.as_deref().unwrap_or("unclaimed")
-        )));
+            current.claimed_by.as_deref().unwrap_or("unclaimed"),
+            activation_id = current.id,
+        ));
     }
-    Ok(None)
+    None
 }
 
 fn delivery_flush_timer_id(session_id: &str) -> String {
@@ -19685,6 +19709,7 @@ mod tests {
         compose_context_encoding, continuation_messages_for_projection,
         critical_maintenance_transaction_available, decide_provider_circuit_admission,
         derived_thread_kind, durable_activation_revocation_reason,
+        durable_activation_revocation_reason_for_record,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
         harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
         model_binding_completion_error, model_harness_tool_scope,
@@ -20348,6 +20373,57 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with(&format!("runtime:{}:", std::process::id())));
         assert!(second.starts_with(&format!("runtime:{}:", std::process::id())));
+    }
+
+    #[test]
+    fn terminal_outcome_does_not_revoke_its_own_post_commit_handoff() {
+        let now = chrono::Utc::now();
+        let owner = "runtime:current";
+        let activation = |status| ThreadActivationRecord {
+            id: "activation-handoff".to_string(),
+            revision: 2,
+            generation: 0,
+            agent_id: "agent-handoff".to_string(),
+            context_id: "context-handoff".to_string(),
+            session_id: "session-handoff".to_string(),
+            initiating_principal_id: None,
+            trigger_event_id: "trigger-handoff".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "chat/user_message".to_string(),
+            parent_activation_id: None,
+            root_turn_id: "root-handoff".to_string(),
+            model_alias: None,
+            reasoning_effort: None,
+            context_snapshot_version: None,
+            status,
+            claimed_by: None,
+            lease_expires_at: None,
+            dialogue_lane_released_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        assert_eq!(
+            durable_activation_revocation_reason_for_record(
+                &activation(ThreadActivationStatus::Succeeded),
+                owner,
+            ),
+            None,
+            "a successful outcome still has to dispatch its persisted Event and arm delivery"
+        );
+        assert_eq!(
+            durable_activation_revocation_reason_for_record(
+                &activation(ThreadActivationStatus::Failed),
+                owner,
+            ),
+            None,
+            "a failed outcome still has to dispatch its durable failure reply"
+        );
+        assert!(durable_activation_revocation_reason_for_record(
+            &activation(ThreadActivationStatus::Cancelled),
+            owner,
+        )
+        .is_some());
     }
 
     #[tokio::test]
