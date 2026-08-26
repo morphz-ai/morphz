@@ -19,6 +19,7 @@ from benchmarks.state_bench.v2.prepare_evaluator_human_validation import (
 from benchmarks.state_bench.v2.run_public_systems_formal import (
     ARMS,
     DOMAINS,
+    EXPECTED_MORPHZ_BINARY_SHA256_BY_PLATFORM,
     _queue,
     _run_job,
 )
@@ -96,6 +97,17 @@ def test_formal_queue_is_deterministic_and_complete(monkeypatch) -> None:
                 )
                 == 50
             )
+
+
+def test_formal_runtime_hashes_are_frozen_per_execution_platform() -> None:
+    assert EXPECTED_MORPHZ_BINARY_SHA256_BY_PLATFORM == {
+        ("Darwin", "arm64"): (
+            "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a"
+        ),
+        ("Linux", "x86_64"): (
+            "98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691"
+        ),
+    }
 
 
 def test_formal_statistics_are_paired_and_failures_count_as_zero(monkeypatch) -> None:

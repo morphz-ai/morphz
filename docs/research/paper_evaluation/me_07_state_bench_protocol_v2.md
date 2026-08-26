@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / formal-training-clean-restart / evaluator-human-validation-pending`
+> 状态：`three-arm-scored-smoke-passed / formal-training-running / cloud-formal-run-staging / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -58,6 +58,15 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
 
 版本、容器镜像 digest、Python/Node 依赖锁、数据库版本和配置哈希必须在真实 smoke 前写入
 机器可读 lock；`latest` 镜像不得进入正式运行。
+
+训练阶段使用 Apple Silicon 本机冻结二进制
+`0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a`。为避免移动
+工作站中断 2,250 个正式 trial，正式批次允许迁移到 Linux x86-64 云节点；云端二进制仍从同一
+adapter commit `2e502056` 和 Rust 1.97.1 构建，并冻结为
+`98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691`。runner 按
+`(操作系统, 架构)` 校验唯一允许的二进制哈希并把平台写入 manifest。平台迁移不改变训练数据、
+快照、Runtime 源码、模型、任务、评分器或配对队列；Linux 正式启动前仍须通过无模型 Runtime
+Gate 和一组不计分的三臂接线 smoke。
 
 ## 5. 公平性合同
 

@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import random
 import subprocess
 import time
@@ -45,9 +46,14 @@ ARMS = {
 }
 QUEUE_SEED = 20_260_826
 EXPECTED_STATE_BENCH_COMMIT = "5644b1838d96bc4483da29642d058ecaa6f80f7f"
-EXPECTED_MORPHZ_BINARY_SHA256 = (
-    "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a"
-)
+EXPECTED_MORPHZ_BINARY_SHA256_BY_PLATFORM = {
+    ("Darwin", "arm64"): (
+        "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a"
+    ),
+    ("Linux", "x86_64"): (
+        "98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691"
+    ),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -399,10 +405,17 @@ def main() -> int:
         )
     morphz_binary = args.morphz_binary.resolve(strict=True)
     morphz_binary_sha256 = _sha256(morphz_binary)
-    if morphz_binary_sha256 != EXPECTED_MORPHZ_BINARY_SHA256:
+    platform_key = (platform.system(), platform.machine())
+    expected_morphz_binary_sha256 = EXPECTED_MORPHZ_BINARY_SHA256_BY_PLATFORM.get(
+        platform_key
+    )
+    if expected_morphz_binary_sha256 is None:
+        raise RuntimeError(f"unsupported ME-07 formal platform: {platform_key!r}")
+    if morphz_binary_sha256 != expected_morphz_binary_sha256:
         raise RuntimeError(
             "Morphz formal binary mismatch: "
-            f"{morphz_binary_sha256} != {EXPECTED_MORPHZ_BINARY_SHA256}"
+            f"{morphz_binary_sha256} != {expected_morphz_binary_sha256} "
+            f"for {platform_key!r}"
         )
     morphz_home = args.morphz_home.resolve(strict=True)
     morphz_snapshots = args.morphz_snapshot_dir.resolve(strict=True)
@@ -465,6 +478,10 @@ def main() -> int:
             "runtime_binary": {
                 "path": str(morphz_binary),
                 "sha256": morphz_binary_sha256,
+                "platform": {
+                    "system": platform_key[0],
+                    "machine": platform_key[1],
+                },
             },
             "snapshots": {
                 domain: {
