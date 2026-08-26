@@ -59,14 +59,20 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
 版本、容器镜像 digest、Python/Node 依赖锁、数据库版本和配置哈希必须在真实 smoke 前写入
 机器可读 lock；`latest` 镜像不得进入正式运行。
 
-训练阶段使用 Apple Silicon 本机冻结二进制
-`0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a`。为避免移动
-工作站中断 2,250 个正式 trial，正式批次允许迁移到 Linux x86-64 云节点；云端二进制仍从同一
-adapter commit `2e502056` 和 Rust 1.97.1 构建，并冻结为
-`98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691`。runner 按
-`(操作系统, 架构)` 校验唯一允许的二进制哈希并把平台写入 manifest。平台迁移不改变训练数据、
-快照、Runtime 源码、模型、任务、评分器或配对队列；Linux 正式启动前仍须通过无模型 Runtime
-Gate 和一组不计分的三臂接线 smoke。
+训练输入、训练脚本、模型绑定和每个领域的 100 条轨迹固定不变；训练 receipt 与最终 assembly
+manifest 共同记录每份快照的生产环境和最终哈希。为避免移动工作站成为长任务的单点故障，已经在本机开始的 `travel`
+快照继续使用 Apple Silicon 冻结二进制
+`0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a` 完成，尚未开始的
+Morphz 领域则迁移到 Linux x86-64 云节点。两份二进制都从同一 adapter commit
+`2e502056` 和 Rust 1.97.1 构建；Linux 二进制冻结为
+`98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691`。Letta 和 Mem0
+同样只在领域边界迁移，不续接半成品快照；每个领域都由单一进程从第 1 条训练轨迹完整运行至
+第 100 条，并在正式评分前冻结、重载验证和汇总到统一 snapshot manifest。
+
+全部 2,250 个正式 trial 只在 Linux 云节点运行。formal runner 按 `(操作系统, 架构)` 校验
+唯一允许的 Morphz 二进制哈希并把平台写入 manifest。平台迁移不改变训练数据、快照内容、
+Runtime 源码、模型、任务、评分器或配对队列；Linux 正式启动前仍须通过无模型 Runtime Gate
+和一组不计分的三臂接线 smoke。
 
 ## 5. 公平性合同
 
