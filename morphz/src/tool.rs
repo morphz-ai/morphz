@@ -12641,6 +12641,7 @@ Body
 
     #[tokio::test]
     async fn exec_cwd_outside_profile_requires_explicit_escalation() {
+        #[cfg(target_os = "macos")]
         let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("crate-a")).unwrap();
