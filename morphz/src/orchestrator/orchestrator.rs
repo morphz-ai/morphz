@@ -11345,24 +11345,29 @@ impl Orchestrator {
                             arguments: call.arguments.clone(),
                         },
                     };
-                    let outcome = self
-                        .execute_tool_calls(
-                            session_id,
-                            &attempt_id,
-                            response,
-                            &effective_phase,
-                            ToolExecutionOptions {
-                                context_tx_allowed: false,
-                                wake_on_output: false,
-                                plan_execution_id: None,
-                                continuation_tool_calls: None,
-                                allowed_tool_names: allowed_tool_names.clone(),
-                                record_assistant_call: true,
-                                model_attempt_id: Some(model_attempt_id.clone()),
-                                provider_continuation: provider_continuation.clone(),
-                            },
-                        )
-                        .await?;
+                    // Keep every tool-execution branch behind the same heap
+                    // boundary. Linux test workers use a smaller default
+                    // stack than the process main thread, and leaving this
+                    // branch inline still made the enclosing Evaluation
+                    // future exceed that stack even though the required-
+                    // coordination branch was already boxed.
+                    let outcome = Box::pin(self.execute_tool_calls(
+                        session_id,
+                        &attempt_id,
+                        response,
+                        &effective_phase,
+                        ToolExecutionOptions {
+                            context_tx_allowed: false,
+                            wake_on_output: false,
+                            plan_execution_id: None,
+                            continuation_tool_calls: None,
+                            allowed_tool_names: allowed_tool_names.clone(),
+                            record_assistant_call: true,
+                            model_attempt_id: Some(model_attempt_id.clone()),
+                            provider_continuation: provider_continuation.clone(),
+                        },
+                    ))
+                    .await?;
                     let output = outcome
                         .outputs
                         .into_iter()
@@ -11691,25 +11696,24 @@ impl Orchestrator {
                 // the same semantic boundary.
                 self.refill_activation_admission_queue().await?;
             }
-            let result = self
-                .execute_tool_calls(
-                    session_id,
-                    &attempt_id,
-                    response,
-                    &effective_phase,
-                    ToolExecutionOptions {
-                        context_tx_allowed: context.turn_budget.context_tx_available
-                            && !context_tx_cooldown,
-                        wake_on_output: true,
-                        plan_execution_id: None,
-                        continuation_tool_calls: None,
-                        allowed_tool_names,
-                        record_assistant_call: true,
-                        model_attempt_id: Some(terminal_model_attempt_id.clone()),
-                        provider_continuation: terminal_provider_continuation,
-                    },
-                )
-                .await;
+            let result = Box::pin(self.execute_tool_calls(
+                session_id,
+                &attempt_id,
+                response,
+                &effective_phase,
+                ToolExecutionOptions {
+                    context_tx_allowed: context.turn_budget.context_tx_available
+                        && !context_tx_cooldown,
+                    wake_on_output: true,
+                    plan_execution_id: None,
+                    continuation_tool_calls: None,
+                    allowed_tool_names,
+                    record_assistant_call: true,
+                    model_attempt_id: Some(terminal_model_attempt_id.clone()),
+                    provider_continuation: terminal_provider_continuation,
+                },
+            ))
+            .await;
             let outcome = result?;
             if outcome.context_tx_succeeded {
                 if let Some(gate) = context_maintenance_gate.as_ref() {
