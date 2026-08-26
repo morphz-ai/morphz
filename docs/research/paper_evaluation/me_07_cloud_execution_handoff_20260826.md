@@ -15,10 +15,11 @@ ME-07 包含 3 个系统、3 个领域、每领域 100 条训练轨迹，以及
 
 - Runtime adapter commit：`2e502056f52fc355e29f01df69d3b434607c257e`；
 - Runtime 收敛基线：`ad60e300f115fe84e03a8cd3ab70940deb06ae68`；
+- Linux 正式 Runtime commit：`2249878536ce5f7a8d7449add2f5c8743395b69b`；
 - Darwin/arm64 训练二进制：
   `0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a`；
 - Linux/x86-64 正式二进制：
-  `98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691`；
+  `7b0c63cd685f4b4420f362bea1f986fa4546ad27482802aec5af3c9cbdbb356e`；
 - STATE-Bench commit：`5644b1838d96bc4483da29642d058ecaa6f80f7f`；
 - Letta：v0.16.8，source commit
   `1131535716e8a31c9a437f8695e25ac98f203a24`；

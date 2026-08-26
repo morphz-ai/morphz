@@ -49,7 +49,9 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
   `ad60e300f115fe84e03a8cd3ab70940deb06ae68`，包含 Harbor workspace/exec drain 修复和
   Objective 通用收敛契约；生产 STATE-Bench Runtime adapter commit 为
   `2e502056f52fc355e29f01df69d3b434607c257e`，其中包含按 Session 与 root turn 等待
-  durable reply 的完成协议修复；三臂 adapter 及 Morphz/Mem0 训练 runner
+  durable reply 的完成协议修复；Linux 正式执行 commit 为
+  `2249878536ce5f7a8d7449add2f5c8743395b69b`，在前述 adapter 上合入 terminal
+  commit—delivery handoff 与 SQLite cancellation-safe transaction 修复；三臂 adapter 及 Morphz/Mem0 训练 runner
   commit 为 `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；Letta 原子 checkpoint 与 episodic
   context reset 训练 runner commit 为 `c6d80048d99b2a38c49944398be2a49adc08283b`；正式配对
   runner、统计器与人工盲评包生成器
@@ -63,11 +65,15 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
 manifest 共同记录每份快照的生产环境和最终哈希。为避免移动工作站成为长任务的单点故障，已经在本机开始的 `travel`
 快照继续使用 Apple Silicon 冻结二进制
 `0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a` 完成，尚未开始的
-Morphz 领域则迁移到 Linux x86-64 云节点。两份二进制都从同一 adapter commit
-`2e502056` 和 Rust 1.97.1 构建；Linux 二进制冻结为
-`98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691`。Letta 和 Mem0
-同样只在领域边界迁移，不续接半成品快照；每个领域都由单一进程从第 1 条训练轨迹完整运行至
-第 100 条，并在正式评分前冻结、重载验证和汇总到统一 snapshot manifest。
+Morphz 领域则迁移到 Linux x86-64 云节点。训练二进制均包含 adapter commit `2e502056` 并由
+Rust 1.97.1 构建；Linux 训练二进制 SHA-256 为
+`98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691`。训练完成后发现的
+terminal delivery 修复不改变模型请求、Context transaction 或已成功 episode 的快照内容；
+因此通过 receipt 与重载 Gate 的训练快照不重跑，而全部正式 trial 改用 commit `2249878` 的
+新 Linux 二进制，SHA-256 为
+`7b0c63cd685f4b4420f362bea1f986fa4546ad27482802aec5af3c9cbdbb356e`。Letta 和 Mem0 同样只在
+领域边界迁移，不续接半成品快照；每个领域都由单一进程从第 1 条训练轨迹完整运行至第 100 条，
+并在正式评分前冻结、重载验证和汇总到统一 snapshot manifest。
 
 全部 2,250 个正式 trial 只在 Linux 云节点运行。formal runner 按 `(操作系统, 架构)` 校验
 唯一允许的 Morphz 二进制哈希并把平台写入 manifest。平台迁移不改变训练数据、快照内容、
@@ -176,6 +182,15 @@ Context transaction 已写入 durable Event Store，但旧 adapter 将异步 bus
 Runtime/evals Gate。协议身份因此推进到 machine-readable lock revision 2，并要求从空数据库
 重新训练；旧快照不得续跑或进入效果统计。证据与边界见
 [`me_07_morphz_training_reply_failure_and_recovery_20260826.md`](./me_07_morphz_training_reply_failure_and_recovery_20260826.md)。
+
+ME-08 随后的 89 题刷新又暴露 terminal commit—delivery handoff 竞态：Activation 将自身终态
+提交为 succeeded 后，旧 revocation watcher 会取消仍在执行的 EventBus/Delivery 交接；被取消的
+手工 `BEGIN IMMEDIATE` 还可能把开放写事务归还连接池。通用修复 commit `ac3344e` 与
+STATE-Bench adapter 合并为正式 commit `2249878`，完整 Runtime/Evals Gate 和 Linux 无模型
+Gate 均通过；后者直接验证 durable reply 唯一、Thread outcome 已交付、进程退出后 SQLite 可
+立即重新取得写事务且模型调用为 0。协议 lock 因此推进到 revision 3。正在计分的 ME-08 原始
+trial 不追改；ME-07 已成功训练 episode 的 Context 状态也不改写，只有尚未启动的正式评测使用
+新二进制。
 
 ## 10. 公开来源
 

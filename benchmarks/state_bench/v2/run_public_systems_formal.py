@@ -51,7 +51,7 @@ EXPECTED_MORPHZ_BINARY_SHA256_BY_PLATFORM = {
         "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a"
     ),
     ("Linux", "x86_64"): (
-        "98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691"
+        "7b0c63cd685f4b4420f362bea1f986fa4546ad27482802aec5af3c9cbdbb356e"
     ),
 }
 
