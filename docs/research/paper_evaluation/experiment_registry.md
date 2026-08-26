@@ -28,7 +28,7 @@
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
-| ME-07 | LongMemEval-V2 Small 上的结构化记忆投影方法验证 | 外部效度/RQ6 | P1 | Reference adapter Gate 已通过；未经授权的 Qwen 全量运行中止，无可报告效果结果 | `cancelled-current-paper` | [`v1 superseded`](./me_07_longmemeval_v2_small_protocol_v1.md) | 当前论文取消，不补跑；保留方法组件实现与中止审计，不作为论文证据 |
+| ME-07 | STATE-Bench Agent Learning 上的生产 Morphz 经验学习验证 | 外部效度/RQ5/RQ6 | P1 | Benchmark 重选完成；尚无效果结果 | `benchmark-selected / access-gated` | [`重选决策`](./me_07_benchmark_reselection_decision_20260826.md) | 实现无模型 adapter Gate；取得官方锁定 GPT-5.4 Azure eval client 后才允许 smoke |
 | ME-08 | Terminal-Bench 2.1 剩余 49 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | 前 40 题完成；剩余 49 题已冻结并运行 | `running` | [`remaining-49 protocol`](./me_08_terminal_bench_remaining_49_protocol_v1.md) | 每臂并发 1；完成后合并为 89 题同环境一次配对结果 |
 
 ## 依赖
@@ -38,7 +38,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-02 ───────────┤
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
-       ├─> ME-07 (当前论文取消)
+       ├─> ME-07 (STATE-Bench；锁定评测访问 Gate)
        └─> ME-08
 ```
 
@@ -61,6 +61,14 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-26
 
+- ME-07 重选为 STATE-Bench Agent Learning Track。该 Track 使用历史 train trajectories 形成
+  可复用 learnings，并在 held-out 企业工具任务上评分，允许 custom `BaseAgent`/client 与
+  只读 `retrieve_learnings(top_k=3)`，因此比 LongMemEval-V2 的长期问答投影更贴合
+  “认知改变后续行动”的论文主张。冻结候选为生产 Morphz Structured Learning 与同 Runtime/
+  同模型的 no-learning control 两臂；Agent 均使用 `gpt-5.6-sol`/max/CLIProxyAPI，官方
+  simulator/judge 必须使用协议锁定的 GPT-5.4 Azure client。正式规模为每臂 750 trials；
+  当前因缺少锁定 eval client 保持 `access-gated`，不得擅自替换模型或启动真实运行。原
+  LongMemEval-V2 方案继续作为已取消历史保留，不提供效果证据；
 - ME-07 方法边界复核确认：`morphz_structured_projection` 是有意隔离结构化记忆表示与投影
   方法的 reference implementation，而不是生产 Morphz 产品替身。它实现稳定 Frame、来源
   引用、顺序 Relation、逻辑 Context/版本和确定性 FTS/BM25 投影，并保持两臂 Reader/Judge

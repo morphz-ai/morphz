@@ -174,12 +174,22 @@ Token 和延迟作为机制与成本诊断，不预设 Morphz 必须在每项上
 
 主要指标：最终隐藏行动/状态正确率。次要指标：陈旧状态率、污染率、Frame 增长、Context 压力、恢复正确率和累计成本。
 
-### ME-07：当前论文取消
+### ME-07：STATE-Bench Agent Learning 外部经验学习验证
 
-ME-07 原计划采用 LongMemEval-V2 Small 对 source-linked Structured Projection 做外部记忆
-验证。Reference adapter Gate 保留为方法组件审计，但使用未经授权替代模型启动的运行已经
-终止，未形成可报告效果结果；用户决定当前论文不补跑。ME-07 因而不承担本文任何效果主张，
-LongMemEval-V2 只保留为相关工作和未来生产 Morphz 外部记忆验证候选。
+LongMemEval-V2 Small 旧方案及未经授权替代模型运行继续作为已取消历史保留，不提供任何
+效果证据。替代方案选择 STATE-Bench Agent Learning Track，因为它直接检验历史轨迹形成的
+可复用认知是否改善 held-out 企业工具任务，而不是只测长期材料问答。
+
+两臂均运行生产 Morphz、同一 `gpt-5.6-sol`/max Agent、同一工具和 task-local Context：
+Structured Learning 臂从三个领域各 100 条 train trajectory 形成 source-linked Mind
+Frames，并经官方只读 `retrieve_learnings(top_k=3)` 投影；no-learning control 使用相同
+工具合同但返回空列表。正式协议为三个领域各 50 个 held-out tasks、每题 5 runs，即每臂
+750 trials。官方 user simulator/judge 必须使用 STATE-Bench 锁定的 GPT-5.4 Azure eval
+client；取得该访问并通过 adapter/fake-client/隔离 Gate 前，不启动真实模型运行，也不允许
+使用其他可用模型替代。
+
+协议与候选比较见
+[`me_07_benchmark_reselection_decision_20260826.md`](./me_07_benchmark_reselection_decision_20260826.md)。
 
 ### ME-08：Terminal-Bench 2.1 完整 Agent 外部系统验证
 
@@ -238,7 +248,7 @@ Token、耗时和资源负载。该实验检验完整 Agent 系统的外部效�
 
 ### Phase 4：公开 Benchmark 与论文收口
 
-范围：ME-08；ME-07 已取消，不再补跑。
+范围：ME-07、ME-08。ME-07 先完成 adapter 与锁定评测访问 Gate；ME-08 可独立闭合。
 
 退出条件：
 
@@ -271,7 +281,8 @@ Token、耗时和资源负载。该实验检验完整 Agent 系统的外部效�
 - ME-05 至少三个模型家族的核心子集。
 
 公开发布前完成 ME-08 的 89 题同环境 paired 对照，以降低“任务为 Morphz 量身设计”的质疑。
-ME-07 已取消，论文必须明确不报告公开长期记忆 Benchmark 分数，不能把中止运行暗示为证据。
+ME-07 新方案完成前，论文必须明确尚无 STATE-Bench 效果结果；旧 LongMemEval-V2 中止运行
+不得暗示为证据。只有完整协议结果通过审计后，才允许加入公开经验学习 Benchmark 数字。
 
 更完整的会议投稿包可再加入第二个公开长期记忆 Benchmark；它不属于当前预印本完成条件。
 
