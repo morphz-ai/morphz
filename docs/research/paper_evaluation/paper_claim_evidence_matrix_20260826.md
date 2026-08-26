@@ -56,6 +56,10 @@ terminal commit—delivery/SQLite cancellation-safe 修复；Linux 二进制已�
 Morphz-only 系统能力测量独立报告；历史 Codex 只能作为不同并发、不同时间的非同期参考。
 在 89 个官方 verifier reward 与身份/唯一性/哈希 Gate 闭合前，不写入新效果数字。
 
+论文放置规则已经冻结：历史 Morphz↔Codex 同期、同并发 89 题对照保留为摘要和正文的主外部
+效度结果；`ad60e` Morphz-only 刷新只进入 ME-08 小节的系统迭代补充或附录，不替换 paired
+主结果，也不重新计算 paired 显著性；`ac3344e` 后受影响题复测只进入 Runtime 失败诊断。
+
 ## 4. 论文结果组织
 
 1. **机制可执行且不退化：** ME-01、ME-02；
