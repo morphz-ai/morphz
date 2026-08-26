@@ -7562,6 +7562,33 @@ impl Orchestrator {
         // That transition is performed in run_attempt from the persisted plan,
         // never inferred from a process-local gate.
         let existing_thread = session_store.get_thread_by_root(&root_turn_id).await?;
+        let requested_target_id = if event.event_type == TYPE_USER_MESSAGE {
+            event
+                .payload
+                .get("target_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        if let (Some(existing), Some(requested)) =
+            (existing_thread.as_ref(), requested_target_id.as_ref())
+        {
+            if existing.target_id.as_deref() != Some(requested.as_str()) {
+                return Err(format!(
+                    "Dialogue Thread '{}' is already bound to Execution Target '{}'; Event '{}' cannot redirect it to '{}'",
+                    existing.id,
+                    existing.target_id.as_deref().unwrap_or("unbound"),
+                    event.id,
+                    requested
+                )
+                .into());
+            }
+        }
+        let initial_target_id = existing_thread
+            .as_ref()
+            .and_then(|thread| thread.target_id.clone())
+            .or(requested_target_id);
         let initial_thread_kind = existing_thread
             .as_ref()
             .map(|thread| thread.kind)
@@ -7603,7 +7630,7 @@ impl Orchestrator {
                     "self".to_string()
                 },
                 executor_id: plan_execution_id,
-                target_id: None,
+                target_id: initial_target_id,
                 supervision,
             })
             .await?;

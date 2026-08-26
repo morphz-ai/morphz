@@ -6182,6 +6182,7 @@ async fn append_dialogue_signal_in_transaction(
         .payload
         .get("principal_id")
         .and_then(JsonValue::as_str);
+    let requested_target_id = event.payload.get("target_id").and_then(JsonValue::as_str);
     let sequence = sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
         .bind(&event.id)
         .fetch_one(&mut **tx)
@@ -6220,6 +6221,7 @@ async fn append_dialogue_signal_in_transaction(
                activation.initiating_principal_id = ?
                OR (activation.initiating_principal_id IS NULL AND ? IS NULL)
              )
+             AND (? IS NULL OR thread.target_id IS NULL OR thread.target_id = ?)
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1"#,
         )
@@ -6227,6 +6229,8 @@ async fn append_dialogue_signal_in_transaction(
         .bind(batch_limit)
         .bind(principal_id)
         .bind(principal_id)
+        .bind(requested_target_id)
+        .bind(requested_target_id)
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -6264,6 +6268,7 @@ async fn append_dialogue_signal_in_transaction(
                    thread.initiating_principal_id = ?
                    OR (thread.initiating_principal_id IS NULL AND ? IS NULL)
                  )
+                 AND (? IS NULL OR thread.target_id IS NULL OR thread.target_id = ?)
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
@@ -6278,6 +6283,8 @@ async fn append_dialogue_signal_in_transaction(
             .bind(&session.id)
             .bind(principal_id)
             .bind(principal_id)
+            .bind(requested_target_id)
+            .bind(requested_target_id)
             .bind(batch_limit)
             .fetch_optional(&mut **tx)
             .await?
@@ -6296,11 +6303,11 @@ async fn append_dialogue_signal_in_transaction(
                 r#"INSERT INTO threads
                    (id, revision, generation, agent_id, context_id, session_id,
                     initiating_principal_id, root_turn_id, kind, status, control_state,
-                    executor_kind, lifetime, supervisor_kind, supervisor_id,
+                    executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                     supervision_generation, completion_contract_json, delivery_status,
                     created_at, updated_at)
                    VALUES (?, 1, 1, ?, ?, ?, ?, ?, 'dialogue_turn', 'open', 'active',
-                           'self', 'durable', 'runtime', 'dialogue-router', 1, '{}',
+                           'self', ?, 'durable', 'runtime', 'dialogue-router', 1, '{}',
                            'none', ?, ?)"#,
             )
             .bind(&thread_id)
@@ -6309,6 +6316,7 @@ async fn append_dialogue_signal_in_transaction(
             .bind(&session.id)
             .bind(principal_id)
             .bind(&event.id)
+            .bind(requested_target_id)
             .bind(&now)
             .bind(&now)
             .execute(&mut **tx)
@@ -6316,6 +6324,41 @@ async fn append_dialogue_signal_in_transaction(
             (thread_id, 1, None)
         }
     };
+
+    if let Some(requested_target_id) = requested_target_id {
+        let current_target_id =
+            sqlx::query_scalar::<_, Option<String>>("SELECT target_id FROM threads WHERE id = ?")
+                .bind(&thread_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        match current_target_id.as_deref() {
+            Some(current) if current == requested_target_id => {}
+            Some(current) => {
+                return Err(format!(
+                    "Dialogue Thread '{}' is already bound to Execution Target '{}' and cannot accept message Target '{}'",
+                    thread_id, current, requested_target_id
+                )
+                .into());
+            }
+            None => {
+                let updated = sqlx::query(
+                    "UPDATE threads SET target_id = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND target_id IS NULL",
+                )
+                .bind(requested_target_id)
+                .bind(&now)
+                .bind(&thread_id)
+                .execute(&mut **tx)
+                .await?;
+                if updated.rows_affected() != 1 {
+                    return Err(format!(
+                        "Dialogue Thread '{}' Target binding changed concurrently",
+                        thread_id
+                    )
+                    .into());
+                }
+            }
+        }
+    }
 
     let signal_id = stable_thread_signal_id(&event.id);
     let status = if activation_id.is_some() {

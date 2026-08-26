@@ -299,6 +299,9 @@ struct SendMessageRequest {
     /// Optional one-shot reasoning level for this message's Evaluation.
     #[serde(default)]
     reasoning_effort: Option<String>,
+    /// Optional one-shot physical destination for this Dialogue Thread.
+    #[serde(default)]
+    target_id: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -6593,6 +6596,7 @@ async fn handle_send_message(
                 dispatch_mode: request.dispatch_mode,
                 model_alias: request.model_alias,
                 reasoning_effort: request.reasoning_effort,
+                target_id: request.target_id,
             },
         )
         .await
@@ -9122,6 +9126,7 @@ mod tests {
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
@@ -9371,6 +9376,7 @@ mod tests {
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
@@ -12012,6 +12018,23 @@ account = "xai-account"
         .await
         .into_response();
         assert_eq!(target.status(), StatusCode::CREATED);
+        runtime
+            .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                id: "api-message-target".to_string(),
+                owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                provider_node_id: None,
+                kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                name: "API message target".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("linux-x86_64".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: json!({"test": "http_message_target"}),
+                policy_digest: "api-message-target-policy".to_string(),
+                last_seen_at: Some(chrono::Utc::now()),
+            })
+            .await
+            .unwrap();
 
         let rejected = handle_send_message(
             State(Arc::clone(&state)),
@@ -12034,6 +12057,7 @@ account = "xai-account"
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
@@ -12066,6 +12090,7 @@ account = "xai-account"
                     dispatch_mode: Some(crate::memory::MessageDispatchMode::Parallel),
                     model_alias: None,
                     reasoning_effort: None,
+                    target_id: Some("api-message-target".to_string()),
                 }),
             )
             .await
@@ -12093,6 +12118,7 @@ account = "xai-account"
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
@@ -12119,6 +12145,11 @@ account = "xai-account"
             user_message.payload["dispatch_mode"],
             json!("parallel"),
             "the one-shot HTTP scheduling choice must be an immutable part of the accepted user Event",
+        );
+        assert_eq!(
+            user_message.payload["target_id"],
+            json!("api-message-target"),
+            "the HTTP message Target must be persisted before Dialogue Thread creation",
         );
         assert_eq!(
             user_message.payload["references"][0]["session_id"],
@@ -12244,6 +12275,7 @@ account = "xai-account"
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
@@ -12431,6 +12463,7 @@ account = "xai-account"
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
