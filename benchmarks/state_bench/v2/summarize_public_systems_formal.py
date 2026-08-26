@@ -115,9 +115,15 @@ def main() -> int:
     queue_value = json.loads((root / "queue.json").read_text(encoding="utf-8"))
     if queue_value.get("protocol_id") != PROTOCOL_ID:
         raise RuntimeError("ME-07 queue protocol mismatch")
+    num_runs = int(queue_value.get("num_runs", 0))
+    if num_runs != 1:
+        raise RuntimeError(f"amended ME-07 result requires one run, got {num_runs}")
     cells = queue_value.get("cells")
-    if not isinstance(cells, list) or len(cells) != 750:
-        raise RuntimeError(f"expected 750 paired cells, got {len(cells or [])}")
+    expected_cells = 150 * num_runs
+    if not isinstance(cells, list) or len(cells) != expected_cells:
+        raise RuntimeError(
+            f"expected {expected_cells} paired cells, got {len(cells or [])}"
+        )
 
     jobs: dict[tuple[str, str, int, str], dict[str, Any]] = {}
     integrity_errors: list[str] = []
@@ -156,8 +162,9 @@ def main() -> int:
             "ME-07 formal artifacts failed integrity checks: "
             + "; ".join(integrity_errors[:20])
         )
-    if len(jobs) != 2_250:
-        raise RuntimeError(f"expected 2250 terminal jobs, got {len(jobs)}")
+    expected_jobs = expected_cells * len(ARMS)
+    if len(jobs) != expected_jobs:
+        raise RuntimeError(f"expected {expected_jobs} terminal jobs, got {len(jobs)}")
 
     task_scores: dict[tuple[str, str], dict[str, list[float]]] = defaultdict(
         lambda: defaultdict(list)
@@ -174,9 +181,9 @@ def main() -> int:
         clusters = [
             values[arm]
             for values in task_scores.values()
-            if arm in values and len(values[arm]) == 5
+            if arm in values and len(values[arm]) == num_runs
         ]
-        if len(trials) != 750 or len(clusters) != 150:
+        if len(trials) != expected_cells or len(clusters) != 150:
             raise RuntimeError(
                 f"incomplete arm {arm}: {len(trials)} trials, {len(clusters)} tasks"
             )
@@ -185,7 +192,7 @@ def main() -> int:
             "tasks": len(clusters),
             "task_completion_pass@1": sum(score["completion"] for score in trials)
             / len(trials),
-            "task_completion_pass^5": sum(
+            "task_completion_all_runs": sum(
                 all(value == 1 for value in cluster) for cluster in clusters
             )
             / len(clusters),
@@ -209,7 +216,9 @@ def main() -> int:
         for values in task_scores.values():
             morphz = values["morphz"]
             other = values[comparator]
-            differences.append(sum(morphz) / 5 - sum(other) / 5)
+            differences.append(
+                sum(morphz) / num_runs - sum(other) / num_runs
+            )
         estimate = sum(differences) / len(differences)
         pvalue = _sign_flip_pvalue(differences)
         raw_pvalues[name] = pvalue
@@ -228,6 +237,7 @@ def main() -> int:
         "kind": "formal_confirmatory_result",
         "reportable_score": True,
         "primary_metric": "updated_protocol_task_completion_pass@1",
+        "num_runs": num_runs,
         "arm_summary": arm_summary,
         "paired_contrasts": contrasts,
         "statistics": {
@@ -255,14 +265,14 @@ def main() -> int:
         "",
         f"Protocol: `{PROTOCOL_ID}`",
         "",
-        "| Arm | pass@1 | pass^5 | state | task req. | UX | terminal failures |",
+        "| Arm | pass@1 | all runs pass | state | task req. | UX | terminal failures |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for arm in ARMS:
         value = arm_summary[arm]
         lines.append(
             f"| {arm} | {value['task_completion_pass@1']:.3f} | "
-            f"{value['task_completion_pass^5']:.3f} | {value['state_pass@1']:.3f} | "
+            f"{value['task_completion_all_runs']:.3f} | {value['state_pass@1']:.3f} | "
             f"{value['task_requirements_pass@1']:.3f} | {value['ux_mean']:.3f} | "
             f"{value['terminal_failures_counted_as_zero']} |"
         )
