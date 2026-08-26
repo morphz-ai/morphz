@@ -28,13 +28,13 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 
 ## 3. 正在完成的证据
 
-### ME-07：当前论文取消
+### ME-07：替代 Benchmark 已选，尚无效果证据
 
-ME-07 原计划使用 LongMemEval-V2 Small 验证 source-linked Structured Projection。Reference
-adapter Gate 已通过，但随后启动的运行使用了未经用户授权的替代 reader/judge 模型，且没有
-形成冻结基准模型的完整 paired 结果。该运行已终止并保留审计记录；任何局部数量、分数或
-延迟均不进入本文证据。用户决定当前论文不补跑 ME-07，因此它不提供公开长期记忆效果证据。
-LongMemEval-V2 仅作为相关工作和未来生产 Morphz 外部记忆验证候选。
+旧 ME-07 LongMemEval-V2 Small 运行使用了未经用户授权的替代 reader/judge 模型，已终止并
+保留审计记录；任何局部数量、分数或延迟均不进入本文证据。替代方案已选择 STATE-Bench
+Agent Learning，拟在同一 reasoning model、相同 train trajectories 与相同只读检索合同下
+比较生产 Morphz、A-MEM 和 Mem0；no-memory 不作为正式实验臂。当前强基线版本、三臂
+adapter 与锁定 GPT-5.4 evaluation client 尚未通过 Gate，因此 ME-07 仍不提供任何效果结论。
 
 ### ME-08：Terminal-Bench 2.1 完整 89 题同环境对照
 
@@ -62,7 +62,8 @@ LongMemEval-V2 仅作为相关工作和未来生产 Morphz 外部记忆验证候
 - ME-01/02/03 是 Pilot，部分 cell 存在天花板效应；
 - ME-05 的严格合同分与语义诊断分回答不同问题，二者都必须报告；
 - ME-06 只有 3 个 paired fixtures，不作统计显著性宣称；
-- ME-07 已取消，任何中止运行的局部结果都不作为论文效果证据；
+- ME-07 旧 LongMemEval 运行已取消，替代 STATE-Bench 方案尚无结果；任何中止运行的局部
+  结果都不作为论文效果证据；
 - ME-08 每题只运行一次，能够进行同环境 paired 描述和检验，但不能估计同题采样方差；
 - Provider refusal、timeout、Runtime 和 harness failure 必须分层，不按对某组有利的方向删除；
 - Program-valued `infer`、任意动态交替和“无限寿命 Agent”仍是未来能力。

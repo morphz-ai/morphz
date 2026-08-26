@@ -5,12 +5,11 @@
 > 日期：2026-08-11
 > 原则：先证明核心机制，再证明外部任务适用性；先做预实验（Pilot），再做确认性运行。
 
-> 2026-08-26 实施解释更新：论文方法组件可以由边界清楚的 reference implementation 验证，
-> 不要求每项实验都启动生产产品二进制。LongMemEval adapter 隔离的是稳定 Frame、来源引用、
-> Relation、逻辑 Context/版本和确定性投影；它不验证生产事务、多 Session、恢复或完整 Agent，
-> 且 `no_retrieval` 对照不能证明结构化表示优于普通 RAG。由于全量运行擅自使用未经授权模型，
-> 且用户决定不再为当前论文补跑，ME-07 取消并不提供效果证据。ME-06 承担真实 Morphz 长程
-> 状态验证，ME-08 Terminal-Bench 承担公开完整 Agent 外部验证。
+> 2026-08-26 实施解释更新：旧 LongMemEval 方案因未经授权模型运行而取消，不提供任何效果
+> 证据。ME-07 随后重选 STATE-Bench Agent Learning，候选正式对照为生产 Morphz、A-MEM、
+> Mem0 三种都有长期学习能力的系统；no-memory 不作为正式实验臂。当前只完成 Benchmark 与
+> 研究问题选择，强基线版本、adapter 和锁定 GPT-5.4 评测访问尚未通过 Gate。ME-06 承担真实
+> Morphz 长程状态证据，ME-08 Terminal-Bench 承担公开完整 Agent 外部验证。
 
 本文所称“预实验（Pilot）”，是正式实验前的小规模试跑，用于检查任务难度、评分器、方差、成本和样本量设计。预实验期间允许修改协议，因此其样本与冻结协议后的确认性实验隔离，不用于论文的最终显著性结论。
 
@@ -180,13 +179,17 @@ LongMemEval-V2 Small 旧方案及未经授权替代模型运行继续作为已�
 效果证据。替代方案选择 STATE-Bench Agent Learning Track，因为它直接检验历史轨迹形成的
 可复用认知是否改善 held-out 企业工具任务，而不是只测长期材料问答。
 
-两臂均运行生产 Morphz、同一 `gpt-5.6-sol`/max Agent、同一工具和 task-local Context：
-Structured Learning 臂从三个领域各 100 条 train trajectory 形成 source-linked Mind
-Frames，并经官方只读 `retrieve_learnings(top_k=3)` 投影；no-learning control 使用相同
-工具合同但返回空列表。正式协议为三个领域各 50 个 held-out tasks、每题 5 runs，即每臂
-750 trials。官方 user simulator/judge 必须使用 STATE-Bench 锁定的 GPT-5.4 Azure eval
-client；取得该访问并通过 adapter/fake-client/隔离 Gate 前，不启动真实模型运行，也不允许
-使用其他可用模型替代。
+正式实验不使用“无记忆 vs 有记忆”作为主对照，因为它只能证明记忆有用，不能区分 Morphz
+的独特价值。三个 arms 分别为生产 Morphz Structured Learning、A-MEM 和 Mem0；三者都从
+相同的三个领域各 100 条 train trajectory 形成学习产物，并经同一只读
+`retrieve_learnings(top_k=3)` 工具合同进入 held-out Agent。三臂使用同一
+`gpt-5.6-sol`/max reasoning Agent、同一工具和任务协议；方法自身的写入、索引、检索、模型
+调用和成本作为被测系统组成完整记录。
+
+正式协议为三个领域各 50 个 held-out tasks、每题 5 runs，即每臂 750、合计 2,250 trials。
+官方 user simulator/judge 必须使用 STATE-Bench 锁定的 GPT-5.4 Azure eval client；取得该
+访问并通过三臂 adapter/fake-client/隔离 Gate 前，不启动真实模型运行，也不允许使用其他
+可用模型替代。
 
 协议与候选比较见
 [`me_07_benchmark_reselection_decision_20260826.md`](./me_07_benchmark_reselection_decision_20260826.md)。
