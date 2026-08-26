@@ -23,9 +23,10 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, provider_continuation_message, Client, Message, ModelAttemptBinding,
-    ModelAttemptBindingError, ModelFailure, ModelFailureKind, ModelRequestContext, ModelUsage,
-    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolDefinition,
+    attachment_message, model_attachments, provider_continuation_message, Client, Message,
+    ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
+    ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation,
+    ToolDefinition,
 };
 use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
@@ -1165,6 +1166,25 @@ fn retain_context_maintenance_tools(
     });
 }
 
+/// Critical maintenance replaces the ordinary tool transcript with a bounded
+/// Context Projection, but native attachments are the evidence rather than
+/// transport noise. Keep those attachment messages in the maintenance request
+/// so the model can preserve task-relevant visual conclusions before retiring
+/// the corresponding metadata Observation.
+fn continuation_messages_for_projection(
+    messages: &[Message],
+    bounded_critical_projection: bool,
+) -> Vec<Message> {
+    if !bounded_critical_projection {
+        return messages.to_vec();
+    }
+    messages
+        .iter()
+        .filter(|message| model_attachments(message).is_some())
+        .cloned()
+        .collect()
+}
+
 /// A final-reply turn is reply-only for ordinary work. A bound Objective still
 /// needs its one deterministic lifecycle operation; completing the public
 /// reply without updating the Objective would leave the Supervisor running.
@@ -1242,6 +1262,7 @@ const SOFT_CHECKPOINT_PROMPT: &str = r#"The Runtime is at a soft-checkpoint. Thi
 
 const CRITICAL_MAINTENANCE_PROMPT: &str = r#"The Runtime has entered critical-maintenance: this Context reached critical pressure and must release capacity before more external work.
 - To keep maintenance itself receivable, the Runtime may project only a bounded Inbox slice. kernel.context-pressure.active-observations is the complete active count; the current Inbox contains this batch's causal root plus the oldest unprotected maintenance candidates. Missing observations remain persisted as Events and are neither lost nor retired. After this batch commits, the Runtime reevaluates and supplies another batch if still over limit.
+- Native image attachments from the triggering tool result remain present when they are the evidence being maintained. Inspect them now and preserve task-relevant visual conclusions, not merely paths, hashes, sizes, or loaded status, before retiring their Observation.
 - Call only tools actually provided in this request. External physical tools are temporarily removed; do not repeat the previous physical call or assume it ran.
 - Prefer one accurate context_tx that compresses Mind/Inbox while preserving the current objective, user constraints, latest reliable facts, unfinished work, and evidence required to continue. Summarize or retire stale, duplicate, or superseded content.
 - Use recall only for source evidence truly missing before maintenance, not to begin new external work. The Runtime recalculates pressure and restores applicable physical tools after maintenance.
@@ -10279,9 +10300,10 @@ impl Orchestrator {
                 tool_calls: None,
             },
         ];
-        if !bounded_critical_projection {
-            messages.extend(continuation_messages.clone());
-        }
+        messages.extend(continuation_messages_for_projection(
+            &continuation_messages,
+            bounded_critical_projection,
+        ));
         if let Some(message) = attachment_message {
             messages.push(message);
         }
@@ -19660,11 +19682,12 @@ mod tests {
         action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
         attached_delegation_return_route, baseline_system_prompt, classify_terminal_response,
         cognitive_sexpr_vm_system_prompt, completed_objective_update_call,
-        compose_context_encoding, critical_maintenance_transaction_available,
-        decide_provider_circuit_admission, derived_thread_kind,
-        durable_activation_revocation_reason, durable_reasoning_continuation_state_from_events,
-        extend_exec_output_facts, harness_entry_callable_tools, infer_tool_status,
-        legacy_plan_effect_sequence, model_binding_completion_error, model_harness_tool_scope,
+        compose_context_encoding, continuation_messages_for_projection,
+        critical_maintenance_transaction_available, decide_provider_circuit_admission,
+        derived_thread_kind, durable_activation_revocation_reason,
+        durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
+        harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
+        model_binding_completion_error, model_harness_tool_scope,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persistent_provider_wait_contexts, plan_infer_tool_scope,
@@ -19691,8 +19714,9 @@ mod tests {
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
-        FunctionCall, ModelAttemptBinding, ModelAttemptBindingError, ModelFailureKind, ModelUsage,
-        PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
+        attachment_message, model_attachments, FunctionCall, Message, ModelAttemptBinding,
+        ModelAttemptBindingError, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
+        PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -21179,6 +21203,40 @@ mod tests {
         let mut unbound_final_reply = named_tools(&["exec", "objective_update", "objective_amend"]);
         retain_final_reply_control_tools(&mut unbound_final_reply, false, true);
         assert_eq!(unbound_final_reply[0].name, "objective_amend");
+    }
+
+    #[test]
+    fn critical_projection_keeps_native_attachments_without_replaying_tool_transcript() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: String::new(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(Vec::new()),
+            },
+            Message {
+                role: "tool".to_string(),
+                content: r#"{"path":"/app/contact.jpg","sha256":"stable"}"#.to_string(),
+                name: Some("read".to_string()),
+                tool_call_id: Some("call-image".to_string()),
+                tool_calls: None,
+            },
+            attachment_message(vec![crate::llm::ModelAttachment {
+                name: "contact.jpg".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data_base64: "aW1hZ2U=".to_string(),
+            }])
+            .unwrap(),
+        ];
+
+        assert_eq!(
+            continuation_messages_for_projection(&messages, false),
+            messages
+        );
+        let projected = continuation_messages_for_projection(&messages, true);
+        assert_eq!(projected.len(), 1);
+        assert!(model_attachments(&projected[0]).is_some());
     }
 
     #[test]
