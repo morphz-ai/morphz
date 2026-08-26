@@ -52,7 +52,8 @@ SQLite backup/reload 状态等价检查，Letta 必须完成导出快照与原�
 - `morphz-me07-postgres`：固定 pgvector/PostgreSQL 容器；
 - `morphz-me07-train-morphz-remaining-20260826.service`：剩余 Morphz 领域；
 - `morphz-me07-train-mem0-remaining-20260826.service`：剩余 Mem0 领域；
-- `morphz-me07-finalize-and-start-20260826.service`：等待云端训练与 ME-08 释放节点，汇总快照并启动正式服务；
+- `morphz-me07-finalize-and-start-20260826.service`：等待云端训练、正式 Runtime 发布门和 ME-08
+  释放节点，汇总快照并启动正式服务；
 - `morphz-me07-formal-20260826.service`：正式 smoke、2,250 trials、统计与盲评包。
 
 访问凭据不出现在命令行、systemd unit、manifest 或本文档中；执行包装器仅在进程内从云端已有
@@ -68,10 +69,13 @@ CLIProxyAPI 配置读取唯一 access key。
 2. 本机产物上传到新建且不可覆盖的 staging 目录；
 3. 本机启动并确认云端 finalizer 已由 systemd 接管；
 4. 云端 finalizer 等待 Morphz/Mem0 两条剩余领域训练序列完整结束；
-5. ME-08 Terminal-Bench 节点负载已经释放；
-6. assembly manifest 和 environment lock 生成成功；
-7. 云端三臂同题 smoke 通过；
-8. formal runner 校验 Linux Runtime 哈希、STATE-Bench commit、三领域九份快照和冻结队列。
+5. ME-08 暴露的 terminal commit—delivery 竞态已经修复，并通过新增回归、Linux release
+   build、无模型 Gate；finalizer 只接受包含 Runtime/adapter commit、二进制 SHA-256 和协议
+   revision 的显式 release receipt，不允许静默沿用旧二进制；
+6. ME-08 Terminal-Bench 节点负载已经释放；
+7. assembly manifest 和 environment lock 生成成功；
+8. 云端三臂同题 smoke 通过；
+9. formal runner 校验 Linux Runtime 哈希、STATE-Bench commit、三领域九份快照和冻结队列。
 
 formal runner 的每个 terminal failure 都保留并计零。进程中断时只恢复缺失 job；已经形成原子
 job receipt 的失败绝不重跑，已经写出 trajectory 而未写出 receipt 的窄窗口按 orphan failure
@@ -96,5 +100,9 @@ exit code 0 退出并已卸载，因此从这一时刻起，云端剩余训练�
 统计与盲评包生成均不依赖本机保持在线。
 
 交接完成时，云端 Morphz 与 Mem0 的剩余领域训练服务均为 active；formal 服务保持 inactive
-是预期状态，它只会在两条训练序列完成、九份快照通过 assembly Gate 且 ME-08 释放节点后由
-finalizer 启动。
+是预期状态。22:32，finalizer 已升级为显式 Runtime release Gate：即使训练和 ME-08 均结束，
+只要 post-ME-08 修复尚未取得有效 release receipt，它也不会使用旧二进制启动正式批次。该
+安全 Gate 的脚本 SHA-256 为
+`eb4129efbfdf7381a575f994ca09f74fc8bcc9695b3e91885ab75084a30bb667`，升级过程没有中断两条
+训练服务。正式批次将在新 Runtime 通过发布 Gate、九份快照通过 assembly Gate 且节点释放后
+由 finalizer 启动。
