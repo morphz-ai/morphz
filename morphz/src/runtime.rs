@@ -104,7 +104,7 @@ use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
     KillTaskTool, ListFilesTool, ListSecretsTool, ListSkillsTool, ListTasksTool, PrincipalTool,
     ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool,
-    TaskStatusTool, ThreadScheduler, WriteFileTool,
+    TaskStatusTool, ThreadScheduler, Tool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -891,6 +891,7 @@ pub struct MorphzRuntimeBuilder {
     provider_auth_registry: Option<crate::provider::auth::AuthAdapterRegistry>,
     execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
     harness_packages: Vec<HarnessPackage>,
+    extra_tools: Vec<Arc<dyn Tool>>,
 }
 
 impl MorphzRuntimeBuilder {
@@ -909,6 +910,7 @@ impl MorphzRuntimeBuilder {
             provider_auth_registry: None,
             execution_target_backends: Vec::new(),
             harness_packages: Vec::new(),
+            extra_tools: Vec::new(),
             config,
             client,
         }
@@ -998,6 +1000,15 @@ impl MorphzRuntimeBuilder {
     /// artifact may not reuse an existing `(id, version)`.
     pub fn harness_package(mut self, package: HarnessPackage) -> Self {
         self.harness_packages.push(package);
+        self
+    }
+
+    /// Registers an embedding-host tool before the local Execution Target is
+    /// materialized. This keeps benchmark/domain adapters on the ordinary
+    /// durable Tool -> ExecutionJob path without adding them to Morphz's
+    /// built-in product tool catalog.
+    pub fn extra_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.extra_tools.push(tool);
         self
     }
 
@@ -1354,6 +1365,9 @@ impl MorphzRuntimeBuilder {
             #[cfg(feature = "experimental-cognitive-coordination")]
             cognitive_coordination_network: cognitive_coordination_network.clone(),
         });
+        for tool in self.extra_tools {
+            registry.register(tool);
+        }
         registry.register(Arc::new(crate::execution_target::ListTargetsTool::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
         )));
@@ -9557,6 +9571,34 @@ mod tests {
 
     struct ReplyClient;
 
+    struct EmbeddedProbeTool;
+
+    #[async_trait::async_trait]
+    impl Tool for EmbeddedProbeTool {
+        fn name(&self) -> &str {
+            "embedded_probe"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: "Embedding-host probe tool".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: &str,
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            Ok("embedded-probe-ok".to_string())
+        }
+    }
+
     struct SessionSignalCoordinationClient {
         target_started: tokio::sync::Notify,
         observed_concurrent_target: AtomicBool,
@@ -10415,6 +10457,30 @@ mod tests {
         ) -> Result<Response, RuntimeError> {
             Ok(text_response("runtime-ok"))
         }
+    }
+
+    #[tokio::test]
+    async fn embedding_host_can_register_a_physical_tool_before_target_materialization() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .extra_tool(Arc::new(EmbeddedProbeTool))
+            .build()
+            .await
+            .unwrap();
+
+        assert!(runtime
+            .tool_names()
+            .iter()
+            .any(|name| name == "embedded_probe"));
+        assert!(runtime
+            .physical_tool_names()
+            .iter()
+            .any(|name| name == "embedded_probe"));
     }
 
     #[async_trait::async_trait]
