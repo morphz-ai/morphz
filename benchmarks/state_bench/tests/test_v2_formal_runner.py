@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from state_bench.agents.base import AgentRuntimeContext
 
 from benchmarks.state_bench.v2 import public_agent_systems
+from benchmarks.state_bench.v2.letta_train_snapshots import (
+    _read_checkpoint,
+    _write_checkpoint,
+)
 from benchmarks.state_bench.v2.prepare_evaluator_human_validation import (
     ALLOCATION,
     _select,
@@ -149,3 +154,20 @@ def test_human_validation_selection_is_balanced_and_task_unique() -> None:
                 sum(job["domain"] == domain and job["arm"] == arm for job in selected)
                 == expected
             )
+
+
+def test_letta_checkpoint_is_single_file_and_digest_guarded(tmp_path: Path) -> None:
+    exported = '{"agent":"state"}'
+    progress = {
+        "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+        "domain": "travel",
+        "snapshot_sha256": hashlib.sha256(exported.encode()).hexdigest(),
+        "episodes": [],
+    }
+    checkpoint = tmp_path / "travel.zip"
+
+    _write_checkpoint(checkpoint, exported, progress)
+
+    restored_export, restored_progress = _read_checkpoint(checkpoint)
+    assert restored_export == exported
+    assert restored_progress == progress

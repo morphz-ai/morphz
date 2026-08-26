@@ -3,16 +3,22 @@
 Only ``datasets/train_task_trajectories`` is accepted as input.  The script
 gives each completed episode to one persistent Letta Agent per domain and lets
 the Agent decide, through its native memory tools, which procedural lessons to
-retain.  It never reads held-out task definitions, task environments, or
-oracle requirements.
+retain.  After each acknowledged episode, Letta's public ``reset-messages``
+operation clears the short-term transcript while rebuilding the system context
+from the updated native memory blocks.  This preserves the learned Agent state
+without forcing 100 raw trajectories into one active message window.  It never
+reads held-out task definitions, task environments, or oracle requirements.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import os
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +31,48 @@ from benchmarks.state_bench.v2.canonical_episode import (
 )
 
 DOMAINS = {"travel", "customer_support", "shopping_assistant"}
+
+
+def _atomic_text(path: Path, value: str) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(value)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _atomic_json(path: Path, value: object) -> None:
+    _atomic_text(
+        path,
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _write_checkpoint(path: Path, exported: str, progress: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("agent.af", exported)
+        archive.writestr(
+            "progress.json",
+            json.dumps(progress, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        )
+    with temporary.open("rb") as stream:
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _read_checkpoint(path: Path) -> tuple[str, dict[str, Any]]:
+    with zipfile.ZipFile(path, "r") as archive:
+        if set(archive.namelist()) != {"agent.af", "progress.json"}:
+            raise RuntimeError("invalid Letta training checkpoint members")
+        exported = archive.read("agent.af").decode()
+        progress = json.loads(archive.read("progress.json"))
+    if not isinstance(progress, dict):
+        raise TypeError("Letta checkpoint progress is not an object")
+    if progress.get("snapshot_sha256") != sha256_bytes(exported.encode()):
+        raise RuntimeError("Letta checkpoint snapshot digest mismatch")
+    return exported, progress
 
 
 def _assistant_texts(response: object) -> list[str]:
@@ -138,6 +186,7 @@ def main() -> int:
     parser.add_argument("--model-endpoint", default="http://127.0.0.1:18317/v1")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--require-memory-tool", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     expected_suffix = Path("datasets/train_task_trajectories")
@@ -158,18 +207,71 @@ def main() -> int:
         files = files[: args.limit]
 
     args.snapshot_dir.mkdir(parents=True, exist_ok=True)
-    args.artifact_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume:
+        if not args.artifact_dir.is_dir():
+            raise FileNotFoundError(
+                f"cannot resume missing Letta artifact directory: {args.artifact_dir}"
+            )
+    else:
+        args.artifact_dir.mkdir(parents=True, exist_ok=False)
     client = Letta(base_url=args.base_url)
-    agent = _create_agent(client, args.domain, args.model_endpoint)
+    snapshot_path = args.snapshot_dir / f"{args.domain}.af"
+    checkpoint_path = args.artifact_dir / f"{args.domain}-letta-checkpoint.zip"
+    progress_path = args.artifact_dir / f"{args.domain}-letta-progress.json"
+    if args.resume:
+        exported, progress = _read_checkpoint(checkpoint_path)
+        if progress.get("protocol_id") != PROTOCOL_ID:
+            raise RuntimeError("Letta checkpoint protocol mismatch")
+        if progress.get("domain") != args.domain:
+            raise RuntimeError("Letta checkpoint domain mismatch")
+        completed_episodes = progress.get("episodes")
+        if not isinstance(completed_episodes, list):
+            raise TypeError("Letta checkpoint episodes are not a list")
+        for index, prior in enumerate(completed_episodes):
+            episode, _serialized = load_canonical_episode(files[index], args.domain)
+            if (
+                prior.get("task_id") != episode["task_id"]
+                or prior.get("source_sha256") != episode["source_sha256"]
+            ):
+                raise RuntimeError(
+                    f"Letta checkpoint input prefix mismatch at episode {index + 1}"
+                )
+        with io.BytesIO(exported.encode()) as stream:
+            imported = client.agents.import_file(
+                file=stream,
+                append_copy_suffix=True,
+                override_existing_tools=True,
+            )
+        if len(imported.agent_ids) != 1:
+            raise RuntimeError("Letta checkpoint must contain exactly one Agent")
+        agent = client.agents.retrieve(imported.agent_ids[0])
+        episodes: list[dict[str, Any]] = list(completed_episodes)
+        totals = {
+            key: int(value) for key, value in (progress.get("usage") or {}).items()
+        }
+        expected_usage_keys = {
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+        }
+        if set(totals) != expected_usage_keys:
+            raise RuntimeError("Letta checkpoint usage keys mismatch")
+    else:
+        if snapshot_path.exists() or checkpoint_path.exists() or progress_path.exists():
+            raise FileExistsError("refusing to overwrite Letta training artifacts")
+        agent = _create_agent(client, args.domain, args.model_endpoint)
+        episodes = []
+        totals = {
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+    if _binding(agent)["model"] != "gpt-5.6-sol":
+        raise RuntimeError("Letta checkpoint model binding mismatch")
     started = time.monotonic()
-    episodes: list[dict[str, Any]] = []
-    totals = {
-        "input_tokens": 0,
-        "cached_input_tokens": 0,
-        "output_tokens": 0,
-        "reasoning_tokens": 0,
-    }
-    for index, path in enumerate(files, start=1):
+    for index, path in enumerate(files[len(episodes) :], start=len(episodes) + 1):
         episode, serialized = load_canonical_episode(path, args.domain)
         response = client.agents.messages.create(
             agent_id=agent.id,
@@ -197,6 +299,20 @@ def main() -> int:
             name in {"memory_insert", "memory_replace"} for name in tools
         ):
             raise RuntimeError(f"Letta did not use native memory for {path.name}")
+        reset_state = client.agents.messages.reset(
+            agent.id,
+            add_default_initial_messages=False,
+            timeout=120,
+        )
+        state = reset_state or client.agents.retrieve(agent.id)
+        if _binding(state) != _binding(agent):
+            raise RuntimeError("Letta binding changed after episodic context reset")
+        active_message_count = len(state.message_ids or [])
+        if active_message_count != 1:
+            raise RuntimeError(
+                "Letta episodic reset did not leave exactly one active system message: "
+                f"{active_message_count}"
+            )
         exported = client.agents.export_file(
             agent.id, use_legacy_format=False, scrub_messages=False
         )
@@ -208,14 +324,42 @@ def main() -> int:
                 "native_tools": tools,
                 "usage": usage,
                 "state_sha256": sha256_bytes(exported.encode()),
+                "episodic_context_reset": True,
+                "active_message_count_after_reset": active_message_count,
             }
         )
+        progress = {
+            "protocol_id": PROTOCOL_ID,
+            "kind": "letta_training_checkpoint",
+            "reportable_score": False,
+            "domain": args.domain,
+            "episode_count": len(episodes),
+            "episodes": episodes,
+            "usage": totals,
+            "snapshot_sha256": sha256_bytes(exported.encode()),
+            "episodic_context_reset": True,
+        }
+        _write_checkpoint(checkpoint_path, exported, progress)
+        _atomic_text(snapshot_path, exported)
+        _atomic_json(progress_path, progress)
+        print(
+            json.dumps(
+                {
+                    "domain": args.domain,
+                    "episode": len(episodes),
+                    "task_id": episode["task_id"],
+                    "checkpoint_sha256": sha256_bytes(checkpoint_path.read_bytes()),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
 
-    exported = client.agents.export_file(
-        agent.id, use_legacy_format=False, scrub_messages=False
-    )
-    snapshot_path = args.snapshot_dir / f"{args.domain}.af"
-    snapshot_path.write_text(exported, encoding="utf-8")
+    exported, checkpoint_progress = _read_checkpoint(checkpoint_path)
+    if checkpoint_progress.get("episode_count") != len(files):
+        raise RuntimeError("Letta final checkpoint episode count mismatch")
+    if snapshot_path.read_text(encoding="utf-8") != exported:
+        raise RuntimeError("Letta final snapshot differs from atomic checkpoint")
     state = client.agents.retrieve(agent.id)
     blocks = [
         {"label": block.label, "value": block.value}
@@ -236,12 +380,17 @@ def main() -> int:
         "memory_blocks": blocks,
         "snapshot": str(snapshot_path),
         "snapshot_sha256": sha256_bytes(exported.encode()),
-        "passed": len(episodes) == len(files),
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_sha256": sha256_bytes(checkpoint_path.read_bytes()),
+        "episodic_context_reset": True,
+        "passed": len(episodes) == len(files)
+        and all(episode["episodic_context_reset"] for episode in episodes)
+        and all(
+            episode["active_message_count_after_reset"] == 1 for episode in episodes
+        ),
     }
     receipt_path = args.artifact_dir / f"{args.domain}-letta-training-receipt.json"
-    receipt_path.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    _atomic_json(receipt_path, receipt)
     print(
         json.dumps(
             {
