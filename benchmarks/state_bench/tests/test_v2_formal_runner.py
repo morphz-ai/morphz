@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Lock
+from time import sleep
 
 from state_bench.agents.base import AgentRuntimeContext
 from state_bench.protocol import load_default_protocol, load_split_task_ids
 
-from benchmarks.state_bench.v2 import public_agent_systems
+from benchmarks.state_bench.v2 import public_agent_systems, run_public_systems_formal
 from benchmarks.state_bench.v2.letta_train_snapshots import (
     _read_checkpoint,
     _write_checkpoint,
@@ -80,23 +82,55 @@ def test_formal_queue_is_deterministic_and_complete(monkeypatch) -> None:
     )
     protocol = type("Protocol", (), {"split_version": "frozen"})()
 
-    first = _queue(protocol, 5)
-    second = _queue(protocol, 5)
+    first = _queue(protocol, 1)
+    second = _queue(protocol, 1)
 
     assert first == second
-    assert len(first) == 5 * len(DOMAINS) * 50
-    assert [cell["cell_index"] for cell in first] == list(range(1, 751))
+    assert len(first) == len(DOMAINS) * 50
+    assert [cell["cell_index"] for cell in first] == list(range(1, 151))
     assert all(set(cell["arm_order"]) == set(ARMS) for cell in first)
     assert len({cell["cell_id"] for cell in first}) == len(first)
-    for run_idx in range(1, 6):
-        for domain in DOMAINS:
-            assert (
-                sum(
-                    cell["run_idx"] == run_idx and cell["domain"] == domain
-                    for cell in first
-                )
-                == 50
-            )
+    for domain in DOMAINS:
+        assert (
+            sum(cell["run_idx"] == 1 and cell["domain"] == domain for cell in first)
+            == 50
+        )
+
+
+def test_formal_batch_runs_four_isolated_cells_concurrently(
+    monkeypatch, tmp_path: Path
+) -> None:
+    barrier = Barrier(4)
+    lock = Lock()
+    active = 0
+    peak = 0
+
+    def fake_run_cell(**kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        barrier.wait(timeout=5)
+        sleep(0.01)
+        with lock:
+            active -= 1
+        return [("morphz", {"runner_result": {"status": "OK"}})]
+
+    monkeypatch.setattr(run_public_systems_formal, "_run_cell", fake_run_cell)
+    cells = [
+        {"cell_id": f"cell-{index:04d}", "cell_index": index} for index in range(1, 5)
+    ]
+
+    results = run_public_systems_formal._run_cell_batch(
+        output=tmp_path,
+        cells=cells,
+        protocol=object(),
+        cell_workers=4,
+        paired_workers=3,
+    )
+
+    assert len(results) == 4
+    assert peak == 4
 
 
 def test_formal_runtime_hashes_are_frozen_per_execution_platform() -> None:
@@ -159,7 +193,7 @@ def test_human_validation_selection_is_balanced_and_task_unique() -> None:
         for domain in ALLOCATION
         for arm in ARMS
         for task_index in range(1, 21)
-        for run_idx in range(1, 6)
+        for run_idx in (1,)
     ]
 
     selected = _select(jobs)

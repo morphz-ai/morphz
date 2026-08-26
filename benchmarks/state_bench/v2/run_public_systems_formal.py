@@ -366,6 +366,64 @@ def _progress(output: Path, queue: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _missing_arms(output: Path, cell: dict[str, Any]) -> list[str]:
+    return [
+        arm
+        for arm in cell["arm_order"]
+        if not _valid_terminal_job(
+            output / "jobs" / str(cell["cell_id"]) / f"{arm}.json",
+            cell,
+            arm,
+        )
+    ]
+
+
+def _run_cell(
+    *,
+    output: Path,
+    cell: dict[str, Any],
+    protocol: Any,
+    paired_workers: int,
+) -> list[tuple[str, dict[str, Any]]]:
+    missing = _missing_arms(output, cell)
+    if not missing:
+        return []
+    with ThreadPoolExecutor(max_workers=paired_workers) as executor:
+        futures = {
+            executor.submit(
+                _run_job,
+                output=output,
+                cell=cell,
+                arm=arm,
+                protocol=protocol,
+            ): arm
+            for arm in missing
+        }
+        return [(futures[future], future.result()) for future in as_completed(futures)]
+
+
+def _run_cell_batch(
+    *,
+    output: Path,
+    cells: list[dict[str, Any]],
+    protocol: Any,
+    cell_workers: int,
+    paired_workers: int,
+) -> list[tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]]:
+    with ThreadPoolExecutor(max_workers=cell_workers) as executor:
+        futures = {
+            executor.submit(
+                _run_cell,
+                output=output,
+                cell=cell,
+                protocol=protocol,
+                paired_workers=paired_workers,
+            ): cell
+            for cell in cells
+        }
+        return [(futures[future], future.result()) for future in as_completed(futures)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-bench-root", type=Path, required=True)
@@ -376,14 +434,15 @@ def main() -> int:
     parser.add_argument("--letta-snapshot-dir", type=Path, required=True)
     parser.add_argument("--mem0-snapshot-dir", type=Path, required=True)
     parser.add_argument("--letta-base-url", default="http://127.0.0.1:8283")
-    parser.add_argument("--num-runs", type=int, default=5)
+    parser.add_argument("--num-runs", type=int, default=1)
     parser.add_argument("--paired-workers", type=int, choices=(1, 3), default=3)
+    parser.add_argument("--cell-workers", type=int, choices=(1, 2, 4), default=4)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-cells", type=int)
     args = parser.parse_args()
 
-    if args.num_runs != 5:
-        raise ValueError("frozen ME-07 formal protocol requires exactly 5 runs")
+    if args.num_runs != 1:
+        raise ValueError("amended ME-07 formal protocol requires exactly 1 run")
     if args.max_cells is not None and args.max_cells < 1:
         raise ValueError("--max-cells must be positive")
     state_bench_root = args.state_bench_root.resolve(strict=True)
@@ -451,6 +510,7 @@ def main() -> int:
         "queue_seed": QUEUE_SEED,
         "num_runs": args.num_runs,
         "paired_workers": args.paired_workers,
+        "cell_workers": args.cell_workers,
         "cells": queue,
     }
     if args.resume:
@@ -493,41 +553,25 @@ def main() -> int:
             },
             "num_runs": args.num_runs,
             "paired_workers": args.paired_workers,
+            "cell_workers": args.cell_workers,
             "max_attempts": 1,
             "queue_sha256": _sha256(queue_path),
         }
         _atomic_json(output / "run_manifest.json", manifest)
 
-    processed_cells = 0
-    for cell in queue:
-        missing = [
-            arm
-            for arm in cell["arm_order"]
-            if not _valid_terminal_job(
-                output / "jobs" / str(cell["cell_id"]) / f"{arm}.json",
-                cell,
-                arm,
-            )
-        ]
-        if not missing:
-            continue
-        if args.max_cells is not None and processed_cells >= args.max_cells:
-            break
-        processed_cells += 1
-        with ThreadPoolExecutor(max_workers=args.paired_workers) as executor:
-            futures = {
-                executor.submit(
-                    _run_job,
-                    output=output,
-                    cell=cell,
-                    arm=arm,
-                    protocol=protocol,
-                ): arm
-                for arm in missing
-            }
-            for future in as_completed(futures):
-                arm = futures[future]
-                value = future.result()
+    pending_cells = [cell for cell in queue if _missing_arms(output, cell)]
+    if args.max_cells is not None:
+        pending_cells = pending_cells[: args.max_cells]
+    for offset in range(0, len(pending_cells), args.cell_workers):
+        batch = pending_cells[offset : offset + args.cell_workers]
+        for cell, results in _run_cell_batch(
+            output=output,
+            cells=batch,
+            protocol=protocol,
+            cell_workers=args.cell_workers,
+            paired_workers=args.paired_workers,
+        ):
+            for arm, value in results:
                 print(
                     json.dumps(
                         {

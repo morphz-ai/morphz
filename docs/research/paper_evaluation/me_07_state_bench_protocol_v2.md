@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / local-training-uploaded / cloud-training-running / cloud-finalizer-active / evaluator-human-validation-pending`
+> 状态：`three-arm-scored-smoke-passed / single-run-cost-amendment-frozen / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -81,7 +81,7 @@ terminal delivery 修复不改变模型请求、Context transaction 或已成功
 领域边界迁移，不续接半成品快照；每个领域都由单一进程从第 1 条训练轨迹完整运行至第 100 条，
 并在正式评分前冻结、重载验证和汇总到统一 snapshot manifest。
 
-全部 2,250 个正式 trial 只在 Linux 云节点运行。formal runner 按 `(操作系统, 架构)` 校验
+全部 450 个正式 trial 只在 Linux 云节点运行。formal runner 按 `(操作系统, 架构)` 校验
 唯一允许的 Morphz 二进制哈希并把平台写入 manifest。平台迁移不改变训练数据、快照内容、
 Runtime 源码、模型、任务、评分器或配对队列；Linux 正式启动前仍须通过无模型 Runtime Gate
 和一组不计分的三臂接线 smoke。
@@ -140,19 +140,25 @@ v2 不再把 STATE-Bench 历史协议中的 Azure GPT-5.4 当作不可替换的�
 
 ## 8. 正式规模、指标与统计
 
-正式规模保持上游完整任务：3 domains × 50 held-out tasks × 5 runs = 750 trials/arm，三组
-共 2,250 trials。真实 smoke 只用于 Gate，不得混入正式分数。
+正式规模保持上游完整 held-out 任务，但基于 2026-08-27 的成本修订，每题只运行一次：
+3 domains × 50 held-out tasks × 1 run = 150 trials/arm，三组共 450 trials。150 个不同
+held-out task 已提供配对统计单位；本轮不再用每题重复五次来估计模型采样方差。该修订由
+预算与工期触发，不以已完成 cell 的成败选择样本。原五次队列已经运行的前 31 个 cell
+全部属于 `run_idx=1`，并已确认与单次队列的前缀逐项一致；这些 terminal receipt 原样复用，
+不删题、不补跑失败项。修订后的汇总仅使用完整的 150 个 `run_idx=1` cell。真实 smoke
+只用于 Gate，不得混入正式分数。
 
 正式队列以 `20260826` 为固定随机种子，将同一 `(domain, task, run)` 定义为一个配对单元；
-每个单元内三个 arm 最多并行运行，因而不同系统承受相近的外部时间条件，但同一 arm 任一时刻
-最多只有一个任务。每个任务只允许一次正式尝试。terminal 失败保留并计零，不自动重试；进程
+每批最多并发四个配对单元，每个单元内三个 arm 并行运行，即最多同时运行 12 个 job。
+每个 job 使用独立快照克隆和独立产物目录，不允许跨 held-out task 学习污染。每个任务只允许
+一次正式尝试。terminal 失败保留并计零，不自动重试；进程
 中断恢复时只运行尚未形成 terminal receipt 的缺失任务。每个 terminal receipt 在进入下一个
 配对单元前原子写入。若上游 trajectory 已落盘但进程在原子 receipt 前中断，则保留该孤立
 trajectory，不重跑，并因模型绑定与评分调用收据不完整而按 terminal failure 计零。
 
 - 主指标：更新评测协议下的 pass@1；
 - 主要配对差：Morphz−Letta、Morphz−Mem0；
-- 次指标：pass^5、task-requirements、UX、cost/task、Token、任务用时、训练成本与失败分类；
+- 次指标：task-requirements、UX、cost/task、Token、任务用时、训练成本与失败分类；
 - 统计单位：held-out task；置信区间和置换/Bootstrap 以 task 聚类；
 - 两个主要比较使用预注册 Holm 校正；
 - 官方/上游 scorer 输出仍是分数真值，事后 Runtime 诊断只能解释失败，不能覆盖分数。
