@@ -22,6 +22,7 @@
 - [ME-07 冻结协议](./me_07_state_bench_protocol_v1.md)：STATE-Bench Agent Learning 上生产 Morphz、A-MEM-compatible、Mem0 三个强记忆 arms；固定版本、同一 reasoning Agent、同一 retrieval 合同和锁定 GPT-5.4 Azure 评测边界；
 - [ME-07 无模型 Adapter Gate](./artifacts/me07_state_bench_adapter_gate_20260826/RESULT.md)：官方 300 条训练轨迹、版本锁、extension discovery、检索往返与固定 top-k 全部通过；模型调用为 0，不作为效果结果；
 - [ME-07 三强记忆学习产物 Gate](./artifacts/me07_state_bench_artifact_gate_20260826/RESULT.md)：Morphz、A-MEM、Mem0 对同一官方轨迹分别完成真实学习、冻结、重载与检索；仍不作为效果结果；
+- [ME-07 锁定评测器访问 Gate](./me_07_locked_evaluator_access_gate_20260826.md)：上游 Azure GPT-5.4 client 在网络请求前因缺少 endpoint/deployment 失败关闭；没有替换模型或启动正式 trial；
 - [ME-07 Benchmark 重选决策](./me_07_benchmark_reselection_decision_20260826.md)：记录为什么取消无记忆组并选择三种强记忆系统；锁定 GPT-5.4 Azure eval client 可用前不运行真实评分；
 - [ME-07 superseded LongMemEval 协议与取消边界](./me_07_longmemeval_v2_small_protocol_v1.md)：未经授权替代模型运行已中止，任何局部结果均不引用；
 - [ME-08 剩余 49 题冻结协议](./me_08_terminal_bench_remaining_49_protocol_v1.md)：与前 40 题合并为完整 89 题 Morphz/Codex 同环境一次配对结果；

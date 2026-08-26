@@ -110,3 +110,7 @@ digests、extension discovery、memory tool 往返、固定 top-k 和无记忆 a
 尚未完成的实质门槛是：为 3 个 arm × 3 个 domain 构建完整 100-trajectory 学习产物、取得
 锁定 Azure GPT-5.4 eval client、完成三臂 scored smoke 和正式 2,250-trial 批次。因此目前
 只能声称协议、adapter 与真实学习产物路径闭环，不能报告 ME-07 效果结论。
+
+2026-08-26 的上游 client 预检在任何网络请求前因缺少
+`STATE_BENCH_EVAL_ENDPOINT`/deployment 配置而失败关闭，详见
+[`me_07_locked_evaluator_access_gate_20260826.md`](./me_07_locked_evaluator_access_gate_20260826.md)。
