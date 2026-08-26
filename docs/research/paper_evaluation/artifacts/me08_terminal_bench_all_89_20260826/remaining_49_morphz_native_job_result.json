@@ -1,0 +1,101 @@
+{
+    "id": "d45db547-15e4-4ed3-b66c-8746f6aead10",
+    "started_at": "2026-08-26T01:48:00.335217",
+    "updated_at": "2026-08-26T09:38:38.448521",
+    "finished_at": "2026-08-26T09:38:38.448521",
+    "n_total_trials": 49,
+    "stats": {
+        "n_completed_trials": 49,
+        "n_errored_trials": 8,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "morphz__gpt-5.6-sol__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 48,
+                "n_errors": 8,
+                "metrics": [
+                    {
+                        "mean": 0.8163265306122449
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "overfull-hbox__8pLtikr",
+                            "video-processing__empQyRb",
+                            "financial-document-processor__2j7zgD7",
+                            "install-windows-3.11__9Wqj6mJ",
+                            "break-filter-js-from-html__esANhzu",
+                            "extract-moves-from-video__9BkUyhT",
+                            "protein-assembly__CCKQFub",
+                            "tune-mjcf__58zqB8h"
+                        ],
+                        "1.0": [
+                            "sanitize-git-repo__XShoTDf",
+                            "qemu-startup__FXDAMFb",
+                            "hf-model-inference__3JWByEx",
+                            "reshard-c4-data__E8t9hAf",
+                            "feal-differential-cryptanalysis__ZDLxH9f",
+                            "rstan-to-pystan__jTgzLrU",
+                            "make-mips-interpreter__haGduQv",
+                            "password-recovery__WWP6JKB",
+                            "sqlite-db-truncate__UdAw8aF",
+                            "query-optimize__UxnqLgE",
+                            "cancel-async-tasks__gULhyZp",
+                            "polyglot-c-py__E8Fgwiz",
+                            "pytorch-model-cli__bVvWj4F",
+                            "db-wal-recovery__imgV7NS",
+                            "largest-eigenval__32x65Uf",
+                            "large-scale-text-editing__spdmiju",
+                            "count-dataset-tokens__xQG4FB7",
+                            "path-tracing-reverse__qhAHdYT",
+                            "chess-best-move__yXKqQda",
+                            "git-multibranch__t955Mz6",
+                            "multi-source-data-merger__UJJZ6Vh",
+                            "sqlite-with-gcov__bipt594",
+                            "polyglot-rust-c__7uUkUtQ",
+                            "feal-linear-cryptanalysis__mN6Hn3E",
+                            "crack-7z-hash__mwbDbMz",
+                            "sparql-university__mnAmhan",
+                            "custom-memory-heap-crash__9WfmByv",
+                            "code-from-image__T5htzGw",
+                            "fix-git__eeM53H9",
+                            "winning-avg-corewars__hb2tMrf",
+                            "modernize-scientific-stack__REFe3yG",
+                            "git-leak-recovery__6T4rTHk",
+                            "distribution-search__PeBRuKA",
+                            "build-pmars__My42DBQ",
+                            "mailman__NHTM8bG",
+                            "headless-terminal__95NLbtV",
+                            "bn-fit-modify__qk2fYnh",
+                            "constraints-scheduling__VosKkRr",
+                            "fix-code-vulnerability__s2H33g6",
+                            "portfolio-optimization__nJhfJom"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "video-processing__empQyRb",
+                        "financial-document-processor__2j7zgD7",
+                        "install-windows-3.11__9Wqj6mJ",
+                        "break-filter-js-from-html__esANhzu",
+                        "extract-moves-from-video__9BkUyhT",
+                        "mailman__NHTM8bG",
+                        "tune-mjcf__58zqB8h"
+                    ],
+                    "RuntimeError": [
+                        "prove-plus-comm__UYRBXnR"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 22955376,
+        "n_cache_tokens": 1935872,
+        "n_output_tokens": 665721,
+        "cost_usd": null
+    }
+}

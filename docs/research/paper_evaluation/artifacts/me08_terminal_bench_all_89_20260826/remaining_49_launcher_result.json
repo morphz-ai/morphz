@@ -1,0 +1,10 @@
+{
+  "protocol": "terminal-bench-two-arm-remaining-49-v1",
+  "completed_at": "2026-08-26T01:38:40.693166+00:00",
+  "return_codes": {
+    "morphz-native": 3,
+    "official-codex": 3
+  },
+  "complete_official_results": true,
+  "summary": "/opt/morphz-benchmark/two-arm-runs/remaining-49-v1-20260826/two_arm_summary.json"
+}

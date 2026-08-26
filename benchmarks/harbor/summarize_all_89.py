@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import hashlib
 import json
 import math
@@ -172,11 +173,70 @@ def load_resource_samples(path: Path) -> dict[str, Any]:
     }
 
 
+def load_job_usage(path: Path, *, expected_trials: int) -> dict[str, Any]:
+    payload = load_json(path)
+    require(payload.get("n_total_trials") == expected_trials, f"unexpected job trial count: {path}")
+    stats = payload.get("stats")
+    require(isinstance(stats, dict), f"job result has no stats: {path}")
+    started_at = datetime.fromisoformat(str(payload["started_at"]))
+    finished_at = datetime.fromisoformat(str(payload["finished_at"]))
+    require(finished_at >= started_at, f"job finish precedes start: {path}")
+    return {
+        "started_at": payload["started_at"],
+        "finished_at": payload["finished_at"],
+        "wall_time_seconds": (finished_at - started_at).total_seconds(),
+        "trial_count": expected_trials,
+        "errored_trials": int(stats.get("n_errored_trials") or 0),
+        "provider_reported_input_tokens": int(stats.get("n_input_tokens") or 0),
+        "provider_reported_cache_tokens": int(stats.get("n_cache_tokens") or 0),
+        "provider_reported_output_tokens": int(stats.get("n_output_tokens") or 0),
+        "harbor_estimated_cost_usd": stats.get("cost_usd"),
+    }
+
+
+def combine_job_usage(first_40: dict[str, Any], remaining_49: dict[str, Any]) -> dict[str, Any]:
+    cost_values = [
+        float(value)
+        for value in (
+            first_40["harbor_estimated_cost_usd"],
+            remaining_49["harbor_estimated_cost_usd"],
+        )
+        if value is not None
+    ]
+    return {
+        "provider_reported_input_tokens": (
+            first_40["provider_reported_input_tokens"]
+            + remaining_49["provider_reported_input_tokens"]
+        ),
+        "provider_reported_cache_tokens": (
+            first_40["provider_reported_cache_tokens"]
+            + remaining_49["provider_reported_cache_tokens"]
+        ),
+        "provider_reported_output_tokens": (
+            first_40["provider_reported_output_tokens"]
+            + remaining_49["provider_reported_output_tokens"]
+        ),
+        "wall_time_seconds_across_two_subsets": (
+            first_40["wall_time_seconds"] + remaining_49["wall_time_seconds"]
+        ),
+        "errored_trials": first_40["errored_trials"] + remaining_49["errored_trials"],
+        "harbor_estimated_cost_usd": sum(cost_values) if len(cost_values) == 2 else None,
+        "subsets": {
+            "first_40": first_40,
+            "remaining_49": remaining_49,
+        },
+    }
+
+
 def summarize(
     prior_morphz_path: Path,
     prior_codex_path: Path,
     remaining_path: Path,
     resource_samples_path: Path | None = None,
+    prior_morphz_job_path: Path | None = None,
+    prior_codex_job_path: Path | None = None,
+    remaining_morphz_job_path: Path | None = None,
+    remaining_codex_job_path: Path | None = None,
 ) -> dict[str, Any]:
     prior_morphz = load_prior_strict(prior_morphz_path)
     prior_codex = load_prior_strict(prior_codex_path)
@@ -238,9 +298,9 @@ def summarize(
             for task in tasks
         ],
         "input_sha256": {
-            str(prior_morphz_path): sha256(prior_morphz_path),
-            str(prior_codex_path): sha256(prior_codex_path),
-            str(remaining_path): sha256(remaining_path),
+            "first_40_morphz_strict_result": sha256(prior_morphz_path),
+            "first_40_codex_strict_result": sha256(prior_codex_path),
+            "remaining_49_two_arm_summary": sha256(remaining_path),
         },
         "bootstrap": {
             "seed": BOOTSTRAP_SEED,
@@ -249,7 +309,34 @@ def summarize(
     }
     if resource_samples_path is not None:
         summary["host_resources"] = load_resource_samples(resource_samples_path)
-        summary["input_sha256"][str(resource_samples_path)] = sha256(resource_samples_path)
+        summary["input_sha256"]["remaining_49_resource_samples"] = sha256(
+            resource_samples_path
+        )
+    job_paths = {
+        "first_40_morphz_job_result": prior_morphz_job_path,
+        "first_40_codex_job_result": prior_codex_job_path,
+        "remaining_49_morphz_job_result": remaining_morphz_job_path,
+        "remaining_49_codex_job_result": remaining_codex_job_path,
+    }
+    if any(path is not None for path in job_paths.values()):
+        require(
+            all(path is not None for path in job_paths.values()),
+            "all four job results are required together",
+        )
+        prior_morphz_usage = load_job_usage(prior_morphz_job_path, expected_trials=40)
+        prior_codex_usage = load_job_usage(prior_codex_job_path, expected_trials=40)
+        remaining_morphz_usage = load_job_usage(remaining_morphz_job_path, expected_trials=49)
+        remaining_codex_usage = load_job_usage(remaining_codex_job_path, expected_trials=49)
+        summary["execution"] = {
+            "morphz-native": combine_job_usage(prior_morphz_usage, remaining_morphz_usage),
+            "official-codex": combine_job_usage(prior_codex_usage, remaining_codex_usage),
+            "cost_note": (
+                "Harbor cost fields are nominal estimates; the experiment used subscription/OAuth "
+                "routes rather than developer API billing."
+            ),
+        }
+        for label, path in job_paths.items():
+            summary["input_sha256"][label] = sha256(path)
     return summary
 
 
@@ -257,6 +344,18 @@ def result_markdown(summary: dict[str, Any]) -> str:
     morphz = summary["arms"]["morphz-native"]
     codex = summary["arms"]["official-codex"]
     paired = summary["paired"]
+    execution_lines = ""
+    if "execution" in summary:
+        morphz_execution = summary["execution"]["morphz-native"]
+        codex_execution = summary["execution"]["official-codex"]
+        execution_lines = (
+            "- Provider-reported input tokens: "
+            f"Morphz {morphz_execution['provider_reported_input_tokens']:,}; "
+            f"Codex {codex_execution['provider_reported_input_tokens']:,}\n"
+            "- Provider-reported output tokens: "
+            f"Morphz {morphz_execution['provider_reported_output_tokens']:,}; "
+            f"Codex {codex_execution['provider_reported_output_tokens']:,}\n"
+        )
     return f"""# ME-08 Terminal-Bench 2.1 all-89 paired result
 
 - Tasks: 89
@@ -268,6 +367,7 @@ def result_markdown(summary: dict[str, Any]) -> str:
 - Both pass / both fail: {paired['both_pass']} / {paired['both_fail']}
 - Exact two-sided paired p: {paired['exact_two_sided_p']:.6g}
 - Paired bootstrap 95% CI: [{paired['paired_bootstrap_95_ci'][0]:+.2%}, {paired['paired_bootstrap_95_ci'][1]:+.2%}]
+{execution_lines}
 
 This is a same-environment one-attempt-per-task comparison, not an official
 leaderboard submission and not an estimate of within-task sampling variance.
@@ -280,6 +380,10 @@ def main() -> int:
     parser.add_argument("--prior-codex", type=Path, required=True)
     parser.add_argument("--remaining-summary", type=Path, required=True)
     parser.add_argument("--resource-samples", type=Path)
+    parser.add_argument("--prior-morphz-job", type=Path)
+    parser.add_argument("--prior-codex-job", type=Path)
+    parser.add_argument("--remaining-morphz-job", type=Path)
+    parser.add_argument("--remaining-codex-job", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=False)
@@ -288,6 +392,10 @@ def main() -> int:
         args.prior_codex,
         args.remaining_summary,
         args.resource_samples,
+        args.prior_morphz_job,
+        args.prior_codex_job,
+        args.remaining_morphz_job,
+        args.remaining_codex_job,
     )
     (args.output_dir / "all_89_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=True) + "\n",

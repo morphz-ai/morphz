@@ -30,3 +30,30 @@ python3 benchmarks/state_bench/no_model_gate.py \
 The Gate fails closed when the official upstream commit, train split, class
 discovery, fixed `top_k=3`, read-only retrieval contract, or secret scan does
 not match the frozen protocol.
+
+## Frozen learning artifacts
+
+`build_learning_artifact.py` builds exactly one arm/domain artifact from all
+100 official training trajectories. It stages the build under a hidden
+`.domain.building` directory, preserves failures, hashes every payload, rejects
+held-out input, and only atomically publishes the domain directory after the
+manifest verifies.
+
+The builders use each method's real learning path:
+
+- Morphz: production `context_tx`, Context audit, WAL checkpoint and Recall
+  index rebuild;
+- A-MEM: MemGym's serializable A-MEM-compatible implementation with metadata
+  generation and memory evolution;
+- Mem0: OSS procedural-memory extraction and an on-disk Qdrant namespace.
+
+`artifact_reload_no_model_gate.py`, `morphz_artifact_real_smoke.py`, and
+`strong_memory_artifact_real_smoke.py` separately verify persistence/reload
+and one-trajectory native learning. A one-trajectory smoke is a build Gate,
+never an effectiveness score.
+
+When the Python OpenAI SDK reaches CLIProxyAPI through an mDNS `.local` name,
+freeze the resolved LAN IPv4 as `MORPHZ_STATE_BENCH_AGENT_BASE_URL`; on the
+2026-08-26 test host, Python selected a public IPv6 route while curl and Morphz
+selected the local route. The failed request is preserved in the Gate artifact
+and was not silently retried or scored.

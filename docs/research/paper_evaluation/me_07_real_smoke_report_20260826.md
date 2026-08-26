@@ -1,5 +1,10 @@
 # ME-07 LongMemEval-V2 Small 真实 smoke（2026-08-26）
 
+> **SUPERSEDED / 无效效果证据：**本 smoke 使用了未经用户授权提升为主实验路线的 Qwen
+> substitute reader/judge。用户随后明确取消整个 LongMemEval 方案；本文所有局部数字均不得
+> 进入论文。当前 ME-07 见
+> [`me_07_state_bench_protocol_v1.md`](./me_07_state_bench_protocol_v1.md)。
+
 ## 状态
 
 四个冻结 cell 均完整通过，允许进入 451 题全量 paired 运行。每个 cell 内部并发保持 1。

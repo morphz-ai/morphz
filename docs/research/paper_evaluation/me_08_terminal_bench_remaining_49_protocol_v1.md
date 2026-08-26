@@ -2,7 +2,8 @@
 
 > 协议：`terminal-bench-two-arm-remaining-49-v1`
 >
-> 状态：`frozen-before-model-run`
+> 状态：`complete`；结果见
+> [`artifacts/me08_terminal_bench_all_89_20260826/RESULT.md`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)
 >
 > 日期：2026-08-26
 

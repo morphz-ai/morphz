@@ -142,7 +142,8 @@ class AMemBackend(StrongMemoryBackend):
 
     def __init__(self, artifact_dir: Path):
         state_path = artifact_dir / "amem_state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        raw_state = json.loads(state_path.read_text(encoding="utf-8"))
+        state = _resolve_env_placeholders(raw_state, artifact_dir=artifact_dir)
         memgym_root = os.environ.get("MORPHZ_STATE_BENCH_MEMGYM_ROOT", "").strip()
         if not memgym_root:
             raise RuntimeError("MORPHZ_STATE_BENCH_MEMGYM_ROOT is required for the A-MEM arm")
@@ -178,17 +179,28 @@ class AMemBackend(StrongMemoryBackend):
         return {"arm": self.arm, "state_sha256": self.state_sha256}
 
 
-def _resolve_env_placeholders(value: Any) -> Any:
+def _resolve_env_placeholders(value: Any, *, artifact_dir: Path | None = None) -> Any:
     if isinstance(value, dict):
-        return {key: _resolve_env_placeholders(child) for key, child in value.items()}
+        return {
+            key: _resolve_env_placeholders(child, artifact_dir=artifact_dir)
+            for key, child in value.items()
+        }
     if isinstance(value, list):
-        return [_resolve_env_placeholders(child) for child in value]
+        return [_resolve_env_placeholders(child, artifact_dir=artifact_dir) for child in value]
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
         name = value[2:-1]
+        if name == "ARTIFACT_DIR":
+            if artifact_dir is None:
+                raise RuntimeError("ARTIFACT_DIR placeholder requires an artifact directory")
+            return str(artifact_dir.resolve())
         resolved = os.environ.get(name)
         if resolved is None:
             raise RuntimeError(f"required environment variable is missing: {name}")
         return resolved
+    if isinstance(value, str) and "${ARTIFACT_DIR}" in value:
+        if artifact_dir is None:
+            raise RuntimeError("ARTIFACT_DIR placeholder requires an artifact directory")
+        return value.replace("${ARTIFACT_DIR}", str(artifact_dir.resolve()))
     return value
 
 
@@ -199,14 +211,16 @@ class Mem0Backend(StrongMemoryBackend):
         config_path = artifact_dir / "mem0_config.json"
         raw_config = json.loads(config_path.read_text(encoding="utf-8"))
         self.config_sha256 = sha256_file(config_path)
-        config = _resolve_env_placeholders(raw_config)
+        config = _resolve_env_placeholders(raw_config, artifact_dir=artifact_dir)
         from mem0 import Memory
 
         self.memory = Memory.from_config(config)
-        self.user_id = f"state-bench-{domain}"
+        # Procedural memories are written through Mem0's agent-scoped API.
+        # Reading them back through user_id silently yields an empty result.
+        self.agent_id = f"state-bench-{domain}"
 
     def retrieve(self, query: str, top_k: int) -> list[str]:
-        response = self.memory.search(query, top_k=top_k, filters={"user_id": self.user_id})
+        response = self.memory.search(query, top_k=top_k, filters={"agent_id": self.agent_id})
         rows = response.get("results", []) if isinstance(response, dict) else []
         learnings = [
             str(row.get("memory")).strip()
@@ -232,6 +246,9 @@ def create_backend(
     artifact_dir = artifact_root / arm / domain
     if not artifact_dir.is_dir():
         raise FileNotFoundError(f"missing ME-07 memory artifact: {artifact_dir}")
+    from .artifacts import verify_artifact_manifest
+
+    verify_artifact_manifest(artifact_dir, arm=arm, domain=domain)
     if arm == "morphz":
         return MorphzRecallBackend(artifact_dir, task_id=task_id, output_dir=output_dir)
     if arm == "amem":

@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 from benchmarks.harbor.summarize_all_89 import (
+    combine_job_usage,
     exact_two_sided,
+    load_job_usage,
     load_resource_samples,
     summarize,
 )
@@ -46,6 +48,21 @@ def remaining_payload(morphz: list[int], codex: list[int]) -> dict[str, object]:
     }
 
 
+def job_payload(trials: int, *, input_tokens: int, cost: float | None) -> dict[str, object]:
+    return {
+        "started_at": "2026-08-26T00:00:00",
+        "finished_at": "2026-08-26T00:02:00",
+        "n_total_trials": trials,
+        "stats": {
+            "n_errored_trials": 2,
+            "n_input_tokens": input_tokens,
+            "n_cache_tokens": 10,
+            "n_output_tokens": 20,
+            "cost_usd": cost,
+        },
+    }
+
+
 class SummarizeAll89Test(unittest.TestCase):
     def test_exact_two_sided(self) -> None:
         self.assertEqual(exact_two_sided(0, 0), 1.0)
@@ -79,6 +96,14 @@ class SummarizeAll89Test(unittest.TestCase):
         self.assertEqual(
             summary["bootstrap"],
             {"seed": 20260826, "repetitions": 10_000},
+        )
+        self.assertEqual(
+            set(summary["input_sha256"]),
+            {
+                "first_40_morphz_strict_result",
+                "first_40_codex_strict_result",
+                "remaining_49_two_arm_summary",
+            },
         )
 
     def test_summarize_rejects_overlap_between_frozen_subsets(self) -> None:
@@ -146,6 +171,24 @@ class SummarizeAll89Test(unittest.TestCase):
         self.assertEqual(summary["cpu_count"], 16)
         self.assertEqual(summary["memory_used_kib"]["max"], 6_000)
         self.assertEqual(summary["docker_running_containers"]["max"], 3)
+
+    def test_job_usage_and_combination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_path = root / "first.json"
+            remaining_path = root / "remaining.json"
+            write_json(first_path, job_payload(40, input_tokens=100, cost=1.5))
+            write_json(remaining_path, job_payload(49, input_tokens=200, cost=2.5))
+            first = load_job_usage(first_path, expected_trials=40)
+            remaining = load_job_usage(remaining_path, expected_trials=49)
+            combined = combine_job_usage(first, remaining)
+
+        self.assertEqual(combined["provider_reported_input_tokens"], 300)
+        self.assertEqual(combined["provider_reported_cache_tokens"], 20)
+        self.assertEqual(combined["provider_reported_output_tokens"], 40)
+        self.assertEqual(combined["wall_time_seconds_across_two_subsets"], 240.0)
+        self.assertEqual(combined["errored_trials"], 4)
+        self.assertEqual(combined["harbor_estimated_cost_usd"], 4.0)
 
 
 if __name__ == "__main__":

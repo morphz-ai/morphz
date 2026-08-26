@@ -1,0 +1,42 @@
+{
+  "gate": "ME-07-Morphz-production-artifact-real-smoke-v1",
+  "trajectory_id": "1-cancel_economy_domestic",
+  "trajectory_sha256": "4d79d0ff440afbfa8d4b71d6ef15c4d24b4907efb332bcc30ea06f4b21eb3b86",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "profile": "roadshow-demo-001",
+  "binary_sha256": "05e0f4624a457c2c078f96ca7cfbc3edd81e0665eda40ce421510a7b1f851980",
+  "binary_version": "morphz 0.1.0 (git b5800b52d7a9)",
+  "real_model_calls_expected": 1,
+  "gate_passed": true,
+  "payloads": [
+    "backend.json",
+    "learned_context.sqlite",
+    "context_audit.json",
+    "recall_rebuild.json",
+    "recall_inspect.json"
+  ],
+  "method": {
+    "implementation": "production-morphz-context-tx",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "profile": "roadshow-demo-001",
+    "binary_sha256": "05e0f4624a457c2c078f96ca7cfbc3edd81e0665eda40ce421510a7b1f851980",
+    "one_context_per_domain": true,
+    "full_access": true
+  },
+  "build_receipts": [
+    {
+      "trajectory_id": "1-cancel_economy_domestic",
+      "status": "committed",
+      "wall_time_seconds": 128.400577
+    }
+  ],
+  "retrieved_count": 2,
+  "retrieved_preview_sha256": [
+    "5f0498031ca0f2fe7d39cfcd04f8ae93390c920239e2fab243623faf0bb58858",
+    "1daa224ac7bd2223ed66566163f90edff60fca030d6593696b1a99c42069d960"
+  ],
+  "source_snapshot_immutable": true,
+  "wal_or_shm_present": false
+}

@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 强记忆系统对照协议 v1
 
-> 状态：`protocol-frozen / no-model-adapter-gate-complete / locked-eval-access-gated`
+> 状态：`protocol-frozen / artifact-build-and-reload-gate-complete / locked-eval-access-gated`
 >
 > 协议 ID：`ME-07-STATE-Bench-strong-memory-v1`
 >
@@ -98,10 +98,15 @@ Provider、模型、adapter 和评分失败均保留；官方 scorer 是主分�
 
 ## 8. 当前状态
 
-无模型 Gate 已通过：7 项单元测试和 7 项端到端 Gate 均成功，覆盖官方 commit、三个领域各
-100 条训练轨迹、canonical digests、extension discovery、memory tool 往返、固定 top-k 和
-无记忆 arm 排除。该阶段模型调用为 0。
+无模型 Adapter Gate 已通过：覆盖官方 commit、三个领域各 100 条训练轨迹、canonical
+digests、extension discovery、memory tool 往返、固定 top-k 和无记忆 arm 排除。
 
-尚未完成的实质门槛是：构建三个真实学习 artifact、取得锁定 Azure GPT-5.4 eval client、
-完成三臂真实 smoke 和正式批次。因此目前只能声称协议与 adapter 合同闭环，不能报告 ME-07
-效果结论。
+三臂真实学习产物 Gate 亦已通过：三组读取同一条官方训练轨迹；Morphz 真实执行生产
+`context_tx`、checkpoint、Recall rebuild/audit 并从新进程检索冻结 SQLite；A-MEM 与 Mem0
+分别执行原生 add-time 模型归纳、关闭持久化存储后由新实例检索。模型均核验为
+`gpt-5.6-sol`/max。详见
+[`artifacts/me07_state_bench_artifact_gate_20260826/RESULT.md`](./artifacts/me07_state_bench_artifact_gate_20260826/RESULT.md)。
+
+尚未完成的实质门槛是：为 3 个 arm × 3 个 domain 构建完整 100-trajectory 学习产物、取得
+锁定 Azure GPT-5.4 eval client、完成三臂 scored smoke 和正式 2,250-trial 批次。因此目前
+只能声称协议、adapter 与真实学习产物路径闭环，不能报告 ME-07 效果结论。

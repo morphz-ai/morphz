@@ -1,5 +1,10 @@
 # ME-07 LongMemEval-V2 Small adapter Gate（2026-08-26）
 
+> **SUPERSEDED / 已取消：**该 LongMemEval 方案及其 substitute-model 路线已由用户明确取消，
+> 不进入论文效果证据。当前 ME-07 是 STATE-Bench 三强记忆系统对照；见
+> [`me_07_state_bench_protocol_v1.md`](./me_07_state_bench_protocol_v1.md)。以下内容仅保留为
+> 历史工程审计，不能据此恢复运行或引用分数。
+
 ## 结论
 
 `morphz_structured_projection` 已通过官方接口、合成数据和官方真实数据的无模型 Gate，可以进入
