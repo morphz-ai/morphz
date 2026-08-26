@@ -1000,6 +1000,17 @@ impl ProviderAuthManager {
         self.accounts.read().ok()?.get(account_id).cloned()
     }
 
+    /// Resolve a Runtime-managed static credential through the same Secret
+    /// Store used by OAuth accounts. Unmanaged aliases retain the Secret
+    /// Store's bootstrap compatibility with process environment variables.
+    pub(crate) fn materialize_static_credential(
+        &self,
+        alias: &str,
+    ) -> Result<Option<String>, String> {
+        self.secret_store
+            .resolve(alias, SecretUseContext::default())
+    }
+
     /// Make a newly persisted OAuth account available to the current process.
     /// The Runtime publishes the matching Provider and Model Route through the
     /// same control-plane mutation before the login flow is started.
