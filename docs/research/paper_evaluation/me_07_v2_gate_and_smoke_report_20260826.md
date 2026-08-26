@@ -81,7 +81,7 @@ Morphz Gate 的一次 episode 产生 1 次 Context Transaction，Mind version `0
 - ME-07 三臂 runner/adapters：
   `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；
 - 正式配对 runner、聚类统计与盲评包生成器：
-  `0688924678a015cd8045706a84dcb6eaa3cdb666`；
+  `4dcaf15bf9e36c004d0034b0df7654cc408a9125`；
 - Letta episodic reset 与原子 checkpoint 训练 runner：
   `c6d80048d99b2a38c49944398be2a49adc08283b`；
 - Gate binary SHA-256：

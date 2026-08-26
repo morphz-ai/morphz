@@ -52,7 +52,7 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
   commit 为 `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；Letta 原子 checkpoint 与 episodic
   context reset 训练 runner commit 为 `c6d80048d99b2a38c49944398be2a49adc08283b`；正式配对
   runner、统计器与人工盲评包生成器
-  commit 为 `0688924678a015cd8045706a84dcb6eaa3cdb666`。后续替换任一身份都必须生成新 lock
+  commit 为 `4dcaf15bf9e36c004d0034b0df7654cc408a9125`。后续替换任一身份都必须生成新 lock
   和回归证据，不得隐式跟随 `main`。
 
 版本、容器镜像 digest、Python/Node 依赖锁、数据库版本和配置哈希必须在真实 smoke 前写入
@@ -119,7 +119,8 @@ v2 不再把 STATE-Bench 历史协议中的 Azure GPT-5.4 当作不可替换的�
 每个单元内三个 arm 最多并行运行，因而不同系统承受相近的外部时间条件，但同一 arm 任一时刻
 最多只有一个任务。每个任务只允许一次正式尝试。terminal 失败保留并计零，不自动重试；进程
 中断恢复时只运行尚未形成 terminal receipt 的缺失任务。每个 terminal receipt 在进入下一个
-配对单元前原子写入。
+配对单元前原子写入。若上游 trajectory 已落盘但进程在原子 receipt 前中断，则保留该孤立
+trajectory，不重跑，并因模型绑定与评分调用收据不完整而按 terminal failure 计零。
 
 - 主指标：更新评测协议下的 pass@1；
 - 主要配对差：Morphz−Letta、Morphz−Mem0；

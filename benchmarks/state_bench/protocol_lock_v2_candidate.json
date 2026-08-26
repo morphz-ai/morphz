@@ -44,7 +44,7 @@
         "letta": "c6d80048d99b2a38c49944398be2a49adc08283b",
         "mem0": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa"
       },
-      "formal_runner_commit": "0688924678a015cd8045706a84dcb6eaa3cdb666",
+      "formal_runner_commit": "4dcaf15bf9e36c004d0034b0df7654cc408a9125",
       "gate_binary_sha256": "92efe2c3a54887136909366b9437de0b47e7b41f676dae6858cd702189983edd",
       "scope": "complete_agent_runtime",
       "replacement_requires_new_lock": true
@@ -102,6 +102,7 @@
     "max_attempts": 1,
     "terminal_failures_are_not_retried": true,
     "resume_runs_only_missing_nonterminal_jobs": true,
+    "orphaned_trajectory_without_atomic_receipt_is_preserved_and_scored_zero": true,
     "heldout_snapshot_isolation": true,
     "training_and_memory_costs_counted": true
   },
