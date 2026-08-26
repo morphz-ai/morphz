@@ -1,0 +1,65 @@
+{
+  "protocol": "me08-terminal-bench-postfix-targeted-v1",
+  "dataset": "terminal-bench/terminal-bench-2-1",
+  "dataset_version": "2.1",
+  "prior_runtime_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+  "postfix_runtime_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
+  "attempts_per_task": 1,
+  "concurrency": 1,
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "harness_mode": "none",
+  "primary_score": "official_verifier_raw_reward",
+  "smoke_tasks": [
+    "prove-plus-comm",
+    "install-windows-3.11"
+  ],
+  "prior_failures": {
+    "first_40": [
+      "configure-git-webserver",
+      "dna-insert",
+      "extract-elf",
+      "gcode-to-text",
+      "make-doom-for-mips",
+      "mteb-leaderboard",
+      "pytorch-model-recovery",
+      "raman-fitting",
+      "train-fasttext",
+      "vulnerable-secret"
+    ],
+    "remaining_49": [
+      "break-filter-js-from-html",
+      "extract-moves-from-video",
+      "financial-document-processor",
+      "install-windows-3.11",
+      "overfull-hbox",
+      "protein-assembly",
+      "prove-plus-comm",
+      "tune-mjcf",
+      "video-processing"
+    ]
+  },
+  "regression_sentinels": [
+    "bn-fit-modify",
+    "build-pov-ray",
+    "cancel-async-tasks",
+    "qemu-alpine-ssh",
+    "qemu-startup"
+  ],
+  "known_diagnostic_classification": {
+    "confirmed_runtime_defect_repaired": [
+      "prove-plus-comm",
+      "install-windows-3.11"
+    ],
+    "provider_policy_refusal_not_runtime": [
+      "break-filter-js-from-html"
+    ],
+    "background_process_outlived_benchmark_deadline": [
+      "extract-moves-from-video"
+    ],
+    "model_or_task_nonconvergence_without_observed_state_loss": [
+      "financial-document-processor",
+      "video-processing"
+    ]
+  }
+}
