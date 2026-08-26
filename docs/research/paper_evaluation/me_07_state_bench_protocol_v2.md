@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / single-run-cost-amendment-frozen / evaluator-human-validation-pending`
+> 状态：`three-arm-scored-smoke-passed / single-run-cost-amendment-frozen / post-hoc-mind-frame-trace-audit-specified / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -162,6 +162,25 @@ trajectory，不重跑，并因模型绑定与评分调用收据不完整而按 
 - 统计单位：held-out task；置信区间和置换/Bootstrap 以 task 聚类；
 - 两个主要比较使用预注册 Holm 校正；
 - 官方/上游 scorer 输出仍是分数真值，事后 Runtime 诊断只能解释失败，不能覆盖分数。
+
+### 8.1 Morphz Mind Frame 迁移轨迹审计（事后诊断）
+
+正式批次启动后另行增加一项**只读、无模型调用、不重新评分**的机制轨迹审计。它不改变
+任何 arm 的冻结任务分数，也不冒充预注册因果消融。审计逐个遍历 150 个 Morphz held-out
+task 的隔离 Runtime 数据库，并要求：
+
+1. 对应领域训练 Session 已通过 100 次 `chat/context_tx_committed` 把全部训练 episode 写入
+   Structured Context；
+2. 冻结 Mind projection 的最终 revision 为 100，并存在由训练 Session 形成且带来源的活跃
+   Mind Frame、显式 Relation 及被淘汰对象记录；
+3. held-out task 使用独立 Session，但其中每次 `chat/assistant_call` 的
+   `context_snapshot_version` 都等于该最终 revision；
+4. 审计结果只证明“训练经验被整合为结构化认知状态，并由后续求值实际使用”，不能把
+   Morphz 与 Letta/Mem0 的全部端到端分差单独归因于 Mind Frame。
+
+可复现审计器为
+[`audit_morphz_mind_frame_transfer.py`](../../../benchmarks/state_bench/v2/audit_morphz_mind_frame_transfer.py)。
+增加该诊断是为了检验论文的核心机制链，而不是对已经看到的失败做补分或筛选样本。
 
 ## 9. 进入真实运行前的 Gate
 
