@@ -43,7 +43,32 @@ test("renders documentation indexes and bilingual article routes", async () => {
   assert.match(html[3], /Current behavior/);
 });
 
+test("renders the bilingual journal and its first essay", async () => {
+  const slug = "from-chat-completion-to-structured-context-evaluation";
+  const routes = ["/blog", "/en/blog", `/blog/${slug}`, `/en/blog/${slug}`];
+  const responses = await Promise.all(routes.map(render));
+  for (const response of responses) assert.equal(response.status, 200);
+  const html = await Promise.all(responses.map((response) => response.text()));
+  assert.match(html[0], /代理认知与运行时的技术说明/);
+  assert.match(html[1], /Technical notes on agent cognition and runtimes/);
+  assert.match(html[2], /从聊天补全到结构化上下文求值/);
+  assert.match(html[2], /聊天历史不是认知状态/);
+  assert.match(html[2], /作者/);
+  assert.match(html[2], /Morphz Project/);
+  assert.match(html[3], /From Chat Completion to Structured Context Evaluation/);
+  assert.match(html[3], /A transcript is not cognitive state/);
+  assert.match(html[3], /By/);
+  assert.match(html[3], /Morphz Project/);
+  assert.doesNotMatch(html[2], /我叫 Morphz|一台认知机，也应当拥有自己的声音/);
+  assert.doesNotMatch(html[3], /I am Morphz|A cognitive machine should have a voice of its own/);
+});
+
 test("returns not found for an unknown documentation slug", async () => {
   const response = await render("/docs/not-a-real-page");
+  assert.equal(response.status, 404);
+});
+
+test("returns not found for an unknown journal slug", async () => {
+  const response = await render("/blog/not-a-real-essay");
   assert.equal(response.status, 404);
 });

@@ -16,6 +16,7 @@ const content = {
     boundariesEyebrow: "运行时边界",
     firstRunEyebrow: "首次运行",
     documentationEyebrow: "产品文档",
+    journalEyebrow: "MORPHZ · 技术文章",
     principlesTitle: "不是聊天外壳，而是认知与执行底座",
     principlesLead: "模型可以变化，任务可以跨越多轮，进程也可能重启。Morphz 把必须可靠的部分留在运行时。",
     principles: [
@@ -30,6 +31,10 @@ const content = {
       ["03", "执行", "让代理在明确的工作区、权限和执行目标内完成任务。"],
       ["04", "持续", "通过认知帧、召回、目标与调度器推进长期工作。"],
     ],
+    journalTitle: "当代理离开聊天，它需要一种新的计算模型",
+    journalLead: "Morphz 的第一篇文章，从线性消息历史出发，解释为什么结构化上下文应当成为模型直接求值的对象。",
+    journalArticle: "从聊天补全到结构化上下文求值",
+    journalAction: "阅读技术文章",
     docsTitle: "文档是产品契约",
     docsLead: "公开文档只描述当前可以验证的行为。设计提案、研究和历史实现保留在仓库中，但不会伪装成已经交付的功能。",
     docsCards: [
@@ -51,6 +56,7 @@ const content = {
     boundariesEyebrow: "RUNTIME BOUNDARIES",
     firstRunEyebrow: "FIRST RUN",
     documentationEyebrow: "DOCUMENTATION",
+    journalEyebrow: "MORPHZ · TECHNICAL NOTES",
     principlesTitle: "A cognition and execution runtime, not a chat wrapper",
     principlesLead: "Models change, work spans many turns, and processes restart. Morphz keeps the parts that must remain reliable inside the runtime.",
     principles: [
@@ -65,6 +71,10 @@ const content = {
       ["03", "Execute", "Let the agent work inside explicit workspace, permission, and target boundaries."],
       ["04", "Continue", "Use cognitive frames, Recall, Objectives, and scheduling for durable work."],
     ],
+    journalTitle: "When agents move beyond chat, they need a different computational model",
+    journalLead: "The first essay from Morphz begins with linear message history and explains why structured Context should become the object a model evaluates.",
+    journalArticle: "From Chat Completion to Structured Context Evaluation",
+    journalAction: "Read the technical note",
     docsTitle: "Documentation is a product contract",
     docsLead: "Public docs describe behavior that can be verified today. Proposals, research, and historical designs remain available in the repository without being presented as shipped features.",
     docsCards: [
@@ -79,6 +89,7 @@ const content = {
 export function LandingPage({ locale }: { locale: Locale }) {
   const t = content[locale];
   const docs = locale === "zh" ? "/docs" : "/en/docs";
+  const blog = locale === "zh" ? "/blog/from-chat-completion-to-structured-context-evaluation" : "/en/blog/from-chat-completion-to-structured-context-evaluation";
   return (
     <main>
       <SiteHeader locale={locale} />
@@ -127,6 +138,19 @@ export function LandingPage({ locale }: { locale: Locale }) {
             <li key={number}><span>{number}</span><div><h3>{title}</h3><p>{description}</p></div></li>
           ))}
         </ol>
+      </section>
+
+      <section className="section section--journal">
+        <div className="section-heading">
+          <p className="eyebrow">{t.journalEyebrow}</p>
+          <h2>{t.journalTitle}</h2>
+          <p>{t.journalLead}</p>
+        </div>
+        <Link className="journal-feature" href={blog}>
+          <span>01</span>
+          <h3>{t.journalArticle}</h3>
+          <strong>{t.journalAction} <span aria-hidden="true">→</span></strong>
+        </Link>
       </section>
 
       <section className="section section--docs">

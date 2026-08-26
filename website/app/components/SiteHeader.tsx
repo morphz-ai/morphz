@@ -4,6 +4,7 @@ import type { Locale } from "@/lib/docs";
 const copy = {
   zh: {
     docs: "文档",
+    blog: "文章",
     concepts: "核心概念",
     operations: "运维与排障",
     github: "GitHub",
@@ -14,6 +15,7 @@ const copy = {
   },
   en: {
     docs: "Docs",
+    blog: "Notes",
     concepts: "Concepts",
     operations: "Operations",
     github: "GitHub",
@@ -24,11 +26,12 @@ const copy = {
   },
 };
 
-export function SiteHeader({ locale }: { locale: Locale }) {
+export function SiteHeader({ locale, otherLanguageHref }: { locale: Locale; otherLanguageHref?: string }) {
   const t = copy[locale];
   const home = locale === "zh" ? "/" : "/en";
   const docs = locale === "zh" ? "/docs" : "/en/docs";
-  const otherLanguage = locale === "zh" ? "/en" : "/";
+  const blog = locale === "zh" ? "/blog" : "/en/blog";
+  const otherLanguage = otherLanguageHref ?? (locale === "zh" ? "/en" : "/");
 
   return (
     <header className="site-header">
@@ -39,6 +42,7 @@ export function SiteHeader({ locale }: { locale: Locale }) {
           <small>{t.runtime}</small>
         </Link>
         <nav className="site-nav" aria-label={t.navigation}>
+          <Link href={blog}>{t.blog}</Link>
           <Link href={docs}>{t.docs}</Link>
           <Link href={`${docs}/core-concepts`}>{t.concepts}</Link>
           <Link href={`${docs}/operations`}>{t.operations}</Link>
