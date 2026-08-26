@@ -14632,7 +14632,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detached_execution_uses_completion_inbox_then_singleton_passthrough() {
+    async fn detached_execution_delivers_exactly_once_after_completion_inbox_wake() {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
@@ -14700,9 +14700,26 @@ mod tests {
                 }
             };
         assert_eq!(reply.payload["text"], "detached execution complete");
-        assert_eq!(reply.payload["delivery_strategy"], "passthrough");
-        assert_eq!(reply.payload["delivery_kind"], "thread_delivery");
-        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        let delivery = (
+            reply.payload.get("delivery_kind").and_then(Value::as_str),
+            reply.payload.get("thread_kind").and_then(Value::as_str),
+            reply
+                .payload
+                .get("delivery_strategy")
+                .and_then(Value::as_str),
+        );
+        assert!(
+            matches!(
+                delivery,
+                (Some("turn_reply"), Some("execution"), None)
+                    | (
+                        Some("thread_delivery"),
+                        Some("delivery"),
+                        Some("passthrough")
+                    )
+            ),
+            "detached completion used an unsupported delivery envelope: {delivery:?}"
+        );
         let jobs = runtime
             .inner
             .store
@@ -14714,6 +14731,35 @@ mod tests {
             .await
             .unwrap();
         assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
+
+        // The background Job completion and its final model answer can cross:
+        // either the still-interactive Execution publishes the answer directly,
+        // or the already-terminal result reaches the singleton Delivery fast
+        // path. Both consume the same immutable Activation outcome, so neither
+        // may be followed by a second user-visible copy.
+        match tokio::time::timeout(std::time::Duration::from_millis(1_500), replies.recv()).await {
+            Err(_) | Ok(None) => {}
+            Ok(Some(duplicate)) => panic!(
+                "detached execution produced a duplicate reply after {delivery:?}: {:?}",
+                duplicate.payload
+            ),
+        }
+        let events = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "the durable Event ledger must contain exactly one detached completion reply"
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
