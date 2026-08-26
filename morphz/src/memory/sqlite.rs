@@ -1854,6 +1854,12 @@ fn runtime_sqlite_pool_options(max_connections: u32) -> SqlitePoolOptions {
         .idle_timeout(None)
 }
 
+async fn begin_immediate_sqlite_transaction(
+    pool: &SqlitePool,
+) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
+    pool.begin_with("BEGIN IMMEDIATE").await
+}
+
 const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
     "20260723_01_attention_acknowledgement_projection";
 const LEGACY_OBJECTIVE_THREAD_KIND_MIGRATION: &str = "20260815_04_legacy_objective_thread_kind";
@@ -12739,11 +12745,11 @@ impl ThreadStore for SqliteStore {
 
         // BEGIN IMMEDIATE serializes the aggregate read with the generation
         // bump. Two results completing concurrently can therefore never let
-        // an older aggregate overwrite a newer due time.
-        let mut connection = self.pool.acquire().await?;
-        sqlx::query("BEGIN IMMEDIATE")
-            .execute(&mut *connection)
-            .await?;
+        // an older aggregate overwrite a newer due time. Keep the command in
+        // SQLx's RAII Transaction rather than manually pairing BEGIN/ROLLBACK:
+        // an Activation may be cancelled at any await point, and Transaction
+        // Drop queues the rollback before returning the pooled connection.
+        let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         let operation: Result<
             Option<RuntimeTimerRecord>,
             Box<dyn std::error::Error + Send + Sync>,
@@ -12756,7 +12762,7 @@ impl ThreadStore for SqliteStore {
                      AND delivery_status = 'pending'"#,
             )
             .bind(session_id)
-            .fetch_one(&mut *connection)
+            .fetch_one(&mut *tx)
             .await?;
             let Some(first_pending_at) = aggregate.get::<Option<String>, _>("first_pending_at")
             else {
@@ -12780,7 +12786,7 @@ impl ThreadStore for SqliteStore {
                 i64::try_from(snapshot_max_items)
                     .map_err(|_| "Delivery Flush snapshot_max_items 超出 SQLite INTEGER 范围")?,
             )
-            .fetch_all(&mut *connection)
+            .fetch_all(&mut *tx)
             .await?;
             let completed_thread_ids = delivery_rows
                 .iter()
@@ -12794,7 +12800,7 @@ impl ThreadStore for SqliteStore {
             let current_generation =
                 sqlx::query_scalar::<_, i64>("SELECT generation FROM runtime_timers WHERE id = ?")
                     .bind(timer_id)
-                    .fetch_optional(&mut *connection)
+                    .fetch_optional(&mut *tx)
                     .await?
                     .unwrap_or(0);
             let generation = current_generation
@@ -12836,22 +12842,22 @@ impl ThreadStore for SqliteStore {
             .bind(payload)
             .bind(&now)
             .bind(&now)
-            .execute(&mut *connection)
+            .execute(&mut *tx)
             .await?;
             let row = sqlx::query("SELECT * FROM runtime_timers WHERE id = ?")
                 .bind(timer_id)
-                .fetch_one(&mut *connection)
+                .fetch_one(&mut *tx)
                 .await?;
             Ok(Some(runtime_timer_from_row(&row)?))
         }
         .await;
         match operation {
             Ok(timer) => {
-                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                tx.commit().await?;
                 Ok(timer)
             }
             Err(error) => {
-                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                let _ = tx.rollback().await;
                 Err(error)
             }
         }
@@ -28757,6 +28763,39 @@ mod tests {
                 .unwrap(),
             ExecutionJobMutation::Rejected { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_immediate_transaction_does_not_poison_the_pooled_writer() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let pool = store.pool.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let transaction = begin_immediate_sqlite_transaction(&pool).await.unwrap();
+            entered_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            transaction.rollback().await.unwrap();
+        });
+        entered_rx.await.unwrap();
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        drop(release_tx);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut transaction = begin_immediate_sqlite_transaction(&store.pool).await?;
+            sqlx::query("UPDATE runtime_timers SET updated_at = updated_at WHERE 1 = 0")
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await
+        })
+        .await
+        .expect("a cancelled transaction must not retain SQLite's writer lock")
+        .unwrap();
     }
 
     #[tokio::test]
