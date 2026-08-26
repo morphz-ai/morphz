@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`agent-set-selected / letta-adapter-and-artifact-gate-pending / updated-evaluator-gate-pending`
+> 状态：`three-arm-scored-smoke-passed / formal-training-pending / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -45,10 +45,12 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
   Apache-2.0；
 - Mem0：tag `v2.0.19`，commit `dc82354e143c2581d505d581a00286d6ef8c3605`，
   Apache-2.0；
-- Morphz Runtime 候选：commit
+- Morphz Runtime 基线：commit
   `ad60e300f115fe84e03a8cd3ab70940deb06ae68`，包含 Harbor workspace/exec drain 修复和
-  Objective 通用收敛契约；Letta adapter Gate 通过后再冻结 runner/adapter commit。若候选
-  Runtime 在 Gate 前被替换，必须生成新 lock 和回归证据，不得隐式跟随 `main`。
+  Objective 通用收敛契约；生产 STATE-Bench Runtime adapter commit 为
+  `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 runner/adapter commit 为
+  `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`。后续替换任一身份都必须生成新 lock 和回归
+  证据，不得隐式跟随 `main`。
 
 版本、容器镜像 digest、Python/Node 依赖锁、数据库版本和配置哈希必须在真实 smoke 前写入
 机器可读 lock；`latest` 镜像不得进入正式运行。
@@ -128,7 +130,17 @@ v2 不再把 STATE-Bench 历史协议中的 Azure GPT-5.4 当作不可替换的�
 8. 冻结 runner/Runtime/adapter commit、交错队列、产物合同和总预算后才能运行正式批次。
 
 任何 Gate 失败都保留原始产物；不得换模型、删题、静默重试或只挑成功 arm。当前 v1 的
-A-MEM artifact Gate **不能**替代 v2 Letta Gate，因此目前没有 ME-07 v2 效果结果。
+A-MEM artifact Gate **不能**替代 v2 Letta Gate。
+
+截至 2026-08-26，三臂已使用同一条 canonical travel 训练 episode 完成原生学习、进程退出、
+快照重载和持久化审计；Morphz、Letta、Mem0 的任务克隆均不修改冻结源快照。随后在同一个
+held-out travel task 上完成了三臂 scored smoke：三个 Agent 执行与评分链均正常闭合，且
+simulator/judge 的全部成功调用都物理绑定 `gpt-5.6-sol`/max/no-fallback。第一次 smoke 暴露
+CLIProxyAPI `json_object` 模式所需的显式 JSON 格式词缺失，三臂任务轨迹全部保留且未补分；
+适配器只增加“返回有效 JSON 对象”的传输格式约束后，从全新目录重跑三臂并通过 Gate。
+
+上述 smoke 只证明装置闭合，单题得分不进入论文效果统计。正式训练快照、完整交错队列、
+30 条盲化人工 evaluator 复核和正式批次仍未完成，因此目前仍没有 ME-07 v2 可报告效果结论。
 
 ## 10. 公开来源
 
