@@ -126,6 +126,13 @@ class Me09SharedContextTest(unittest.TestCase):
             "terminal-bench/write-compressor",
         )
 
+    def test_edge_pairing_retries_only_the_explicit_sqlite_busy_case(self) -> None:
+        script = Path(__file__).parents[1].joinpath("run_me09_edge.sh").read_text()
+        self.assertIn('grep -Fq "database is locked"', script)
+        self.assertIn("for attempt in {1..8}", script)
+        self.assertIn('if ! grep -Fq "database is locked"', script)
+        self.assertNotIn("cyber_policy", script)
+
 
 if __name__ == "__main__":
     unittest.main()
