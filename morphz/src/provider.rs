@@ -555,9 +555,9 @@ impl ProtocolClient {
                 HeaderValue::from_str(&value)?,
             );
         }
-        let mut http_builder = reqwest::Client::builder()
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(llm.connect_timeout_secs.max(1)));
+        let mut http_builder =
+            crate::http_transport::client_builder(crate::http_transport::HttpProxyScope::Provider)
+                .connect_timeout(Duration::from_secs(llm.connect_timeout_secs.max(1)));
         // Antigravity rejects or intermittently stalls HTTP/2 requests. This
         // is a physical-provider compatibility requirement, not a Gemini
         // protocol rule, so it is scoped to the adapter.

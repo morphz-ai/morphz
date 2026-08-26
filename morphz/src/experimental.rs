@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const COGNITIVE_COORDINATION: &str = "cognitive-coordination";
+pub const COGNITIVE_COORDINATION_TOOL_NAME: &str = "coordinate";
+pub const COGNITIVE_COORDINATION_PARTICIPANT_ACTOR: &str = "Cognitive-Coordination-Experiment";
 
 #[cfg(feature = "experimental-cognitive-coordination")]
 pub use morphz_cognitive_coordination as cognitive_coordination;

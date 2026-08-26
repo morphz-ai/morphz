@@ -194,12 +194,10 @@ fn oauth_adapters_compatible(configured: &str, actual: &str) -> bool {
 }
 
 fn oauth_http_client() -> reqwest::Client {
-    // Provider traffic already uses an explicit no-proxy client. Keep OAuth
-    // on the same deterministic transport path: reqwest's macOS system-proxy
-    // discovery can return a null SCDynamicStore in headless/service contexts
-    // and panic while the Runtime is starting.
-    reqwest::Client::builder()
-        .no_proxy()
+    // OAuth follows its explicit override, then the Provider override, then
+    // the global HTTP policy. System routing remains the default; headless
+    // deployments that require deterministic direct traffic can opt out.
+    crate::http_transport::client_builder(crate::http_transport::HttpProxyScope::OAuth)
         .build()
         .expect("OAuth HTTP client configuration must be valid")
 }

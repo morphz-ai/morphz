@@ -18,7 +18,12 @@ use super::{ExperimentalFeaturePermit, COGNITIVE_COORDINATION};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const COORDINATE_TOOL_NAME: &str = "coordinate";
+pub const COORDINATE_TOOL_NAME: &str = super::COGNITIVE_COORDINATION_TOOL_NAME;
+/// Actor reserved for Runtime-created participant Evaluations. A Context may
+/// require coordination for ordinary user turns, but these child requests are
+/// already inside that coordination boundary and must never recursively open
+/// another network evaluation.
+pub const COORDINATION_PARTICIPANT_ACTOR: &str = super::COGNITIVE_COORDINATION_PARTICIPANT_ACTOR;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -122,7 +127,7 @@ impl crate::tool::Tool for CoordinateTool {
     fn definition(&self) -> crate::llm::ToolDefinition {
         crate::llm::ToolDefinition {
             name: self.name().to_string(),
-            description: "Invoke an explicitly bound Cognitive Coordination operation. Use operation=evaluate only when independent participant cognition materially benefits the task; ordinary conversation and local work stay in the initiating Agent. The initiator coordinates this request, while Runtime-selected paired participants evaluate independently and unresolved alternatives remain explicit. Never simulate missing participants.".to_string(),
+            description: "Invoke an explicitly bound Cognitive Coordination operation. When coordinated evaluation mode is enabled for the current Context, Runtime invokes this operation automatically before every ordinary user request; call it explicitly only for an additional independent sub-question. The initiator coordinates the request, Runtime-selected paired participants evaluate independently, and unresolved alternatives remain explicit. Never simulate missing participants.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -486,7 +491,7 @@ impl CognitiveEvaluationTransport for SdkEvaluationTransport {
                 SendMessageCommand {
                     session_id: assignment.participant.session_id.clone(),
                     text: prompt,
-                    actor: "Cognitive-Coordination-Experiment".to_string(),
+                    actor: COORDINATION_PARTICIPANT_ACTOR.to_string(),
                     client_message_id: Some(assignment.assignment_id.clone()),
                     attachments: Vec::new(),
                     references: Vec::new(),

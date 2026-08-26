@@ -8308,7 +8308,7 @@ fn render_cognitive_capabilities(bindings: &[ContextCapabilityBindingRecord]) ->
                         list("operations", vec![atom("evaluate")]),
                         pair(
                             "activation",
-                            atom("explicitly invoke only when the task benefits from independent multi-subject evaluation; ordinary dialogue remains local"),
+                            atom("required for ordinary user turns: Runtime dispatches coordinated evaluation before local synthesis; participant child evaluations remain local to prevent recursion"),
                         ),
                         pair(
                             "contract",
@@ -10805,7 +10805,8 @@ mod tests {
         assert!(rendered.starts_with("(cognitive-capabilities"));
         assert!(rendered.contains("(tool coordinate)"));
         assert!(rendered.contains("(operations evaluate)"));
-        assert!(rendered.contains("ordinary dialogue remains local"));
+        assert!(rendered.contains("Runtime dispatches coordinated evaluation"));
+        assert!(rendered.contains("participant child evaluations remain local"));
         assert!(rendered.contains("never simulated"));
 
         assert!(render_cognitive_capabilities(&[]).is_none());

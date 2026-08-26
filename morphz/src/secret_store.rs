@@ -16,9 +16,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 const NATIVE_KEYRING_SERVICE: &str = "ai.morphz.runtime.secrets.v1";
+pub const HOST_ENV_FILE_SECRET_BACKEND_ID: &str = "morphz_env_file";
 const MAX_USAGE_AUDIT_BYTES: u64 = 4 * 1024 * 1024;
 const RETAINED_USAGE_AUDIT_RECORDS: usize = 2_000;
 const BACKEND_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+const NATIVE_KEYRING_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
 const BACKEND_OPERATION_IDLE: u8 = 0;
 const BACKEND_OPERATION_IN_FLIGHT: u8 = 1;
 const BACKEND_OPERATION_STALLED: u8 = 2;
@@ -236,7 +238,7 @@ impl HostEnvFileSecretBackend {
 
 impl SecretValueBackend for HostEnvFileSecretBackend {
     fn backend_id(&self) -> &'static str {
-        "morphz_env_file"
+        HOST_ENV_FILE_SECRET_BACKEND_ID
     }
 
     fn storage_kind(&self) -> &'static str {
@@ -338,6 +340,7 @@ pub struct SecretStore {
     backends: BTreeMap<String, Arc<dyn SecretValueBackend>>,
     backend_operation_states: BTreeMap<String, Arc<AtomicU8>>,
     backend_operation_timeout: Duration,
+    native_keyring_operation_timeout: Duration,
     catalog: RwLock<BTreeMap<String, ManagedSecret>>,
     audit_lock: Mutex<()>,
 }
@@ -381,19 +384,37 @@ impl SecretStore {
         default_backend_id: impl Into<String>,
         backends: Vec<Arc<dyn SecretValueBackend>>,
     ) -> Result<Self, String> {
-        Self::with_backends_and_timeout(
+        Self::with_backends_and_timeouts(
             catalog_path,
             default_backend_id,
             backends,
             BACKEND_OPERATION_TIMEOUT,
+            NATIVE_KEYRING_OPERATION_TIMEOUT,
         )
     }
 
+    #[cfg(test)]
     fn with_backends_and_timeout(
         catalog_path: impl Into<PathBuf>,
         default_backend_id: impl Into<String>,
         backends: Vec<Arc<dyn SecretValueBackend>>,
         backend_operation_timeout: Duration,
+    ) -> Result<Self, String> {
+        Self::with_backends_and_timeouts(
+            catalog_path,
+            default_backend_id,
+            backends,
+            backend_operation_timeout,
+            backend_operation_timeout,
+        )
+    }
+
+    fn with_backends_and_timeouts(
+        catalog_path: impl Into<PathBuf>,
+        default_backend_id: impl Into<String>,
+        backends: Vec<Arc<dyn SecretValueBackend>>,
+        backend_operation_timeout: Duration,
+        native_keyring_operation_timeout: Duration,
     ) -> Result<Self, String> {
         let catalog_path = catalog_path.into();
         let audit_path = catalog_path.with_file_name("managed-secret-usage.jsonl");
@@ -429,6 +450,8 @@ impl SecretStore {
             backends,
             backend_operation_states,
             backend_operation_timeout: backend_operation_timeout.max(Duration::from_millis(1)),
+            native_keyring_operation_timeout: native_keyring_operation_timeout
+                .max(Duration::from_millis(1)),
             catalog: RwLock::new(catalog),
             audit_lock: Mutex::new(()),
         })
@@ -436,6 +459,16 @@ impl SecretStore {
 
     pub fn backend_id(&self) -> &str {
         &self.default_backend_id
+    }
+
+    pub fn has_backend(&self, backend_id: &str) -> bool {
+        self.backend(backend_id).is_ok()
+    }
+
+    pub fn backend_storage_kind(&self, backend_id: &str) -> Option<&'static str> {
+        self.backend(backend_id)
+            .ok()
+            .map(|backend| backend.storage_kind())
     }
 
     pub fn backend_statuses(&self) -> Vec<SecretBackendStatus> {
@@ -533,6 +566,30 @@ impl SecretStore {
         scope_id: Option<String>,
         value_backend: &str,
     ) -> Result<ManagedSecret, String> {
+        self.put_with_backend_policy(name, value, scope_kind, scope_id, value_backend, true)
+    }
+
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    pub(crate) fn copy_to_backend_retaining_previous(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+    ) -> Result<ManagedSecret, String> {
+        self.put_with_backend_policy(name, value, scope_kind, scope_id, value_backend, false)
+    }
+
+    fn put_with_backend_policy(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+        value_backend: &str,
+        cleanup_previous: bool,
+    ) -> Result<ManagedSecret, String> {
         validate_name(name)?;
         validate_value(value)?;
         validate_scope(&scope_kind, scope_id.as_deref())?;
@@ -573,7 +630,9 @@ impl SecretStore {
         self.persist_catalog(next.values())?;
         *guard = next;
         drop(guard);
-        if let Some(previous) = previous.filter(|entry| entry.value_backend != backend_id) {
+        if let Some(previous) =
+            previous.filter(|entry| cleanup_previous && entry.value_backend != backend_id)
+        {
             let cleanup = self.backend(&previous.value_backend).and_then(|backend| {
                 let previous_backend_id = backend.backend_id().to_string();
                 let locator = locator.clone();
@@ -750,6 +809,14 @@ impl SecretStore {
             .ok_or_else(|| format!("Secret Value Backend '{value_backend}' is not registered"))
     }
 
+    fn operation_timeout_for_backend(&self, backend_id: &str) -> Duration {
+        self.backends
+            .get(backend_id)
+            .filter(|backend| backend.storage_kind() == "native_keyring")
+            .map(|_| self.native_keyring_operation_timeout)
+            .unwrap_or(self.backend_operation_timeout)
+    }
+
     /// Runs a potentially interactive or remote backend outside Tokio's blocking pool.
     ///
     /// Tokio waits indefinitely for `spawn_blocking` work while dropping a Runtime. A
@@ -768,6 +835,7 @@ impl SecretStore {
         T: Send + 'static,
         F: FnOnce() -> Result<T, String> + Send + 'static,
     {
+        let operation_timeout = self.operation_timeout_for_backend(backend_id);
         let state = self
             .backend_operation_states
             .get(backend_id)
@@ -784,17 +852,14 @@ impl SecretStore {
                 Ok(_) => break,
                 Err(BACKEND_OPERATION_STALLED) => {
                     return Err(format!(
-                        "Secret Value Backend '{backend_id}' previously entered an uninterruptible stall and has been isolated by the Runtime; unlock and authorize the system credential store, then restart the Runtime"
+                        "Secret Value Backend '{backend_id}' still has a timed-out operation in progress and is temporarily isolated by the Runtime; complete or dismiss the system credential-store prompt before retrying"
                     ));
                 }
                 Err(BACKEND_OPERATION_IN_FLIGHT) => {
-                    let Some(remaining) = self
-                        .backend_operation_timeout
-                        .checked_sub(started.elapsed())
-                    else {
+                    let Some(remaining) = operation_timeout.checked_sub(started.elapsed()) else {
                         return Err(format!(
                             "Secret Value Backend '{backend_id}' waited more than {} ms to {operation}; another backend operation is still in progress",
-                            self.backend_operation_timeout.as_millis()
+                            operation_timeout.as_millis()
                         ));
                     };
                     std::thread::sleep(remaining.min(Duration::from_millis(10)));
@@ -816,12 +881,29 @@ impl SecretStore {
                     .map_err(|_| "Secret Value Backend worker panicked".to_string())
                     .and_then(|result| result);
                 let _ = sender.send(result);
-                let _ = worker_state.compare_exchange(
-                    BACKEND_OPERATION_IN_FLIGHT,
-                    BACKEND_OPERATION_IDLE,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
+                // A timed-out native prompt can still complete after the
+                // caller returned. Re-open that backend automatically instead
+                // of requiring a process restart after successful approval.
+                loop {
+                    let current = worker_state.load(Ordering::Acquire);
+                    if !matches!(
+                        current,
+                        BACKEND_OPERATION_IN_FLIGHT | BACKEND_OPERATION_STALLED
+                    ) {
+                        break;
+                    }
+                    if worker_state
+                        .compare_exchange(
+                            current,
+                            BACKEND_OPERATION_IDLE,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
             });
         if let Err(error) = spawn_result {
             let _ = state.compare_exchange(
@@ -835,8 +917,7 @@ impl SecretStore {
             ));
         }
 
-        let remaining = self
-            .backend_operation_timeout
+        let remaining = operation_timeout
             .checked_sub(started.elapsed())
             .unwrap_or_default();
         match receiver.recv_timeout(remaining) {
@@ -850,7 +931,7 @@ impl SecretStore {
                 );
                 Err(format!(
                     "Secret Value Backend '{backend_id}' {operation} operation exceeded {} ms; the call may be waiting for system credential-store authorization, so the Runtime isolated this backend to prevent jobs and shutdown from blocking indefinitely",
-                    self.backend_operation_timeout.as_millis()
+                    operation_timeout.as_millis()
                 ))
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -1447,8 +1528,64 @@ mod tests {
         }
     }
 
+    struct DelayedNativeGetBackend;
+
+    impl SecretValueBackend for DelayedNativeGetBackend {
+        fn backend_id(&self) -> &'static str {
+            "delayed_native_test"
+        }
+
+        fn storage_kind(&self) -> &'static str {
+            "native_keyring"
+        }
+
+        fn put(&self, _locator: &str, _value: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn get(&self, _locator: &str) -> Result<Option<String>, String> {
+            std::thread::sleep(Duration::from_millis(80));
+            Ok(Some("authorized-after-prompt".to_string()))
+        }
+
+        fn delete(&self, _locator: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+    }
+
     #[test]
-    fn stalled_backend_is_bounded_and_circuit_broken_without_blocking_tokio_shutdown() {
+    fn native_keyring_uses_a_human_authorization_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SecretStore::with_backends_and_timeouts(
+            directory.path().join("managed-secrets.json"),
+            "delayed_native_test",
+            vec![Arc::new(DelayedNativeGetBackend)],
+            Duration::from_millis(20),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        store
+            .put(
+                "PROMPTED_TOKEN",
+                "not-persisted",
+                SecretScopeKind::Runtime,
+                None,
+            )
+            .unwrap();
+
+        let started = Instant::now();
+        assert_eq!(
+            store
+                .resolve("PROMPTED_TOKEN", SecretUseContext::default())
+                .unwrap()
+                .as_deref(),
+            Some("authorized-after-prompt")
+        );
+        assert!(started.elapsed() >= Duration::from_millis(80));
+    }
+
+    #[test]
+    fn stalled_backend_is_bounded_then_recovers_after_the_prompt_completes() {
         let directory = tempfile::tempdir().unwrap();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let backend = Arc::new(HangingGetBackend {
@@ -1502,10 +1639,28 @@ mod tests {
         let retry_error = store
             .resolve("BLOCKED_TOKEN", SecretUseContext::default())
             .unwrap_err();
-        assert!(retry_error.contains("previously entered an uninterruptible stall"));
+        assert!(retry_error.contains("timed-out operation in progress"));
         assert!(retry_started.elapsed() < Duration::from_millis(20));
         assert_eq!(backend.get_calls.load(AtomicOrdering::SeqCst), 1);
 
         release_tx.send(()).unwrap();
+        let state = store.backend_operation_states.get("hanging_test").unwrap();
+        let recovery_deadline = Instant::now() + Duration::from_secs(1);
+        while state.load(Ordering::Acquire) != BACKEND_OPERATION_IDLE
+            && Instant::now() < recovery_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(state.load(Ordering::Acquire), BACKEND_OPERATION_IDLE);
+
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            store
+                .resolve("BLOCKED_TOKEN", SecretUseContext::default())
+                .unwrap()
+                .as_deref(),
+            Some("eventually-returned")
+        );
+        assert_eq!(backend.get_calls.load(AtomicOrdering::SeqCst), 2);
     }
 }

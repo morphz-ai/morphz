@@ -1345,25 +1345,30 @@ impl MorphzRuntimeBuilder {
                 crate::experimental::COGNITIVE_COORDINATION,
             ) {
             let coordination = &self.config.experimental.cognitive_coordination;
-            (coordination.participant.is_some() || coordination.mesh.is_some())
-                    .then(|| {
-                        crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService::new_with_secret_store(
-                            permit,
-                            self.config
-                                .experimental
-                                .cognitive_coordination
-                                .clone(),
-                            secret_store.as_ref(),
-                        )
-                        .map(|service| {
-                            service.with_assignment_store(
-                                Arc::clone(&store)
-                                    as Arc<dyn crate::memory::WorkAssignmentStore>,
-                            )
-                        })
-                        .map(Arc::new)
-                    })
-                    .transpose()?
+            if coordination.participant.is_some() || coordination.mesh.is_some() {
+                match crate::experimental::cognitive_coordination_network::CognitiveCoordinationNetworkService::new_with_secret_store(
+                    permit,
+                    self.config
+                        .experimental
+                        .cognitive_coordination
+                        .clone(),
+                    secret_store.as_ref(),
+                ) {
+                    Ok(service) => Some(Arc::new(service.with_assignment_store(
+                        Arc::clone(&store) as Arc<dyn crate::memory::WorkAssignmentStore>,
+                    ))),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            event_code = "runtime.cognitive_coordination.initialization_deferred",
+                            "Cognitive Coordination is unavailable for this process; local Runtime startup will continue"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -8963,6 +8968,7 @@ impl SessionHandle {
             model_alias,
             reasoning_effort,
         } = options;
+        let actor = actor.into();
         let session = self
             .runtime
             .get_session(&self.id)
@@ -9155,6 +9161,26 @@ impl SessionHandle {
                 MessageDispatchMode::FollowUp
             }
         });
+        // Resolve the Context routing switch at ingress. A later Dashboard
+        // toggle must not change the meaning of a message that was already
+        // accepted, and participant child Evaluations must never recursively
+        // fan out through the Mesh again.
+        let coordination_mode =
+            if actor == crate::experimental::COGNITIVE_COORDINATION_PARTICIPANT_ACTOR {
+                "local"
+            } else if self
+                .runtime
+                .context_capability_binding(
+                    &session.context_id,
+                    crate::experimental::COGNITIVE_COORDINATION,
+                )
+                .await?
+                .is_some_and(|binding| binding.enabled)
+            {
+                "required"
+            } else {
+                "local"
+            };
         let mut payload = serde_json::Map::from_iter([
             ("context_id".to_string(), json!(session.context_id)),
             ("session_id".to_string(), json!(self.id)),
@@ -9162,6 +9188,7 @@ impl SessionHandle {
             ("client_message_id".to_string(), json!(client_message_id)),
             ("text".to_string(), json!(text)),
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
+            ("coordination_mode".to_string(), json!(coordination_mode)),
         ]);
         if let Some(model_alias) = model_alias {
             payload.insert("model_alias".to_string(), json!(model_alias));
@@ -9188,7 +9215,7 @@ impl SessionHandle {
         }
         let event = Event::new(
             event_id.clone(),
-            actor.into(),
+            actor,
             TYPE_USER_MESSAGE.to_string(),
             "chat/user_message".to_string(),
             payload,
@@ -11053,6 +11080,78 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[cfg(feature = "experimental-cognitive-coordination")]
+    #[tokio::test]
+    async fn optional_coordination_keychain_failure_does_not_block_local_runtime_startup() {
+        struct UnavailableNativeSecretBackend;
+
+        impl crate::secret_store::SecretValueBackend for UnavailableNativeSecretBackend {
+            fn backend_id(&self) -> &'static str {
+                "unavailable_native_test"
+            }
+
+            fn storage_kind(&self) -> &'static str {
+                "native_keyring"
+            }
+
+            fn put(&self, _locator: &str, _value: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn get(&self, _locator: &str) -> Result<Option<String>, String> {
+                Err("native authorization was not completed".to_string())
+            }
+
+            fn delete(&self, _locator: &str) -> Result<bool, String> {
+                Ok(true)
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let secret_store = Arc::new(
+            SecretStore::new(
+                directory.path().join("managed-secrets.json"),
+                Arc::new(UnavailableNativeSecretBackend),
+            )
+            .unwrap(),
+        );
+        secret_store
+            .put(
+                crate::experimental::cognitive_coordination_identity::NODE_IDENTITY_SECRET_ALIAS,
+                "opaque-test-identity",
+                crate::secret_store::SecretScopeKind::Runtime,
+                None,
+            )
+            .unwrap();
+
+        let database = NamedTempFile::new().unwrap();
+        let sqlite = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let mut config = AppConfig::default();
+        config
+            .experimental
+            .enabled
+            .insert(crate::experimental::COGNITIVE_COORDINATION.to_string());
+        config.experimental.cognitive_coordination.mesh =
+            Some("static:http://127.0.0.1:9".to_string());
+        config.experimental.cognitive_coordination.participant = Some(Default::default());
+
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .store(
+                "sqlite:optional-coordination-secret-test",
+                sqlite as Arc<dyn RuntimeStore>,
+            )
+            .secret_store(secret_store)
+            .build()
+            .await
+            .unwrap();
+
+        assert!(runtime.cognitive_coordination_network().is_none());
     }
 
     #[tokio::test]

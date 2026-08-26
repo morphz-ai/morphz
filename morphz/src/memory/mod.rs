@@ -7457,8 +7457,10 @@ pub trait StorageMaintenanceStore: Send + Sync {
     ) -> Result<StorageMaintenanceReport, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-/// Durable Context-scoped optional capability bindings. This is deliberately
-/// separate from Session routing metadata and from the Agent-owned Mind.
+/// Durable Context-scoped capability modes. Cognitive Coordination uses its
+/// binding as the default route for new ordinary user turns: enabled means
+/// required network evaluation before local synthesis. This is deliberately
+/// separate from Session model routing metadata and from the Agent-owned Mind.
 #[async_trait::async_trait]
 pub trait ContextCapabilityBindingStore: Send + Sync {
     async fn list_context_capability_bindings(

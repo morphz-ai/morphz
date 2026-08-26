@@ -196,10 +196,12 @@ impl CognitiveCoordinationNetworkService {
             (None, None)
         };
         validate_config(&config)?;
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(config.request_timeout_secs.max(1)))
-            .build()?;
+        let client = crate::http_transport::client_builder(
+            crate::http_transport::HttpProxyScope::Coordination,
+        )
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(config.request_timeout_secs.max(1)))
+        .build()?;
         Ok(Self {
             config,
             client,
@@ -693,11 +695,18 @@ impl CognitiveCoordinationNetworkService {
         peer: &CognitiveCoordinationPeerConfig,
     ) -> Result<IdentityAdvertisement, DynError> {
         let url = format!("{}{}", peer.base_url.trim_end_matches('/'), IDENTITY_PATH);
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| coordination_transport_error(&peer.base_url, error.to_string()))?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
-            return Err(format!("identity probe returned HTTP {status}").into());
+            return Err(
+                coordination_http_error(&peer.base_url, "identity probe", status, &bytes).into(),
+            );
         }
         let envelope: AuthenticatedEnvelope<IdentityAdvertisement> =
             serde_json::from_slice(&bytes)?;
@@ -1039,20 +1048,17 @@ impl CognitiveCoordinationNetworkService {
             )?
         };
         let url = format!("{}{}", peer.base_url.trim_end_matches('/'), path);
-        let response = self.client.post(url).json(&envelope).send().await?;
+        let response = self
+            .client
+            .post(url)
+            .json(&envelope)
+            .send()
+            .await
+            .map_err(|error| coordination_transport_error(&peer.base_url, error.to_string()))?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
-            let message = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).to_string());
-            return Err(format!("peer returned HTTP {status}: {message}").into());
+            return Err(coordination_http_error(&peer.base_url, "peer", status, &bytes).into());
         }
         Ok(serde_json::from_slice(&bytes)?)
     }
@@ -1125,6 +1131,49 @@ impl CognitiveCoordinationNetworkService {
             heartbeat_started: AtomicBool::new(false),
         }
     }
+}
+
+fn coordination_transport_error(base_url: &str, message: String) -> String {
+    let hint = crate::http_transport::proxy_failure_hint(
+        crate::http_transport::HttpProxyScope::Coordination,
+        base_url,
+    )
+    .map(|hint| format!("; {hint}"))
+    .unwrap_or_default();
+    format!("coordination request to '{base_url}' failed: {message}{hint}")
+}
+
+fn coordination_http_error(
+    base_url: &str,
+    operation: &str,
+    status: reqwest::StatusCode,
+    bytes: &[u8],
+) -> String {
+    let message = serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| {
+            value.get("error").and_then(|error| {
+                error.as_str().map(str::to_string).or_else(|| {
+                    error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+            })
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(bytes).trim().to_string());
+    let detail = if message.is_empty() {
+        format!("{operation} returned HTTP {status}")
+    } else {
+        format!("{operation} returned HTTP {status}: {message}")
+    };
+    if matches!(
+        status,
+        reqwest::StatusCode::BAD_GATEWAY | reqwest::StatusCode::GATEWAY_TIMEOUT
+    ) {
+        return coordination_transport_error(base_url, detail);
+    }
+    detail
 }
 
 struct NetworkEvaluationTransport {
@@ -1532,6 +1581,20 @@ mod tests {
     use axum::{extract::State, routing::post, Json, Router};
     use domain::{EvaluationModelRequest, ModelExecutionProfile};
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn coordination_http_error_reads_the_structured_api_envelope() {
+        let message = coordination_http_error(
+            "http://peer.local:8080",
+            "peer",
+            reqwest::StatusCode::UNAUTHORIZED,
+            br#"{"error":{"code":"unauthorized","message":"reverse identity probe failed"}}"#,
+        );
+        assert_eq!(
+            message,
+            "peer returned HTTP 401 Unauthorized: reverse identity probe failed"
+        );
+    }
 
     #[derive(Clone)]
     struct MockPeer {

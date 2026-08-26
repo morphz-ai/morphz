@@ -125,7 +125,7 @@ test('context budget control opens above the clipped composer status row', () =>
   )
 })
 
-test('cognitive coordination separates global Mesh health from its Context capability gate', () => {
+test('cognitive coordination separates global Mesh health from its Context routing mode', () => {
   assert.match(
     appSource,
     /\/api\/experimental\/cognitive-coordination\/status/,
@@ -148,8 +148,18 @@ test('cognitive coordination separates global Mesh health from its Context capab
   )
   assert.match(
     appSource,
-    /className="cognitive-coordination-selector"[\s\S]*?toggleCognitiveCoordination\(\)/s,
-    'the Context-scoped coordinate tool gate must remain beside the current Context controls',
+    /className="runtime-side"[\s\S]*?cognitive-coordination-selector[\s\S]*?toggleCognitiveCoordination\(\)[\s\S]*?coordination-network-selector/s,
+    'the Context-scoped coordinated-evaluation mode must live in the header immediately before process-scoped Mesh health',
+  )
+  assert.doesNotMatch(
+    appSource,
+    /className="composer-policy-controls"[\s\S]*?cognitive-coordination-selector/s,
+    'the Context-scoped coordinated-evaluation mode must not be presented as a per-Session composer setting',
+  )
+  assert.match(
+    appSource,
+    /peer\.healthy[\s\S]*?cognitiveCoordination\.probeFailed/s,
+    'failed handshakes must be labelled as failures instead of presenting elapsed failure time as healthy latency',
   )
   assert.match(
     appSource,
@@ -160,6 +170,24 @@ test('cognitive coordination separates global Mesh health from its Context capab
     appCss,
     /\.coordination-status-popover\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto/s,
     'the coordination status panel must use viewport coordinates outside the clipped composer row',
+  )
+})
+
+test('narrow navigation remains a horizontally accessible function rail', () => {
+  assert.match(
+    appCss,
+    /@media \(max-width: 1080px\)[\s\S]*?\.runtime-navigation-row\s*\{[^}]*overflow-x:\s*auto;[^}]*overscroll-behavior-x:\s*contain;/s,
+    'the complete narrow chrome row must support native horizontal navigation',
+  )
+  assert.match(
+    appCss,
+    /@media \(max-width: 1080px\)[\s\S]*?\.runtime-navigation\s*\{[^}]*min-width:\s*max-content;[^}]*flex:\s*0 0 auto;[^}]*overflow:\s*visible;/s,
+    'primary navigation must keep its intrinsic width instead of being squeezed out by page controls',
+  )
+  assert.match(
+    appCss,
+    /@media \(max-width: 1080px\)[\s\S]*?\.immersive-controls\s*\{[^}]*position:\s*sticky;[^}]*right:\s*0;/s,
+    'the trailing immersive action must remain reachable while the function rail scrolls',
   )
 })
 

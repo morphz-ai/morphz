@@ -11936,6 +11936,42 @@ account = "xai-account"
         assert!(enabled_projection.sexpr.contains("(cognitive-capabilities"));
         assert!(enabled_projection.sexpr.contains("(tool coordinate)"));
 
+        let required_message = handle_send_message(
+            State(Arc::clone(&state)),
+            Path(session.id.clone()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SendMessageRequest {
+                text: "evaluate this through the Mesh".to_string(),
+                client_message_id: Some("coordination-required-message".to_string()),
+                attachments: Vec::new(),
+                references: Vec::new(),
+                harness: None,
+                dispatch_mode: None,
+                model_alias: None,
+                reasoning_effort: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(required_message.status(), StatusCode::ACCEPTED);
+        let required_body = axum::body::to_bytes(required_message.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let required_json: serde_json::Value = serde_json::from_slice(&required_body).unwrap();
+        let required_events = runtime
+            .query_events(crate::memory::QueryFilter {
+                event_id: required_json["event_id"].as_str().map(str::to_string),
+                ..crate::memory::QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(required_events.len(), 1);
+        assert_eq!(
+            required_events[0].payload["coordination_mode"], "required",
+            "the Context switch must be frozen onto the accepted root message"
+        );
+
         let stale = handle_update_context_capability_binding(
             State(Arc::clone(&state)),
             Path((

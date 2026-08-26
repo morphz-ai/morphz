@@ -1076,12 +1076,68 @@ fn retain_context_bound_capability_tools(
     tools: &mut Vec<ToolDefinition>,
     bindings: &[crate::memory::ContextCapabilityBindingRecord],
 ) {
-    let cognitive_coordination_enabled = bindings.iter().any(|binding| {
-        binding.enabled && binding.capability_id == crate::experimental::COGNITIVE_COORDINATION
-    });
+    let cognitive_coordination_enabled = cognitive_coordination_required(bindings);
     if !cognitive_coordination_enabled {
         tools.retain(|tool| tool.name != "coordinate");
     }
+}
+
+fn cognitive_coordination_required(
+    bindings: &[crate::memory::ContextCapabilityBindingRecord],
+) -> bool {
+    bindings.iter().any(|binding| {
+        binding.enabled && binding.capability_id == crate::experimental::COGNITIVE_COORDINATION
+    })
+}
+
+fn required_cognitive_coordination_response(
+    root: &Event,
+    root_turn_id: &str,
+) -> Option<crate::llm::Response> {
+    if root.event_type != TYPE_USER_MESSAGE
+        || root
+            .payload
+            .get("coordination_mode")
+            .and_then(serde_json::Value::as_str)
+            != Some("required")
+        || root.actor == crate::experimental::COGNITIVE_COORDINATION_PARTICIPANT_ACTOR
+    {
+        return None;
+    }
+    let text = root
+        .payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let question = if text.is_empty() {
+        "Independently evaluate the initiating user's attachment or reference-only request. Return the most useful proposal possible from the shared metadata; the initiating Agent retains the native attachments for final synthesis."
+    } else {
+        text
+    };
+    let mut shared_input = serde_json::Map::from_iter([
+        ("root_turn_id".to_string(), json!(root_turn_id)),
+        ("event_id".to_string(), json!(&root.id)),
+    ]);
+    for field in ["attachments", "references"] {
+        if let Some(value) = root.payload.get(field) {
+            shared_input.insert(field.to_string(), value.clone());
+        }
+    }
+    Some(crate::llm::Response {
+        content: String::new(),
+        tool_calls: vec![crate::llm::ToolCallRepr {
+            id: format!("required_coordination_{root_turn_id}"),
+            r#type: "function".to_string(),
+            func_name: crate::experimental::COGNITIVE_COORDINATION_TOOL_NAME.to_string(),
+            arguments: serde_json::to_string(&json!({
+                "operation": "evaluate",
+                "question": question,
+                "shared_input": shared_input,
+            }))
+            .expect("required coordination input is JSON-serializable"),
+        }],
+    })
 }
 
 fn is_objective_bound_tool(name: &str) -> bool {
@@ -10340,6 +10396,72 @@ impl Orchestrator {
             });
             tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
         }
+        // A Context-required coordinated Evaluation is the first evaluation
+        // step for an ordinary user root. Dispatch it before a Runtime-owned
+        // Harness entry so the Dashboard routing switch cannot be bypassed by
+        // another mounted entry point. The participant results wake a
+        // successor Activation, which performs the local synthesis exactly
+        // once.
+        if activation.trigger_event_id == activation.root_turn_id {
+            let root = self
+                .context_engine
+                .find_event(&activation.context_id, &activation.root_turn_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "required coordination is missing root request Event '{}'",
+                        activation.root_turn_id
+                    )
+                })?;
+            if let Some(response) =
+                required_cognitive_coordination_response(&root, &activation.root_turn_id)
+            {
+                tracing::info!(
+                    context_id = %activation.context_id,
+                    session_id,
+                    activation_id = %activation.id,
+                    root_turn_id = %activation.root_turn_id,
+                    event_code = "orchestrator.cognitive_coordination.required_dispatched",
+                    "Dispatching the Context-required coordinated Evaluation before local model synthesis"
+                );
+                if dialogue_lease.is_some()
+                    && session_store
+                        .release_dialogue_turn_activation(&activation.id, Utc::now())
+                        .await?
+                {
+                    tracing::debug!(
+                        activation_id = %activation.id,
+                        session_id,
+                        event_code = "orchestrator.dialogue_turn.channel_released",
+                        "Required coordination durably left the dialogue channel while participant Evaluations run"
+                    );
+                }
+                if let Some(lease) = dialogue_lease.as_mut() {
+                    lease.release();
+                }
+                self.refill_activation_admission_queue().await?;
+                self.execute_tool_calls(
+                    session_id,
+                    &attempt_id,
+                    response,
+                    "required-coordination",
+                    ToolExecutionOptions {
+                        context_tx_allowed: false,
+                        wake_on_output: true,
+                        plan_execution_id: None,
+                        continuation_tool_calls: None,
+                        allowed_tool_names: HashSet::from([
+                            crate::experimental::COGNITIVE_COORDINATION_TOOL_NAME.to_string(),
+                        ]),
+                        record_assistant_call: true,
+                        model_attempt_id: None,
+                        provider_continuation: None,
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
+        }
         // A Runtime-owned Harness entry is the root program for the current
         // Evaluation. A `plan_infer` Thread is already a child node of that
         // program: re-dispatching the mounted entry here would short-circuit
@@ -19549,15 +19671,15 @@ mod tests {
         production_system_prompt_inspection, provider_delivery_retry_delay,
         recover_action_group_from_durable_events, recovered_action_group_settled_event,
         recovery_owns_activation, render_harness_context, render_system_contract,
-        restrict_tools_to_scope, retain_context_bound_capability_tools,
-        retain_context_maintenance_tools, retain_final_reply_control_tools,
-        retain_pending_continuation_calls, scheduler_audit_event, semantic_sexpr_vm_system_prompt,
-        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
-        tool_call_activity_preview, validate_final_reply_response,
-        validate_objective_closure_review_response, validate_objective_completion_call,
-        ContextEngine, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
-        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
-        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        required_cognitive_coordination_response, restrict_tools_to_scope,
+        retain_context_bound_capability_tools, retain_context_maintenance_tools,
+        retain_final_reply_control_tools, retain_pending_continuation_calls, scheduler_audit_event,
+        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
+        should_force_final_for_maintenance, tool_call_activity_preview,
+        validate_final_reply_response, validate_objective_closure_review_response,
+        validate_objective_completion_call, ContextEngine, DialogueThreadGate, DialogueThreadLease,
+        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
         ModelVisibleAttachmentReference, NoReplyMode, ProviderCircuitAdmission,
         ProviderCircuitPhase, ProviderCircuitState, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
@@ -20971,6 +21093,49 @@ mod tests {
             }],
         );
         assert!(explicitly_disabled.is_empty());
+    }
+
+    #[test]
+    fn required_coordination_is_runtime_dispatched_once_for_an_ordinary_user_root() {
+        let required = Event::new(
+            "message-required".to_string(),
+            "User-Test".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::from_iter([
+                ("text".to_string(), json!("Compare both designs")),
+                ("coordination_mode".to_string(), json!("required")),
+                ("attachments".to_string(), json!([{"name": "design.png"}])),
+            ]),
+        );
+        let response = required_cognitive_coordination_response(&required, &required.id)
+            .expect("required ordinary user input must dispatch coordination");
+        assert!(response.content.is_empty());
+        assert_eq!(response.tool_calls.len(), 1);
+        let call = &response.tool_calls[0];
+        assert_eq!(
+            call.func_name,
+            crate::experimental::COGNITIVE_COORDINATION_TOOL_NAME
+        );
+        let arguments: serde_json::Value = serde_json::from_str(&call.arguments).unwrap();
+        assert_eq!(arguments["operation"], "evaluate");
+        assert_eq!(arguments["question"], "Compare both designs");
+        assert_eq!(arguments["shared_input"]["root_turn_id"], required.id);
+        assert_eq!(
+            arguments["shared_input"]["attachments"][0]["name"],
+            "design.png"
+        );
+
+        let mut local = required.clone();
+        local
+            .payload
+            .insert("coordination_mode".to_string(), json!("local"));
+        assert!(required_cognitive_coordination_response(&local, &local.id).is_none());
+
+        let mut participant = required;
+        participant.actor =
+            crate::experimental::COGNITIVE_COORDINATION_PARTICIPANT_ACTOR.to_string();
+        assert!(required_cognitive_coordination_response(&participant, &participant.id).is_none());
     }
 
     #[test]

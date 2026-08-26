@@ -7065,6 +7065,7 @@ export default function App() {
     contextTokenBudget?.model,
   )?.label ?? t('model.unavailable')
   const cognitiveCoordinationHealthyPeers = cognitiveCoordinationStatus?.peers.filter(peer => peer.healthy).length ?? 0
+  const cognitiveCoordinationHasFailedPeers = cognitiveCoordinationStatus?.peers.some(peer => !peer.healthy) ?? false
   const cognitiveCoordinationNetworkAvailable = cognitiveCoordination?.feature?.available
     || cognitiveCoordinationStatus?.available
 
@@ -7249,10 +7250,30 @@ export default function App() {
           </div>
 
           <div className="runtime-side">
+            <div className="cognitive-coordination-selector">
+              <button
+                className={`theme-button coordination-context-button ${cognitiveCoordination?.enabled ? 'is-active' : ''}`}
+                type="button"
+                aria-pressed={cognitiveCoordination?.enabled ?? false}
+                disabled={!selectedContextId || !cognitiveCoordination || changingCognitiveCoordination
+                  || (!cognitiveCoordination.enabled && !cognitiveCoordination.feature?.available)}
+                title={cognitiveCoordination?.feature?.available
+                  ? t(cognitiveCoordination.enabled
+                    ? 'cognitiveCoordination.disableHint'
+                    : 'cognitiveCoordination.enableHint')
+                  : t('cognitiveCoordination.unavailable')}
+                onClick={() => void toggleCognitiveCoordination()}
+              >
+                {changingCognitiveCoordination
+                  ? <LoaderCircle className="is-spinning" size={15} />
+                  : <Brain size={15} />}
+                <span>{t('cognitiveCoordination.short')}</span>
+              </button>
+            </div>
             {cognitiveCoordinationNetworkAvailable && (
               <div className="coordination-network-selector" ref={cognitiveCoordinationNetworkRef}>
                 <button
-                  className={`theme-button coordination-health-button ${cognitiveCoordinationStatusOpen ? 'is-active' : ''} ${cognitiveCoordinationHealthyPeers > 0 ? 'has-healthy-peers' : ''} ${cognitiveCoordinationStatusError ? 'has-error' : ''}`}
+                  className={`theme-button coordination-health-button ${cognitiveCoordinationStatusOpen ? 'is-active' : ''} ${cognitiveCoordinationHealthyPeers > 0 ? 'has-healthy-peers' : ''} ${cognitiveCoordinationStatusError || cognitiveCoordinationHasFailedPeers ? 'has-error' : ''}`}
                   type="button"
                   aria-expanded={cognitiveCoordinationStatusOpen}
                   title={t('cognitiveCoordination.peerStatus')}
@@ -7265,7 +7286,7 @@ export default function App() {
                     ? <LoaderCircle className="is-spinning" size={15} />
                     : <Radio size={15} />}
                   <span>{t('cognitiveCoordination.networkShort')}</span>
-                  <em>{cognitiveCoordinationStatusError
+                  <em>{cognitiveCoordinationStatusError || cognitiveCoordinationHasFailedPeers
                     ? '!'
                     : cognitiveCoordinationStatus == null ? '—' : cognitiveCoordinationHealthyPeers}</em>
                 </button>
@@ -7287,13 +7308,23 @@ export default function App() {
                     <p>{t('cognitiveCoordination.networkHint')}</p>
                     <div className="coordination-peer-list">
                       {(cognitiveCoordinationStatus?.peers ?? []).map(peer => (
-                        <article className={peer.healthy ? 'is-healthy' : 'is-offline'} key={`${peer.authority_id}:${peer.base_url}`}>
+                        <article
+                          className={peer.healthy ? 'is-healthy' : 'is-offline'}
+                          key={`${peer.authority_id}:${peer.base_url}`}
+                          title={peer.healthy
+                            ? undefined
+                            : peer.latency_ms == null
+                              ? peer.error ?? t('cognitiveCoordination.probeFailed')
+                              : `${peer.error ?? t('cognitiveCoordination.probeFailed')} · ${t('cognitiveCoordination.probeFailureDuration', { duration: `${peer.latency_ms} ms` })}`}
+                        >
                           <span className="coordination-peer-state" />
                           <span>
                             <strong>{peer.authority_id}</strong>
                             <small>{peer.participant?.default_model.route ?? peer.error ?? peer.base_url}</small>
                           </span>
-                          <em>{peer.latency_ms == null ? '—' : `${peer.latency_ms} ms`}</em>
+                          <em>{peer.healthy
+                            ? peer.latency_ms == null ? '—' : `${peer.latency_ms} ms`
+                            : t('cognitiveCoordination.probeFailed')}</em>
                         </article>
                       ))}
                       {cognitiveCoordinationStatusError && (
@@ -9103,26 +9134,6 @@ export default function App() {
                   {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
                 </select>
               </label>
-              <div className="cognitive-coordination-selector">
-                <button
-                  className={`composer-policy-control ${cognitiveCoordination?.enabled ? 'is-active' : ''}`}
-                  type="button"
-                  aria-pressed={cognitiveCoordination?.enabled ?? false}
-                  disabled={!selectedContextId || !cognitiveCoordination || changingCognitiveCoordination
-                    || (!cognitiveCoordination.enabled && !cognitiveCoordination.feature?.available)}
-                  title={cognitiveCoordination?.feature?.available
-                    ? t(cognitiveCoordination.enabled
-                      ? 'cognitiveCoordination.disableHint'
-                      : 'cognitiveCoordination.enableHint')
-                    : t('cognitiveCoordination.unavailable')}
-                  onClick={() => void toggleCognitiveCoordination()}
-                >
-                  {changingCognitiveCoordination
-                    ? <LoaderCircle className="is-spinning" size={11} />
-                    : <Brain size={11} />}
-                  <span>{t('cognitiveCoordination.short')}</span>
-                </button>
-              </div>
               <div className="context-budget-selector" ref={contextTokenBudgetRef}>
                 <button
                   className={`composer-policy-control context-budget-button ${contextTokenBudgetOpen ? 'is-active' : ''}`}

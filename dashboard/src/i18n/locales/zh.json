@@ -836,8 +836,8 @@
   },
   "cognitiveCoordination": {
     "short": "认知协调",
-    "enableHint": "为当前认知上下文启用认知协调；从下一次模型求值开始，才会注入 coordinate 工具与精简能力契约。",
-    "disableHint": "关闭当前认知上下文的认知协调；新的模型求值将不再看到相关工具和能力契约。",
+    "enableHint": "开启当前认知上下文的协同求值模式；开启后，每条新的普通请求都会先交给协作网络独立求值，再由本地 Agent 汇总。",
+    "disableHint": "关闭当前认知上下文的协同求值模式；新的普通请求将直接在本地求值，已经提交的请求不受影响。",
     "unavailable": "当前运行时未提供认知协调。请先编译并启用 experimental-cognitive-coordination 实验功能。",
     "peerStatus": "查看认知协调参与节点",
     "networkShort": "协调网络",
@@ -845,6 +845,8 @@
     "networkHint": "实时认证握手用于显示节点健康状态，以及新 Assignment 将冻结的逻辑模型路由。",
     "notConfigured": "本地参与节点尚未配置",
     "noPeers": "Mesh 尚未发现其他参与节点。",
+    "probeFailed": "失败",
+    "probeFailureDuration": "失败耗时 {{duration}}",
     "assignments": "协调任务",
     "noAssignments": "暂无协调任务记录。",
     "assignmentRoles": {

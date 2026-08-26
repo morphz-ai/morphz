@@ -1,7 +1,9 @@
 //! Durable node identity and trust-on-first-contact pinning for an
 //! operator-declared Coordination Mesh.
 
-use crate::secret_store::{SecretScopeKind, SecretStore, SecretUseContext};
+use crate::secret_store::{
+    SecretScopeKind, SecretStore, SecretUseContext, HOST_ENV_FILE_SECRET_BACKEND_ID,
+};
 use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
@@ -32,24 +34,59 @@ impl std::fmt::Debug for CoordinationNodeIdentity {
 
 impl CoordinationNodeIdentity {
     pub fn load_or_create(secret_store: &SecretStore) -> Result<Self, DynError> {
-        let encoded = zeroize::Zeroizing::new(
-            match secret_store.resolve(NODE_IDENTITY_SECRET_ALIAS, SecretUseContext::default())? {
-                Some(encoded) => encoded,
-                None => {
-                    let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
-                        .map_err(|_| "failed to generate Coordination Mesh node identity")?;
-                    let encoded =
-                        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(document.as_ref());
-                    secret_store.put(
-                        NODE_IDENTITY_SECRET_ALIAS,
-                        &encoded,
-                        SecretScopeKind::Runtime,
-                        None,
-                    )?;
-                    encoded
-                }
-            },
-        );
+        let existing = secret_store
+            .list()?
+            .into_iter()
+            .find(|entry| entry.name == NODE_IDENTITY_SECRET_ALIAS);
+        let encoded = zeroize::Zeroizing::new(if let Some(existing) = existing {
+            let encoded = secret_store
+                .resolve(NODE_IDENTITY_SECRET_ALIAS, SecretUseContext::default())?
+                .ok_or("Coordination Mesh node identity metadata has no stored value")?;
+            if secret_store.backend_storage_kind(&existing.value_backend) == Some("native_keyring")
+                && secret_store.has_backend(HOST_ENV_FILE_SECRET_BACKEND_ID)
+            {
+                // Do not synchronously delete the legacy Keychain copy here:
+                // deletion can trigger a second authorization prompt. The
+                // catalog switches atomically to the non-interactive copy, so
+                // subsequent starts never touch the legacy item.
+                secret_store.copy_to_backend_retaining_previous(
+                    NODE_IDENTITY_SECRET_ALIAS,
+                    &encoded,
+                    SecretScopeKind::Runtime,
+                    None,
+                    HOST_ENV_FILE_SECRET_BACKEND_ID,
+                )?;
+                tracing::info!(
+                        previous_backend = existing.value_backend,
+                        backend = HOST_ENV_FILE_SECRET_BACKEND_ID,
+                        event_code = "runtime.cognitive_coordination.identity_backend_migrated",
+                        "Migrated the Runtime-owned Coordination Mesh identity to non-interactive host storage"
+                    );
+            }
+            encoded
+        } else {
+            let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+                .map_err(|_| "failed to generate Coordination Mesh node identity")?;
+            let encoded =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(document.as_ref());
+            if secret_store.has_backend(HOST_ENV_FILE_SECRET_BACKEND_ID) {
+                secret_store.put_with_backend(
+                    NODE_IDENTITY_SECRET_ALIAS,
+                    &encoded,
+                    SecretScopeKind::Runtime,
+                    None,
+                    HOST_ENV_FILE_SECRET_BACKEND_ID,
+                )?;
+            } else {
+                secret_store.put(
+                    NODE_IDENTITY_SECRET_ALIAS,
+                    &encoded,
+                    SecretScopeKind::Runtime,
+                    None,
+                )?;
+            }
+            encoded
+        });
         Self::from_pkcs8_base64(encoded.as_str())
     }
 
@@ -260,8 +297,11 @@ fn persist_trust_document<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secret_store::{SecretStore, SecretValueBackend};
+    use crate::secret_store::{
+        HostEnvFileSecretBackend, SecretStore, SecretValueBackend, HOST_ENV_FILE_SECRET_BACKEND_ID,
+    };
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     #[derive(Debug, Default)]
@@ -290,6 +330,41 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct SimulatedNativeBackend {
+        values: Mutex<HashMap<String, String>>,
+        reads: AtomicUsize,
+        deletes: AtomicUsize,
+    }
+
+    impl SecretValueBackend for SimulatedNativeBackend {
+        fn backend_id(&self) -> &'static str {
+            "simulated_native_keyring"
+        }
+
+        fn storage_kind(&self) -> &'static str {
+            "native_keyring"
+        }
+
+        fn put(&self, locator: &str, value: &str) -> Result<(), String> {
+            self.values
+                .lock()
+                .unwrap()
+                .insert(locator.into(), value.into());
+            Ok(())
+        }
+
+        fn get(&self, locator: &str) -> Result<Option<String>, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.values.lock().unwrap().get(locator).cloned())
+        }
+
+        fn delete(&self, locator: &str) -> Result<bool, String> {
+            self.deletes.fetch_add(1, Ordering::SeqCst);
+            Ok(self.values.lock().unwrap().remove(locator).is_some())
+        }
+    }
+
     #[test]
     fn node_identity_is_stable_in_the_secret_store() {
         let directory = tempfile::tempdir().unwrap();
@@ -302,6 +377,86 @@ mod tests {
         let second = CoordinationNodeIdentity::load_or_create(&store).unwrap();
         assert_eq!(first.authority_id(), second.authority_id());
         assert_eq!(first.public_key(), second.public_key());
+    }
+
+    #[test]
+    fn generated_node_identity_uses_noninteractive_host_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let native = Arc::new(SimulatedNativeBackend::default());
+        let store = SecretStore::with_backends(
+            directory.path().join("secrets.json"),
+            native.backend_id(),
+            vec![
+                native.clone(),
+                Arc::new(HostEnvFileSecretBackend::new(
+                    directory.path().join("secrets.env"),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let first = CoordinationNodeIdentity::load_or_create(&store).unwrap();
+        let second = CoordinationNodeIdentity::load_or_create(&store).unwrap();
+        assert_eq!(first.authority_id(), second.authority_id());
+        assert_eq!(native.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.name == NODE_IDENTITY_SECRET_ALIAS)
+                .unwrap()
+                .value_backend,
+            HOST_ENV_FILE_SECRET_BACKEND_ID
+        );
+    }
+
+    #[test]
+    fn legacy_keychain_node_identity_migrates_once_without_changing_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let native = Arc::new(SimulatedNativeBackend::default());
+        let store = SecretStore::with_backends(
+            directory.path().join("secrets.json"),
+            native.backend_id(),
+            vec![
+                native.clone(),
+                Arc::new(HostEnvFileSecretBackend::new(
+                    directory.path().join("secrets.env"),
+                )),
+            ],
+        )
+        .unwrap();
+        let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(document.as_ref());
+        let expected = CoordinationNodeIdentity::from_pkcs8_base64(&encoded).unwrap();
+        store
+            .put(
+                NODE_IDENTITY_SECRET_ALIAS,
+                &encoded,
+                SecretScopeKind::Runtime,
+                None,
+            )
+            .unwrap();
+
+        let migrated = CoordinationNodeIdentity::load_or_create(&store).unwrap();
+        assert_eq!(migrated.authority_id(), expected.authority_id());
+        assert_eq!(native.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(native.deletes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.name == NODE_IDENTITY_SECRET_ALIAS)
+                .unwrap()
+                .value_backend,
+            HOST_ENV_FILE_SECRET_BACKEND_ID
+        );
+
+        let restarted = CoordinationNodeIdentity::load_or_create(&store).unwrap();
+        assert_eq!(restarted.authority_id(), expected.authority_id());
+        assert_eq!(native.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(native.deletes.load(Ordering::SeqCst), 0);
     }
 
     #[test]

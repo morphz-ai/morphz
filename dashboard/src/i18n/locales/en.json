@@ -836,8 +836,8 @@
   },
   "cognitiveCoordination": {
     "short": "Coordinate",
-    "enableHint": "Enable Cognitive Coordination for this Context. The coordinate tool and its compact capability contract will appear only in subsequent model evaluations.",
-    "disableHint": "Disable Cognitive Coordination for this Context. New evaluations will no longer receive its tool or capability contract.",
+    "enableHint": "Enable coordinated evaluation for this Context. Every new ordinary request will be evaluated by the coordination network before the local Agent synthesizes the result.",
+    "disableHint": "Disable coordinated evaluation for this Context. New ordinary requests will evaluate locally; requests already accepted keep their recorded route.",
     "unavailable": "Cognitive Coordination is not available in this Runtime. Compile and enable the experimental-cognitive-coordination feature first.",
     "peerStatus": "Inspect coordination participants",
     "networkShort": "Coordination",
@@ -845,6 +845,8 @@
     "networkHint": "Live authenticated handshakes show peer health and the logical model route frozen into new assignments.",
     "notConfigured": "Local participant not configured",
     "noPeers": "The Mesh has not discovered another participant yet.",
+    "probeFailed": "Failed",
+    "probeFailureDuration": "Failed after {{duration}}",
     "assignments": "Assignments",
     "noAssignments": "No coordination assignments yet.",
     "assignmentRoles": {

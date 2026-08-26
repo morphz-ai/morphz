@@ -903,7 +903,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .theme-swatch.mono { border: 1px solid #858791; background: linear-gradient(135deg, #ececf0 50%, #41434b 50%); }
 .context-budget-selector { position: relative; }
 .cognitive-coordination-selector { position: relative; display: inline-flex; gap: 3px; }
-.cognitive-coordination-selector > .composer-policy-control.is-active {
+.cognitive-coordination-selector > .coordination-context-button.is-active {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, var(--surface));
   color: var(--accent-strong);
@@ -939,6 +939,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .coordination-peer-list strong { overflow: hidden; color: var(--text-soft); font: 650 10px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .coordination-peer-list small { overflow: hidden; color: var(--faint); font: 500 8px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .coordination-peer-list em { color: var(--muted); font: 600 8px/1 var(--mono); font-style: normal; }
+.coordination-peer-list article.is-offline > em { color: var(--danger-text); }
 .coordination-peer-empty { padding: 12px; text-align: center; }
 .coordination-peer-error { padding: 10px; border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line)); border-radius: var(--radius-xs); background: var(--red-soft); color: var(--danger-text); font: 600 9px/1.45 var(--mono); overflow-wrap: anywhere; }
 .coordination-assignment-section { margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--line); }
@@ -3443,6 +3444,7 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .principal-chip > svg { right: 6px; }
   .runtime-side { gap: 4px; }
   .runtime-side .theme-selector > .theme-button,
+  .runtime-side .coordination-context-button,
   .runtime-side .coordination-health-button,
   .runtime-side .reasoning-summary-toggle,
   .runtime-side .global-attention {
@@ -3460,6 +3462,7 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   }
   .runtime-side .theme-selector > .theme-button span,
   .runtime-side .theme-selector > .theme-button svg:last-child,
+  .runtime-side .coordination-context-button span,
   .runtime-side .coordination-health-button span,
   .runtime-side .reasoning-summary-toggle span,
   .runtime-side .global-attention span,
@@ -3520,6 +3523,43 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .dialogue-activity-toggle small { display: none; }
 }
 
+/* On narrow landscape and phone viewports the navigation and page controls
+   are one native horizontal function rail. Neither group is allowed to
+   squeeze the other out of view; swipe/trackpad scrolling exposes every
+   action while the immersive control remains pinned to the trailing edge. */
+@media (max-width: 1080px) {
+  .runtime-navigation-row {
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: 8px;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .runtime-navigation-row::-webkit-scrollbar { height: 3px; }
+  .runtime-navigation-row::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--line-strong); }
+  .runtime-navigation {
+    width: max-content;
+    min-width: max-content;
+    max-width: none;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+  .navigation-page-toolbar {
+    width: min(58vw, 480px);
+    min-width: 260px;
+    max-width: none;
+    flex: 0 0 min(58vw, 480px);
+  }
+  .immersive-controls {
+    position: sticky;
+    z-index: 2;
+    right: 0;
+    background: color-mix(in srgb, var(--surface) 96%, transparent);
+    box-shadow: -10px 0 16px color-mix(in srgb, var(--bg) 72%, transparent);
+  }
+}
+
 /* The Runtime activity dock is an independent overlay. Centre the dialogue
    canvas in the usable region to its left instead of centring it on the full
    viewport, while leaving a stable inner margin beside the dock. */
@@ -3572,7 +3612,7 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   }
   .runtime-navigation { padding-inline: 10px; }
   .runtime-navigation button span { display: none; }
-  .navigation-page-toolbar { width: min(58vw, 420px); max-width: min(58vw, 420px); flex-basis: 420px; }
+  .navigation-page-toolbar { width: min(68vw, 420px); min-width: 250px; max-width: none; flex-basis: min(68vw, 420px); }
   .conversation-toolbar { gap: 6px; padding: 0 10px 0 6px; }
   .conversation-toolbar-session { display: none; }
   .morphz-shell.is-immersive .conversation-toolbar-session { display: block; max-width: 132px; flex-basis: 132px; }
@@ -3711,6 +3751,13 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
     gap: 8px 10px;
     padding: 8px 12px 9px;
   }
+  .runtime-navigation { gap: 0; padding-inline: 6px; }
+  .runtime-navigation button { width: 36px; min-width: 36px; height: 42px; padding: 0; }
+  .navigation-page-toolbar { width: 72vw; min-width: 238px; flex-basis: 72vw; }
+  .conversation-toolbar { gap: 4px; padding-inline: 5px; }
+  .conversation-history-search { min-width: 106px; }
+  .conversation-layout-switch button { width: 30px; padding-inline: 0; }
+  .conversation-layout-switch button span { display: none; }
   .brand { grid-column: 1; grid-row: 1; min-width: 0; overflow: hidden; }
   .runtime-side { grid-column: 2; grid-row: 1; min-width: 0; gap: 3px; }
   .runtime-side .theme-button { width: 30px; height: 30px; justify-content: center; padding: 0; }
