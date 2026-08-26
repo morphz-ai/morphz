@@ -82,6 +82,8 @@ Morphz Gate 的一次 episode 产生 1 次 Context Transaction，Mind version `0
   `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；
 - 正式配对 runner、聚类统计与盲评包生成器：
   `0688924678a015cd8045706a84dcb6eaa3cdb666`；
+- Letta episodic reset 与原子 checkpoint 训练 runner：
+  `c6d80048d99b2a38c49944398be2a49adc08283b`；
 - Gate binary SHA-256：
   `92efe2c3a54887136909366b9437de0b47e7b41f676dae6858cd702189983edd`。
 
@@ -94,3 +96,9 @@ Morphz Gate 的一次 episode 产生 1 次 Context Transaction，Mind version `0
 
 因此论文当前仍应写“ME-07 已完成生产适配与 scored smoke，正式效果实验进行中”，不得把上表
 作为 Morphz 优于 Letta 或 Mem0 的证据。
+
+正式训练首次尝试另暴露 Letta 活动短期消息累积问题：34 条 episode 后活动 Context 已约
+226k token，第 35 条被 Provider policy 400 拒绝。失败状态完整保留且未进入正式快照。修复后
+每条 episode 由 Letta 原生 memory tool 学习并确认，再通过公开 `reset-messages` 清除短期消息；
+两条真实 episode 的退出、checkpoint import、继续执行 Gate 已通过。完整证据见
+`me_07_letta_training_failure_and_recovery_20260826.md`。

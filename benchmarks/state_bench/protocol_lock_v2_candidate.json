@@ -39,7 +39,11 @@
       "runtime_baseline_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
       "runtime_adapter_commit": "3902cb4df3c400ffb8136ccd3587488a3560cf41",
       "public_system_adapter_commit": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
-      "training_runner_commit": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
+      "training_runner_commits": {
+        "morphz": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
+        "letta": "c6d80048d99b2a38c49944398be2a49adc08283b",
+        "mem0": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa"
+      },
       "formal_runner_commit": "0688924678a015cd8045706a84dcb6eaa3cdb666",
       "gate_binary_sha256": "92efe2c3a54887136909366b9437de0b47e7b41f676dae6858cd702189983edd",
       "scope": "complete_agent_runtime",
@@ -124,6 +128,14 @@
       "reportable_score": false,
       "user_simulator_calls": 8,
       "judge_calls": 6
+    },
+    "letta_episodic_training_recovery": {
+      "first_attempt_preserved_failure": "provider invalid_prompt after 34 acknowledged episodes",
+      "failed_attempt_reportable": false,
+      "public_reset_messages_after_each_episode": true,
+      "active_messages_after_reset": 1,
+      "atomic_checkpoint_resume_gate_passed": true,
+      "clean_formal_restart_required": true
     },
     "evaluator_human_validation": {
       "required_blinded_samples": 30,

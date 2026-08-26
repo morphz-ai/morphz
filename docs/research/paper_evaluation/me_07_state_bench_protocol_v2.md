@@ -48,8 +48,10 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
 - Morphz Runtime 基线：commit
   `ad60e300f115fe84e03a8cd3ab70940deb06ae68`，包含 Harbor workspace/exec drain 修复和
   Objective 通用收敛契约；生产 STATE-Bench Runtime adapter commit 为
-  `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 adapter 与训练 runner commit 为
-  `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；正式配对 runner、统计器与人工盲评包生成器
+  `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 adapter 及 Morphz/Mem0 训练 runner
+  commit 为 `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；Letta 原子 checkpoint 与 episodic
+  context reset 训练 runner commit 为 `c6d80048d99b2a38c49944398be2a49adc08283b`；正式配对
+  runner、统计器与人工盲评包生成器
   commit 为 `0688924678a015cd8045706a84dcb6eaa3cdb666`。后续替换任一身份都必须生成新 lock
   和回归证据，不得隐式跟随 `main`。
 
@@ -82,7 +84,9 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
   Mind Frames；
 - Letta：把每条轨迹作为一个明确边界的历史任务 episode 顺序交给同一领域 Agent，并允许
   Letta 通过公开 API 使用其原生记忆工具更新 core/recall/archival memory；每条 episode 后
-  记录状态摘要与持久化 digest；
+  记录状态摘要与持久化 digest。Agent 精确确认且 memory tool 已完成后，调用 Letta 公开
+  `reset-messages` 清除该 episode 的短期活动消息并用最新 memory blocks 重建 system context；
+  原始消息仍保留在 Letta 数据库审计记录中，不把 100 条原始轨迹累积成一个模型输入；
 - Mem0：把同一 canonical episode 交给 Mem0 的 add-time 学习路径，使用领域 agent namespace。
 
 训练过程中的全部模型和 embedding 调用都计费计时。不得用人工整理的“正确经验摘要”替
