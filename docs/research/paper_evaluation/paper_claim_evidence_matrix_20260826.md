@@ -2,7 +2,7 @@
 
 > 用途：作为中英文论文改稿的唯一数字与主张入口。最终论文可以压缩表达，但不得越过本表
 > 记录的证据边界。ME-08 历史完整 89 题结果与统计已经闭合；`ad60e` Runtime 的 Morphz-only
-> 89 题刷新已闭合，包含后续通用修复的 `4bbc3d63` 刷新正在运行。失败和无效启动不从审计记录删除，不把不同 Runtime 或并发条件的运行
+> 89 题刷新已闭合，包含后续通用修复的 `4bbc3d63` 刷新也以 72/89 闭合。失败和无效启动不从审计记录删除，不把不同 Runtime 或并发条件的运行
 > 拼接成新的同期 paired 结果。
 
 ## 1. 论文中心主张
@@ -26,6 +26,7 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 | ME-04 Runtime 权威边界 | 8/8 故障/权限 cells 通过；完整 lib 989 passed；恶意 Observation 无法扩大工具权限；并发版本、重放、副作用和恢复边界通过确定性 Gate | 模型生成的候选值与权威现实提交可以被确定性分离；安全主张来自 Runtime Gate，而不是模型自觉 | 识别全部 Prompt Injection；形式化证明整个系统安全；所有外部副作用均可恢复 |
 | ME-05 九模型普适性 | 144/144 完整；冻结严格 98/144；程序最终值 32/36；4 个未交付均为 Claude Provider refusal；非确定性求值事后语义诊断 104/108，且 104/104 可解析结果满足可见 Context 合同 | 机制不依赖单一模型家族；语义正确与 schema/轨迹合规必须分开；确定性校验层具有现实必要性 | 九模型同等可靠；68.1% 是公开榜分；某模型综合智力更高；忽略 Provider 失败后的选择性高分 |
 | ME-08 Terminal-Bench 2.1 历史完整 89 题 | 同环境、同 GPT-5.6 Sol/max、每题一次、两臂并发 1：pre-fix Morphz 70/89（78.65%），official Codex 73/89（82.02%）；配对差 −3.37pp，95% paired bootstrap CI [−13.48pp,+6.74pp]，双侧精确 `p=0.678`；Morphz 报告总逻辑 Token 少 27.4%、墙钟长 18.3% | 该历史版本 Morphz 完整 Agent 在完整公开任务集上与 Codex 处于同一表现量级；Token/耗时作为 pre-fix 工程画像，cache 命中不作效率评分；完整任务集优于选择局部子集 | 当前 post-fix Runtime 的分数或效率；官方榜单成绩；形式化非劣、等价或优越；估计同题采样方差；结构化 Context 导致 Token 优势；把新 Runtime 刷新与历史 Codex 冒充同期 paired 结果 |
+| ME-08 `4bbc3d63` 当前 Runtime Morphz-only 刷新 | 完整 89 题、并发 8、每题一次、零重试：72/89（80.90%，Wilson 95% CI [71.52%,87.72%]）；89 个官方 reward 与 strict Gate 通过；3 个 AgentTimeout 均保留为零；总逻辑 Token 58,787,962 | 当前修复版 Morphz 的完整公开任务工程测量；失败保留、资源负载与当前 Token 画像；相对历史 70/89 没有灾难性回退 | 与历史 Codex 的同期配对、显著性或效率结论；把 72/73 单次差解释为修复的因果效果；估计题内采样方差 |
 | ME-06 长期 Structured Context 与受控 Compaction | 3 paired fixtures；两臂均 3/3 fixture、24/24 最终状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context transaction、跨 Session、版本冲突重读、重启恢复、隔离与因果审计；完整 Morphz 5,093,621 total tokens，精简受控参照 310,336（约 16.4×） | 在三个长程任务上未观察到相对一次受控 compaction 的最终能力退化；Frame 事务、持久恢复和因果审计为额外系统能力；原始成本差异提供工程优化线索 | Morphz 相对完整 Agent 的准确率或 Token 优劣；把非同构 scaffold 的 16.4× 当作 Structured Context 固有成本或产品效率排名；三个样本具有统计显著性；该结果是公开记忆榜分 |
 
 ## 3. 正在完成的证据
@@ -48,16 +49,17 @@ Prompt、状态表示与调度作为端到端系统差异保留。评测器改�
 `2249878536ce5f7a8d7449add2f5c8743395b69b`，其中包含 durable request—reply fence 与
 terminal commit—delivery/SQLite cancellation-safe 修复；Linux 二进制已通过无模型交付 Gate。
 
-### ME-08：最新通用修复基线的 Morphz-only 89 题刷新进行中
+### ME-08：最新通用修复基线的 Morphz-only 89 题刷新已闭合
 
 历史 70/89 对 73/89 仍是唯一同期 paired 证据；`ad60e` 的 Morphz-only 89 题刷新已得 73/89，
 但不替代历史 paired 结果。当前正式刷新使用组合 commit
 `4bbc3d63f4bda09947dc79dc5656edc71f8c02fa` 及固定 release binary
 `31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`，纳入随后确认的通用
 终态交付、SQLite 取消安全、永久安全拒绝分类及视觉 Context 计量/投影修复；并发 8、每题
-一次、零重试，只刷新 Morphz，不重跑 Codex。它仍必须作为独立的 Morphz-only 系统能力测量
-报告；历史 Codex 只能作为不同时间、不同并发的非同期参考。在 89 个官方 verifier reward 与
-身份/唯一性/哈希 Gate 闭合前，不写入新效果数字。
+一次、零重试，只刷新 Morphz，不重跑 Codex。官方 verifier 得到 72/89（80.90%，Wilson 95%
+CI `[71.52%,87.72%]`）；89 个 reward、身份、唯一性、哈希和失败保留 Gate 全部通过。它仍
+只作为独立的 Morphz-only 系统能力测量；历史 Codex 是不同时间、不同并发的非同期参考。
+相对 `ad60e` 单臂 73/89，本轮 4 题转对、5 题转错，不能从一分波动推导修复的单调因果效果。
 
 论文放置规则已经冻结：历史 Morphz↔Codex 同期、同并发 89 题对照保留为主外部效度结果；
 `ad60e` 与 `4bbc3d63` Morphz-only 刷新只进入 ME-08 小节的系统迭代补充或附录，不替换
@@ -69,8 +71,8 @@ paired 主结果，也不重新计算 paired 显著性。
 2. **非确定性认知求值及其边界：** ME-03、ME-05；
 3. **确定性权威与额外系统能力：** ME-04、ME-06；
 4. **长期状态与额外状态语义：** ME-06；
-5. **完整 Agent 外部系统效度：** ME-08 的历史 89 题同环境配对结果，以及单独报告的 `ad60e` Runtime
-   Morphz-only 刷新；
+5. **完整 Agent 外部系统效度：** ME-08 的历史 89 题同环境配对结果，以及单独报告的 `ad60e` 与
+   `4bbc3d63` Morphz-only 刷新；
 6. **共同结论：** Morphz 改变状态与求值机制并获得持久、可寻址、可事务、跨 Session、恢复
    和审计能力；已有简单和外部任务证据未显示灾难性通用能力代价，但 ME-08 的宽区间不足以
    证明形式化非劣。ME-06 未观察到准确率优于 compaction；它记录的巨大原始 Token 差异来自
@@ -86,7 +88,7 @@ paired 主结果，也不重新计算 paired 显著性。
   已通过，但正式批次和人工校准完成前不得报告效果；任何中止运行或旧 arm 的局部结果都不作为
   v2 论文效果证据；
 - ME-08 每题只运行一次，能够进行同环境 paired 描述和检验，但不能估计同题采样方差；
-- ME-08 `ad60e` Runtime 只刷新 Morphz，且早于 `ac3344e` handoff 修复；不能据此重算与历史
-  Codex 的同期 paired 显著性，也不能用 post-fix 单题诊断改写原始总分；
+- ME-08 `ad60e` 与 `4bbc3d63` Runtime 都只刷新 Morphz；不能据此重算与历史 Codex 的同期
+  paired 显著性，也不能用不同运行中的单题成败改写任一原始总分；
 - Provider refusal、timeout、Runtime 和 harness failure 必须分层，不按对某组有利的方向删除；
 - Program-valued `infer`、任意动态交替和“无限寿命 Agent”仍是未来能力。

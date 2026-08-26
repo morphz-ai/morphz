@@ -38,7 +38,7 @@
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；完整 Morphz 的原始 token 为精简受控参照约 16.4×，但 scaffold 不同，不能解释为完整 Agent 效率排名 | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本与成本不可归因边界，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 三臂 adapter、持久化重载、精确模型绑定、九份训练快照和同题 scored smoke 已闭合；成本修订后的单次正式批次已在云端运行，目标为每 arm 150、总计 450 个 terminal trial | `v2-gates-passed / snapshots-frozen / single-run-formal-active / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md) | 闭合 150 个 paired cells/450 个正式 trial，运行单次口径汇总器并生成 30 条盲评材料；任何 terminal failure 计零且不静默重跑 |
-| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史严格同环境：Morphz 70/89、Codex 73/89；`ad60e` Morphz 单臂刷新 73/89；包含后续通用 Runtime 修复的 `4bbc3d63` Morphz-only 89 题、并发 8、单次尝试、零重试正式刷新正在运行，Codex 不重跑 | `historical-paired-complete / ad60e-refresh-complete / finalfix-4bbc3d6-active` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`refresh result`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md)；[`finalfix protocol`](./me_08_postfix_all_89_morphz_protocol_v2.md) | 闭合 `4bbc3d63` 的 89 个官方 verifier reward、唯一性、Runtime/binary hash 与失败保留 Gate；作为新的 Morphz-only 工程结果单独报告，不与历史 Codex 拼接为同期 paired 结果 |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史严格同环境：Morphz 70/89、Codex 73/89；`ad60e` Morphz 单臂刷新 73/89；当前 `4bbc3d63` Morphz-only 并发 8 刷新 72/89（80.90%），89 个官方 reward、唯一性、身份、失败保留与完整性 Gate 全部闭合 | `historical-paired-complete / ad60e-refresh-complete / finalfix-4bbc3d6-complete` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`ad60e refresh`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md)；[`4bbc3d6 result`](./artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md) | 把当前 Morphz-only 工程结果单独写入论文；不与历史 Codex 拼接为同期 paired 结果，不按单次 72/73 波动推断修复的因果效应 |
 | ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 仅形成预结果解释与完整性 Gate，尚未运行 | `proposal-only / not-authorized-for-model-run` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md) | 先向用户展示并确认；证明无需改变 Runtime 二进制即可接入八个隔离 Execution Target，再做无模型 dry-run |
 
 ## 依赖
@@ -71,6 +71,15 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-27
 
+- ME-08 `4bbc3d63` 当前修复版 Morphz-only 完整 89 题刷新已经闭合：官方 verifier
+  72/89（80.90%，Wilson 95% CI `[71.52%,87.72%]`），并发 8、每题一次、零重试；
+  `strict_result.json` 含 89 个唯一任务且完整性 Gate 通过。三个 `AgentTimeoutError` 与其余
+  失败均按零保留。Provider 报告输入 57,541,202、输出 1,246,760，总逻辑 Token
+  58,787,962；缓存输入子集 9,389,568，不作为架构效率评分。报告与脱敏产物见
+  [`artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md`](./artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md)；
+- 该 72/89 没有同期 Codex arm，不能替换历史 70/89 对 73/89 的 paired 统计。相对前一次
+  `ad60e` Morphz-only 73/89，本轮 4 题由错转对、5 题由对转错；这说明单次运行同时包含
+  任务采样波动和实现变化，不能把一分差解释为 Runtime 修复的单调因果效果；
 - ME-08 `ad60e` Morphz 单臂完整 89 题刷新已经闭合：官方 verifier 73/89
   （82.02%，Wilson 95% CI `[72.77%, 88.62%]`），89 个唯一任务、完整性 Gate 和资源记录
   均通过。该数值与历史 Codex 73/89 相同，但 Codex 没有在本轮重跑，故只可称为相同任务、
@@ -82,8 +91,8 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   未完成。另有 `build-pov-ray` 虽 Harbor timeout，但官方产物通过；其单 Runtime 终态交付
   竞态由 `ac3344ef...` 修复。本轮每题拥有独立 SQLite，不能把任何上述问题归因于八道题
   共享数据库。诊断不覆盖官方分数，也不生成剔除外因后的主分；
-- 按成本和证据边界，ME-08 到此停止模型运行。后续开发修复只进入 Runtime 回归，不静默追改
-  73/89，也不再消耗额度重跑完整 89 题；
+- 【随后由用户显式追加授权 supersede】当时按成本边界作出的“停止完整重跑”决定，后来由
+  `4bbc3d63` 单次全 89 题刷新取代；两次结果分别冻结，未用新分数静默追改旧分数；
 
 ### 2026-08-26
 

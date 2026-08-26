@@ -21,11 +21,11 @@
 | ME-08 后 49 题 | 已完成，Morphz 40/49、official Codex 45/49 | 与前 40 的身份和任务集合核验后合并 |
 | ME-08 历史完整 89 题 | 已完成，Morphz 70/89、Codex 73/89；差 −3.37pp，`p=0.678` | 保留为原始 Runtime、并发 1 的同环境 paired 历史结果；不得与后修复运行拼接 |
 | ME-08 `ad60e` Runtime 完整 89 题 | Morphz-only、并发 8、每题一次的独立刷新已完成，为 73/89；Codex 未同期重跑 | 作为非同期工程刷新单独报告；不得替换历史 paired 结果或据此重算显著性 |
-| ME-08 `4bbc3d63` Runtime 完整 89 题 | 纳入后续通用 Runtime 修复的 Morphz-only、并发 8、每题一次、零重试独立刷新正在运行；Codex 不重跑 | 必须按官方 verifier `raw_reward` 闭合全部 89 题并通过唯一性、Runtime/binary hash 及失败保留 Gate；历史 Codex 只能作为非同期参考 |
+| ME-08 `4bbc3d63` Runtime 完整 89 题 | Morphz-only、并发 8、每题一次、零重试独立刷新已完成：72/89（80.90%），89 个官方 reward 与完整性 Gate 通过；Codex 未重跑 | 作为当前 Runtime 的单臂工程结果独立报告；历史 Codex 只能作为非同期参考，不复用 paired `p` 值 |
 
 ## 3. 最终结果必须同步的位置
 
-历史完整 89 题和 `ad60e` Morphz-only 刷新已生成；`4bbc3d63` Runtime 的 Morphz-only 完整刷新尚未闭合。中英文稿必须在新结果通过 Gate 后同时更新：
+历史完整 89 题、`ad60e` Morphz-only 刷新及 `4bbc3d63` 当前 Runtime 刷新均已闭合。中英文稿必须同步更新：
 
 1. 稿件状态与进度行；
 2. 摘要中的 Terminal-Bench 数字和边界结论；
@@ -98,7 +98,7 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。本轮 `ad60e` Runtime
 - [x] 历史 ME-08 49 题 launcher 与两臂 official results 完整；本地扫描误报不覆盖官方评分；
 - [x] 历史合并 89 题时验证任务集合不重叠且并集恰为 89；
 - [x] `ad60e` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
-- [ ] `4bbc3d63` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
+- [x] `4bbc3d63` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
 - [ ] ME-07 九份快照、450-trial 三臂正式批次、统计与盲评材料闭合；
 - [ ] 新结果进入主张—证据矩阵、实验登记及中英文摘要/正文/结论，且数字一致；
 - [ ] 最终全文无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；

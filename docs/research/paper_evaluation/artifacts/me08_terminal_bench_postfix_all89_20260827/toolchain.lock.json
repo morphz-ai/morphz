@@ -1,0 +1,93 @@
+{
+  "harbor": {
+    "package_version": "0.21.0",
+    "git_tag": "v0.21.0",
+    "git_commit": "64afbbcb62165950301e1a6407c729aa26d844ff"
+  },
+  "terminal_bench": {
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "version": "2.1",
+    "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "source_archive_sha256": "aa992a8848a1f3ed5191a34fa72ed5700d67dd9f968413a0e0a567b6188cb527",
+    "task_count": 89,
+    "leaderboard_submission_policy_checked_at": "2026-08-20"
+  },
+  "runtime": {
+    "git_tag": "me08-runtime-4bbc3d6-20260827",
+    "git_commit": "4bbc3d63f4bda09947dc79dc5656edc71f8c02fa",
+    "rust_toolchain": "1.97.1",
+    "builder_image": "rust:1.97.1-bullseye",
+    "builder_image_digest": "sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0",
+    "rustup_dist_server": "https://static.rust-lang.org",
+    "rustup_update_root": "https://static.rust-lang.org/rustup",
+    "cargo_registry": "sparse+https://rsproxy.cn/index/",
+    "build_git_commit": "4bbc3d63f4bda09947dc79dc5656edc71f8c02fa",
+    "target": "x86_64-unknown-linux-gnu",
+    "container_platform": "linux/amd64",
+    "binary_sha256": "31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575",
+    "prior_postfix_git_tag": "me08-postfix-runtime-v1",
+    "prior_postfix_git_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
+    "prior_postfix_binary_sha256": "af41ba739096f1970a5439d97d21e7ea237937278a7b2c689d990990b00ab0a6",
+    "prior_me08_git_tag": "paper-eval-runtime-v4",
+    "prior_me08_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "prior_me08_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "superseded_cache_affected_binary_sha256": "960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac",
+    "watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "superseded_dynamic_sqlite_watcher_sha256": "9873d7945f8a86b583ba5ed8884bc286db51da9292d3f8569e8d8582c19785bb"
+  },
+  "model": {
+    "requested_alias": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider_protocol": "openai-responses",
+    "provider_host": "cloud-local-docker-bridge",
+    "provider_base_url": "http://172.17.0.1:8317/v1",
+    "address_policy": "bind only to the Docker host bridge; no public 8317 ingress",
+    "fallback": false
+  },
+  "provider_runtime": {
+    "implementation": "CLIProxyAPI",
+    "version": "7.2.140",
+    "git_commit": "a7e3596b",
+    "release_archive_sha256": "334b8417f0c24d2744700d63c10023c5b5d7c7c5b43b1609456432813ce713bf",
+    "listen_address": "172.17.0.1:8317",
+    "public_ingress": false
+  },
+  "harness": {
+    "id": "terminal-task",
+    "version": "0.5.0",
+    "path": "morphz-evals/harnesses/terminal-task.hns",
+    "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f",
+    "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+    "evaluation_owner": "model",
+    "status": "frozen-development-comparison"
+  },
+  "harness_profiles": {
+    "minimal-v0.5": {
+      "id": "terminal-task",
+      "version": "0.5.0",
+      "path": "morphz-evals/harnesses/terminal-task.hns",
+      "source_sha256": "bacde4c7777aa2f3aa800d3052f982a51243f6eb9340f880237cbb3648eb745f",
+      "artifact_hash": "sha256:82d9664e6014120d6d1d972e28360859a77123c92e1594d997faa91e25a26320",
+      "evaluation_owner": "model",
+      "status": "frozen-development-comparison"
+    },
+    "dialectical-practice-v0.1": {
+      "id": "terminal-task-dialectical-practice",
+      "version": "0.1.0",
+      "path": "morphz-evals/harnesses/terminal-task-dialectical-practice.hns",
+      "source_sha256": "b05d8883928a50be19bb2075761596e97bab19784258a293a30d5c8f0df4ec3a",
+      "artifact_hash": "sha256:6ecfafdac4636b3de67022218eddd399812ae050f749c9f59193097f89440559",
+      "evaluation_owner": "model",
+      "status": "frozen-exploratory-comparison"
+    }
+  },
+  "permissions": {
+    "mode": "full_access",
+    "shell_environment_policy": "remove_sensitive",
+    "morphz_effective_network": true,
+    "terminal_bench_public_network_tasks": 89,
+    "isolation": "one Harbor container, SQLite database, Context and Session per trial"
+  }
+}
