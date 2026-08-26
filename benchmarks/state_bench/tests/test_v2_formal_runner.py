@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, Lock
@@ -22,6 +23,8 @@ from benchmarks.state_bench.v2.run_public_systems_formal import (
     ARMS,
     DOMAINS,
     EXPECTED_MORPHZ_BINARY_SHA256_BY_PLATFORM,
+    PROTOCOL_ID,
+    _import_terminal_prefix,
     _queue,
     _run_job,
 )
@@ -139,9 +142,65 @@ def test_formal_runtime_hashes_are_frozen_per_execution_platform() -> None:
             "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a"
         ),
         ("Linux", "x86_64"): (
-            "98a7ed2458d7dd3d086b9f5ddfbe682902f96dcb879c5719054afb70f57c2691"
+            "7b0c63cd685f4b4420f362bea1f986fa4546ad27482802aec5af3c9cbdbb356e"
         ),
     }
+
+
+def test_formal_import_preserves_complete_contiguous_prefix(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "output"
+    source.mkdir()
+    output.mkdir()
+    cells = [
+        {
+            "cell_id": f"cell-{index:04d}",
+            "cell_index": index,
+            "domain": "travel",
+            "task_id": f"task-{index}",
+            "run_idx": 1,
+            "arm_order": list(ARMS),
+        }
+        for index in (1, 2)
+    ]
+    (source / "queue.json").write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    (source / "run_manifest.json").write_text("{}\n", encoding="utf-8")
+
+    for arm_index, arm in enumerate(ARMS):
+        trajectory = source / "trajectories" / arm / "travel" / "run1" / "task-1.json"
+        trajectory.parent.mkdir(parents=True, exist_ok=True)
+        trajectory.write_text(
+            json.dumps({"task_id": "task-1", "arm": arm}), encoding="utf-8"
+        )
+        trajectory_sha256 = hashlib.sha256(trajectory.read_bytes()).hexdigest()
+        job = source / "jobs" / "cell-0001" / f"{arm}.json"
+        job.parent.mkdir(parents=True, exist_ok=True)
+        job.write_text(
+            json.dumps(
+                {
+                    "protocol_id": PROTOCOL_ID,
+                    "terminal": True,
+                    "cell_id": "cell-0001",
+                    "arm": arm,
+                    "official_score_eligible": arm_index != 0,
+                    "trajectory": {"trajectory_sha256": trajectory_sha256},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    receipt = _import_terminal_prefix(source=source, output=output, queue=cells)
+
+    assert receipt["queue_prefix_equal"] is True
+    assert receipt["imported_cells"] == 1
+    assert receipt["imported_jobs"] == 3
+    assert receipt["failed_jobs_preserved"] == 1
+    for arm in ARMS:
+        assert (output / "jobs" / "cell-0001" / f"{arm}.json").is_file()
+        assert (
+            output / "trajectories" / arm / "travel" / "run1" / "task-1.json"
+        ).is_file()
+        assert not (output / "jobs" / "cell-0002" / f"{arm}.json").exists()
 
 
 def test_formal_statistics_are_paired_and_failures_count_as_zero(monkeypatch) -> None:

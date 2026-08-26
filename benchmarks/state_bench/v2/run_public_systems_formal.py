@@ -1,10 +1,9 @@
 """Run the frozen ME-07 public-Agent-system confirmatory batch.
 
-The queue is paired by ``(domain, task_id, run_idx)``.  The three arms may run
-in parallel inside a cell, but every arm has at most one active trial.  Each
-terminal outcome is written atomically before the next cell starts, so a
-process restart can resume missing jobs without silently retrying scored
-failures.
+The queue is paired by ``(domain, task_id, run_idx)``.  The three arms run in
+parallel inside a cell and at most four isolated cells run concurrently.  Each
+terminal outcome is written atomically, so a process restart can resume
+missing jobs without silently retrying scored failures.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import json
 import os
 import platform
 import random
+import shutil
 import subprocess
 import time
 import traceback
@@ -89,6 +89,16 @@ def _atomic_json(path: Path, value: object) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
+        shutil.copyfileobj(input_stream, output_stream)
+        output_stream.flush()
+        os.fsync(output_stream.fileno())
+    os.replace(temporary, destination)
 
 
 def _queue(protocol: Any, num_runs: int) -> list[dict[str, Any]]:
@@ -378,6 +388,113 @@ def _missing_arms(output: Path, cell: dict[str, Any]) -> list[str]:
     ]
 
 
+def _import_terminal_prefix(
+    *, source: Path, output: Path, queue: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Copy a complete, contiguous run-1 prefix without rerunning any job.
+
+    The abandoned five-run protocol used the same seeded run-1 prefix as the
+    amended one-run protocol.  Importing is allowed only when all 150 frozen
+    cells are byte-for-byte equal as JSON values and completed cells form one
+    contiguous prefix with all three arms present.  This prevents selecting
+    only successful jobs or silently retrying a failed arm.
+    """
+
+    source = source.resolve(strict=True)
+    source_queue_path = source / "queue.json"
+    source_manifest_path = source / "run_manifest.json"
+    source_queue = json.loads(source_queue_path.read_text(encoding="utf-8"))
+    source_cells = source_queue.get("cells")
+    if not isinstance(source_cells, list) or source_cells[: len(queue)] != queue:
+        raise RuntimeError("source queue run-1 prefix differs from amended ME-07 queue")
+    if len(source_cells) < len(queue):
+        raise RuntimeError("source queue is shorter than amended ME-07 queue")
+
+    imported: list[dict[str, Any]] = []
+    gap_seen = False
+    for cell in queue:
+        source_jobs = {
+            arm: source / "jobs" / str(cell["cell_id"]) / f"{arm}.json" for arm in ARMS
+        }
+        valid = {
+            arm: _valid_terminal_job(path, cell, arm)
+            for arm, path in source_jobs.items()
+        }
+        if any(valid.values()) and not all(valid.values()):
+            raise RuntimeError(
+                f"source prefix contains a partial paired cell: {cell['cell_id']}"
+            )
+        if not all(valid.values()):
+            gap_seen = True
+            continue
+        if gap_seen:
+            raise RuntimeError(
+                f"source terminal jobs are not a contiguous prefix: {cell['cell_id']}"
+            )
+
+        for arm, source_job_path in source_jobs.items():
+            job = json.loads(source_job_path.read_text(encoding="utf-8"))
+            trajectory = job.get("trajectory")
+            source_trajectory = (
+                source
+                / "trajectories"
+                / arm
+                / str(cell["domain"])
+                / "run1"
+                / f"{cell['task_id']}.json"
+            )
+            trajectory_sha256 = None
+            if isinstance(trajectory, dict):
+                expected = trajectory.get("trajectory_sha256")
+                if not isinstance(expected, str) or not source_trajectory.is_file():
+                    raise RuntimeError(
+                        f"source job has no verifiable trajectory: {cell['cell_id']} {arm}"
+                    )
+                trajectory_sha256 = _sha256(source_trajectory)
+                if trajectory_sha256 != expected:
+                    raise RuntimeError(
+                        f"source trajectory hash mismatch: {cell['cell_id']} {arm}"
+                    )
+                destination_trajectory = (
+                    output
+                    / "trajectories"
+                    / arm
+                    / str(cell["domain"])
+                    / "run1"
+                    / f"{cell['task_id']}.json"
+                )
+                _atomic_copy(source_trajectory, destination_trajectory)
+
+            destination_job = output / "jobs" / str(cell["cell_id"]) / f"{arm}.json"
+            _atomic_copy(source_job_path, destination_job)
+            imported.append(
+                {
+                    "cell_id": cell["cell_id"],
+                    "arm": arm,
+                    "job_sha256": _sha256(destination_job),
+                    "trajectory_sha256": trajectory_sha256,
+                    "official_score_eligible": job.get("official_score_eligible"),
+                }
+            )
+
+    receipt = {
+        "protocol_id": PROTOCOL_ID,
+        "kind": "contiguous_run1_prefix_import",
+        "source_output": str(source),
+        "source_queue_sha256": _sha256(source_queue_path),
+        "source_manifest_sha256": _sha256(source_manifest_path),
+        "queue_prefix_equal": True,
+        "imported_cells": len(imported) // len(ARMS),
+        "imported_jobs": len(imported),
+        "failed_jobs_preserved": sum(
+            item["official_score_eligible"] is not True for item in imported
+        ),
+        "jobs": imported,
+    }
+    _atomic_json(output / "prefix_import_receipt.json", receipt)
+    return receipt
+
+
 def _run_cell(
     *,
     output: Path,
@@ -438,6 +555,8 @@ def main() -> int:
     parser.add_argument("--paired-workers", type=int, choices=(1, 3), default=3)
     parser.add_argument("--cell-workers", type=int, choices=(1, 2, 4), default=4)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--initialize-only", action="store_true")
+    parser.add_argument("--import-prefix-from", type=Path)
     parser.add_argument("--max-cells", type=int)
     args = parser.parse_args()
 
@@ -445,6 +564,8 @@ def main() -> int:
         raise ValueError("amended ME-07 formal protocol requires exactly 1 run")
     if args.max_cells is not None and args.max_cells < 1:
         raise ValueError("--max-cells must be positive")
+    if args.resume and args.import_prefix_from is not None:
+        raise ValueError("--import-prefix-from is only valid for a new output")
     state_bench_root = args.state_bench_root.resolve(strict=True)
     output = args.output.resolve()
     if args.resume:
@@ -556,8 +677,31 @@ def main() -> int:
             "cell_workers": args.cell_workers,
             "max_attempts": 1,
             "queue_sha256": _sha256(queue_path),
+            "protocol_amendment": {
+                "reason": "cost_and_wall_clock_reduction_before_any_run2_job",
+                "superseded_num_runs": 5,
+                "num_runs": 1,
+            },
         }
+        if args.import_prefix_from is not None:
+            receipt = _import_terminal_prefix(
+                source=args.import_prefix_from,
+                output=output,
+                queue=queue,
+            )
+            manifest["prefix_import"] = {
+                "source_output": receipt["source_output"],
+                "imported_cells": receipt["imported_cells"],
+                "imported_jobs": receipt["imported_jobs"],
+                "receipt_sha256": _sha256(output / "prefix_import_receipt.json"),
+            }
         _atomic_json(output / "run_manifest.json", manifest)
+
+    if args.initialize_only:
+        progress = _progress(output, queue)
+        _atomic_json(output / "progress.json", progress)
+        print(json.dumps(progress, ensure_ascii=False), flush=True)
+        return 0
 
     pending_cells = [cell for cell in queue if _missing_arms(output, cell)]
     if args.max_cells is not None:
