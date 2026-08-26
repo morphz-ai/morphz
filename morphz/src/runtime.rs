@@ -14636,7 +14636,11 @@ mod tests {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.permissions.mode = PermissionMode::Custom;
+        // This test exercises detached execution and delivery, not sandbox
+        // policy. Linux deliberately fails closed when no validated native
+        // sandbox is available, so use the same explicit FullAccess boundary
+        // as the Terminal-Bench protocol on every platform.
+        config.permissions.mode = PermissionMode::FullAccess;
         config.permissions.reviewer = ReviewerKind::Deny;
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         let client = Arc::new(DetachedExecClient {
@@ -14720,18 +14724,6 @@ mod tests {
             ),
             "detached completion used an unsupported delivery envelope: {delivery:?}"
         );
-        let jobs = runtime
-            .inner
-            .store
-            .list_execution_jobs(crate::memory::ExecutionJobFilter {
-                session_id: Some(session.id().to_string()),
-                include_terminal: true,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
-
         // The background Job completion and its final model answer can cross:
         // either the still-interactive Execution publishes the answer directly,
         // or the already-terminal result reaches the singleton Delivery fast
@@ -14744,6 +14736,30 @@ mod tests {
                 duplicate.payload
             ),
         }
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            jobs.iter().any(|job| job.tool_name == "exec/background"),
+            "detached execution jobs: {:?}",
+            jobs.iter()
+                .map(|job| {
+                    (
+                        &job.tool_name,
+                        &job.status,
+                        &job.result_event_id,
+                        &job.error,
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
         let events = runtime
             .inner
             .store
