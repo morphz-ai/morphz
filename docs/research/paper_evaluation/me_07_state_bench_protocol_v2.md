@@ -50,7 +50,7 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
   Objective 通用收敛契约；生产 STATE-Bench Runtime adapter commit 为
   `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 adapter 与训练 runner commit 为
   `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；正式配对 runner、统计器与人工盲评包生成器
-  commit 为 `d0ed3b7b79841e30059e2997b1670030863a89ea`。后续替换任一身份都必须生成新 lock
+  commit 为 `0688924678a015cd8045706a84dcb6eaa3cdb666`。后续替换任一身份都必须生成新 lock
   和回归证据，不得隐式跟随 `main`。
 
 版本、容器镜像 digest、Python/Node 依赖锁、数据库版本和配置哈希必须在真实 smoke 前写入

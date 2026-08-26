@@ -40,7 +40,7 @@
       "runtime_adapter_commit": "3902cb4df3c400ffb8136ccd3587488a3560cf41",
       "public_system_adapter_commit": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
       "training_runner_commit": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
-      "formal_runner_commit": "d0ed3b7b79841e30059e2997b1670030863a89ea",
+      "formal_runner_commit": "0688924678a015cd8045706a84dcb6eaa3cdb666",
       "gate_binary_sha256": "92efe2c3a54887136909366b9437de0b47e7b41f676dae6858cd702189983edd",
       "scope": "complete_agent_runtime",
       "replacement_requires_new_lock": true
