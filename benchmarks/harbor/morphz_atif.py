@@ -52,15 +52,31 @@ class StepDraft:
     llm_call_count: int | None = None
 
 
-def _read_events(db_path: Path) -> list[EventRecord]:
+def _read_events(
+    db_path: Path,
+    *,
+    root_turn_id: str | None = None,
+) -> list[EventRecord]:
     if not db_path.is_file():
         raise FileNotFoundError(f"Morphz event store does not exist: {db_path}")
     connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        rows = connection.execute(
-            "SELECT rowid, id, timestamp, actor, type, topic, payload "
-            "FROM events ORDER BY rowid"
-        ).fetchall()
+        if root_turn_id is None:
+            rows = connection.execute(
+                "SELECT rowid, id, timestamp, actor, type, topic, payload "
+                "FROM events ORDER BY rowid"
+            ).fetchall()
+        else:
+            # The root user-message Event is its own root and therefore has a
+            # NULL root_turn_id column.  All causally descended Events carry
+            # the explicit root_turn_id fence.  Select both shapes so a
+            # shared Context/Session database can still yield one ATIF file
+            # per independent benchmark trial without importing other turns.
+            rows = connection.execute(
+                "SELECT rowid, id, timestamp, actor, type, topic, payload "
+                "FROM events WHERE id = ? OR root_turn_id = ? ORDER BY rowid",
+                (root_turn_id, root_turn_id),
+            ).fetchall()
     finally:
         connection.close()
     events: list[EventRecord] = []
@@ -245,8 +261,9 @@ def build_trajectory(
     configured_model: str,
     reasoning_effort: str = "max",
     permission_mode: str = "full_access",
+    root_turn_id: str | None = None,
 ) -> Trajectory:
-    events = _read_events(db_path)
+    events = _read_events(db_path, root_turn_id=root_turn_id)
     harness_identity = _harness_identity(events)
 
     usage_by_attempt: dict[str, dict[str, Any]] = {}
@@ -525,6 +542,7 @@ def build_trajectory(
             "event_store_sha256": _sha256(db_path),
             "event_count": len(events),
             "context_id": context_id,
+            "root_turn_id": root_turn_id,
             "harness": harness_identity,
         },
     )
