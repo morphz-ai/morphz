@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / formal-training-running / cloud-formal-run-staging / evaluator-human-validation-pending`
+> 状态：`three-arm-scored-smoke-passed / local-training-uploaded / cloud-training-running / cloud-finalizer-active / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >

@@ -1,6 +1,6 @@
 # ME-07 云端正式执行交接记录（2026-08-26）
 
-> 状态：`training-running / automatic-handoff-armed / formal-not-started`
+> 状态：`local-training-complete / local-artifacts-uploaded / cloud-finalizer-active / formal-not-started`
 >
 > 协议：`ME-07-STATE-Bench-public-agent-systems-v2`
 
@@ -85,3 +85,16 @@ job receipt 的失败绝不重跑，已经写出 trajectory 而未写出 receipt
 - cloud pipeline/assembly/training 脚本：Python bytecode compilation 通过；
 - Letta health、PostgreSQL、Ollama、proxy loopback：健康；
 - 正式服务在快照汇总前保持 `disabled/inactive`，不会误用半成品状态。
+
+## 实际交接结果
+
+2026-08-26 22:04（Asia/Shanghai），本机边界已经闭合：Morphz travel 训练达到
+100/100 且 receipt `passed=true`，Letta 三个领域和 Mem0 travel 的完整领域 receipt 也均已
+通过。一次性交接程序向云端不可覆盖 staging 目录上传 16 个显式文件（约 34 MiB），随后启动
+并确认 `morphz-me07-finalize-and-start-20260826.service` 为 active。macOS LaunchAgent 以
+exit code 0 退出并已卸载，因此从这一时刻起，云端剩余训练、快照组装、smoke、正式批次、
+统计与盲评包生成均不依赖本机保持在线。
+
+交接完成时，云端 Morphz 与 Mem0 的剩余领域训练服务均为 active；formal 服务保持 inactive
+是预期状态，它只会在两条训练序列完成、九份快照通过 assembly Gate 且 ME-08 释放节点后由
+finalizer 启动。
