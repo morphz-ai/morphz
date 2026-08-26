@@ -840,10 +840,25 @@
     "disableHint": "Disable Cognitive Coordination for this Context. New evaluations will no longer receive its tool or capability contract.",
     "unavailable": "Cognitive Coordination is not available in this Runtime. Compile and enable the experimental-cognitive-coordination feature first.",
     "peerStatus": "Inspect coordination participants",
+    "networkShort": "Coordination",
     "network": "Coordination network",
     "networkHint": "Live authenticated handshakes show peer health and the logical model route frozen into new assignments.",
     "notConfigured": "Local participant not configured",
-    "noPeers": "No enabled static peers.",
+    "noPeers": "The Mesh has not discovered another participant yet.",
+    "assignments": "Assignments",
+    "noAssignments": "No coordination assignments yet.",
+    "assignmentRoles": {
+      "coordinator": "Coordinator",
+      "participant": "Participant"
+    },
+    "assignmentStatuses": {
+      "queued": "Queued",
+      "running": "Running",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted"
+    },
     "localStatus": "{{count}} capabilities · {{active}} active assignments",
     "refresh": "Refresh"
   },

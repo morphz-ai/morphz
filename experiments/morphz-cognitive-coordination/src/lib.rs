@@ -26,4 +26,4 @@ pub use routing::{CapabilityRouter, ParticipantRouter};
 pub use settlement::{PreserveAlternativesSettlement, SemanticSettlementEngine};
 pub use transport::{CognitiveEvaluationTransport, ProposalDraft, UnionCommitter};
 
-pub const EXPERIMENT_SPEC_VERSION: &str = "morphz-cognitive-coordination/0.0.1";
+pub const EXPERIMENT_SPEC_VERSION: &str = "morphz-cognitive-coordination/0.0.2";

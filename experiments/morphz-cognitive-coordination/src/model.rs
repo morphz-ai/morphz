@@ -219,12 +219,16 @@ pub struct ParticipantDescriptor {
     pub authority_id: String,
     pub agent_id: String,
     pub context_id: String,
+    /// Empty in a handshake advertisement. The projection phase binds this
+    /// participant capability to an Assignment-scoped execution Session.
+    /// A Runtime Session is therefore never part of a node's durable identity.
+    #[serde(default)]
     pub session_id: String,
     #[serde(default)]
     pub capabilities: BTreeSet<String>,
     #[serde(default)]
     pub model_profiles: Vec<ModelExecutionProfile>,
-    /// Effective local Session policy frozen by handshake. The coordinator
+    /// Effective local Runtime policy frozen by handshake. The coordinator
     /// copies this into an Assignment when no explicit override is requested.
     #[serde(default)]
     pub default_model: EvaluationModelRequest,
@@ -239,7 +243,6 @@ impl ParticipantDescriptor {
             ("authority_id", self.authority_id.as_str()),
             ("agent_id", self.agent_id.as_str()),
             ("context_id", self.context_id.as_str()),
-            ("session_id", self.session_id.as_str()),
         ] {
             if value.trim().is_empty() {
                 return Err(CoordinationError::InvalidRequest(format!(
@@ -309,6 +312,18 @@ impl ParticipantDescriptor {
                     )));
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Assignment execution needs a concrete, request-scoped Session even
+    /// though capability advertisements deliberately do not carry one.
+    pub fn validate_assignment_route(&self) -> CoordinationResult<()> {
+        self.validate()?;
+        if self.session_id.trim().is_empty() {
+            return Err(CoordinationError::InvalidRequest(
+                "assigned participant session_id must not be empty".to_string(),
+            ));
         }
         Ok(())
     }
@@ -412,7 +427,7 @@ pub struct EvaluationAssignment {
     pub projection: ProjectionSnapshot,
     pub token_budget: u64,
     /// Immutable per-Evaluation request negotiated before dispatch. Empty
-    /// fields preserve the participant Session's local defaults.
+    /// fields preserve the participant Runtime's advertised defaults.
     #[serde(default)]
     pub model: EvaluationModelRequest,
 }

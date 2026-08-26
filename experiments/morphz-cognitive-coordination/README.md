@@ -56,6 +56,11 @@ without a separate self parameter.
 `--coordination-mesh` automatically enables the runtime experiment. It does not require an
 Authority argument or a shared cluster token. Every installation creates an Ed25519 node identity,
 stores its private key through Morphz Secret Store, and derives its Authority from the public key.
+The interactive `--session` remains independent from Mesh identity: any Session in a Context where
+the capability is enabled may invoke `coordinate`. Handshake advertises node capability without a
+Session id, and projection creates a deterministic, request-scoped execution Session for each
+request. The Session follows Morphz's default shared-Context semantics; operators may isolate it
+explicitly when the work requires a private transcript boundary.
 The operator-declared Mesh is the candidate trust boundary; the first valid signed response from a
 declared endpoint is pinned locally. Use HTTPS or a private authenticated network because plain HTTP
 does not protect the first contact from an on-path attacker.
@@ -101,7 +106,6 @@ max_clock_skew_secs = 60
 [experimental.cognitive_coordination.participant]
 agent_id = "default-agent"
 context_id = "context-default"
-session_id = "session-default"
 capabilities = ["general-reasoning", "code-review"]
 max_token_budget = 32768
 priority = 10
@@ -137,9 +141,15 @@ Contribution Graph, Semantic Settlement, partial failures, and live peer status,
 `committed=false`. It never mutates Union Mind. A future explicit Union commit operation may consume
 that result under its own Authority and quorum policy.
 
+Each coordinator-side and participant-side Assignment is durable and carries its own absolute
+execution-lease deadline. Runtime startup and heartbeat recovery only interrupt nonterminal work
+after this stored deadline, which keeps crash recovery safe when several Runtime workers share one
+PostgreSQL Store.
+
 The initiating Agent is the coordinator for the request it emits. It sends the same semantic task
-to selected peers, while every peer evaluates from its own projected Context in an isolated,
-ephemeral Session. Handshake advertisements expose capabilities, logical model routes, physical
+to selected peers, while every peer evaluates from its own projected Context in a request-scoped
+Session using the Runtime's default shared-Context semantics. Handshake advertisements expose
+capabilities, logical model routes, physical
 model labels, supported reasoning efforts, limits, and a short lease. The coordinator may request a
 common logical model route or an Authority-specific override. That choice is validated against the
 advertisement and frozen into each Assignment.

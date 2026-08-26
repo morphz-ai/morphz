@@ -37,27 +37,29 @@ use crate::memory::{
     NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
     NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
     NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
-    NewThreadGroupPlan, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveMutation,
-    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
-    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
-    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
-    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
-    SessionContextSharing, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionSignalClaim,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport,
-    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
-    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
-    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
-    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment, ObjectiveCompletionIntent,
+    ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
+    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
+    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
+    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
+    SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    StorageMaintenanceReport, StorageMaintenanceStore, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
+    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
+    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
+    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
+    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
@@ -502,6 +504,38 @@ impl SqliteStore {
             PRIMARY KEY(context_id, capability_id),
             FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS work_assignments (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            request_id TEXT,
+            objective_id TEXT,
+            counterparty_id TEXT,
+            summary TEXT NOT NULL,
+            input_json TEXT NOT NULL,
+            output_json TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'
+            )),
+            status_reason TEXT,
+            lease_expires_at TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(kind, external_id, role, context_id),
+            FOREIGN KEY(agent_id) REFERENCES agents(id),
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_assignments_context_status_updated
+            ON work_assignments(context_id, status, updated_at DESC, id);
+        CREATE INDEX IF NOT EXISTS idx_work_assignments_agent_kind_updated
+            ON work_assignments(agent_id, kind, updated_at DESC, id);
 
         CREATE TABLE IF NOT EXISTS context_cognitive_clocks (
             context_id TEXT PRIMARY KEY,
@@ -1400,6 +1434,22 @@ impl SqliteStore {
             sqlx::query("ALTER TABLE session_message_requests ADD COLUMN request_fingerprint TEXT")
                 .execute(&pool)
                 .await?;
+        }
+        let work_assignment_columns = sqlx::query("PRAGMA table_info(work_assignments)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !work_assignment_columns.contains("lease_expires_at") {
+            sqlx::query("ALTER TABLE work_assignments ADD COLUMN lease_expires_at TEXT")
+                .execute(&pool)
+                .await?;
+            sqlx::query(
+                "UPDATE work_assignments SET lease_expires_at = updated_at WHERE lease_expires_at IS NULL",
+            )
+            .execute(&pool)
+            .await?;
         }
         migrate_execution_targets(&pool).await?;
         migrate_edge_execution(&pool).await?;
@@ -3665,6 +3715,224 @@ impl ProviderAccountStateStore for SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+}
+
+fn parse_work_assignment_status(
+    value: &str,
+) -> Result<WorkAssignmentStatus, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(match value {
+        "queued" => WorkAssignmentStatus::Queued,
+        "running" => WorkAssignmentStatus::Running,
+        "succeeded" => WorkAssignmentStatus::Succeeded,
+        "failed" => WorkAssignmentStatus::Failed,
+        "cancelled" => WorkAssignmentStatus::Cancelled,
+        "interrupted" => WorkAssignmentStatus::Interrupted,
+        other => return Err(format!("unknown Work Assignment status: {other}").into()),
+    })
+}
+
+fn work_assignment_from_sqlite_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<WorkAssignmentRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(WorkAssignmentRecord {
+        id: row.get("id"),
+        kind: row.get("kind"),
+        external_id: row.get("external_id"),
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        role: row.get("role"),
+        request_id: row.get("request_id"),
+        objective_id: row.get("objective_id"),
+        counterparty_id: row.get("counterparty_id"),
+        summary: row.get("summary"),
+        input: serde_json::from_str(&row.get::<String, _>("input_json"))?,
+        output: row
+            .get::<Option<String>, _>("output_json")
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
+        status: parse_work_assignment_status(&row.get::<String, _>("status"))?,
+        status_reason: row.get("status_reason"),
+        lease_expires_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("lease_expires_at"))?
+            .with_timezone(&Utc),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        created_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))?
+            .with_timezone(&Utc),
+        updated_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?
+            .with_timezone(&Utc),
+    })
+}
+
+#[async_trait::async_trait]
+impl WorkAssignmentStore for SqliteStore {
+    async fn create_work_assignment(
+        &self,
+        assignment: NewWorkAssignment,
+    ) -> Result<WorkAssignmentCreateResult, Box<dyn std::error::Error + Send + Sync>> {
+        for (field, value) in [
+            ("id", assignment.id.as_str()),
+            ("kind", assignment.kind.as_str()),
+            ("external_id", assignment.external_id.as_str()),
+            ("agent_id", assignment.agent_id.as_str()),
+            ("context_id", assignment.context_id.as_str()),
+            ("session_id", assignment.session_id.as_str()),
+            ("role", assignment.role.as_str()),
+            ("summary", assignment.summary.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Work Assignment {field} must not be empty").into());
+            }
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let input_json = serde_json::to_string(&assignment.input)?;
+        let created = sqlx::query(
+            r#"INSERT OR IGNORE INTO work_assignments
+               (id, kind, external_id, agent_id, context_id, session_id, role,
+                request_id, objective_id, counterparty_id, summary, input_json,
+                output_json, status, status_reason, lease_expires_at, revision, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, 1, ?, ?)"#,
+        )
+        .bind(&assignment.id)
+        .bind(&assignment.kind)
+        .bind(&assignment.external_id)
+        .bind(&assignment.agent_id)
+        .bind(&assignment.context_id)
+        .bind(&assignment.session_id)
+        .bind(&assignment.role)
+        .bind(&assignment.request_id)
+        .bind(&assignment.objective_id)
+        .bind(&assignment.counterparty_id)
+        .bind(&assignment.summary)
+        .bind(&input_json)
+        .bind(assignment.status.as_str())
+        .bind(assignment.lease_expires_at.to_rfc3339_opts(
+            chrono::SecondsFormat::Nanos,
+            true,
+        ))
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1;
+        let record = self
+            .get_work_assignment(&assignment.id)
+            .await?
+            .ok_or("Work Assignment insert did not produce a record")?;
+        let same_contract = record.kind == assignment.kind
+            && record.external_id == assignment.external_id
+            && record.agent_id == assignment.agent_id
+            && record.context_id == assignment.context_id
+            && record.session_id == assignment.session_id
+            && record.role == assignment.role
+            && record.request_id == assignment.request_id
+            && record.objective_id == assignment.objective_id
+            && record.counterparty_id == assignment.counterparty_id
+            && record.summary == assignment.summary
+            && record.input == assignment.input;
+        if !same_contract {
+            return Err(format!(
+                "Work Assignment identity '{}' is occupied by a different contract",
+                assignment.id
+            )
+            .into());
+        }
+        Ok(WorkAssignmentCreateResult { record, created })
+    }
+
+    async fn get_work_assignment(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkAssignmentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM work_assignments WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref()
+            .map(work_assignment_from_sqlite_row)
+            .transpose()
+    }
+
+    async fn list_context_work_assignments(
+        &self,
+        context_id: &str,
+        kind: Option<&str>,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut builder = QueryBuilder::new("SELECT * FROM work_assignments WHERE context_id = ");
+        builder.push_bind(context_id);
+        if let Some(kind) = kind {
+            builder.push(" AND kind = ");
+            builder.push_bind(kind);
+        }
+        if !include_terminal {
+            builder.push(" AND status IN ('queued', 'running')");
+        }
+        builder.push(" ORDER BY updated_at DESC, id LIMIT ");
+        builder.push_bind(i64::try_from(limit.max(1))?);
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.iter().map(work_assignment_from_sqlite_row).collect()
+    }
+
+    async fn list_agent_work_assignments(
+        &self,
+        agent_id: &str,
+        kind: Option<&str>,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut builder = QueryBuilder::new("SELECT * FROM work_assignments WHERE agent_id = ");
+        builder.push_bind(agent_id);
+        if let Some(kind) = kind {
+            builder.push(" AND kind = ");
+            builder.push_bind(kind);
+        }
+        if !include_terminal {
+            builder.push(" AND status IN ('queued', 'running')");
+        }
+        builder.push(" ORDER BY updated_at DESC, id LIMIT ");
+        builder.push_bind(i64::try_from(limit.max(1))?);
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.iter().map(work_assignment_from_sqlite_row).collect()
+    }
+
+    async fn update_work_assignment(
+        &self,
+        id: &str,
+        mutation: WorkAssignmentMutation,
+    ) -> Result<WorkAssignmentMutationResult, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let output_json = mutation
+            .output
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let row = sqlx::query(
+            r#"UPDATE work_assignments SET
+                 status = ?, output_json = COALESCE(?, output_json), status_reason = ?,
+                 revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status IN ('queued', 'running')
+               RETURNING *"#,
+        )
+        .bind(mutation.status.as_str())
+        .bind(output_json)
+        .bind(&mutation.status_reason)
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(mutation.expected_revision)?)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = row {
+            return Ok(WorkAssignmentMutationResult::Updated(
+                work_assignment_from_sqlite_row(&row)?,
+            ));
+        }
+        Ok(match self.get_work_assignment(id).await? {
+            Some(current) => WorkAssignmentMutationResult::Conflict(current),
+            None => WorkAssignmentMutationResult::NotFound,
+        })
     }
 }
 
@@ -23609,6 +23877,127 @@ mod tests {
             sqlite_has_wal_reset_fix(&version),
             "linked SQLite {version} is vulnerable to the WAL-reset race"
         );
+    }
+
+    #[tokio::test]
+    async fn work_assignments_are_durable_idempotent_and_terminally_fenced() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "assignment-agent".to_string(),
+                    title: "Assignment Agent".to_string(),
+                    root_context_id: "assignment-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "assignment-context".to_string(),
+                    agent_id: "assignment-agent".to_string(),
+                    title: "Assignment Context".to_string(),
+                },
+                NewSession {
+                    id: "assignment-session".to_string(),
+                    agent_id: "assignment-agent".to_string(),
+                    context_id: "assignment-context".to_string(),
+                    parent_session_id: None,
+                    title: "Assignment Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+
+        let contract = NewWorkAssignment {
+            id: "assignment-local".to_string(),
+            kind: "cognitive_coordination/evaluation".to_string(),
+            external_id: "assignment-wire".to_string(),
+            agent_id: "assignment-agent".to_string(),
+            context_id: "assignment-context".to_string(),
+            session_id: "assignment-session".to_string(),
+            role: "participant".to_string(),
+            request_id: Some("request-1".to_string()),
+            objective_id: Some("objective-1".to_string()),
+            counterparty_id: Some("authority-a".to_string()),
+            summary: "Evaluate a proposal".to_string(),
+            input: serde_json::json!({"question": "Which proposal is stronger?"}),
+            status: WorkAssignmentStatus::Running,
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+        };
+        let created = store
+            .create_work_assignment(contract.clone())
+            .await
+            .unwrap();
+        assert!(created.created);
+        assert_eq!(created.record.revision, 1);
+        assert_eq!(created.record.status, WorkAssignmentStatus::Running);
+        let mut retry_contract = contract;
+        retry_contract.lease_expires_at += chrono::Duration::seconds(30);
+        let retried = store.create_work_assignment(retry_contract).await.unwrap();
+        assert!(!retried.created);
+        assert_eq!(
+            retried.record.id, created.record.id,
+            "retrying the same protocol Assignment must be idempotent",
+        );
+        assert_eq!(
+            retried.record.lease_expires_at, created.record.lease_expires_at,
+            "a retry must observe the original execution claim instead of extending it",
+        );
+        let active = store
+            .list_context_work_assignments(
+                "assignment-context",
+                Some("cognitive_coordination/evaluation"),
+                false,
+                8,
+            )
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1);
+
+        let completed = match store
+            .update_work_assignment(
+                &created.record.id,
+                WorkAssignmentMutation {
+                    expected_revision: created.record.revision,
+                    status: WorkAssignmentStatus::Succeeded,
+                    output: Some(serde_json::json!({"answer": 42})),
+                    status_reason: None,
+                },
+            )
+            .await
+            .unwrap()
+        {
+            WorkAssignmentMutationResult::Updated(record) => record,
+            other => panic!("unexpected Assignment mutation outcome: {other:?}"),
+        };
+        assert_eq!(completed.status, WorkAssignmentStatus::Succeeded);
+        assert_eq!(completed.output, Some(serde_json::json!({"answer": 42})));
+        assert!(store
+            .list_context_work_assignments("assignment-context", None, false, 8)
+            .await
+            .unwrap()
+            .is_empty());
+
+        match store
+            .update_work_assignment(
+                &completed.id,
+                WorkAssignmentMutation {
+                    expected_revision: completed.revision,
+                    status: WorkAssignmentStatus::Failed,
+                    output: None,
+                    status_reason: Some("late failure".to_string()),
+                },
+            )
+            .await
+            .unwrap()
+        {
+            WorkAssignmentMutationResult::Conflict(current) => {
+                assert_eq!(current.status, WorkAssignmentStatus::Succeeded);
+                assert_eq!(current.output, Some(serde_json::json!({"answer": 42})));
+            }
+            other => panic!("a terminal Assignment was rewritten: {other:?}"),
+        }
     }
 
     #[tokio::test]

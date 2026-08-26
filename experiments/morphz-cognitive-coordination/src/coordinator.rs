@@ -195,13 +195,16 @@ impl CognitiveEvaluationCoordinator {
                 let evaluated = async {
                     let projection = transport.project(&participant, &request).await?;
                     if projection.context_id != participant.context_id
-                        || projection.session_id != participant.session_id
+                        || projection.session_id.trim().is_empty()
                     {
                         return Err(CoordinationError::Transport(format!(
                             "projection route for authority '{}' does not match the participant",
                             participant.authority_id
                         )));
                     }
+                    let mut participant = participant;
+                    participant.session_id = projection.session_id.clone();
+                    participant.validate_assignment_route()?;
                     let identity = (
                         request.request_id.as_str(),
                         participant.authority_id.as_str(),
@@ -432,10 +435,10 @@ fn ensure_independent_participants(
                 ));
             }
         }
-        // Agent, Context, and Session identifiers are scoped by Authority.
-        // Separate Runtime nodes may legitimately use the same local defaults
-        // (for example `default-agent` and `session-default`). Authority is the
-        // globally unique participant identity at this protocol boundary.
+        // Agent and Context identifiers are scoped by Authority. Session is
+        // intentionally unbound until projection creates a request-scoped
+        // execution route. Authority is the globally unique participant
+        // identity at this protocol boundary.
         if !authorities.insert(&participant.authority_id) {
             return Err(CoordinationError::InvalidRequest(
                 "participants must have distinct Authority identities".to_string(),

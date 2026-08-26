@@ -125,7 +125,7 @@ test('context budget control opens above the clipped composer status row', () =>
   )
 })
 
-test('cognitive coordination status exposes authenticated peer health beside its Context gate', () => {
+test('cognitive coordination separates global Mesh health from its Context capability gate', () => {
   assert.match(
     appSource,
     /\/api\/experimental\/cognitive-coordination\/status/,
@@ -135,6 +135,26 @@ test('cognitive coordination status exposes authenticated peer health beside its
     appSource,
     /coordination-status-popover[\s\S]*?peer\.healthy[\s\S]*?peer\.latency_ms/s,
     'the status panel must distinguish live handshake health and latency',
+  )
+  assert.match(
+    appSource,
+    /coordination-assignment-section[\s\S]*?cognitiveCoordinationStatus\?\.assignments[\s\S]*?assignment\.status/s,
+    'the Runtime-wide status panel must expose durable active and recent coordination assignments',
+  )
+  assert.match(
+    appSource,
+    /className="runtime-side"[\s\S]*?coordination-network-selector[\s\S]*?coordination-status-popover/s,
+    'the process-scoped Mesh health entry must live in the global Runtime header',
+  )
+  assert.match(
+    appSource,
+    /className="cognitive-coordination-selector"[\s\S]*?toggleCognitiveCoordination\(\)/s,
+    'the Context-scoped coordinate tool gate must remain beside the current Context controls',
+  )
+  assert.match(
+    appSource,
+    /setCognitiveCoordinationStatusError\(reason instanceof Error \? reason\.message : String\(reason\)\)/,
+    'the status surface must preserve the Runtime diagnostic instead of replacing it with a generic unconfigured state',
   )
   assert.match(
     appCss,

@@ -56,7 +56,7 @@ model or CLI concept.
 A successful handshake is a short-lived capability lease containing:
 
 - protocol version and supported operations;
-- participant Authority, Agent, Context, and anchor Session;
+- participant Authority, Agent, and Context; execution Session identity is assigned per request;
 - semantic capabilities and token capacity;
 - logical model routes and descriptive physical model labels;
 - supported reasoning-effort vocabulary and output limits;
@@ -77,7 +77,9 @@ sender names an endpoint present in the receiver's Mesh source.
 3. The coordinator requests a Context projection digest from every selected participant.
 4. It creates an immutable Assignment containing the common task, token budget, projection binding,
    peer identities, and resolved logical model route/reasoning effort.
-5. Every participant evaluates independently from its own Context in an isolated ephemeral Session.
+5. Every participant evaluates independently in a request-scoped Session mounted into its own
+   shared Context. Operators may explicitly isolate that Session when a private transcript boundary
+   is required.
 6. Drafts are validated and converted to provenance-bound proposals.
 7. Valid proposals form a Contribution Graph and a Semantic Settlement record.
 8. Participant errors are returned separately. The operation succeeds only if valid proposals still
@@ -102,11 +104,20 @@ compatible; otherwise another advertised compatible route is selected determinis
 The resolved choice is copied into the Assignment. Nodes must not silently replace it because local
 defaults change while the request is in flight.
 
+Both coordinator and participant persist their role-specific view of each Assignment. Admission is
+idempotent: only the writer that durably creates the immutable contract may execute it. Lifecycle
+updates are revision-fenced, and `succeeded`, `failed`, `cancelled`, and `interrupted` are terminal,
+so a duplicate delivery or late result cannot reopen or overwrite settled work. Every admitted
+Assignment stores an absolute execution-lease deadline derived from the request timeout. Startup and
+the heartbeat mark nonterminal Assignments `interrupted` only after that persisted lease expires;
+this clears work abandoned by a crashed process without interrupting fresh work owned by another
+Runtime worker sharing the same Store or reinterpret the deadline through another worker's config.
+
 ## 7. Timeout and cancellation
 
 Every remote call has an operator-defined timeout. When Evaluation transport fails or times out, the
 coordinator sends a best-effort cancellation request. The participant maps an active Assignment to
-its ephemeral Session and durably cancels that Session without affecting ordinary local Sessions.
+its request-scoped Session and durably cancels that Session without affecting ordinary local Sessions.
 
 Cancellation is idempotent: an unknown or already-finished Assignment returns `cancelled=false`.
 
@@ -121,7 +132,7 @@ Cancellation is idempotent: an unknown or already-finished Assignment returns `c
 
 Identity probing returns a self-signed public envelope. The four stateful protocol endpoints use
 authenticated envelopes. The status endpoint uses normal
-Morphz operator authorization and never returns secrets.
+Morphz operator authorization and never returns secrets or Assignment protocol input/output payloads.
 
 ## 9. Union commit boundary
 

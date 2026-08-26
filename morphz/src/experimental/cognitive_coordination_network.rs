@@ -15,6 +15,10 @@ use crate::config::{
     CognitiveCoordinationConfig, CognitiveCoordinationParticipantConfig,
     CognitiveCoordinationPeerConfig,
 };
+use crate::memory::{
+    NewWorkAssignment, WorkAssignmentCreateResult, WorkAssignmentMutation,
+    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
+};
 use async_trait::async_trait;
 use base64::Engine as _;
 use domain::{
@@ -27,6 +31,7 @@ use domain::{
 use ring::hmac;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,6 +47,9 @@ pub const EVALUATE_PATH: &str = "/api/experimental/cognitive-coordination/evalua
 pub const CANCEL_PATH: &str = "/api/experimental/cognitive-coordination/cancel";
 const HMAC_AUTH_SPEC_VERSION: &str = "morphz-cognitive-coordination-auth/0.1";
 const IDENTITY_AUTH_SPEC_VERSION: &str = "morphz-cognitive-coordination-ed25519/0.1";
+pub const COORDINATION_ASSIGNMENT_KIND: &str = "cognitive_coordination/evaluation";
+pub const COORDINATION_ASSIGNMENT_COORDINATOR_ROLE: &str = "coordinator";
+pub const COORDINATION_ASSIGNMENT_PARTICIPANT_ROLE: &str = "participant";
 static ENVELOPE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +147,7 @@ pub struct CognitiveCoordinationNetworkService {
     local_endpoint: Arc<RwLock<Option<String>>>,
     peer_statuses: Arc<RwLock<Vec<CoordinationPeerStatus>>>,
     accepted_nonces: Arc<Mutex<HashMap<String, i64>>>,
+    assignment_store: Option<Arc<dyn WorkAssignmentStore>>,
     active_assignments: dashmap::DashMap<String, String>,
     heartbeat_started: AtomicBool,
 }
@@ -201,6 +210,7 @@ impl CognitiveCoordinationNetworkService {
             local_endpoint: Arc::new(RwLock::new(None)),
             peer_statuses: Arc::new(RwLock::new(Vec::new())),
             accepted_nonces: Arc::new(Mutex::new(HashMap::new())),
+            assignment_store: None,
             active_assignments: dashmap::DashMap::new(),
             heartbeat_started: AtomicBool::new(false),
         })
@@ -218,6 +228,11 @@ impl CognitiveCoordinationNetworkService {
 
     pub fn config(&self) -> &CognitiveCoordinationConfig {
         &self.config
+    }
+
+    pub fn with_assignment_store(mut self, store: Arc<dyn WorkAssignmentStore>) -> Self {
+        self.assignment_store = Some(store);
+        self
     }
 
     pub fn participant_config(&self) -> Result<&CognitiveCoordinationParticipantConfig, DynError> {
@@ -256,6 +271,198 @@ impl CognitiveCoordinationNetworkService {
 
     pub fn local_authority_id(&self) -> Result<&str, DynError> {
         Ok(self.participant_config()?.authority_id.as_str())
+    }
+
+    pub fn assignment_record_id(
+        &self,
+        external_id: &str,
+        role: &str,
+        context_id: &str,
+    ) -> Result<String, DynError> {
+        let authority_id = self.local_authority_id()?;
+        let mut digest = Sha256::new();
+        for value in [authority_id, context_id, role, external_id] {
+            digest.update((value.len() as u64).to_be_bytes());
+            digest.update(value.as_bytes());
+        }
+        let digest = digest.finalize();
+        Ok(format!(
+            "coord-assignment-{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest[..18])
+        ))
+    }
+
+    pub async fn begin_assignment(
+        &self,
+        assignment: &EvaluationAssignment,
+        host_agent_id: &str,
+        host_context_id: &str,
+        host_session_id: &str,
+        role: &str,
+        counterparty_id: &str,
+    ) -> Result<Option<WorkAssignmentCreateResult>, DynError> {
+        let Some(store) = self.assignment_store.as_ref() else {
+            return Ok(None);
+        };
+        let id = self.assignment_record_id(&assignment.assignment_id, role, host_context_id)?;
+        let summary = match role {
+            COORDINATION_ASSIGNMENT_COORDINATOR_ROLE => format!(
+                "Coordinate '{}' with Authority {}",
+                assignment.question, assignment.participant.authority_id
+            ),
+            COORDINATION_ASSIGNMENT_PARTICIPANT_ROLE => format!(
+                "Evaluate '{}' for Authority {}",
+                assignment.question, counterparty_id
+            ),
+            _ => format!("Cognitive Evaluation: {}", assignment.question),
+        };
+        let lease_duration = chrono::Duration::from_std(self.request_timeout())
+            .map_err(|_| "coordination request timeout exceeds the supported lease range")?;
+        let lease_expires_at = chrono::Utc::now()
+            .checked_add_signed(lease_duration)
+            .ok_or("coordination Assignment lease deadline overflowed")?;
+        Ok(Some(
+            store
+                .create_work_assignment(NewWorkAssignment {
+                    id,
+                    kind: COORDINATION_ASSIGNMENT_KIND.to_string(),
+                    external_id: assignment.assignment_id.clone(),
+                    agent_id: host_agent_id.to_string(),
+                    context_id: host_context_id.to_string(),
+                    session_id: host_session_id.to_string(),
+                    role: role.to_string(),
+                    request_id: Some(assignment.request_id.clone()),
+                    objective_id: Some(assignment.objective_id.clone()),
+                    counterparty_id: Some(counterparty_id.to_string()),
+                    summary,
+                    input: serde_json::to_value(assignment)?,
+                    status: WorkAssignmentStatus::Running,
+                    lease_expires_at,
+                })
+                .await?,
+        ))
+    }
+
+    pub async fn transition_assignment(
+        &self,
+        assignment: Option<WorkAssignmentRecord>,
+        status: WorkAssignmentStatus,
+        output: Option<Value>,
+        status_reason: Option<String>,
+    ) -> Result<Option<WorkAssignmentRecord>, DynError> {
+        let Some(mut current) = assignment else {
+            return Ok(None);
+        };
+        let Some(store) = self.assignment_store.as_ref() else {
+            return Ok(Some(current));
+        };
+        if current.status.is_terminal() {
+            return Ok(Some(current));
+        }
+        for _ in 0..3 {
+            match store
+                .update_work_assignment(
+                    &current.id,
+                    WorkAssignmentMutation {
+                        expected_revision: current.revision,
+                        status,
+                        output: output.clone(),
+                        status_reason: status_reason.clone(),
+                    },
+                )
+                .await?
+            {
+                WorkAssignmentMutationResult::Updated(updated) => return Ok(Some(updated)),
+                WorkAssignmentMutationResult::Conflict(latest) if latest.status.is_terminal() => {
+                    return Ok(Some(latest));
+                }
+                WorkAssignmentMutationResult::Conflict(latest) => current = latest,
+                WorkAssignmentMutationResult::NotFound => {
+                    return Err(format!(
+                        "Work Assignment '{}' disappeared during a lifecycle transition",
+                        current.id
+                    )
+                    .into());
+                }
+            }
+        }
+        Err(format!(
+            "Work Assignment '{}' changed concurrently too many times",
+            current.id
+        )
+        .into())
+    }
+
+    pub async fn list_assignments(
+        &self,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, DynError> {
+        let Some(store) = self.assignment_store.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(participant) = self.config.participant.as_ref() else {
+            return Ok(Vec::new());
+        };
+        store
+            .list_agent_work_assignments(
+                &participant.agent_id,
+                Some(COORDINATION_ASSIGNMENT_KIND),
+                include_terminal,
+                limit,
+            )
+            .await
+    }
+
+    /// Close nonterminal records only after their persisted execution lease
+    /// has elapsed. A shared PostgreSQL Store may be used by multiple Runtime
+    /// processes, so startup must never interrupt fresh work merely because it
+    /// belongs to another healthy worker. The heartbeat repeats this sweep,
+    /// which eventually closes work abandoned by a crashed process.
+    pub async fn recover_interrupted_assignments(&self) -> Result<usize, DynError> {
+        let now = chrono::Utc::now();
+        let assignments = self
+            .list_assignments(false, 10_000)
+            .await?
+            .into_iter()
+            .filter(|assignment| assignment_has_expired(assignment, now))
+            .collect::<Vec<_>>();
+        let mut interrupted = 0;
+        for assignment in assignments {
+            let transitioned = self
+                .transition_assignment(
+                    Some(assignment),
+                    WorkAssignmentStatus::Interrupted,
+                    None,
+                    Some(
+                        "Runtime restarted before the coordinated Evaluation completed".to_string(),
+                    ),
+                )
+                .await?;
+            if transitioned
+                .as_ref()
+                .is_some_and(|record| record.status == WorkAssignmentStatus::Interrupted)
+            {
+                interrupted += 1;
+            }
+        }
+        Ok(interrupted)
+    }
+
+    pub async fn participant_assignment(
+        &self,
+        external_id: &str,
+    ) -> Result<Option<WorkAssignmentRecord>, DynError> {
+        let Some(store) = self.assignment_store.as_ref() else {
+            return Ok(None);
+        };
+        let participant = self.participant_config()?;
+        let id = self.assignment_record_id(
+            external_id,
+            COORDINATION_ASSIGNMENT_PARTICIPANT_ROLE,
+            &participant.context_id,
+        )?;
+        store.get_work_assignment(&id).await
     }
 
     pub fn register_active_assignment(&self, assignment_id: &str, session_id: &str) {
@@ -607,6 +814,13 @@ impl CognitiveCoordinationNetworkService {
         }
         tokio::spawn(async move {
             loop {
+                if let Err(error) = self.recover_interrupted_assignments().await {
+                    tracing::warn!(
+                        error = %error,
+                        event_code = "runtime.cognitive_coordination.assignment_expiry_failed",
+                        "Expired Cognitive Coordination Assignment recovery failed"
+                    );
+                }
                 self.refresh_peer_statuses().await;
                 tokio::time::sleep(Duration::from_secs(
                     self.config.heartbeat_interval_secs.max(1),
@@ -906,6 +1120,7 @@ impl CognitiveCoordinationNetworkService {
             local_endpoint: Arc::clone(&self.local_endpoint),
             peer_statuses: Arc::clone(&self.peer_statuses),
             accepted_nonces: Arc::clone(&self.accepted_nonces),
+            assignment_store: self.assignment_store.clone(),
             active_assignments: dashmap::DashMap::new(),
             heartbeat_started: AtomicBool::new(false),
         }
@@ -914,6 +1129,9 @@ impl CognitiveCoordinationNetworkService {
 
 struct NetworkEvaluationTransport {
     service: Arc<CognitiveCoordinationNetworkService>,
+    host_agent_id: String,
+    host_context_id: String,
+    host_session_id: String,
 }
 
 #[async_trait]
@@ -932,7 +1150,76 @@ impl CognitiveEvaluationTransport for NetworkEvaluationTransport {
         &self,
         assignment: &EvaluationAssignment,
     ) -> CoordinationResult<ProposalDraft> {
-        self.service.evaluate_remote(assignment).await
+        let start = self
+            .service
+            .begin_assignment(
+                assignment,
+                &self.host_agent_id,
+                &self.host_context_id,
+                &self.host_session_id,
+                COORDINATION_ASSIGNMENT_COORDINATOR_ROLE,
+                &assignment.participant.authority_id,
+            )
+            .await
+            .map_err(|error| CoordinationError::Transport(error.to_string()))?;
+        if let Some(existing) = start.as_ref().filter(|result| !result.created) {
+            if existing.record.status == WorkAssignmentStatus::Succeeded {
+                if let Some(output) = existing.record.output.clone() {
+                    return serde_json::from_value(output).map_err(|error| {
+                        CoordinationError::Transport(format!(
+                            "persisted Assignment '{}' has an invalid Proposal result: {error}",
+                            existing.record.external_id
+                        ))
+                    });
+                }
+            }
+            return Err(CoordinationError::Transport(format!(
+                "Assignment '{}' already exists with status '{}' and cannot execute twice",
+                existing.record.external_id,
+                existing.record.status.as_str(),
+            )));
+        }
+        let record = start.map(|result| result.record);
+        match self.service.evaluate_remote(assignment).await {
+            Ok(draft) => {
+                let persisted = self
+                    .service
+                    .transition_assignment(
+                        record,
+                        WorkAssignmentStatus::Succeeded,
+                        serde_json::to_value(&draft).ok(),
+                        None,
+                    )
+                    .await
+                    .map_err(|error| CoordinationError::Transport(error.to_string()))?;
+                if let Some(record) = persisted {
+                    if record.status != WorkAssignmentStatus::Succeeded {
+                        return Err(CoordinationError::Transport(format!(
+                            "Assignment '{}' completed remotely after its durable status became '{}'",
+                            record.external_id,
+                            record.status.as_str(),
+                        )));
+                    }
+                }
+                Ok(draft)
+            }
+            Err(error) => {
+                self.service
+                    .transition_assignment(
+                        record,
+                        WorkAssignmentStatus::Failed,
+                        None,
+                        Some(error.to_string()),
+                    )
+                    .await
+                    .map_err(|store_error| {
+                        CoordinationError::Transport(format!(
+                            "{error}; additionally failed to persist Assignment outcome: {store_error}"
+                        ))
+                    })?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -955,7 +1242,11 @@ impl UnionCommitter for CommitDisabled {
 
 #[async_trait]
 impl CognitiveCoordinationBackend for Arc<CognitiveCoordinationNetworkService> {
-    async fn evaluate(&self, input: CoordinatedEvaluationInput) -> Result<Value, DynError> {
+    async fn evaluate(
+        &self,
+        input: CoordinatedEvaluationInput,
+        invocation: super::cognitive_coordination_sdk::CognitiveCoordinationInvocation,
+    ) -> Result<Value, DynError> {
         let statuses = self.handshake_all().await;
         let participants = statuses
             .iter()
@@ -1036,6 +1327,9 @@ impl CognitiveCoordinationBackend for Arc<CognitiveCoordinationNetworkService> {
             Arc::new(domain::CapabilityRouter),
             Arc::new(NetworkEvaluationTransport {
                 service: Arc::clone(self),
+                host_agent_id: self.participant_config()?.agent_id.clone(),
+                host_context_id: invocation.context_id.clone(),
+                host_session_id: invocation.session_id.clone(),
             }),
             Arc::new(DeclaredRelationGraphBuilder),
             Arc::new(PreserveAlternativesSettlement),
@@ -1044,6 +1338,10 @@ impl CognitiveCoordinationBackend for Arc<CognitiveCoordinationNetworkService> {
         let result = coordinator.evaluate(request, participants).await?;
         Ok(json!({
             "operation": "evaluate",
+            "initiating_route": {
+                "context_id": invocation.context_id,
+                "session_id": invocation.session_id,
+            },
             "result": result,
             "peer_status": statuses,
             "committed": false,
@@ -1068,7 +1366,6 @@ fn validate_config(config: &CognitiveCoordinationConfig) -> Result<(), DynError>
         ("authority_id", participant.authority_id.as_str()),
         ("agent_id", participant.agent_id.as_str()),
         ("context_id", participant.context_id.as_str()),
-        ("session_id", participant.session_id.as_str()),
     ] {
         if value.trim().is_empty() {
             return Err(format!("coordination participant {field} must not be empty").into());
@@ -1213,11 +1510,24 @@ fn new_request_id() -> String {
     )
 }
 
+fn assignment_has_expired(
+    assignment: &WorkAssignmentRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    assignment.lease_expires_at <= now
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{CognitiveCoordinationParticipantConfig, CognitiveCoordinationPeerConfig};
-    use crate::experimental::cognitive_coordination_sdk::CoordinatedParticipantModelInput;
+    use crate::experimental::cognitive_coordination_sdk::{
+        CognitiveCoordinationInvocation, CoordinatedParticipantModelInput,
+    };
+    use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{
+        NewAgent, NewCognitiveContext, NewSession, SessionDirectoryStore, SessionMountKind,
+    };
     use crate::secret_store::{SecretStore, SecretValueBackend};
     use axum::{extract::State, routing::post, Json, Router};
     use domain::{EvaluationModelRequest, ModelExecutionProfile};
@@ -1328,12 +1638,13 @@ mod tests {
         Json(envelope): Json<AuthenticatedEnvelope<ProjectionRequest>>,
     ) -> Json<AuthenticatedEnvelope<ProjectionSnapshot>> {
         verify_signature(&envelope, state.secret.as_bytes()).unwrap();
+        let request_id = envelope.payload.request_id;
         Json(
             signed_envelope(
                 state.authority_id,
                 ProjectionSnapshot {
                     context_id: state.participant.context_id,
-                    session_id: state.participant.session_id,
+                    session_id: format!("coord-eval-{request_id}"),
                     context_version: 7,
                     digest: "sha256:mock-projection".to_string(),
                 },
@@ -1391,7 +1702,7 @@ mod tests {
             // Runtime; Authority namespaces them at the protocol boundary.
             agent_id: "default-agent".to_string(),
             context_id: "context-default".to_string(),
-            session_id: "session-default".to_string(),
+            session_id: String::new(),
             capabilities: BTreeSet::from(["general-reasoning".to_string()]),
             model_profiles: vec![
                 ModelExecutionProfile {
@@ -1676,6 +1987,41 @@ mod tests {
 
     #[tokio::test]
     async fn three_remote_nodes_negotiate_models_and_evaluate_over_authenticated_http() {
+        let assignment_state = tempfile::tempdir().unwrap();
+        let assignment_store = Arc::new(
+            SqliteStore::new(
+                assignment_state
+                    .path()
+                    .join("assignments.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        assignment_store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "default-agent".to_string(),
+                    title: "Coordinator".to_string(),
+                    root_context_id: "context-origin".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-origin".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    title: "Origin Context".to_string(),
+                },
+                NewSession {
+                    id: "session-origin".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-origin".to_string(),
+                    parent_session_id: None,
+                    title: "Origin Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
         let peer_specs = [
             ("authority-a", "MORPHZ_TEST_COORD_A", "secret-a"),
             ("authority-b", "MORPHZ_TEST_COORD_B", "secret-b"),
@@ -1711,7 +2057,12 @@ mod tests {
         let enabled = BTreeSet::from([COGNITIVE_COORDINATION.to_string()]);
         let permit =
             crate::experimental::require_enabled(&enabled, COGNITIVE_COORDINATION).unwrap();
-        let service = Arc::new(CognitiveCoordinationNetworkService::new(permit, config).unwrap());
+        let assignment_store_dyn: Arc<dyn WorkAssignmentStore> = assignment_store;
+        let service = Arc::new(
+            CognitiveCoordinationNetworkService::new(permit, config)
+                .unwrap()
+                .with_assignment_store(assignment_store_dyn),
+        );
 
         let response = CognitiveCoordinationBackend::evaluate(
             &service,
@@ -1733,11 +2084,17 @@ mod tests {
                     reasoning_effort: Some("low".to_string()),
                 }],
             },
+            CognitiveCoordinationInvocation {
+                context_id: "context-origin".to_string(),
+                session_id: "session-origin".to_string(),
+            },
         )
         .await
         .unwrap();
 
         assert_eq!(response["committed"], false);
+        assert_eq!(response["initiating_route"]["context_id"], "context-origin");
+        assert_eq!(response["initiating_route"]["session_id"], "session-origin");
         let assignments = response["result"]["plan"]["assignments"]
             .as_array()
             .unwrap();
@@ -1763,6 +2120,20 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+        let persisted = service.list_assignments(true, 16).await.unwrap();
+        assert_eq!(persisted.len(), 3);
+        assert!(persisted.iter().all(|assignment| {
+            assignment.role == COORDINATION_ASSIGNMENT_COORDINATOR_ROLE
+                && assignment.context_id == "context-origin"
+                && assignment.session_id == "session-origin"
+                && assignment.status == WorkAssignmentStatus::Succeeded
+                && assignment.output.is_some()
+        }));
+        let mut expired = persisted[0].clone();
+        expired.lease_expires_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        assert!(assignment_has_expired(&expired, chrono::Utc::now()));
+        expired.lease_expires_at = chrono::Utc::now() + chrono::Duration::seconds(10);
+        assert!(!assignment_has_expired(&expired, chrono::Utc::now()));
 
         for server in servers {
             server.abort();

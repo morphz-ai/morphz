@@ -29,11 +29,11 @@ Mesh 来源只产生由运营者授权的候选端点，不直接证明节点身
 握手结果是一份短时有效的能力租约，包括：
 
 - 协议版本与支持的操作；
-- 参与者的 Authority、Agent、Context 与锚点 Session；
+- 参与者的 Authority、Agent 与 Context；执行 Session 由每次请求单独确定；
 - 语义能力与 token 容量；
 - 逻辑模型路由、用于说明的物理模型标签；
 - 支持的 reasoning effort、输出限制；
-- 本地 Session 当前默认模型路由与 reasoning effort；
+- 参与 Runtime 当前默认模型路由与 reasoning effort；
 - 签发时间与失效时间。
 
 只有运营者明确允许的模型路由可以对外声明；凭据和 Provider 账户身份不会进入声明。
@@ -46,7 +46,8 @@ Mesh 来源只产生由运营者授权的候选端点，不直接证明节点身
 2. 协调者进行实时握手，只在租约有效且满足约束的节点中路由。
 3. 协调者向每个入选节点请求 Context 投影摘要。
 4. 协调者生成不可变 Assignment，绑定共同任务、token 预算、投影、同级身份以及已解析的模型路由与 reasoning effort。
-5. 每个节点从自己的 Context 出发，在隔离的临时 Session 内独立求值。
+5. 每个节点从自己的 Context 出发，在请求级 Session 内独立求值；该 Session 默认遵循共享 Context
+   语义，只有需要私有对话历史边界时才由运营者显式隔离。
 6. Runtime 校验草案并生成带来源证明的 proposal。
 7. 有效 proposal 组成 Contribution Graph 与 Semantic Settlement 记录。
 8. 节点错误单独进入 `failures`；只有有效 proposal 数仍满足 `min_participants` 时整体才成功。
@@ -62,9 +63,16 @@ Mesh 来源只产生由运营者授权的候选端点，不直接证明节点身
 
 最终选择会被冻结到 Assignment；节点不得因为请求执行期间本地默认设置发生变化而静默替换。
 
+协调者与参与者分别持久化同一 Assignment 在本地的角色记录。准入具有幂等性：只有成功创建不可变
+契约的写入者可以开始执行；生命周期更新使用 revision fencing，`succeeded`、`failed`、
+`cancelled` 与 `interrupted` 都是终态，因此重复投递和晚到结果不能重新打开或覆盖已经结束的工作。
+每个准入的 Assignment 都持久化一个由请求超时计算出的绝对执行租约期限。启动恢复与心跳只会在该租约
+到期后把非终态 Assignment 收口为 `interrupted`；这样既能清理崩溃进程遗留的工作，也不会误伤由共享
+同一 Store 的其他健康 Runtime worker 正在执行的新鲜任务，或用另一个 worker 的配置重新解释原期限。
+
 ## 7. 超时与取消
 
-每次远程调用都有运营者配置的超时。远程求值失败或超时时，协调者发送尽力而为的取消请求。参与节点把活动 Assignment 映射到临时 Session，并持久化取消该 Session，不影响普通本地会话。
+每次远程调用都有运营者配置的超时。远程求值失败或超时时，协调者发送尽力而为的取消请求。参与节点把活动 Assignment 映射到请求级 Session，并持久化取消该 Session，不影响普通本地会话。
 
 取消是幂等的：未知或已经完成的 Assignment 返回 `cancelled=false`。
 
@@ -77,7 +85,7 @@ Mesh 来源只产生由运营者授权的候选端点，不直接证明节点身
 - `POST /api/experimental/cognitive-coordination/cancel`
 - `GET /api/experimental/cognitive-coordination/status`（使用运营者认证的 Dashboard 接口）
 
-身份探测返回自签名公有信封；其余四个有状态协议接口使用认证信封。状态接口使用 Morphz 既有运营者认证，并且永不返回密钥。
+身份探测返回自签名公有信封；其余四个有状态协议接口使用认证信封。状态接口使用 Morphz 既有运营者认证，并且永不返回密钥或 Assignment 的协议输入/输出载荷。
 
 ## 9. Union commit 边界
 

@@ -40,7 +40,7 @@ pub struct CoordinatedEvaluationInput {
     #[serde(default)]
     pub token_budget_per_participant: Option<u64>,
     /// Common logical model route requested from every participant. Omit to
-    /// preserve each participant Session's local default.
+    /// preserve each participant Runtime's advertised default.
     #[serde(default)]
     pub model_route: Option<String>,
     #[serde(default)]
@@ -61,7 +61,17 @@ pub struct CoordinatedParticipantModelInput {
 
 #[async_trait]
 pub trait CognitiveCoordinationBackend: Send + Sync {
-    async fn evaluate(&self, input: CoordinatedEvaluationInput) -> Result<Value, DynError>;
+    async fn evaluate(
+        &self,
+        input: CoordinatedEvaluationInput,
+        invocation: CognitiveCoordinationInvocation,
+    ) -> Result<Value, DynError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CognitiveCoordinationInvocation {
+    pub context_id: String,
+    pub session_id: String,
 }
 
 /// Fail-closed backend installed until an operator supplies a paired
@@ -72,7 +82,11 @@ pub struct UnavailableCognitiveCoordinationBackend;
 
 #[async_trait]
 impl CognitiveCoordinationBackend for UnavailableCognitiveCoordinationBackend {
-    async fn evaluate(&self, _input: CoordinatedEvaluationInput) -> Result<Value, DynError> {
+    async fn evaluate(
+        &self,
+        _input: CoordinatedEvaluationInput,
+        _invocation: CognitiveCoordinationInvocation,
+    ) -> Result<Value, DynError> {
         Err("coordinated cognitive evaluation is enabled for this Context, but this Runtime has no Coordination Mesh or coordination transport; configure --coordination-mesh or legacy explicit peers before invoking coordinate.evaluate".into())
     }
 }
@@ -247,6 +261,9 @@ impl crate::tool::Tool for CoordinateTool {
         let context_id = crate::tool::CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "coordinate is missing the current Context route")?;
+        let session_id = crate::tool::CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "coordinate is missing the current Session route")?;
         let enabled = self
             .binding_store
             .get_context_capability_binding(&context_id, COGNITIVE_COORDINATION)
@@ -258,7 +275,16 @@ impl crate::tool::Tool for CoordinateTool {
             )
             .into());
         }
-        let output = self.backend.evaluate(input).await?;
+        let output = self
+            .backend
+            .evaluate(
+                input,
+                CognitiveCoordinationInvocation {
+                    context_id,
+                    session_id,
+                },
+            )
+            .await?;
         serde_json::to_string_pretty(&output).map_err(Into::into)
     }
 }
@@ -575,15 +601,15 @@ fn sexpr_string(value: &str) -> CoordinationResult<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CognitiveCoordinationBackend, CoordinateTool, CoordinatedEvaluationInput,
-        SdkEvaluationTransport,
+        CognitiveCoordinationBackend, CognitiveCoordinationInvocation, CoordinateTool,
+        CoordinatedEvaluationInput, SdkEvaluationTransport,
     };
     use crate::event::Event;
     use crate::memory::{
         ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
         ContextCapabilityBindingStore,
     };
-    use crate::tool::{Tool, CURRENT_CONTEXT_ID};
+    use crate::tool::{Tool, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
     use async_trait::async_trait;
     use chrono::Utc;
     use morphz_cognitive_coordination::ContributionRelationKind;
@@ -665,7 +691,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingBackend {
-        calls: Mutex<Vec<CoordinatedEvaluationInput>>,
+        calls: Mutex<Vec<(CoordinatedEvaluationInput, CognitiveCoordinationInvocation)>>,
     }
 
     #[async_trait]
@@ -673,8 +699,9 @@ mod tests {
         async fn evaluate(
             &self,
             input: CoordinatedEvaluationInput,
+            invocation: CognitiveCoordinationInvocation,
         ) -> Result<serde_json::Value, super::DynError> {
-            self.calls.lock().unwrap().push(input);
+            self.calls.lock().unwrap().push((input, invocation));
             Ok(json!({"outcome": "evaluated"}))
         }
     }
@@ -714,11 +741,15 @@ mod tests {
             Arc::new(TestBindingStore::with_enabled("context-a", false)),
             Arc::clone(&backend) as Arc<dyn CognitiveCoordinationBackend>,
         );
-        let error = CURRENT_CONTEXT_ID
-            .scope(
-                "context-a".to_string(),
-                tool.execute(r#"{"operation":"evaluate","question":"compare"}"#),
-            )
+        let error = CURRENT_SESSION_ID
+            .scope("session-a".to_string(), async {
+                CURRENT_CONTEXT_ID
+                    .scope(
+                        "context-a".to_string(),
+                        tool.execute(r#"{"operation":"evaluate","question":"compare"}"#),
+                    )
+                    .await
+            })
             .await
             .unwrap_err();
         assert!(error
@@ -735,20 +766,40 @@ mod tests {
             Arc::new(TestBindingStore::with_enabled("context-a", true)),
             Arc::clone(&backend) as Arc<dyn CognitiveCoordinationBackend>,
         );
-        let output = CURRENT_CONTEXT_ID
-            .scope(
-                "context-a".to_string(),
-                tool.execute(
-                    r#"{"operation":"evaluate","question":"compare","min_participants":2}"#,
-                ),
-            )
+        let output = CURRENT_SESSION_ID
+            .scope("session-current".to_string(), async {
+                CURRENT_CONTEXT_ID
+                    .scope(
+                        "context-a".to_string(),
+                        tool.execute(
+                            r#"{"operation":"evaluate","question":"compare","min_participants":2}"#,
+                        ),
+                    )
+                    .await
+            })
+            .await
+            .unwrap();
+        let second = CURRENT_SESSION_ID
+            .scope("session-another".to_string(), async {
+                CURRENT_CONTEXT_ID
+                    .scope(
+                        "context-a".to_string(),
+                        tool.execute(r#"{"operation":"evaluate","question":"compare again"}"#),
+                    )
+                    .await
+            })
             .await
             .unwrap();
         assert!(output.contains("evaluated"));
+        assert!(second.contains("evaluated"));
         let calls = backend.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].question, "compare");
-        assert_eq!(calls[0].min_participants, Some(2));
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0.question, "compare");
+        assert_eq!(calls[0].0.min_participants, Some(2));
+        assert_eq!(calls[0].1.context_id, "context-a");
+        assert_eq!(calls[0].1.session_id, "session-current");
+        assert_eq!(calls[1].0.question, "compare again");
+        assert_eq!(calls[1].1.session_id, "session-another");
     }
 
     #[test]

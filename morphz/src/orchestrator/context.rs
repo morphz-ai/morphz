@@ -17,7 +17,7 @@ use crate::memory::{
     SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
     SessionStatus, SessionStore, ThreadActivationRecord, ThreadGroupMemberRecord,
     ThreadGroupRecord, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, WorkerCoordinationMode,
+    ThreadSignalStatus, WorkAssignmentRecord, WorkAssignmentStore, WorkerCoordinationMode,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -55,7 +55,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 33;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 34;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -977,6 +977,11 @@ pub struct ContextView {
     pub concurrent_activations: Vec<ConcurrentActivationView>,
     pub background_tasks: Vec<BackgroundTaskView>,
     pub objectives: Vec<ObjectiveRecord>,
+    /// Active bounded work accepted or issued by this Agent. Assignment state
+    /// belongs to the shared Context rather than to whichever Session happens
+    /// to carry its execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_assignments: Vec<WorkAssignmentRecord>,
     /// Compact, Runtime-authoritative index of execution environments visible
     /// to the active Principal. Detailed metadata remains discoverable through
     /// `inspect_target` instead of inflating every model request.
@@ -1153,12 +1158,22 @@ fn select_session_working_set(
     let ready = ready_session_ids.iter().cloned().collect::<HashSet<_>>();
     let window_seconds = i64::try_from(config.active_window.as_secs()).unwrap_or(i64::MAX);
     let cutoff = evaluation_started_at - chrono::Duration::seconds(window_seconds);
+    let current_is_isolated = registry_sessions.iter().any(|session| {
+        ready.contains(&session.id)
+            && session.context_sharing == crate::memory::SessionContextSharing::Isolated
+    });
     let mut excluded = SessionWorkingSetExclusions::default();
     let mut candidates = Vec::new();
 
     for session in registry_sessions {
         let is_current = ready.contains(&session.id);
-        if session.context_sharing == crate::memory::SessionContextSharing::Isolated && !is_current
+        // Isolation is symmetric participation in the automatic Session
+        // working set. An isolated current Session neither publishes its
+        // history nor consumes histories from shared siblings. Shared Mind,
+        // Agent-level work and explicit Recall remain Context-scoped.
+        if !is_current
+            && (current_is_isolated
+                || session.context_sharing == crate::memory::SessionContextSharing::Isolated)
         {
             excluded.isolated += 1;
             continue;
@@ -1230,8 +1245,9 @@ fn select_session_working_set(
         if full_ids.contains(&session.id) {
             continue;
         }
-        if session.context_sharing == crate::memory::SessionContextSharing::Isolated
-            && !ready.contains(&session.id)
+        if !ready.contains(&session.id)
+            && (current_is_isolated
+                || session.context_sharing == crate::memory::SessionContextSharing::Isolated)
         {
             continue;
         }
@@ -1269,7 +1285,7 @@ fn select_session_working_set(
             full_session_ids,
             metadata_only_session_ids,
             excluded,
-            selection: "current first; exclude non-current isolated sessions; then last_activity desc; session_id tie-break".to_string(),
+            selection: "current first; isolated current sessions consume only current histories; otherwise exclude isolated sources; then last_activity desc; session_id tie-break".to_string(),
         },
     )
 }
@@ -1286,6 +1302,7 @@ pub struct ContextEngine {
     recall_projection_store: Option<Arc<dyn RecallProjectionStore>>,
     cognitive_clock_store: Option<Arc<dyn CognitiveClockStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
+    work_assignment_store: Option<Arc<dyn WorkAssignmentStore>>,
     capability_binding_store: Option<Arc<dyn ContextCapabilityBindingStore>>,
     execution_job_store: Option<Arc<dyn ExecutionJobStore>>,
     execution_target_store: Option<Arc<dyn ExecutionTargetStore>>,
@@ -1366,6 +1383,7 @@ impl ContextEngine {
             recall_projection_store: None,
             cognitive_clock_store: None,
             objective_store: None,
+            work_assignment_store: None,
             capability_binding_store: None,
             execution_job_store: None,
             execution_target_store: None,
@@ -1391,6 +1409,11 @@ impl ContextEngine {
         store: Arc<dyn ContextCapabilityBindingStore>,
     ) -> Self {
         self.capability_binding_store = Some(store);
+        self
+    }
+
+    pub fn with_work_assignment_store(mut self, store: Arc<dyn WorkAssignmentStore>) -> Self {
+        self.work_assignment_store = Some(store);
         self
     }
 
@@ -3098,6 +3121,14 @@ impl ContextEngine {
             Some(store) => store.list_context_objectives(context_id, false).await?,
             None => Vec::new(),
         };
+        let work_assignments = match &self.work_assignment_store {
+            Some(store) => {
+                store
+                    .list_context_work_assignments(context_id, None, false, 32)
+                    .await?
+            }
+            None => Vec::new(),
+        };
         let capability_bindings = match &self.capability_binding_store {
             Some(store) => store.list_context_capability_bindings(context_id).await?,
             None => Vec::new(),
@@ -3716,6 +3747,7 @@ impl ContextEngine {
                     concurrent_activations: &concurrent_activations,
                     background_tasks: &background_tasks,
                     objectives: &objectives,
+                    work_assignments: &work_assignments,
                     execution_targets: &execution_targets,
                     execution_target_access: &execution_target_access,
                     evaluation_model_policy: &evaluation_model_policy,
@@ -3754,6 +3786,7 @@ impl ContextEngine {
             concurrent_activations,
             background_tasks,
             objectives,
+            work_assignments,
             execution_targets,
             execution_target_access,
             evaluation_model_policy,
@@ -3917,6 +3950,7 @@ impl ContextEngine {
             concurrent_activations: &view.concurrent_activations,
             background_tasks: &view.background_tasks,
             objectives: &view.objectives,
+            work_assignments: &view.work_assignments,
             execution_targets: &view.execution_targets,
             execution_target_access: &view.execution_target_access,
             evaluation_model_policy: &view.evaluation_model_policy,
@@ -4104,6 +4138,7 @@ impl ContextEngine {
             concurrent_activations: &view.concurrent_activations,
             background_tasks: &view.background_tasks,
             objectives: &view.objectives,
+            work_assignments: &view.work_assignments,
             execution_targets: &view.execution_targets,
             execution_target_access: &view.execution_target_access,
             evaluation_model_policy: &view.evaluation_model_policy,
@@ -6615,6 +6650,7 @@ struct ContextRenderInput<'a> {
     concurrent_activations: &'a [ConcurrentActivationView],
     background_tasks: &'a [BackgroundTaskView],
     objectives: &'a [ObjectiveRecord],
+    work_assignments: &'a [WorkAssignmentRecord],
     execution_targets: &'a [ExecutionTargetRecord],
     execution_target_access: &'a [ExecutionTargetAccessView],
     evaluation_model_policy: &'a EvaluationModelPolicy,
@@ -7349,6 +7385,43 @@ fn render_objectives(objectives: &[ObjectiveRecord]) -> SExpr {
     )
 }
 
+fn render_work_assignments(assignments: &[WorkAssignmentRecord]) -> SExpr {
+    list(
+        "work-assignments",
+        assignments
+            .iter()
+            .map(|assignment| {
+                let mut fields = vec![
+                    pair("id", atom(&assignment.id)),
+                    pair("external-id", atom(&assignment.external_id)),
+                    pair("kind", atom(&assignment.kind)),
+                    pair("role", atom(&assignment.role)),
+                    pair("status", atom(assignment.status.as_str())),
+                    pair("summary", atom(&assignment.summary)),
+                    pair("execution-session", atom(&assignment.session_id)),
+                    pair(
+                        "lease-expires-at",
+                        atom(assignment.lease_expires_at.to_rfc3339()),
+                    ),
+                ];
+                if let Some(request_id) = assignment.request_id.as_deref() {
+                    fields.push(pair("request", atom(request_id)));
+                }
+                if let Some(objective_id) = assignment.objective_id.as_deref() {
+                    fields.push(pair("objective", atom(objective_id)));
+                }
+                if let Some(counterparty_id) = assignment.counterparty_id.as_deref() {
+                    fields.push(pair("counterparty", atom(counterparty_id)));
+                }
+                if let Some(reason) = assignment.status_reason.as_deref() {
+                    fields.push(pair("status-reason", atom(reason)));
+                }
+                list("assignment", fields)
+            })
+            .collect(),
+    )
+}
+
 fn render_objective_wait(wait: &crate::memory::ObjectiveWaitCondition) -> SExpr {
     use crate::memory::ObjectiveWaitCondition;
     match wait {
@@ -7519,6 +7592,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         concurrent_activations,
         background_tasks,
         objectives,
+        work_assignments,
         execution_targets,
         execution_target_access,
         evaluation_model_policy,
@@ -7633,6 +7707,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     }
     if !objectives.is_empty() {
         kernel.push(render_objectives(objectives));
+    }
+    if !work_assignments.is_empty() {
+        kernel.push(render_work_assignments(work_assignments));
     }
     kernel.push(render_wake(wake, references));
     kernel.push(list(
@@ -10705,9 +10782,10 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         ActivationStore as _, DeliveryIngressStore as _, NewAgent, NewCognitiveContext,
-        NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveStatus,
-        SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadControlState, ThreadKind,
-        ThreadLifecycle, ThreadStore as _, ThreadSupervision,
+        NewPrincipal, NewSession, NewThread, NewThreadActivation, NewWorkAssignment,
+        ObjectiveStatus, SessionDirectoryStore as _, SessionMountKind, SessionStore,
+        ThreadControlState, ThreadKind, ThreadLifecycle, ThreadStore as _, ThreadSupervision,
+        WorkAssignmentStatus,
     };
     use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
@@ -10738,6 +10816,88 @@ mod tests {
             }])
             .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn active_work_assignment_is_visible_from_every_session_in_its_context() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("assignment-context.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "assignment-agent".to_string(),
+                    title: "Assignment Agent".to_string(),
+                    root_context_id: "assignment-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "assignment-context".to_string(),
+                    agent_id: "assignment-agent".to_string(),
+                    title: "Assignment Context".to_string(),
+                },
+                NewSession {
+                    id: "coordination-session".to_string(),
+                    agent_id: "assignment-agent".to_string(),
+                    context_id: "assignment-context".to_string(),
+                    parent_session_id: None,
+                    title: "Coordination".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "ordinary-session".to_string(),
+                agent_id: "assignment-agent".to_string(),
+                context_id: "assignment-context".to_string(),
+                parent_session_id: None,
+                title: "Ordinary".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .create_work_assignment(NewWorkAssignment {
+                id: "assignment-local".to_string(),
+                kind: "cognitive_coordination/evaluation".to_string(),
+                external_id: "assignment-wire".to_string(),
+                agent_id: "assignment-agent".to_string(),
+                context_id: "assignment-context".to_string(),
+                session_id: "coordination-session".to_string(),
+                role: "participant".to_string(),
+                request_id: Some("request-1".to_string()),
+                objective_id: Some("objective-1".to_string()),
+                counterparty_id: Some("remote-agent".to_string()),
+                summary: "Evaluate a coordinated proposal".to_string(),
+                input: serde_json::json!({"question": "Which proposal is stronger?"}),
+                status: WorkAssignmentStatus::Running,
+                lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_work_assignment_store(Arc::clone(&store) as Arc<dyn WorkAssignmentStore>);
+
+        for session_id in ["coordination-session", "ordinary-session"] {
+            let view = engine
+                .build_context_encoding("assignment-context", session_id, &HashSet::new())
+                .await
+                .unwrap();
+            assert_eq!(view.work_assignments.len(), 1);
+            assert_eq!(view.work_assignments[0].id, "assignment-local");
+            assert!(view.sexpr.contains("(work-assignments (assignment"));
+            assert!(view
+                .sexpr
+                .contains("(execution-session coordination-session)"));
+        }
     }
 
     struct AuditRaceEventStore {
@@ -11982,11 +12142,15 @@ mod tests {
             &[],
             &[],
         );
-        assert_eq!(view.excluded.isolated, 0);
+        assert_eq!(view.excluded.isolated, 1);
         assert_eq!(
             view.full_session_ids.first().map(String::as_str),
             Some("session-isolated")
         );
+        assert_eq!(view.full_session_ids, vec!["session-isolated"]);
+        assert!(!projected
+            .iter()
+            .any(|entry| entry.session.id == "session-shared"));
         assert!(projected.iter().any(|entry| {
             entry.session.id == "session-isolated" && entry.projection == SessionProjection::Full
         }));
@@ -12561,6 +12725,27 @@ mod tests {
             primary: "primary-route".to_string(),
             agent_allowed: vec!["primary-route".to_string(), "fast-route".to_string()],
         };
+        let work_assignments = vec![WorkAssignmentRecord {
+            id: "assignment-local-1".to_string(),
+            kind: "cognitive_coordination/evaluation".to_string(),
+            external_id: "assignment-wire-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            context_id: "context-1".to_string(),
+            session_id: "coord-eval-1".to_string(),
+            role: "participant".to_string(),
+            request_id: Some("request-1".to_string()),
+            objective_id: Some("objective-1".to_string()),
+            counterparty_id: Some("agent-remote".to_string()),
+            summary: "Evaluate a distributed proposal".to_string(),
+            input: serde_json::json!({"question": "Which proposal is stronger?"}),
+            output: None,
+            status: crate::memory::WorkAssignmentStatus::Running,
+            status_reason: None,
+            lease_expires_at: Utc::now() + chrono::Duration::minutes(1),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
         let rendered = render_context(ContextRenderInput {
             context_id: "context-1",
             active_session_id: "s1",
@@ -12579,6 +12764,7 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            work_assignments: &work_assignments,
             execution_targets: &[],
             execution_target_access: &[],
             evaluation_model_policy: &evaluation_model_policy,
@@ -12668,6 +12854,12 @@ mod tests {
         ));
         assert!(rendered.contains("(model primary-route)"));
         assert!(rendered.contains("(objective-contract"));
+        assert!(rendered.contains("(work-assignments (assignment"));
+        assert!(rendered.contains("(external-id assignment-wire-1)"));
+        assert!(rendered.contains("(status running)"));
+        assert!(rendered.contains("(execution-session coord-eval-1)"));
+        assert!(rendered.contains("(lease-expires-at"));
+        assert!(rendered.contains("(counterparty agent-remote)"));
         assert!(rendered.contains("objective_create"));
         assert!(rendered.contains("Runtime creates its ID and binds current Agent/Context/Session"));
         assert!(rendered.contains("(body-arity \"create derive revise one-or-more\")"));
@@ -12705,6 +12897,7 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            work_assignments: &work_assignments,
             execution_targets: &[],
             execution_target_access: &[],
             evaluation_model_policy: &evaluation_model_policy,
@@ -12771,6 +12964,7 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            work_assignments: &work_assignments,
             execution_targets: &[],
             execution_target_access: &[],
             evaluation_model_policy: &evaluation_model_policy,
@@ -12814,6 +13008,7 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            work_assignments: &work_assignments,
             execution_targets: &[],
             evaluation_model_policy: &evaluation_model_policy,
             execution_target_access: &[],

@@ -1430,6 +1430,11 @@ pub struct CognitiveCoordinationParticipantConfig {
     pub authority_id: String,
     pub agent_id: String,
     pub context_id: String,
+    /// Deprecated compatibility field. Coordination Mesh advertisements do
+    /// not bind a Runtime node to one durable Session; each Assignment receives
+    /// a request-scoped execution Session mounted into the participant's shared
+    /// Context unless the operator explicitly isolates that Session.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub session_id: String,
     pub capabilities: BTreeSet<String>,
     pub max_token_budget: u64,
@@ -1437,7 +1442,7 @@ pub struct CognitiveCoordinationParticipantConfig {
     /// Legacy explicit-peer mode only: environment variable holding the
     /// node's HMAC secret. Mesh mode uses the node identity in Secret Store.
     pub token_env: String,
-    /// Empty means only the participant Session's effective default route may
+    /// Empty means only the participant Runtime's effective default route may
     /// be used remotely. Additional routes require explicit operator consent.
     pub allowed_model_routes: BTreeSet<String>,
 }
@@ -1448,7 +1453,7 @@ impl Default for CognitiveCoordinationParticipantConfig {
             authority_id: String::new(),
             agent_id: "default-agent".to_string(),
             context_id: "context-default".to_string(),
-            session_id: "session-default".to_string(),
+            session_id: String::new(),
             capabilities: BTreeSet::from(["general-reasoning".to_string()]),
             max_token_budget: 32_768,
             priority: 0,

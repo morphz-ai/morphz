@@ -584,6 +584,126 @@ pub enum ContextCapabilityBindingMutation {
     NotFound,
 }
 
+/// Durable contract for one bounded unit of work assigned across an authority
+/// boundary. The contract is deliberately generic: experimental Cognitive
+/// Coordination is its first producer, while the stable Runtime owns only the
+/// lifecycle, route and audit envelope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkAssignmentRecord {
+    /// Runtime-local durable identity. A protocol Assignment may have one
+    /// issuer-side and one assignee-side record in the same Runtime.
+    pub id: String,
+    /// Extensible producer namespace, for example
+    /// `cognitive_coordination/evaluation`.
+    pub kind: String,
+    /// Identity supplied by the producer protocol.
+    pub external_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    /// Session currently carrying execution or delivery. The Assignment is
+    /// Context-visible and is not owned by this Session.
+    pub session_id: String,
+    /// Producer-defined role such as `coordinator` or `participant`.
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterparty_id: Option<String>,
+    pub summary: String,
+    /// Immutable producer contract. Runtime does not interpret this payload.
+    pub input: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    pub status: WorkAssignmentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+    /// Absolute end of the current execution claim. Recovery may interrupt a
+    /// nonterminal Assignment only after this deadline, so another Runtime
+    /// worker sharing the Store is never fenced merely because a peer starts.
+    pub lease_expires_at: DateTime<Utc>,
+    pub revision: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkAssignmentStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl WorkAssignmentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NewWorkAssignment {
+    pub id: String,
+    pub kind: String,
+    pub external_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub role: String,
+    pub request_id: Option<String>,
+    pub objective_id: Option<String>,
+    pub counterparty_id: Option<String>,
+    pub summary: String,
+    pub input: serde_json::Value,
+    pub status: WorkAssignmentStatus,
+    pub lease_expires_at: DateTime<Utc>,
+}
+
+/// Result of idempotently admitting one immutable Assignment contract. The
+/// `created` bit is the durable execution claim: only the writer that inserted
+/// the record may start the work; retries must reuse or observe the existing
+/// lifecycle instead of executing it twice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkAssignmentCreateResult {
+    pub record: WorkAssignmentRecord,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkAssignmentMutation {
+    pub expected_revision: u64,
+    pub status: WorkAssignmentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum WorkAssignmentMutationResult {
+    Updated(WorkAssignmentRecord),
+    Conflict(WorkAssignmentRecord),
+    NotFound,
+}
+
 /// Rebuildable online materialization of one Cognitive Context's current Mind.
 ///
 /// The persistence layer deliberately treats `state` as opaque canonical JSON:
@@ -7362,6 +7482,44 @@ pub trait ContextCapabilityBindingStore: Send + Sync {
     ) -> Result<ContextCapabilityBindingMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Durable Assignment lifecycle. Assignment identity and contract are
+/// immutable after creation; status transitions are revision-fenced so a late
+/// result cannot overwrite cancellation or another terminal outcome.
+#[async_trait::async_trait]
+pub trait WorkAssignmentStore: Send + Sync {
+    async fn create_work_assignment(
+        &self,
+        assignment: NewWorkAssignment,
+    ) -> Result<WorkAssignmentCreateResult, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_work_assignment(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkAssignmentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn list_context_work_assignments(
+        &self,
+        context_id: &str,
+        kind: Option<&str>,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn list_agent_work_assignments(
+        &self,
+        agent_id: &str,
+        kind: Option<&str>,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn update_work_assignment(
+        &self,
+        id: &str,
+        mutation: WorkAssignmentMutation,
+    ) -> Result<WorkAssignmentMutationResult, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Complete durable authority required by one Morphz Runtime worker.
 ///
 /// This capability composition keeps Runtime assembly independent from a
@@ -7389,6 +7547,7 @@ pub trait RuntimeStore:
     + ProviderModelCatalogStore
     + StorageMaintenanceStore
     + ContextCapabilityBindingStore
+    + WorkAssignmentStore
     + crate::scheduler::SchedulerDependencyStore
     + Send
     + Sync

@@ -775,9 +775,9 @@ fn apply_cli_config(
         if let Some(context_id) = option_value(invocation, "context") {
             participant.context_id = context_id.to_string();
         }
-        if let Some(session_id) = option_value(invocation, "session") {
-            participant.session_id = session_id.to_string();
-        }
+        // --session selects the local interactive Session only. A Mesh node
+        // never publishes that Session as its durable participant identity.
+        participant.session_id.clear();
     }
     morphz::experimental::validate_enabled(&app_config.experimental.enabled)?;
     if let Some(format) = option_value(invocation, "format") {
@@ -5528,7 +5528,7 @@ mod tests {
             .unwrap();
         assert_eq!(participant.agent_id, "default-agent");
         assert_eq!(participant.context_id, "context-default");
-        assert_eq!(participant.session_id, "session-default");
+        assert!(participant.session_id.is_empty());
     }
 
     #[tokio::test]

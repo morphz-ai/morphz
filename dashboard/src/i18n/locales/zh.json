@@ -840,10 +840,25 @@
     "disableHint": "关闭当前认知上下文的认知协调；新的模型求值将不再看到相关工具和能力契约。",
     "unavailable": "当前运行时未提供认知协调。请先编译并启用 experimental-cognitive-coordination 实验功能。",
     "peerStatus": "查看认知协调参与节点",
+    "networkShort": "协调网络",
     "network": "认知协调网络",
     "networkHint": "实时认证握手用于显示节点健康状态，以及新 Assignment 将冻结的逻辑模型路由。",
     "notConfigured": "本地参与节点尚未配置",
-    "noPeers": "没有已启用的静态参与节点。",
+    "noPeers": "Mesh 尚未发现其他参与节点。",
+    "assignments": "协调任务",
+    "noAssignments": "暂无协调任务记录。",
+    "assignmentRoles": {
+      "coordinator": "协调者",
+      "participant": "参与者"
+    },
+    "assignmentStatuses": {
+      "queued": "排队中",
+      "running": "进行中",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消",
+      "interrupted": "已中断"
+    },
     "localStatus": "{{count}} 项能力 · {{active}} 个活动 Assignment",
     "refresh": "刷新"
   },

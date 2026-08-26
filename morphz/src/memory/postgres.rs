@@ -14,16 +14,18 @@ use crate::memory::{
     ContextCapabilityBindingStore, ContextCognitiveClock, ContextEncodingProjectionSnapshot,
     EventAppend, EventStore, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
     MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer,
-    NewThread, ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts,
-    ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, ProviderAccountAffinityRecord, ProviderAccountStateMutation,
-    ProviderAccountStateRecord, ProviderAccountStateStore, ProviderAccountStatus,
-    ProviderModelCatalogRecord, ProviderModelCatalogStore, ProviderRefreshLeaseRecord,
-    ProviderRouteAccountStateRecord, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore,
-    StorageMaintenanceReport, StorageMaintenanceStore, TimerStore, TransientStorageRetention,
+    NewThread, NewWorkAssignment, ObjectiveCompletionIntent, ObjectiveMutation,
+    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
+    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, StorageMaintenanceReport, StorageMaintenanceStore, TimerStore,
+    TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
+    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
 };
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
@@ -89,6 +91,18 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260718_01_supported_capabilities",
                     store.migrate_supported_capabilities(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260826_01_work_assignments",
+                    store.migrate_work_assignments(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260826_02_work_assignment_leases",
+                    store.migrate_work_assignment_leases(),
                 )
                 .await?;
             store
@@ -605,6 +619,34 @@ impl PostgresStore {
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_sharing TEXT NOT NULL DEFAULT 'shared'"#,
+            r#"CREATE TABLE IF NOT EXISTS work_assignments (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                request_id TEXT,
+                objective_id TEXT,
+                counterparty_id TEXT,
+                summary TEXT NOT NULL,
+                input_json TEXT NOT NULL,
+                output_json TEXT,
+                status TEXT NOT NULL CHECK(status IN (
+                    'queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'
+                )),
+                status_reason TEXT,
+                lease_expires_at TEXT NOT NULL,
+                revision BIGINT NOT NULL CHECK(revision >= 1),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(kind, external_id, role, context_id)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_work_assignments_context_status_updated
+               ON work_assignments(context_id, status, updated_at DESC, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_work_assignments_agent_kind_updated
+               ON work_assignments(agent_id, kind, updated_at DESC, id)"#,
             r#"CREATE TABLE IF NOT EXISTS principals (
                 id TEXT PRIMARY KEY,
                 provider_id TEXT NOT NULL,
@@ -775,6 +817,57 @@ impl PostgresStore {
                ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
             r#"ALTER TABLE objectives
                ADD COLUMN IF NOT EXISTS completion_intent_json JSONB"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_work_assignments(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"CREATE TABLE IF NOT EXISTS work_assignments (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                request_id TEXT,
+                objective_id TEXT,
+                counterparty_id TEXT,
+                summary TEXT NOT NULL,
+                input_json TEXT NOT NULL,
+                output_json TEXT,
+                status TEXT NOT NULL CHECK(status IN (
+                    'queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'
+                )),
+                status_reason TEXT,
+                lease_expires_at TEXT NOT NULL,
+                revision BIGINT NOT NULL CHECK(revision >= 1),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(kind, external_id, role, context_id)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_work_assignments_context_status_updated
+               ON work_assignments(context_id, status, updated_at DESC, id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_work_assignments_agent_kind_updated
+               ON work_assignments(agent_id, kind, updated_at DESC, id)"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_work_assignment_leases(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"ALTER TABLE work_assignments
+               ADD COLUMN IF NOT EXISTS lease_expires_at TEXT"#,
+            r#"UPDATE work_assignments
+               SET lease_expires_at = updated_at
+               WHERE lease_expires_at IS NULL"#,
+            r#"ALTER TABLE work_assignments
+               ALTER COLUMN lease_expires_at SET NOT NULL"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -2307,6 +2400,221 @@ impl ProviderAccountStateStore for PostgresStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+}
+
+fn parse_work_assignment_status(value: &str) -> Result<WorkAssignmentStatus, StoreError> {
+    Ok(match value {
+        "queued" => WorkAssignmentStatus::Queued,
+        "running" => WorkAssignmentStatus::Running,
+        "succeeded" => WorkAssignmentStatus::Succeeded,
+        "failed" => WorkAssignmentStatus::Failed,
+        "cancelled" => WorkAssignmentStatus::Cancelled,
+        "interrupted" => WorkAssignmentStatus::Interrupted,
+        other => return Err(format!("unknown Work Assignment status: {other}").into()),
+    })
+}
+
+fn work_assignment_from_pg_row(row: &PgRow) -> Result<WorkAssignmentRecord, StoreError> {
+    Ok(WorkAssignmentRecord {
+        id: row.get("id"),
+        kind: row.get("kind"),
+        external_id: row.get("external_id"),
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        role: row.get("role"),
+        request_id: row.get("request_id"),
+        objective_id: row.get("objective_id"),
+        counterparty_id: row.get("counterparty_id"),
+        summary: row.get("summary"),
+        input: serde_json::from_str(&row.get::<String, _>("input_json"))?,
+        output: row
+            .get::<Option<String>, _>("output_json")
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
+        status: parse_work_assignment_status(&row.get::<String, _>("status"))?,
+        status_reason: row.get("status_reason"),
+        lease_expires_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("lease_expires_at"))?
+            .with_timezone(&Utc),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        created_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("created_at"))?
+            .with_timezone(&Utc),
+        updated_at: DateTime::parse_from_rfc3339(&row.get::<String, _>("updated_at"))?
+            .with_timezone(&Utc),
+    })
+}
+
+#[async_trait::async_trait]
+impl WorkAssignmentStore for PostgresStore {
+    async fn create_work_assignment(
+        &self,
+        assignment: NewWorkAssignment,
+    ) -> Result<WorkAssignmentCreateResult, StoreError> {
+        for (field, value) in [
+            ("id", assignment.id.as_str()),
+            ("kind", assignment.kind.as_str()),
+            ("external_id", assignment.external_id.as_str()),
+            ("agent_id", assignment.agent_id.as_str()),
+            ("context_id", assignment.context_id.as_str()),
+            ("session_id", assignment.session_id.as_str()),
+            ("role", assignment.role.as_str()),
+            ("summary", assignment.summary.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Work Assignment {field} must not be empty").into());
+            }
+        }
+        let now = now_text();
+        let input_json = serde_json::to_string(&assignment.input)?;
+        let created = sqlx::query(
+            r#"INSERT INTO work_assignments
+               (id, kind, external_id, agent_id, context_id, session_id, role,
+                request_id, objective_id, counterparty_id, summary, input_json,
+                output_json, status, status_reason, lease_expires_at, revision, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                       NULL, $13, NULL, $14, 1, $15, $15)
+               ON CONFLICT(id) DO NOTHING"#,
+        )
+        .bind(&assignment.id)
+        .bind(&assignment.kind)
+        .bind(&assignment.external_id)
+        .bind(&assignment.agent_id)
+        .bind(&assignment.context_id)
+        .bind(&assignment.session_id)
+        .bind(&assignment.role)
+        .bind(&assignment.request_id)
+        .bind(&assignment.objective_id)
+        .bind(&assignment.counterparty_id)
+        .bind(&assignment.summary)
+        .bind(&input_json)
+        .bind(assignment.status.as_str())
+        .bind(
+            assignment
+                .lease_expires_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1;
+        let record = self
+            .get_work_assignment(&assignment.id)
+            .await?
+            .ok_or("Work Assignment insert did not produce a record")?;
+        let same_contract = record.kind == assignment.kind
+            && record.external_id == assignment.external_id
+            && record.agent_id == assignment.agent_id
+            && record.context_id == assignment.context_id
+            && record.session_id == assignment.session_id
+            && record.role == assignment.role
+            && record.request_id == assignment.request_id
+            && record.objective_id == assignment.objective_id
+            && record.counterparty_id == assignment.counterparty_id
+            && record.summary == assignment.summary
+            && record.input == assignment.input;
+        if !same_contract {
+            return Err(format!(
+                "Work Assignment identity '{}' is occupied by a different contract",
+                assignment.id
+            )
+            .into());
+        }
+        Ok(WorkAssignmentCreateResult { record, created })
+    }
+
+    async fn get_work_assignment(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkAssignmentRecord>, StoreError> {
+        let row = sqlx::query("SELECT * FROM work_assignments WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(work_assignment_from_pg_row).transpose()
+    }
+
+    async fn list_context_work_assignments(
+        &self,
+        context_id: &str,
+        kind: Option<&str>,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, StoreError> {
+        let mut builder: QueryBuilder<'_, Postgres> =
+            QueryBuilder::new("SELECT * FROM work_assignments WHERE context_id = ");
+        builder.push_bind(context_id);
+        if let Some(kind) = kind {
+            builder.push(" AND kind = ");
+            builder.push_bind(kind);
+        }
+        if !include_terminal {
+            builder.push(" AND status IN ('queued', 'running')");
+        }
+        builder.push(" ORDER BY updated_at DESC, id LIMIT ");
+        builder.push_bind(i64::try_from(limit.max(1))?);
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.iter().map(work_assignment_from_pg_row).collect()
+    }
+
+    async fn list_agent_work_assignments(
+        &self,
+        agent_id: &str,
+        kind: Option<&str>,
+        include_terminal: bool,
+        limit: usize,
+    ) -> Result<Vec<WorkAssignmentRecord>, StoreError> {
+        let mut builder: QueryBuilder<'_, Postgres> =
+            QueryBuilder::new("SELECT * FROM work_assignments WHERE agent_id = ");
+        builder.push_bind(agent_id);
+        if let Some(kind) = kind {
+            builder.push(" AND kind = ");
+            builder.push_bind(kind);
+        }
+        if !include_terminal {
+            builder.push(" AND status IN ('queued', 'running')");
+        }
+        builder.push(" ORDER BY updated_at DESC, id LIMIT ");
+        builder.push_bind(i64::try_from(limit.max(1))?);
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.iter().map(work_assignment_from_pg_row).collect()
+    }
+
+    async fn update_work_assignment(
+        &self,
+        id: &str,
+        mutation: WorkAssignmentMutation,
+    ) -> Result<WorkAssignmentMutationResult, StoreError> {
+        let output_json = mutation
+            .output
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let row = sqlx::query(
+            r#"UPDATE work_assignments SET
+                 status = $1, output_json = COALESCE($2, output_json), status_reason = $3,
+                 revision = revision + 1, updated_at = $4
+               WHERE id = $5 AND revision = $6 AND status IN ('queued', 'running')
+               RETURNING *"#,
+        )
+        .bind(mutation.status.as_str())
+        .bind(output_json)
+        .bind(&mutation.status_reason)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(mutation.expected_revision)?)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = row {
+            return Ok(WorkAssignmentMutationResult::Updated(
+                work_assignment_from_pg_row(&row)?,
+            ));
+        }
+        Ok(match self.get_work_assignment(id).await? {
+            Some(current) => WorkAssignmentMutationResult::Conflict(current),
+            None => WorkAssignmentMutationResult::NotFound,
+        })
     }
 }
 

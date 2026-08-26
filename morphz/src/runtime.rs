@@ -1001,7 +1001,8 @@ impl MorphzRuntimeBuilder {
         self
     }
 
-    pub async fn build(self) -> Result<MorphzRuntime, RuntimeError> {
+    #[allow(unused_mut)] // Cognitive Coordination rewrites the Mesh participant route when compiled.
+    pub async fn build(mut self) -> Result<MorphzRuntime, RuntimeError> {
         let database_path = self
             .database_path
             .unwrap_or_else(|| self.config.storage.sqlite.path.clone());
@@ -1113,6 +1114,29 @@ impl MorphzRuntimeBuilder {
                 ),
             }
         }
+        #[cfg(feature = "experimental-cognitive-coordination")]
+        if self
+            .config
+            .experimental
+            .enabled
+            .contains(crate::experimental::COGNITIVE_COORDINATION)
+            && self
+                .config
+                .experimental
+                .cognitive_coordination
+                .mesh
+                .is_some()
+        {
+            let participant = self
+                .config
+                .experimental
+                .cognitive_coordination
+                .participant
+                .get_or_insert_with(crate::config::CognitiveCoordinationParticipantConfig::default);
+            participant.agent_id = self.identity.agent_id.clone();
+            participant.context_id = self.identity.context_id.clone();
+            participant.session_id.clear();
+        }
         self.client.attach_provider_account_state_store(
             Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
         );
@@ -1156,6 +1180,9 @@ impl MorphzRuntimeBuilder {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_capability_binding_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::ContextCapabilityBindingStore>
+            )
+            .with_work_assignment_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::WorkAssignmentStore>
             )
             .with_principal_first_seen_cues(self.principal_first_seen_cues)
             .with_model_context_capacity(Arc::clone(&model_context_capacity))
@@ -1328,6 +1355,12 @@ impl MorphzRuntimeBuilder {
                                 .clone(),
                             secret_store.as_ref(),
                         )
+                        .map(|service| {
+                            service.with_assignment_store(
+                                Arc::clone(&store)
+                                    as Arc<dyn crate::memory::WorkAssignmentStore>,
+                            )
+                        })
                         .map(Arc::new)
                     })
                     .transpose()?
@@ -2643,6 +2676,14 @@ impl MorphzRuntime {
         });
         #[cfg(feature = "experimental-cognitive-coordination")]
         if let Some(service) = self.inner.cognitive_coordination_network.clone() {
+            let interrupted = service.recover_interrupted_assignments().await?;
+            if interrupted > 0 {
+                tracing::warn!(
+                    count = interrupted,
+                    event_code = "runtime.cognitive_coordination.assignments_interrupted",
+                    "Recovered expired Cognitive Coordination Assignments as interrupted"
+                );
+            }
             service.start_heartbeat();
         }
         self.inner.started.store(true, Ordering::Release);
