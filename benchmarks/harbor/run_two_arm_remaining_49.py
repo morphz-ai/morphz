@@ -169,6 +169,10 @@ def load_official_results(job: Path) -> tuple[dict[str, float], dict[str, Any]]:
     if not strict_path.is_file():
         raise RuntimeError(f"missing {strict_path}")
     payload = json.loads(strict_path.read_text(encoding="utf-8"))
+    if payload.get("audit_complete") is not True:
+        raise RuntimeError(f"strict audit is incomplete: {strict_path}")
+    if payload.get("trial_count") != 49:
+        raise RuntimeError(f"strict trial_count is not 49: {strict_path}")
     trials = payload.get("trials", [])
     if len(trials) != 49:
         raise RuntimeError(f"expected 49 trials in {strict_path}, got {len(trials)}")

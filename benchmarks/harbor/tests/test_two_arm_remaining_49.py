@@ -8,6 +8,7 @@ from benchmarks.harbor.run_two_arm_remaining_49 import (
     PROTOCOL,
     commands,
     exact_binomial_two_sided,
+    load_official_results,
     load_tasks,
 )
 
@@ -39,6 +40,29 @@ class Remaining49ProtocolTest(unittest.TestCase):
         self.assertEqual(1.0, exact_binomial_two_sided(0, 0))
         self.assertAlmostEqual(1.0, exact_binomial_two_sided(1, 1))
         self.assertAlmostEqual(0.0625, exact_binomial_two_sided(5, 0))
+
+    def test_official_result_loader_rejects_incomplete_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            job = Path(root)
+            (job / "strict_result.json").write_text(
+                json.dumps(
+                    {
+                        "audit_complete": False,
+                        "trial_count": 49,
+                        "trials": [
+                            {
+                                "task_name": f"terminal-bench/task-{index:02d}",
+                                "raw_reward": 1.0,
+                            }
+                            for index in range(49)
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "audit is incomplete"):
+                load_official_results(job)
 
 
 if __name__ == "__main__":
