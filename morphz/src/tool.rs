@@ -12610,9 +12610,9 @@ Body
         assert!(error.to_string().contains("child processes still alive"));
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn exec_cwd_outside_profile_requires_explicit_escalation() {
-        #[cfg(target_os = "macos")]
         let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("crate-a")).unwrap();
@@ -12652,6 +12652,40 @@ Body
         assert!(rejected
             .to_string()
             .contains("sandbox_permissions=require_escalated"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn exec_with_jailed_profile_fails_closed_without_native_linux_sandbox() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("crate-a")).unwrap();
+        let security = jailed_security(tmp.path());
+        let background = Arc::new(BackgroundTaskConfig {
+            artifact_dir: tmp.path().join("artifacts").to_string_lossy().to_string(),
+            ..BackgroundTaskConfig::default()
+        });
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let tool = ExecuteCommandTool::new_with_configs(bus, background, security, 30);
+
+        let error = tool
+            .execute(
+                &serde_json::json!({
+                    "command": "pwd",
+                    "cwd": "crate-a"
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("native Linux sandbox Backend is not implemented"),
+            "unexpected Linux sandbox error: {message}"
+        );
+        assert!(
+            message.contains("fail_closed=true refuses fallback to an unsandboxed Shell"),
+            "Linux jailed execution must not fall back to an unconfined Shell: {message}"
+        );
     }
 
     #[test]
