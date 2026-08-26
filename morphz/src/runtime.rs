@@ -15136,31 +15136,38 @@ mod tests {
                 }
             };
         assert_eq!(reply.payload["text"], "detached execution complete");
-        match reply.payload.get("delivery_kind").and_then(Value::as_str) {
-            // The resumed Execution Thread can finish its post-commit handoff
-            // before the Delivery Timer snapshots it.
-            Some("turn_reply") => {
-                assert_eq!(reply.payload.get("thread_kind"), Some(&json!("execution")));
-                assert!(reply.payload.get("delivery_strategy").is_none());
-            }
-            // If the Delivery Timer wins that race, the same singleton result
-            // is forwarded without another model evaluation.
-            Some("thread_delivery") => {
-                assert_eq!(
-                    reply.payload.get("delivery_strategy"),
-                    Some(&json!("passthrough"))
-                );
-            }
-            other => panic!(
-                "unexpected detached delivery kind {other:?}: {:?}",
-                reply.payload
+        let delivery = (
+            reply.payload.get("delivery_kind").and_then(Value::as_str),
+            reply.payload.get("thread_kind").and_then(Value::as_str),
+            reply
+                .payload
+                .get("delivery_strategy")
+                .and_then(Value::as_str),
+        );
+        assert!(
+            matches!(
+                delivery,
+                (Some("turn_reply"), Some("execution"), None)
+                    | (
+                        Some("thread_delivery"),
+                        Some("delivery"),
+                        Some("passthrough")
+                    )
+            ),
+            "detached completion used an unsupported delivery envelope: {delivery:?}"
+        );
+        // The background Job completion and its final model answer can cross:
+        // either the still-interactive Execution publishes the answer directly,
+        // or the already-terminal result reaches the singleton Delivery fast
+        // path. Both consume the same immutable Activation outcome, so neither
+        // may be followed by a second user-visible copy.
+        match tokio::time::timeout(std::time::Duration::from_millis(1_500), replies.recv()).await {
+            Err(_) | Ok(None) => {}
+            Ok(Some(duplicate)) => panic!(
+                "detached execution produced a duplicate reply after {delivery:?}: {:?}",
+                duplicate.payload
             ),
         }
-        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
-
-        // Give the alternative direct-reply path the same merge-window
-        // headroom before inspecting the durable background Job projection.
-        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
         let jobs = runtime
             .inner
             .store
@@ -15185,18 +15192,22 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         );
-
-        // Both scheduling orders are valid, but they must converge on one
-        // durable user-visible reply rather than racing into duplicate output.
-        let durable_replies = runtime
-            .query_events(QueryFilter {
+        let events = runtime
+            .inner
+            .store
+            .query(QueryFilter {
                 session_id: Some(session.id().to_string()),
                 topic: Some("chat/reply".to_string()),
                 ..Default::default()
             })
             .await
             .unwrap();
-        assert_eq!(durable_replies.len(), 1, "duplicate detached replies");
+        assert_eq!(
+            events.len(),
+            1,
+            "the durable Event ledger must contain exactly one detached completion reply"
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
