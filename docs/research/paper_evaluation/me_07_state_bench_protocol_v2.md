@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / formal-training-running / evaluator-human-validation-pending`
+> 状态：`three-arm-scored-smoke-passed / formal-training-clean-restart / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -48,7 +48,8 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
 - Morphz Runtime 基线：commit
   `ad60e300f115fe84e03a8cd3ab70940deb06ae68`，包含 Harbor workspace/exec drain 修复和
   Objective 通用收敛契约；生产 STATE-Bench Runtime adapter commit 为
-  `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 adapter 及 Morphz/Mem0 训练 runner
+  `2e502056f52fc355e29f01df69d3b434607c257e`，其中包含按 Session 与 root turn 等待
+  durable reply 的完成协议修复；三臂 adapter 及 Morphz/Mem0 训练 runner
   commit 为 `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；Letta 原子 checkpoint 与 episodic
   context reset 训练 runner commit 为 `c6d80048d99b2a38c49944398be2a49adc08283b`；正式配对
   runner、统计器与人工盲评包生成器
@@ -153,6 +154,13 @@ CLIProxyAPI `json_object` 模式所需的显式 JSON 格式词缺失，三臂任
 
 上述 smoke 只证明装置闭合，单题得分不进入论文效果统计。正式训练快照、完整交错队列、
 30 条盲化人工 evaluator 复核和正式批次仍未完成，因此目前仍没有 ME-07 v2 可报告效果结论。
+
+第一次 Morphz travel 正式训练在第 23 条 episode 后暴露了 adapter 回复等待缺陷：回复和
+Context transaction 已写入 durable Event Store，但旧 adapter 将异步 business subscription
+误作请求—回复完成权威并最终超时。失败快照完整保留；修复 commit `2e502056` 已通过全套
+Runtime/evals Gate。协议身份因此推进到 machine-readable lock revision 2，并要求从空数据库
+重新训练；旧快照不得续跑或进入效果统计。证据与边界见
+[`me_07_morphz_training_reply_failure_and_recovery_20260826.md`](./me_07_morphz_training_reply_failure_and_recovery_20260826.md)。
 
 ## 10. 公开来源
 
