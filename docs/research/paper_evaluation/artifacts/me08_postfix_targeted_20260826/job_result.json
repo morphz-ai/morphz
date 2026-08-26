@@ -1,0 +1,73 @@
+{
+    "id": "b34a7b48-a559-42bf-b20c-d96498606489",
+    "started_at": "2026-08-26T14:02:56.926612",
+    "updated_at": "2026-08-26T19:52:51.716747",
+    "finished_at": "2026-08-26T19:52:51.716747",
+    "n_total_trials": 24,
+    "stats": {
+        "n_completed_trials": 24,
+        "n_errored_trials": 6,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "morphz__gpt-5.6-sol__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 24,
+                "n_errors": 6,
+                "metrics": [
+                    {
+                        "mean": 0.625
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "qemu-alpine-ssh__JqRXcTq",
+                            "mteb-leaderboard__az4wPwa",
+                            "build-pov-ray__NKUFrPh",
+                            "extract-elf__7A9qgBg",
+                            "configure-git-webserver__Kq7hwEi",
+                            "gcode-to-text__ZPyfman",
+                            "raman-fitting__PoTu9j9",
+                            "overfull-hbox__UVEnzVn",
+                            "qemu-startup__AkYudYJ",
+                            "cancel-async-tasks__w7WGwFN",
+                            "install-windows-3.11__Pq4Hj6x",
+                            "prove-plus-comm__Vd2SatD",
+                            "protein-assembly__KgbawkB",
+                            "bn-fit-modify__9GoDWZV",
+                            "tune-mjcf__EFpBUFj"
+                        ],
+                        "0.0": [
+                            "pytorch-model-recovery__gTv7J5H",
+                            "vulnerable-secret__J4wnWeg",
+                            "make-doom-for-mips__TGmBKJJ",
+                            "train-fasttext__Mqnc2Lx",
+                            "dna-insert__jMJndvt",
+                            "video-processing__83tZqJo",
+                            "financial-document-processor__UaHMLDr",
+                            "break-filter-js-from-html__crTxXHV",
+                            "extract-moves-from-video__WJKR5Nx"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "vulnerable-secret__J4wnWeg",
+                        "make-doom-for-mips__TGmBKJJ",
+                        "video-processing__83tZqJo",
+                        "financial-document-processor__UaHMLDr",
+                        "break-filter-js-from-html__crTxXHV",
+                        "extract-moves-from-video__WJKR5Nx"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 25483218,
+        "n_cache_tokens": 2513408,
+        "n_output_tokens": 548630,
+        "cost_usd": null
+    }
+}

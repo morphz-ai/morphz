@@ -1,0 +1,162 @@
+{
+  "protocol": "me08-terminal-bench-postfix-targeted-v1",
+  "phase": "targeted",
+  "completed_at": "2026-08-26T11:52:53.795313+00:00",
+  "official_verifier_raw_reward_is_primary": true,
+  "targeted_result_is_not_an_all_89_score": true,
+  "runtime_git_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
+  "task_count": 24,
+  "postfix_passed": 15,
+  "postfix_score": 0.625,
+  "prior_failures_recovered": 10,
+  "regression_sentinels_failed": 0,
+  "runner_return_code": 3,
+  "strict_result": "/opt/morphz-benchmark/postfix-runs/me08-postfix-targeted-v1/targeted-run-3/jobs/2026-08-26__14-02-56/strict_result.json",
+  "integrity_gate_passed": true,
+  "per_task": [
+    {
+      "task": "configure-git-webserver",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "dna-insert",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "extract-elf",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "gcode-to-text",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "make-doom-for-mips",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "mteb-leaderboard",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "pytorch-model-recovery",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "raman-fitting",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "train-fasttext",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "vulnerable-secret",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "break-filter-js-from-html",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "extract-moves-from-video",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "financial-document-processor",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "install-windows-3.11",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "overfull-hbox",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "protein-assembly",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "prove-plus-comm",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "tune-mjcf",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 1.0,
+      "changed": true
+    },
+    {
+      "task": "video-processing",
+      "prior_raw_reward": 0.0,
+      "postfix_raw_reward": 0.0,
+      "changed": false
+    },
+    {
+      "task": "bn-fit-modify",
+      "prior_raw_reward": 1.0,
+      "postfix_raw_reward": 1.0,
+      "changed": false
+    },
+    {
+      "task": "build-pov-ray",
+      "prior_raw_reward": 1.0,
+      "postfix_raw_reward": 1.0,
+      "changed": false
+    },
+    {
+      "task": "cancel-async-tasks",
+      "prior_raw_reward": 1.0,
+      "postfix_raw_reward": 1.0,
+      "changed": false
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "prior_raw_reward": 1.0,
+      "postfix_raw_reward": 1.0,
+      "changed": false
+    },
+    {
+      "task": "qemu-startup",
+      "prior_raw_reward": 1.0,
+      "postfix_raw_reward": 1.0,
+      "changed": false
+    }
+  ]
+}
