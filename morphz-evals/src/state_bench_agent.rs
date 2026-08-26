@@ -40,6 +40,8 @@ pub struct StateBenchToolManifest {
     pub domain: String,
     pub task_id: String,
     pub system_prompt: String,
+    #[serde(default)]
+    pub learning: bool,
     pub tools: Vec<ToolDefinition>,
 }
 
@@ -109,6 +111,8 @@ pub struct StateBenchReady {
     pub provider_protocol: String,
     pub reasoning_effort: String,
     pub fallback: bool,
+    pub initial_mind_version: u64,
+    pub initial_context_tx_commits: usize,
     pub deterministic_fake_not_reportable: bool,
 }
 
@@ -229,7 +233,7 @@ pub fn load_and_validate_manifest(path: &Path) -> Result<StateBenchToolManifest,
     if manifest.domain.trim().is_empty()
         || manifest.task_id.trim().is_empty()
         || manifest.system_prompt.trim().is_empty()
-        || manifest.tools.is_empty()
+        || (!manifest.learning && manifest.tools.is_empty())
     {
         return Err("ME-07 tool manifest is incomplete".into());
     }
@@ -271,9 +275,25 @@ pub fn render_state_bench_harness(
             }
         })
         .collect::<String>();
+    let (title, scope, task) = if manifest.learning {
+        (
+            "ME-07 STATE-Bench offline learning policy",
+            "This content-addressed Harness admits only canonical completed training trajectories. It forbids held-out task data, oracle requirements, episode-specific facts presented as current truth, and externally written lesson summaries.",
+            "Study the supplied canonical completed training episode. Use context_tx to form or revise reusable, evidence-grounded procedural Mind Frames when warranted. Preserve source provenance, do not memorize transient record values as current truth, and reply exactly TRAINING_EPISODE_INGESTED after the transaction is complete.",
+        )
+    } else {
+        (
+            "ME-07 STATE-Bench task policy",
+            "This content-addressed Harness transports the benchmark's authoritative domain policy into the production Morphz Evaluation. It does not add an answer, hidden oracle, task-specific tactic, or scoring hint.",
+            "Respond to the current STATE-Bench user through the available domain tools. Preserve relevant learned Mind Frames, obey the authoritative domain policy, and return a user-facing answer.",
+        )
+    };
     let source = format!(
-        "(manifest\n  (id me07-state-bench-{task_component})\n  (version \"1.0.0\")\n  (title \"ME-07 STATE-Bench task policy\")\n  (capabilities (tools {declared})))\n\n(contract\n  (version \"1.0.0\")\n  (scope \"This content-addressed Harness transports the benchmark's authoritative domain policy into the production Morphz Evaluation. It does not add an answer, hidden oracle, task-specific tactic, or scoring hint.\")\n  (authoritative-domain-policy {}))\n\n(infer\n  (requires (tools {declared}))\n  (returns String)\n  (task \"Respond to the current STATE-Bench user through the available domain tools. Preserve relevant learned Mind Frames, obey the authoritative domain policy, and return a user-facing answer.\"))\n",
-        sexpr_string(&manifest.system_prompt)?
+        "(manifest\n  (id me07-state-bench-{task_component})\n  (version \"1.0.0\")\n  (title {})\n  (capabilities (tools {declared})))\n\n(contract\n  (version \"1.0.0\")\n  (scope {})\n  (authoritative-domain-policy {}))\n\n(infer\n  (requires (tools {declared}))\n  (returns String)\n  (task {}))\n",
+        sexpr_string(title)?,
+        sexpr_string(scope)?,
+        sexpr_string(&manifest.system_prompt)?,
+        sexpr_string(task)?,
     );
     // Parsing here is part of the pre-model contract Gate, not deferred until
     // the first paid request.
@@ -571,6 +591,8 @@ pub async fn run_state_bench_agent(config: StateBenchAgentConfig) -> Result<(), 
             "max".to_string()
         },
         fallback,
+        initial_mind_version: runtime.mind_version(&config.context_id).await?,
+        initial_context_tx_commits: context_tx_commit_count(&runtime).await?,
         deterministic_fake_not_reportable: config.deterministic_fake_client,
     };
     let stdout = std::io::stdout();
@@ -680,6 +702,7 @@ mod tests {
             domain: "travel".to_string(),
             task_id: "travel-task-1".to_string(),
             system_prompt: "Follow the authoritative travel policy.".to_string(),
+            learning: false,
             tools: vec![ToolDefinition {
                 name: "get_booking".to_string(),
                 description: "Get a booking".to_string(),
@@ -703,6 +726,18 @@ mod tests {
         );
         assert!(source.contains("authoritative-domain-policy"));
         assert!(source.contains("Follow the authoritative travel policy"));
+    }
+
+    #[test]
+    fn learning_harness_allows_context_tx_without_domain_tools() {
+        let mut manifest = manifest();
+        manifest.task_id = "travel-offline-learning".to_string();
+        manifest.learning = true;
+        manifest.tools.clear();
+        let source = render_state_bench_harness(&manifest).unwrap();
+        let package = HarnessPackage::from_source("me07-learning.hns", &source).unwrap();
+        assert_eq!(package.entry.declared_tools.unwrap(), vec!["context_tx"]);
+        assert!(source.contains("TRAINING_EPISODE_INGESTED"));
     }
 
     #[test]
