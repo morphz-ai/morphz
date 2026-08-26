@@ -4009,6 +4009,7 @@ async fn run_once(
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             },
         )
         .await?;
@@ -4391,6 +4392,7 @@ async fn run_interactive(
                     dispatch_mode: None,
                     model_alias: None,
                     reasoning_effort: None,
+                    target_id: None,
                 },
             )) {
                 if let Ok(mut waiting) = waiting_for_reply.lock() {
