@@ -1,7 +1,7 @@
 # ME-08：新 Runtime 下 Terminal-Bench 2.1 完整 89 题 Morphz 协议 v2
 
 > 协议：`me08-terminal-bench-postfix-all89-morphz-v2`  
-> 状态：24 题 Gate 已通过；云端 run-2 正式运行中  
+> 状态：24 题 Gate 已通过；云端 run-2 正式运行中；运行中发现的后续 Runtime 修复不追改本批次
 > 主结果：Terminal-Bench 官方 verifier `raw_reward`
 
 ## 1. 目的
@@ -66,3 +66,16 @@ CLIProxyAPI 订阅路由、云节点和 Terminal-Bench 2.1 digest。
 - run-2 根目录：
   `/opt/morphz-benchmark/postfix-runs/me08-postfix-all89-morphz-v2/run-2`；
 - systemd unit：`morphz-me08-postfix-all89-morphz-run2-20260826.service`。
+
+## 7. 运行后 handoff 修复边界
+
+run-2 冻结后，`build-pov-ray` 暴露 terminal commit—delivery 竞态：任务结果和 Thread 终态已经
+持久化，但旧 revocation watcher 在 EventBus/Delivery 交接完成前把执行 future 取消；同时，
+被取消的手工 `BEGIN IMMEDIATE` 可能把开放写事务归还连接池。该问题由通用 Runtime commit
+`ac3344ef557d749f0c2f1d1c3ab572586e852e91` 修复，并通过完整 lib、Clippy、格式及针对性回归。
+
+正式 run-2 使用的是更早的 `ad60e300f115fe84e03a8cd3ab70940deb06ae68` 二进制。为保持冻结
+协议，运行中的容器、timeout、official reward 和产物均不修改；run-2 闭合后仍按全部 89 个
+原始 official reward 报告。随后允许只对确认受该缺陷影响的任务运行一次 `ac3344e` 后诊断，
+用于验证通用修复是否恢复交付路径。该诊断必须使用新目录和新 manifest，不能替换 run-2 的
+任务 reward、不能拼接成新 89 题总分，也不能冒充与历史 Codex 的同期对照。
