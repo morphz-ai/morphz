@@ -181,6 +181,11 @@ def main() -> int:
         parser.error("smoke and targeted modes require --output-root")
     output_root = args.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=False)
+    # Harbor accepts a jobs directory path but does not create its parent when
+    # launcher discovery fails before the first job starts.  Materialize the
+    # frozen artifact boundary here so both the runner and the post-run audit
+    # can distinguish a pre-model launcher failure from an empty benchmark.
+    (output_root / "jobs").mkdir()
     command = benchmark_command(tasks, output_root)
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     run_manifest = {
