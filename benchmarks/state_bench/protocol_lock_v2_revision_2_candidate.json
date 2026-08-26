@@ -46,7 +46,7 @@
         "letta": "c6d80048d99b2a38c49944398be2a49adc08283b",
         "mem0": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa"
       },
-      "formal_runner_commit": "4dcaf15bf9e36c004d0034b0df7654cc408a9125",
+      "formal_runner_commit": "291bd5901f65b116f30259e10b2c049cb5081bbe",
       "training_binary_sha256": "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a",
       "scope": "complete_agent_runtime",
       "replacement_requires_new_lock": true
