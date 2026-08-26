@@ -1,6 +1,6 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-26
+> 最后更新：2026-08-27
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
@@ -38,7 +38,7 @@
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 三臂 adapter、持久化重载、精确模型绑定和同题 scored smoke 已通过；本机完整领域已上传；post-ME-08 Runtime release-r3 与 Linux 无模型 Gate 已通过；云端剩余训练和 finalizer 正在运行，尚无正式效果结果 | `v2-gates-passed / local-upload-complete / cloud-training-running / runtime-release-r3-passed / finalizer-active / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md) | 完成云端剩余训练后自动组装九份快照、运行三臂 smoke、2,250 个正式 trial 与聚类统计；随后完成 30 条双人盲评，任何 terminal failure 计零且不静默重跑 |
-| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史同环境：Morphz 70/89、Codex 73/89；post-fix 定向 19 道旧失败题恢复 10 道且 5/5 哨兵无回归；`ad60e` Runtime 的 Morphz 89 题并发 8 正在运行，该冻结二进制包含 Objective 收敛修复但早于后来确认的 `ac3344e` terminal handoff 修复 | `historical-complete / postfix-targeted-complete / ad60e-all89-morphz-running` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`postfix targeted`](./artifacts/me08_postfix_targeted_20260826/RESULT.md)；[`refresh protocol`](./me_08_postfix_all_89_morphz_protocol_v2.md) | 完成并发 8 的 `ad60e` Morphz 89 题并保留原始 reward；受 handoff 缺陷影响的任务只作 `ac3344e` 后独立诊断；旧 Codex 只作非同时、不同并发的历史参考，不重跑、不冒充新确认性双臂 |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史严格同环境：Morphz 70/89、Codex 73/89；post-fix 定向 19 道旧失败题恢复 10 道且 5/5 哨兵无回归；`ad60e` Morphz 单臂完整刷新 73/89，数值追平历史 Codex，但二者不是同期、同并发的新配对 | `historical-paired-complete / postfix-targeted-complete / ad60e-all89-morphz-complete / timeout-forensics-complete` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`postfix targeted`](./artifacts/me08_postfix_targeted_20260826/RESULT.md)；[`refresh result`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md) | 不再运行 ME-08 模型；保留 73/89 原始分与已知 Runtime 边界，等待开发任务独立处理永久安全拒绝恢复和视觉 Observation 重复循环；论文同时报告严格配对结果与单臂刷新，不拼接、不冒充等价性证据 |
 | ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 仅形成预结果解释与完整性 Gate，尚未运行 | `proposal-only / not-authorized-for-model-run` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md) | 先向用户展示并确认；证明无需改变 Runtime 二进制即可接入八个隔离 Execution Target，再做无模型 dry-run |
 
 ## 依赖
@@ -68,6 +68,22 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | Harbor、Terminal-Bench、π-Bench adapter | ME-08 / 通用能力 | F/P | Terminal-Bench 前 40 题四臂结果登记为外部系统能力 Pilot；不替代机制消融或专门记忆验证 |
 
 ## 状态更新记录
+
+### 2026-08-27
+
+- ME-08 `ad60e` Morphz 单臂完整 89 题刷新已经闭合：官方 verifier 73/89
+  （82.02%，Wilson 95% CI `[72.77%, 88.62%]`），89 个唯一任务、完整性 Gate 和资源记录
+  均通过。该数值与历史 Codex 73/89 相同，但 Codex 没有在本轮重跑，故只可称为相同任务、
+  模型和评分器下的非同期参考，不是新的严格配对或等价性结论。报告和脱敏原始 JSON 见
+  [`artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md)；
+- 16 个官方失败中有 6 个 AgentTimeout。只读轨迹将其分为：2 个永久 `cyber_policy` 拒绝被
+  错误归入可恢复服务故障；2 个视觉 Observation 在 Context 维护后反复读取、没有沉淀可行动
+  语义；1 个无 Context 维护的拟合过度优化；1 个持续产生真实构建证据但在复杂任务时限内
+  未完成。另有 `build-pov-ray` 虽 Harbor timeout，但官方产物通过；其单 Runtime 终态交付
+  竞态由 `ac3344ef...` 修复。本轮每题拥有独立 SQLite，不能把任何上述问题归因于八道题
+  共享数据库。诊断不覆盖官方分数，也不生成剔除外因后的主分；
+- 按成本和证据边界，ME-08 到此停止模型运行。后续开发修复只进入 Runtime 回归，不静默追改
+  73/89，也不再消耗额度重跑完整 89 题；
 
 ### 2026-08-26
 
