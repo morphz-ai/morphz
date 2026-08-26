@@ -1,7 +1,7 @@
 # Morphz 论文主张—证据矩阵（2026-08-26）
 
 > 用途：作为中英文论文改稿的唯一数字与主张入口。最终论文可以压缩表达，但不得越过本表
-> 记录的证据边界。ME-07～ME-08 完成后补齐结果与统计；失败和无效启动不从审计记录删除。
+> 记录的证据边界。ME-08 完成后补齐最终结果与统计；失败和无效启动不从审计记录删除。
 
 ## 1. 论文中心主张
 
@@ -28,22 +28,13 @@ Morphz 将结构化 Context 作为 Agent 持久认知状态，并让语言模型
 
 ## 3. 正在完成的证据
 
-### ME-07：LongMemEval-V2 Small
+### ME-07：当前论文取消
 
-- 官方 451 题 Small task suite；web 240、enterprise 211；
-- paired arms：官方 `no_retrieval` 与 Morphz source-linked Structured Projection；
-- 每个 cell 内部并发 1；同 domain 使用同一不可变 Small haystack Context，每题 query 隔离且
-  不写回；
-- substitute reader/judge 均物理绑定 Qwen 3.8 Max；由于不是官方 Qwen3.5-9B/GPT-5.2 组合，
-  只能称为 LongMemEval-V2 Small task-suite experiment，不能申报官方排行榜分数；
-- 报告官方分类准确率、abstention、paired win/loss、McNemar 与 bootstrap 95% CI。
-
-当前进度：Web no-retrieval 已完成 7/240（2.92%），Provider 报告 250,600 total tokens；
-Structured Projection Web 已完成 Context 建库与 240 题 Prompt 构造，reader 生成仍在进行。
-一次 Qwen 上游请求等待 17m13s 后 EOF/HTTP 500，由冻结的客户端 retry policy 自动恢复；
-该事件计入失败与延迟审计，不因后续重试成功而删除。
-
-待填：451 题双臂最终分数、分能力结果、统计量、检索/Token/延迟和失败分类。
+ME-07 原计划使用 LongMemEval-V2 Small 验证 source-linked Structured Projection。Reference
+adapter Gate 已通过，但随后启动的运行使用了未经用户授权的替代 reader/judge 模型，且没有
+形成冻结基准模型的完整 paired 结果。该运行已终止并保留审计记录；任何局部数量、分数或
+延迟均不进入本文证据。用户决定当前论文不补跑 ME-07，因此它不提供公开长期记忆效果证据。
+LongMemEval-V2 仅作为相关工作和未来生产 Morphz 外部记忆验证候选。
 
 ### ME-08：Terminal-Bench 2.1 完整 89 题同环境对照
 
@@ -60,18 +51,18 @@ Structured Projection Web 已完成 Context 建库与 240 题 Prompt 构造，re
 1. **机制可执行且不退化：** ME-01、ME-02；
 2. **非确定性认知求值及其边界：** ME-03、ME-05；
 3. **确定性权威与额外系统能力：** ME-04、ME-06；
-4. **长期状态与外部效度：** ME-06、ME-07；
-5. **完整 Agent 产品能力：** ME-08；
+4. **长期状态与额外状态语义：** ME-06；
+5. **完整 Agent 外部系统效度：** ME-08；
 6. **共同结论：** Morphz 改变状态与求值机制并获得持久、可寻址、可事务、跨 Session、恢复
    和审计能力；已有简单和外部任务证据未显示必然的通用能力代价。ME-06 未观察到准确率
-   优于 compaction，且暴露出当前实现的显著 token 开销；外部长期记忆效度由 ME-07 决定。
+   优于 compaction，且暴露出当前实现的显著 token 开销；本文不报告公开长期记忆榜分。
 
 ## 5. 必须保留的有效性威胁
 
 - ME-01/02/03 是 Pilot，部分 cell 存在天花板效应；
 - ME-05 的严格合同分与语义诊断分回答不同问题，二者都必须报告；
 - ME-06 只有 3 个 paired fixtures，不作统计显著性宣称；
-- ME-07 使用替代 reader/judge，不与官方 leaderboard 绝对分横比；
+- ME-07 已取消，任何中止运行的局部结果都不作为论文效果证据；
 - ME-08 每题只运行一次，能够进行同环境 paired 描述和检验，但不能估计同题采样方差；
 - Provider refusal、timeout、Runtime 和 harness failure 必须分层，不按对某组有利的方向删除；
 - Program-valued `infer`、任意动态交替和“无限寿命 Agent”仍是未来能力。
