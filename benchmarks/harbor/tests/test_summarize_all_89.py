@@ -81,6 +81,36 @@ class SummarizeAll89Test(unittest.TestCase):
             {"seed": 20260826, "repetitions": 10_000},
         )
 
+    def test_summarize_rejects_overlap_between_frozen_subsets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prior_morphz = root / "prior_morphz.json"
+            prior_codex = root / "prior_codex.json"
+            remaining = root / "remaining.json"
+            write_json(prior_morphz, prior_payload("morphz", [1] * 40))
+            write_json(prior_codex, prior_payload("codex", [1] * 40))
+            remaining_data = remaining_payload([1] * 49, [1] * 49)
+            remaining_data["per_task"][0]["task"] = "prior-00"
+            write_json(remaining, remaining_data)
+
+            with self.assertRaisesRegex(RuntimeError, "overlap"):
+                summarize(prior_morphz, prior_codex, remaining)
+
+    def test_summarize_rejects_non_official_remaining_score(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prior_morphz = root / "prior_morphz.json"
+            prior_codex = root / "prior_codex.json"
+            remaining = root / "remaining.json"
+            write_json(prior_morphz, prior_payload("morphz", [1] * 40))
+            write_json(prior_codex, prior_payload("codex", [1] * 40))
+            remaining_data = remaining_payload([1] * 49, [1] * 49)
+            remaining_data["official_scoring_is_primary"] = False
+            write_json(remaining, remaining_data)
+
+            with self.assertRaisesRegex(RuntimeError, "official scoring"):
+                summarize(prior_morphz, prior_codex, remaining)
+
     def test_resource_summary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "resources.jsonl"
