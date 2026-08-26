@@ -329,16 +329,17 @@ fn provider_stream_error(protocol: ModelProtocol, payload: &str) -> ProviderErro
         "{} Provider stream returned an error event: {payload}",
         protocol.as_str()
     );
+    let provider_code = provider_error_code(payload);
     let classified = ModelFailure::classify_message(message.clone());
-    let kind = match classified.kind {
-        ModelFailureKind::Unknown | ModelFailureKind::EmptyResponse => {
-            ModelFailureKind::ServerUnavailable
-        }
-        kind => kind,
-    };
-    boxed_model_failure(
-        ModelFailure::new(kind, message).with_provider_code(provider_error_code(payload)),
-    )
+    let kind = provider_failure_kind_from_code(provider_code.as_deref()).unwrap_or(
+        match classified.kind {
+            ModelFailureKind::Unknown | ModelFailureKind::EmptyResponse => {
+                ModelFailureKind::ServerUnavailable
+            }
+            kind => kind,
+        },
+    );
+    boxed_model_failure(ModelFailure::new(kind, message).with_provider_code(provider_code))
 }
 
 fn retry_after_seconds(headers: &HeaderMap) -> Option<u64> {
@@ -366,6 +367,19 @@ fn provider_error_code(body: &str) -> Option<String> {
         .or_else(|| code_from(&value))
 }
 
+/// Maps only provider-authored, semantically unambiguous error codes.
+///
+/// Message classification remains the compatibility path for providers that
+/// do not expose structured codes. Keeping this map exact is important: a
+/// generic word such as `policy` can occur in transient gateway or account
+/// errors and must not turn those failures into permanent safety refusals.
+fn provider_failure_kind_from_code(code: Option<&str>) -> Option<ModelFailureKind> {
+    match code {
+        Some("cyber_policy") => Some(ModelFailureKind::SafetyRefusal),
+        _ => None,
+    }
+}
+
 fn http_model_failure(
     status: reqwest::StatusCode,
     body: String,
@@ -378,7 +392,9 @@ fn http_model_failure(
     // semantics can be observed.
     let semantic = ModelFailure::classify_message(body.clone());
     let provider_code = provider_error_code(&body);
-    let kind = if semantic.kind == ModelFailureKind::ContextLimit {
+    let kind = if let Some(kind) = provider_failure_kind_from_code(provider_code.as_deref()) {
+        kind
+    } else if semantic.kind == ModelFailureKind::ContextLimit {
         ModelFailureKind::ContextLimit
     } else if semantic.kind == ModelFailureKind::QuotaExhausted
         || provider_code.as_deref().is_some_and(|code| {
@@ -1561,11 +1577,153 @@ fn health_response_schema_valid(protocol: ModelProtocol, value: &Value) -> bool 
     }
 }
 
+// Vision Providers account native image inputs as modal tokens rather than
+// tokenizing the transport Base64. This deliberately conservative allowance
+// is high enough for large/high-detail images while avoiding the several-
+// hundred-thousand-token fiction produced by counting encoded bytes as text.
+const HEURISTIC_IMAGE_INPUT_TOKENS: usize = 16_384;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VisualInputShape {
+    media_type: String,
+    encoded_chars: usize,
+    detail: Option<String>,
+}
+
+fn redact_visual_inputs(value: &mut Value, shapes: &mut Vec<VisualInputShape>) {
+    let Value::Object(object) = value else {
+        if let Value::Array(items) = value {
+            for item in items {
+                redact_visual_inputs(item, shapes);
+            }
+        }
+        return;
+    };
+
+    let block_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    if matches!(block_type.as_deref(), Some("image_url" | "input_image")) {
+        let (url, detail) = if block_type.as_deref() == Some("image_url") {
+            let image_url = object.get_mut("image_url").and_then(Value::as_object_mut);
+            let detail = image_url
+                .as_ref()
+                .and_then(|image_url| image_url.get("detail"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            (
+                image_url.and_then(|image_url| image_url.get_mut("url")),
+                detail,
+            )
+        } else {
+            let detail = object
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            (object.get_mut("image_url"), detail)
+        };
+        if let Some(Value::String(url)) = url {
+            let (media_type, encoded_chars) = image_data_url_shape(url);
+            if encoded_chars > 0 {
+                *url = format!("data:{media_type};base64,<runtime-image-payload>");
+            }
+            shapes.push(VisualInputShape {
+                media_type,
+                encoded_chars,
+                detail,
+            });
+            return;
+        }
+    }
+
+    if block_type.as_deref() == Some("image") {
+        if let Some(source) = object.get_mut("source").and_then(Value::as_object_mut) {
+            let media_type = source
+                .get("media_type")
+                .and_then(Value::as_str)
+                .filter(|media_type| media_type.starts_with("image/"))
+                .map(ToOwned::to_owned);
+            if let Some(media_type) = media_type {
+                let encoded_chars = source
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .map(str::len)
+                    .unwrap_or_default();
+                if let Some(data) = source.get_mut("data") {
+                    *data = Value::String("<runtime-image-payload>".to_string());
+                }
+                shapes.push(VisualInputShape {
+                    media_type,
+                    encoded_chars,
+                    detail: None,
+                });
+                return;
+            }
+        }
+    }
+
+    if let Some(inline) = object.get_mut("inlineData").and_then(Value::as_object_mut) {
+        let media_type = inline
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .filter(|media_type| media_type.starts_with("image/"))
+            .map(ToOwned::to_owned);
+        if let Some(media_type) = media_type {
+            let encoded_chars = inline
+                .get("data")
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or_default();
+            if let Some(data) = inline.get_mut("data") {
+                *data = Value::String("<runtime-image-payload>".to_string());
+            }
+            shapes.push(VisualInputShape {
+                media_type,
+                encoded_chars,
+                detail: None,
+            });
+            return;
+        }
+    }
+
+    for child in object.values_mut() {
+        redact_visual_inputs(child, shapes);
+    }
+}
+
+fn image_data_url_shape(url: &str) -> (String, usize) {
+    let Some(rest) = url.strip_prefix("data:") else {
+        return ("remote-image".to_string(), 0);
+    };
+    let Some((media_type, encoded)) = rest.split_once(";base64,") else {
+        return ("embedded-image".to_string(), 0);
+    };
+    if !media_type.starts_with("image/") {
+        return ("embedded-image".to_string(), 0);
+    }
+    (media_type.to_string(), encoded.len())
+}
+
+fn request_token_estimate_input(body: &Value) -> (Value, Vec<VisualInputShape>) {
+    let mut redacted = body.clone();
+    let mut shapes = Vec::new();
+    redact_visual_inputs(&mut redacted, &mut shapes);
+    (redacted, shapes)
+}
+
 fn serialized_request_token_estimate(body: &Value) -> usize {
-    let serialized = serde_json::to_string(body).unwrap_or_default();
+    let (redacted, visual_inputs) = request_token_estimate_input(body);
+    let serialized = serde_json::to_string(&redacted).unwrap_or_default();
     let ascii = serialized.chars().filter(char::is_ascii).count();
     let non_ascii = serialized.chars().count().saturating_sub(ascii);
-    (ascii.saturating_add(3) / 4).saturating_add(non_ascii)
+    (ascii.saturating_add(3) / 4)
+        .saturating_add(non_ascii)
+        .saturating_add(
+            visual_inputs
+                .len()
+                .saturating_mul(HEURISTIC_IMAGE_INPUT_TOKENS),
+        )
 }
 
 fn prompt_calibration_shape(protocol: ModelProtocol, model: &str, body: &Value) -> u64 {
@@ -1576,6 +1734,8 @@ fn prompt_calibration_shape(protocol: ModelProtocol, model: &str, body: &Value) 
         .unwrap_or(&Value::Null)
         .to_string()
         .hash(&mut hasher);
+    let (_, visual_inputs) = request_token_estimate_input(body);
+    visual_inputs.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -3333,6 +3493,26 @@ mod tests {
         assert_eq!(failure.http_status, Some(403));
     }
 
+    #[test]
+    fn cyber_policy_http_error_is_a_permanent_safety_refusal() {
+        let failure = http_model_failure(
+            reqwest::StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": {
+                    "code": "cyber_policy",
+                    "message": "Request rejected by the provider safety policy."
+                }
+            })
+            .to_string(),
+            None,
+        );
+
+        assert_eq!(failure.kind, ModelFailureKind::SafetyRefusal);
+        assert_eq!(failure.http_status, Some(400));
+        assert_eq!(failure.provider_code.as_deref(), Some("cyber_policy"));
+        assert!(!failure.kind.uses_provider_recovery());
+    }
+
     fn messages() -> Vec<Message> {
         vec![
             Message {
@@ -3625,6 +3805,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cyber_policy_stream_error_is_terminal_and_not_provider_recoverable() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    sse(concat!(
+                        "event: error\n",
+                        "data: {\"type\":\"error\",\"code\":\"cyber_policy\",\"message\":\"Request rejected by the provider safety policy.\"}\n\n"
+                    ))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+
+        let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
+        let error = client
+            .send_stream("test-model", &json!({}), None, &stream)
+            .await
+            .unwrap_err();
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::SafetyRefusal);
+        assert_eq!(failure.provider_code.as_deref(), Some("cyber_policy"));
+        assert!(!failure.kind.uses_provider_recovery());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn response_header_idle_timeout_uses_bounded_local_retry() {
         let requests = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&requests);
@@ -3802,6 +4032,103 @@ mod tests {
             gemini["contents"][1]["parts"][0]["inlineData"]["data"],
             "aW1hZ2U="
         );
+    }
+
+    #[test]
+    fn native_image_payloads_are_estimated_as_modal_inputs_not_base64_text() {
+        let attachment = |name: &str, encoded_chars: usize| ModelAttachment {
+            name: name.to_string(),
+            media_type: "image/jpeg".to_string(),
+            data_base64: "A".repeat(encoded_chars),
+        };
+        // Mirrors the two-image payload size that previously inflated a
+        // roughly 24k prompt to about 392k tokens during ME-08.
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: "Compare the two images and preserve the visual findings.".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            attachment_message(vec![
+                attachment("contact.jpg", 406_112),
+                attachment("jump_detail.jpg", 1_065_196),
+            ])
+            .unwrap(),
+        ];
+
+        for protocol in [
+            ModelProtocol::OpenaiChat,
+            ModelProtocol::OpenaiResponses,
+            ModelProtocol::AnthropicMessages,
+            ModelProtocol::GeminiContent,
+        ] {
+            let body = build_request(protocol, "m", None, None, &messages, &[]);
+            let raw_ascii_estimate = serde_json::to_string(&body).unwrap().len() / 4;
+            assert!(raw_ascii_estimate > 300_000, "protocol={protocol:?}");
+
+            let estimate = serialized_request_token_estimate(&body);
+            assert!(
+                estimate >= 2 * HEURISTIC_IMAGE_INPUT_TOKENS,
+                "protocol={protocol:?}, estimate={estimate}"
+            );
+            assert!(
+                estimate < 100_000,
+                "protocol={protocol:?}, estimate={estimate}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_calibration_shape_separates_visual_input_shapes() {
+        let user = Message {
+            role: "user".to_string(),
+            content: "inspect".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        let attachment = |name: &str| ModelAttachment {
+            name: name.to_string(),
+            media_type: "image/png".to_string(),
+            data_base64: "A".repeat(4_096),
+        };
+        let plain = build_request(
+            ModelProtocol::OpenaiResponses,
+            "m",
+            None,
+            None,
+            std::slice::from_ref(&user),
+            &[],
+        );
+        let one = build_request(
+            ModelProtocol::OpenaiResponses,
+            "m",
+            None,
+            None,
+            &[
+                user.clone(),
+                attachment_message(vec![attachment("one.png")]).unwrap(),
+            ],
+            &[],
+        );
+        let two = build_request(
+            ModelProtocol::OpenaiResponses,
+            "m",
+            None,
+            None,
+            &[
+                user,
+                attachment_message(vec![attachment("one.png"), attachment("two.png")]).unwrap(),
+            ],
+            &[],
+        );
+
+        let shape =
+            |body: &Value| prompt_calibration_shape(ModelProtocol::OpenaiResponses, "m", body);
+        assert_ne!(shape(&plain), shape(&one));
+        assert_ne!(shape(&one), shape(&two));
     }
 
     #[test]
@@ -4169,6 +4496,69 @@ mod tests {
                 .accuracy,
             PromptTokenAccuracy::HeuristicEstimate
         );
+    }
+
+    #[tokio::test]
+    async fn visual_usage_calibration_does_not_contaminate_plain_text_requests() {
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: "http://127.0.0.1:1".to_string(),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let user = Message {
+            role: "user".to_string(),
+            content: "inspect".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        let visual_prompt = vec![
+            user.clone(),
+            attachment_message(vec![ModelAttachment {
+                name: "stable.jpg".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data_base64: "A".repeat(304_582 * 4 / 3),
+            }])
+            .unwrap(),
+        ];
+
+        let visual = client
+            .count_prompt_tokens("same-evaluation", &visual_prompt, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        let visual_body = client.request_for_model("test-model", &visual_prompt, &[]);
+        client.observe_completion_usage(
+            ModelProtocol::OpenaiResponses,
+            "test-model",
+            &visual_body,
+            &visual,
+            24_000,
+        );
+
+        let same_visual = client
+            .count_prompt_tokens("same-evaluation", &visual_prompt, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            same_visual.accuracy,
+            PromptTokenAccuracy::UsageCalibratedEstimate
+        );
+
+        let plain = client
+            .count_prompt_tokens("same-evaluation", &[user], &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plain.accuracy, PromptTokenAccuracy::HeuristicEstimate);
+        assert!(plain.tokens < visual.tokens);
     }
 
     #[tokio::test]
