@@ -22,9 +22,9 @@ from benchmarks.harbor.run_benchmark import LOCK_PATH, REPO_ROOT
 PROTOCOL = "me08-terminal-bench-finalfix-all89-morphz-v3"
 FIRST_40_PATH = Path(__file__).with_name("first_40_tasks_v1.json")
 REMAINING_49_PATH = Path(__file__).with_name("remaining_49_tasks_v1.json")
-EXPECTED_RUNTIME_COMMIT = "a00296e1d2bb95d0b1effeb040911b386a18106f"
+EXPECTED_RUNTIME_COMMIT = "4bbc3d63f4bda09947dc79dc5656edc71f8c02fa"
 EXPECTED_RUNTIME_BINARY_SHA256 = (
-    "4c845f9c0cd47394d11b3233de7d77b3052ae54a26b027b33647788da27d5029"
+    "31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575"
 )
 CONCURRENCY_PER_ARM = 8
 RUN_ARMS = ("morphz-native",)
