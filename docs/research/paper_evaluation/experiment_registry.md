@@ -22,7 +22,8 @@
   校验为 `gpt-5.6-sol`，且 `fallback=false`；
 - 授权模式：隔离实验节点使用 `full-access`，episode 中不得混入人工审批等待；
 - 隔离：专用 Morphz 节点、专用数据库、专用 Context；不同 arm/run 使用独立可写
-  状态，不读取共享 Context、产品数据库或历史 Session；
+  状态，不读取共享 Context、产品数据库或历史 Session；只有协议明确把共享 Context 本身定义为
+  处理变量时才可例外，并必须另列隔离控制（当前仅 ME-09 Proposal）；
 - `full-access` 不改变公开 Benchmark 自身的 sandbox、网络、数据和工具规则。
 
 ## 总览
@@ -37,7 +38,8 @@
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 三臂 adapter、持久化重载、精确模型绑定和同题 scored smoke 已通过；正式训练正在运行，尚无正式效果结果 | `v2-gates-passed / formal-training-running / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md) | 完成三个领域训练快照、30 条双人盲评校准、2,250 个正式 trial 与聚类统计；任何 terminal failure 计零且不静默重跑 |
-| ME-08 | Terminal-Bench 2.1 完整 89 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | Morphz 70/89，Codex 73/89；差 −3.37pp，配对 `p=0.678` | `external-complete` | [`result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md) | 写入论文；保留单次采样、宽区间和非 leaderboard 边界，不选择性补跑 |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史同环境：Morphz 70/89、Codex 73/89；post-fix 定向 19 道旧失败题恢复 10 道且 5/5 哨兵无回归；新 Runtime 的 Morphz 89 题并发 8 正在运行 | `historical-complete / postfix-targeted-complete / all89-morphz-running` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`postfix targeted`](./artifacts/me08_postfix_targeted_20260826/RESULT.md)；[`refresh protocol`](./me_08_postfix_all_89_morphz_protocol_v2.md) | 完成并发 8 的新 Morphz 89 题；旧 Codex 只作非同时、不同并发的历史参考，不重跑、不冒充新确认性双臂 |
+| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 仅形成预结果解释与完整性 Gate，尚未运行 | `proposal-only / not-authorized-for-model-run` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md) | 先向用户展示并确认；证明无需改变 Runtime 二进制即可接入八个隔离 Execution Target，再做无模型 dry-run |
 
 ## 依赖
 
@@ -47,7 +49,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
        ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
-       └─> ME-08
+       └─> ME-08 ─> ME-09 (候选；共享 Context 为显式处理变量)
 ```
 
 ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-06 只有在核心状态机制及评分器稳定后才扩成长运行。
