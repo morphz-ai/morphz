@@ -1,17 +1,29 @@
 # Morphz 论文实验中心
 
-> 状态：执行阶段（ME-01、ME-02、ME-03 Pilot 与 ME-04 确定性 Gate 已完成）
+> 状态：论文收口阶段（ME-01～ME-06 已完成；ME-07 当前论文取消；ME-08 完整 89 题
+> 同环境 paired 对照正在闭合）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
 
-> 术语基线：Morphz 的正式机器身份是 **S-Expression Cognitive Machine（S 表达式认知机）**；LLM 是非确定性语义处理器，Runtime 是确定性事务内核，Agent 是加载身份与能力后的机器实例。论文标题描述研究问题，不替代这一系统定义。
+> 术语基线：Morphz 的正式机器身份是 **S-Expression Cognitive Machine（S 表达式认知机）**；LLM 是非确定性认知求值器，Runtime 是确定性事务内核，Agent 是加载身份与能力后的机器实例。论文标题描述研究问题，不替代这一系统定义。
 
 这里是 Morphz 论文实验的唯一进度入口。产品回归测试可以快速演进；用于论文主张的证据必须遵守冻结协议、完整留痕和结论边界。
 
-## 文档入口
+## 当前权威入口
 
-- [Runtime 实验基线 v4](./runtime_baseline_v4.md)：论文、路演与公开 Benchmark 新实验当前默认的 Runtime 源码 commit；
+- [预印本发布审计 Gate](./preprint_release_audit_20260826.md)：最终 89 题、双语论文、作者元数据、敏感信息和限定主张的发布检查清单；
+- [论文主张—证据矩阵](./paper_claim_evidence_matrix_20260826.md)：中英文稿数字与主张的唯一入口；
+- [实验总账](./experiment_registry.md)：每项实验的状态、协议、结果和历史变更；
+- [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
+- [Runtime 实验基线 v4](./runtime_baseline_v4.md)：ME-06 与 ME-08 使用的冻结 Runtime 源码基线；
+- [ME-05 九模型跨模型结果](./artifacts/me05_nine_model_p1_20260826/RESULT.md)：144/144 完整，严格合同与事后语义诊断分开报告；
+- [ME-06 长程 paired 结果](./artifacts/me06_long_horizon_p11_20260826/RESULT.md)：两臂 3/3 fixture、24/24 最终字段、3/3 行动；Morphz 额外状态语义与 16.4× token 成本；
+- [ME-07 superseded 协议与取消边界](./me_07_longmemeval_v2_small_protocol_v1.md)：未经授权替代模型运行已中止，当前论文不补跑且不引用局部结果；
+- [ME-08 剩余 49 题冻结协议](./me_08_terminal_bench_remaining_49_protocol_v1.md)：与前 40 题合并为完整 89 题 Morphz/Codex 同环境一次配对结果；
+
+## 基线、历史与工程审计入口
+
 - [Runtime 实验基线 v2](./runtime_baseline_v2.md)：历史的 2026-08-17 Runtime 基线；
 - [Runtime 实验基线 v1](./runtime_baseline_v1.md)：历史基线及 author/committer 重写后的 SHA 映射；
 - [Terminal-Bench 2.1 执行就绪记录](./terminal_bench_2_1_execution_readiness_2026_08_20.md)：Harbor、数据集、Linux/AMD64 产物、ATIF、模型路由和隔离门禁；
@@ -35,15 +47,13 @@
 - [ME-02 p1.1 No-model Gate 与绑定预检](./me_02_no_model_gate_2026_08_25.md)：6×3 表示 digest、原生 Boolean、隐藏答案泄漏和 scorer 正负例全部通过；零 completion 确认物理模型为 `gpt-5.6-sol`、reasoning `max`、单候选无 fallback；
 - [ME-02 p1 首次真实 Pilot 无效记录](./me_02_p1_invalid_pilot_2026_08_25.md)：记录布尔值被建模成字符串和缺失 Responses continuation 的装置错误；18 个 episode 全部保留但不得进入论文结果；
 - [ME-02 p1.1 真实 Pilot 结果](./artifacts/me02_real_pilot_p11_20260825/RESULT.md)：6×3 共 18/18 严格通过；支持 S-expression 统一程序/数据表示的可行性和当前条件下不退化，不支持相对 JSON/Markdown 的优越性；
-- [ME-03 受约束开放求值与 Context 干预协议 p1](./me_03_bounded_open_context_intervention_protocol_p1.md)：用多值开放契约、Context 干预和唯一闭合算子对照区分“受约束非唯一求值”与任意文本或强制随机性；
+- [ME-03 非确定性认知求值与 Context 干预协议 p1](./me_03_bounded_open_context_intervention_protocol_p1.md)：用多值合同、Context 干预和唯一确定性算子对照区分“受约束非唯一求值”与任意文本或强制随机性；
 - [ME-03 p1.1 No-model Gate 与绑定预检](./me_03_no_model_gate_2026_08_25.md)：合法集合多值性、干预集合不相交、闭合唯一值及 scorer 正负例全部通过；零 completion 精确绑定 `gpt-5.6-sol`/max/no-fallback；
-- [ME-03 p1.1 真实 Pilot 结果](./artifacts/me03_real_pilot_p1_20260825/RESULT.md)：开放求值 12/12、Context shift 6/6、闭合严格 11/12；唯一失败为语义选择正确但 JSON 字段类型错误，按冻结 scorer 保留失败；
+- [ME-03 p1.1 真实 Pilot 结果](./artifacts/me03_real_pilot_p1_20260825/RESULT.md)：非确定性求值合同 12/12、Context shift 6/6、确定性对照严格 11/12；唯一失败为语义选择正确但 JSON 字段类型错误，按冻结 scorer 保留失败；
 - [ME-01 p1.1 Supersession Conflict](./artifacts/me01_supersession_conflict_p11_20260825/RESULT.md)：三组均正确选择两级 supersession 后的 `/hooks/v3`；累计两个真实 cell、6/6 有效 episode 严格通过，仍只作可行性与非退化证据；
 - [ME-01 p1.1 Source Authority](./artifacts/me01_source_authority_p11_20260825/RESULT.md)：三组均正确保留权威来源的 `R-45`，拒绝更新但未批准的 `R-07/R-90`；累计三个真实 cell、9/9 有效 episode 严格通过；
 - [ME-01 p1.1 Cross-Session Continuity](./artifacts/me01_cross_session_continuity_p11_20260825/RESULT.md)：有效重跑中，Session A/B 真实挂载同一 Context，三组均正确；首次硬编码 Session A 的运行永久标记无效；
 - [ME-01 p1.1 Context Isolation](./artifacts/me01_context_isolation_p11_20260825/RESULT.md)：两个真实 Context 保持隔离，三组均选择 primary 的 `blue-archive`；五任务族累计 15/15 严格通过，p1.1 因天花板关闭同类扩样；
-- [实验总计划 v1](./master_plan_v1.md)：研究问题、阶段、优先级、实验依赖和发表门槛；
-- [实验总账](./experiment_registry.md)：每项实验的负责人、协议版本、状态、结果和下一步；
 - [实验协议模板](./templates/protocol_template.md)：正式运行前冻结假设、变量、样本和评分方法；
 - [单次运行记录模板](./templates/run_record_template.md)：记录每个批次的环境、模型、代码和原始产物；
 - [结果报告模板](./templates/result_report_template.md)：汇总统计、失败分类和论文可支持结论。
