@@ -5526,19 +5526,28 @@ async fn drain_exec_output_monitors(
     stderr_task: &mut tokio::task::JoinHandle<()>,
     timeout: tokio::time::Duration,
 ) -> bool {
-    let drained = tokio::time::timeout(timeout, async {
-        let _ = (&mut *stdout_task).await;
-        let _ = (&mut *stderr_task).await;
-    })
-    .await
-    .is_ok();
-    if !drained {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut stdout_drained = false;
+    let mut stderr_drained = false;
+    loop {
+        if stdout_drained && stderr_drained {
+            return true;
+        }
+        tokio::select! {
+            _ = &mut *stdout_task, if !stdout_drained => stdout_drained = true,
+            _ = &mut *stderr_task, if !stderr_drained => stderr_drained = true,
+            _ = tokio::time::sleep_until(deadline) => break,
+        }
+    }
+    if !stdout_drained {
         stdout_task.abort();
-        stderr_task.abort();
         let _ = stdout_task.await;
+    }
+    if !stderr_drained {
+        stderr_task.abort();
         let _ = stderr_task.await;
     }
-    drained
+    false
 }
 
 #[derive(Debug)]
@@ -12566,6 +12575,26 @@ Body
     async fn exec_output_monitor_drain_is_bounded_and_cancels_stuck_readers() {
         let mut stdout_task = tokio::spawn(std::future::pending::<()>());
         let mut stderr_task = tokio::spawn(std::future::pending::<()>());
+
+        let drained = drain_exec_output_monitors(
+            &mut stdout_task,
+            &mut stderr_task,
+            tokio::time::Duration::from_millis(10),
+        )
+        .await;
+
+        assert!(!drained);
+        assert!(stdout_task.is_finished());
+        assert!(stderr_task.is_finished());
+    }
+
+    #[tokio::test]
+    async fn exec_output_monitor_drain_does_not_repoll_a_completed_reader_after_timeout() {
+        let mut stdout_task = tokio::spawn(async {});
+        let mut stderr_task = tokio::spawn(std::future::pending::<()>());
+        while !stdout_task.is_finished() {
+            tokio::task::yield_now().await;
+        }
 
         let drained = drain_exec_output_monitors(
             &mut stdout_task,
