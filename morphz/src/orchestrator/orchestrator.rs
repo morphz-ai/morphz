@@ -10440,7 +10440,7 @@ impl Orchestrator {
                     lease.release();
                 }
                 self.refill_activation_admission_queue().await?;
-                self.execute_tool_calls(
+                Box::pin(self.execute_tool_calls(
                     session_id,
                     &attempt_id,
                     response,
@@ -10457,7 +10457,7 @@ impl Orchestrator {
                         model_attempt_id: None,
                         provider_continuation: None,
                     },
-                )
+                ))
                 .await?;
                 return Ok(());
             }
