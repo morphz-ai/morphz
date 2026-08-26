@@ -155,10 +155,49 @@ def _run_job(
     trajectory_dir.mkdir(parents=True, exist_ok=True)
     trajectory_path = trajectory_dir / f"{task_id}.json"
     job_path = output / "jobs" / cell_id / f"{arm}.json"
-    if trajectory_path.exists() or job_path.exists():
+    if job_path.exists():
         raise FileExistsError(
             f"refusing to overwrite non-resumed ME-07 job artifacts: {job_path}"
         )
+    if trajectory_path.exists():
+        # The upstream harness writes the trajectory before this runner can
+        # atomically write its evaluator/model-binding receipt.  A process
+        # interruption in that narrow window leaves an orphan whose full
+        # integrity cannot be proven.  Preserve it, count it as a terminal
+        # failure, and never silently rerun the scored task.
+        orphan = {
+            "protocol_id": PROTOCOL_ID,
+            "terminal": True,
+            "reportable_score": True,
+            "cell_id": cell_id,
+            "cell_index": int(cell["cell_index"]),
+            "arm": arm,
+            "domain": domain_name,
+            "task_id": task_id,
+            "run_idx": run_idx,
+            "task_file_sha256": _sha256(task_file),
+            "runner_result": {
+                "task_id": task_id,
+                "status": "ERR",
+                "attempts": 1,
+                "error": "orphaned trajectory after interrupted formal runner",
+            },
+            "trajectory": _trajectory_summary(trajectory_path),
+            "updated_evaluator_receipts": {
+                "user_simulator": [],
+                "judge": [],
+            },
+            "integrity": {
+                "checks": {"atomic_job_receipt_present": False},
+                "passed": False,
+                "successful_scoring_required": True,
+            },
+            "official_score_eligible": False,
+            "unhandled_error_type": "InterruptedBeforeAtomicJobReceipt",
+            "elapsed_seconds": 0.0,
+        }
+        _atomic_json(job_path, orphan)
+        return orphan
 
     domain = get_domain_config(domain_name)
     simulator_client = ME07UpdatedEvaluatorClient(role="user_simulator")

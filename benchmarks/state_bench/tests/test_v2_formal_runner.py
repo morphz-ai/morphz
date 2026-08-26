@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from state_bench.agents.base import AgentRuntimeContext
+from state_bench.protocol import load_default_protocol, load_split_task_ids
 
 from benchmarks.state_bench.v2 import public_agent_systems
 from benchmarks.state_bench.v2.letta_train_snapshots import (
@@ -15,7 +16,12 @@ from benchmarks.state_bench.v2.prepare_evaluator_human_validation import (
     ALLOCATION,
     _select,
 )
-from benchmarks.state_bench.v2.run_public_systems_formal import ARMS, DOMAINS, _queue
+from benchmarks.state_bench.v2.run_public_systems_formal import (
+    ARMS,
+    DOMAINS,
+    _queue,
+    _run_job,
+)
 from benchmarks.state_bench.v2.summarize_public_systems_formal import (
     _bootstrap_ci,
     _holm,
@@ -171,3 +177,38 @@ def test_letta_checkpoint_is_single_file_and_digest_guarded(tmp_path: Path) -> N
     restored_export, restored_progress = _read_checkpoint(checkpoint)
     assert restored_export == exported
     assert restored_progress == progress
+
+
+def test_orphaned_trajectory_is_preserved_as_zero_without_rerun(
+    tmp_path: Path,
+) -> None:
+    protocol = load_default_protocol()
+    task_id = load_split_task_ids("travel", "test", protocol.split_version)[0]
+    cell = {
+        "cell_id": f"cell-0001-r1-travel-{task_id}",
+        "cell_index": 1,
+        "domain": "travel",
+        "task_id": task_id,
+        "run_idx": 1,
+    }
+    trajectory_path = (
+        tmp_path / "trajectories" / "morphz" / "travel" / "run1" / f"{task_id}.json"
+    )
+    trajectory_path.parent.mkdir(parents=True)
+    trajectory_path.write_text(
+        '{"task_id":"' + task_id + '","task_completion_pass":1,"ux_score":5,'
+        '"me07_agent_system":{"arm":"morphz"}}\n',
+        encoding="utf-8",
+    )
+
+    result = _run_job(
+        output=tmp_path,
+        cell=cell,
+        arm="morphz",
+        protocol=protocol,
+    )
+
+    assert result["official_score_eligible"] is False
+    assert result["runner_result"]["status"] == "ERR"
+    assert result["trajectory"]["task_completion_pass"] == 1
+    assert (tmp_path / "jobs" / cell["cell_id"] / "morphz.json").is_file()
