@@ -52,6 +52,7 @@ SQLite backup/reload 状态等价检查，Letta 必须完成导出快照与原�
 - `morphz-me07-postgres`：固定 pgvector/PostgreSQL 容器；
 - `morphz-me07-train-morphz-remaining-20260826.service`：剩余 Morphz 领域；
 - `morphz-me07-train-mem0-remaining-20260826.service`：剩余 Mem0 领域；
+- `morphz-me07-finalize-and-start-20260826.service`：等待云端训练与 ME-08 释放节点，汇总快照并启动正式服务；
 - `morphz-me07-formal-20260826.service`：正式 smoke、2,250 trials、统计与盲评包。
 
 访问凭据不出现在命令行、systemd unit、manifest 或本文档中；执行包装器仅在进程内从云端已有
@@ -59,16 +60,18 @@ CLIProxyAPI 配置读取唯一 access key。
 
 ## 自动交接 Gate
 
-一次性 macOS LaunchAgent 保持本机训练期间系统唤醒，并只在以下条件全部成立后启动云端正式
-服务：
+一次性 macOS LaunchAgent 只负责保持本机训练期间系统唤醒、校验并上传已经在本机开始的完整
+领域。上传闭合后，它启动云端 finalizer 即可退出；此后的等待、汇总、smoke 和正式运行不再依赖
+笔记本。两级交接按以下条件推进：
 
 1. 本机 Morphz travel、Letta 三领域、Mem0 travel receipt 全部通过；
 2. 本机产物上传到新建且不可覆盖的 staging 目录；
-3. 云端 Morphz/Mem0 两条剩余领域训练序列均完整结束；
-4. ME-08 Terminal-Bench 节点负载已经释放；
-5. assembly manifest 和 environment lock 生成成功；
-6. 云端三臂同题 smoke 通过；
-7. formal runner 校验 Linux Runtime 哈希、STATE-Bench commit、三领域九份快照和冻结队列。
+3. 本机启动并确认云端 finalizer 已由 systemd 接管；
+4. 云端 finalizer 等待 Morphz/Mem0 两条剩余领域训练序列完整结束；
+5. ME-08 Terminal-Bench 节点负载已经释放；
+6. assembly manifest 和 environment lock 生成成功；
+7. 云端三臂同题 smoke 通过；
+8. formal runner 校验 Linux Runtime 哈希、STATE-Bench commit、三领域九份快照和冻结队列。
 
 formal runner 的每个 terminal failure 都保留并计零。进程中断时只恢复缺失 job；已经形成原子
 job receipt 的失败绝不重跑，已经写出 trajectory 而未写出 receipt 的窄窗口按 orphan failure
