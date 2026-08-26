@@ -15068,7 +15068,11 @@ mod tests {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.permissions.mode = PermissionMode::Custom;
+        // This test exercises detached execution and delivery, not sandbox
+        // policy. Linux deliberately fails closed when no validated native
+        // sandbox is available, so use the same explicit FullAccess boundary
+        // as the Terminal-Bench protocol on every platform.
+        config.permissions.mode = PermissionMode::FullAccess;
         config.permissions.reviewer = ReviewerKind::Deny;
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         let client = Arc::new(DetachedExecClient {
@@ -15171,7 +15175,14 @@ mod tests {
             jobs.iter().any(|job| job.tool_name == "exec/background"),
             "detached execution jobs: {:?}",
             jobs.iter()
-                .map(|job| (&job.tool_name, &job.status, &job.result_event_id))
+                .map(|job| {
+                    (
+                        &job.tool_name,
+                        &job.status,
+                        &job.result_event_id,
+                        &job.error,
+                    )
+                })
                 .collect::<Vec<_>>()
         );
 
