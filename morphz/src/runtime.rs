@@ -15153,6 +15153,10 @@ mod tests {
             ),
         }
         assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+
+        // Give the alternative direct-reply path the same merge-window
+        // headroom before inspecting the durable background Job projection.
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
         let jobs = runtime
             .inner
             .store
@@ -15163,11 +15167,16 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
+        assert!(
+            jobs.iter().any(|job| job.tool_name == "exec/background"),
+            "detached execution jobs: {:?}",
+            jobs.iter()
+                .map(|job| (&job.tool_name, &job.status, &job.result_event_id))
+                .collect::<Vec<_>>()
+        );
 
         // Both scheduling orders are valid, but they must converge on one
         // durable user-visible reply rather than racing into duplicate output.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         let durable_replies = runtime
             .query_events(QueryFilter {
                 session_id: Some(session.id().to_string()),
