@@ -1,6 +1,6 @@
 {
   "protocol_id": "ME-07-STATE-Bench-strong-memory-v1",
-  "status": "frozen-adapter-gate / locked-eval-access-gated",
+  "status": "frozen-artifact-gate / locked-eval-access-gated",
   "formal_arms": [
     "morphz",
     "amem",
