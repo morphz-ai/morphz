@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-08-27",
+  "scope": "ME-08 official Codex all-89 paired baseline",
+  "official_score_is_unchanged": true,
+  "official_score": {
+    "passed": 73,
+    "total": 89
+  },
+  "exception_count": 9,
+  "counts_by_exception_type": {
+    "AgentTimeoutError": 3,
+    "ApiRateLimitError": 2,
+    "VerifierTimeoutError": 1,
+    "AgentSafetyRefusalError": 3
+  },
+  "exceptions": [
+    {
+      "subset": "first_40",
+      "task": "make-doom-for-mips",
+      "exception_type": "AgentTimeoutError"
+    },
+    {
+      "subset": "first_40",
+      "task": "mcmc-sampling-stan",
+      "exception_type": "ApiRateLimitError"
+    },
+    {
+      "subset": "first_40",
+      "task": "torch-tensor-parallelism",
+      "exception_type": "VerifierTimeoutError"
+    },
+    {
+      "subset": "first_40",
+      "task": "vulnerable-secret",
+      "exception_type": "AgentSafetyRefusalError",
+      "provider_cyber_policy_marker": true
+    },
+    {
+      "subset": "remaining_49",
+      "task": "break-filter-js-from-html",
+      "exception_type": "AgentSafetyRefusalError",
+      "provider_cyber_policy_marker": true
+    },
+    {
+      "subset": "remaining_49",
+      "task": "feal-differential-cryptanalysis",
+      "exception_type": "AgentSafetyRefusalError",
+      "provider_cyber_policy_marker": true
+    },
+    {
+      "subset": "remaining_49",
+      "task": "fix-git",
+      "exception_type": "ApiRateLimitError"
+    },
+    {
+      "subset": "remaining_49",
+      "task": "password-recovery",
+      "exception_type": "AgentTimeoutError"
+    },
+    {
+      "subset": "remaining_49",
+      "task": "query-optimize",
+      "exception_type": "AgentTimeoutError"
+    }
+  ],
+  "safety_refusal_task_set_matches_morphz_4bbc3d6": true,
+  "morphz_4bbc3d6_safety_refusal_tasks": [
+    "break-filter-js-from-html",
+    "feal-differential-cryptanalysis",
+    "vulnerable-secret"
+  ]
+}
