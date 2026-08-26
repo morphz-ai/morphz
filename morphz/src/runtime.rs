@@ -5884,6 +5884,14 @@ impl MorphzRuntime {
         self.inner.bus.publish(event).await
     }
 
+    /// Subscribe to process-local EventBus delivery.
+    ///
+    /// This is a live notification surface, not a durable request/reply
+    /// protocol. In particular, exact-topic subscriptions are asynchronous
+    /// business handlers and may still be queued when the publishing call
+    /// returns. Callers waiting for the terminal reply of one DialogueTurn
+    /// must use [`Self::wait_for_turn_reply`], which closes the durable
+    /// commit/subscription race and fences the result by root turn.
     pub fn subscribe(&self, topic: impl Into<String>, capacity: usize) -> RuntimeEventStream {
         let (sender, receiver) = tokio::sync::mpsc::channel(capacity.max(1));
         let subscription_id = self.inner.bus.subscribe(
@@ -5912,6 +5920,68 @@ impl MorphzRuntime {
             bus: Arc::downgrade(&self.inner.bus),
             subscription_id,
         }
+    }
+
+    /// Wait for the durable Assistant reply belonging to exactly one
+    /// DialogueTurn.
+    ///
+    /// The observer is installed before the indexed durable lookup. A reply
+    /// committed before registration is therefore found in the Event Store;
+    /// a reply committed after the lookup crosses the synchronous wildcard
+    /// observation boundary. The live EventBus remains only a low-latency
+    /// wakeup: the immutable Event Store is the completion authority.
+    pub async fn wait_for_turn_reply(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Event, RuntimeError> {
+        let session_id = session_id.trim();
+        let root_turn_id = root_turn_id.trim();
+        if session_id.is_empty() || root_turn_id.is_empty() {
+            return Err("session_id and root_turn_id must not be empty".into());
+        }
+
+        // `*` observers are dispatched synchronously after the persistence
+        // boundary and do not compete for an asynchronous business-handler
+        // permit. Runtime model-stream drafts use try_send and may be dropped;
+        // durable facts retain backpressure until this active waiter drains
+        // them. Register before querying so commit-before-wait has no gap.
+        let mut events = self.subscribe("*", 64);
+        if let Some(reply) = self
+            .query_events(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                root_turn_id: Some(root_turn_id.to_string()),
+                topic: Some("chat/reply".to_string()),
+                latest_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| reply_matches_turn(event, session_id, root_turn_id))
+        {
+            return Ok(reply);
+        }
+
+        tokio::time::timeout(timeout, async {
+            loop {
+                let event = events
+                    .recv()
+                    .await
+                    .ok_or("Runtime Event stream closed before the DialogueTurn reply")?;
+                if reply_matches_turn(&event, session_id, root_turn_id) {
+                    return Ok::<Event, RuntimeError>(event);
+                }
+            }
+        })
+        .await
+        .map_err(|_| -> RuntimeError {
+            format!(
+                "DialogueTurn '{}' in Session '{}' did not produce a reply within {:?}",
+                root_turn_id, session_id, timeout
+            )
+            .into()
+        })?
     }
 
     /// Enable one process-local diagnostic projection for the lifetime of an
@@ -8733,6 +8803,12 @@ pub struct RuntimeEventStream {
     receiver: tokio::sync::mpsc::Receiver<Event>,
     bus: Weak<InMemoryEventBus>,
     subscription_id: String,
+}
+
+fn reply_matches_turn(event: &Event, session_id: &str, root_turn_id: &str) -> bool {
+    event.topic == "chat/reply"
+        && crate::memory::causal_payload_string(event, "session_id") == Some(session_id)
+        && crate::memory::causal_payload_string(event, "root_turn_id") == Some(root_turn_id)
 }
 
 impl RuntimeEventStream {
@@ -13032,6 +13108,109 @@ mod tests {
             assert!(!tools.iter().any(|tool| tool.name == "objective_amend"));
             Ok(text_response("objective-complete"))
         }
+    }
+
+    #[tokio::test]
+    async fn durable_turn_reply_waiter_bypasses_business_saturation_and_fences_root() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.orchestrator.event_bus.max_in_flight = 1;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+
+        let blocker_started = Arc::new(tokio::sync::Notify::new());
+        let blocker_release = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&blocker_started);
+        let release = Arc::clone(&blocker_release);
+        runtime.inner.bus.subscribe(
+            "runtime/test_reply_blocker".to_string(),
+            Arc::new(move |_event| {
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                Box::pin(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok(())
+                })
+            }),
+        );
+        runtime
+            .publish(Event::new(
+                "reply-blocker".to_string(),
+                "Runtime-Test".to_string(),
+                "runtime_control".to_string(),
+                "runtime/test_reply_blocker".to_string(),
+                serde_json::Map::new(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            blocker_started.notified(),
+        )
+        .await
+        .expect("the only asynchronous business permit should be occupied");
+
+        let stale_reply = Event::new(
+            "reply-stale-root".to_string(),
+            "Agent-Test".to_string(),
+            "agent_call".to_string(),
+            "chat/reply".to_string(),
+            vec![
+                ("context_id".to_string(), json!("context-reply-wait")),
+                ("session_id".to_string(), json!("session-reply-wait")),
+                ("root_turn_id".to_string(), json!("root-stale")),
+                ("text".to_string(), json!("stale")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        runtime.publish(stale_reply).await.unwrap();
+
+        let wait_runtime = runtime.clone();
+        let waiter = tokio::spawn(async move {
+            wait_runtime
+                .wait_for_turn_reply(
+                    "session-reply-wait",
+                    "root-target",
+                    std::time::Duration::from_secs(2),
+                )
+                .await
+        });
+        // Let the waiter install its synchronous observation boundary and
+        // finish the durable preflight before the target commit.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let target_reply = Event::new(
+            "reply-target-root".to_string(),
+            "Agent-Test".to_string(),
+            "agent_call".to_string(),
+            "chat/reply".to_string(),
+            vec![
+                ("context_id".to_string(), json!("context-reply-wait")),
+                ("session_id".to_string(), json!("session-reply-wait")),
+                ("root_turn_id".to_string(), json!("root-target")),
+                ("text".to_string(), json!("target")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            runtime.publish(target_reply),
+        )
+        .await
+        .expect("a reply observer must not queue behind business admission")
+        .unwrap();
+
+        let reply = waiter.await.unwrap().unwrap();
+        assert_eq!(reply.id, "reply-target-root");
+        assert_eq!(reply.payload["text"], "target");
+        blocker_release.notify_waiters();
     }
 
     #[tokio::test]

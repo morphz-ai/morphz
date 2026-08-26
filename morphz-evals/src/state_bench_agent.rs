@@ -468,27 +468,23 @@ async fn context_tx_commit_count(runtime: &MorphzRuntime) -> Result<usize, State
 }
 
 async fn wait_for_reply(
-    stream: &mut morphz::runtime::RuntimeEventStream,
+    runtime: &MorphzRuntime,
     session_id: &str,
+    root_turn_id: &str,
     timeout: Duration,
 ) -> Result<String, StateBenchError> {
-    tokio::time::timeout(timeout, async {
-        loop {
-            let event = stream.recv().await.ok_or("ME-07 reply stream closed")?;
-            if event.payload.get("session_id").and_then(Value::as_str) == Some(session_id) {
-                return Ok::<_, StateBenchError>(
-                    event
-                        .payload
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                );
-            }
-        }
-    })
-    .await
-    .map_err(|_| -> StateBenchError { "ME-07 Morphz Runtime reply timed out".into() })?
+    let reply = runtime
+        .wait_for_turn_reply(session_id, root_turn_id, timeout)
+        .await
+        .map_err(|error| -> StateBenchError {
+            format!("ME-07 Morphz Runtime reply failed: {error}").into()
+        })?;
+    reply
+        .payload
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "ME-07 Morphz Runtime reply has no text".into())
 }
 
 pub async fn run_state_bench_agent(config: StateBenchAgentConfig) -> Result<(), StateBenchError> {
@@ -532,7 +528,6 @@ pub async fn run_state_bench_agent(config: StateBenchAgentConfig) -> Result<(), 
         )?));
     }
     let runtime = builder.build().await?;
-    let mut replies = runtime.subscribe("chat/reply", 128);
     runtime.start().await?;
     if runtime.get_agent(&config.agent_id).await?.is_none() {
         runtime
@@ -621,8 +616,9 @@ pub async fn run_state_bench_agent(config: StateBenchAgentConfig) -> Result<(), 
             )
             .await?;
         let text = wait_for_reply(
-            &mut replies,
+            &runtime,
             &config.session_id,
+            &receipt.event_id,
             Duration::from_secs(config.reply_timeout_seconds.max(1)),
         )
         .await?;
