@@ -8813,6 +8813,10 @@ pub struct SessionMessageOptions {
     /// One-shot reasoning level persisted on the root Event and frozen on the
     /// resulting Activation without mutating the Session default.
     pub reasoning_effort: Option<String>,
+    /// One-shot physical destination for the Dialogue Thread rooted at this
+    /// message. Once persisted, Thread target affinity governs every
+    /// continuation; later Events cannot silently redirect it.
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8967,6 +8971,7 @@ impl SessionHandle {
             dispatch_mode,
             model_alias,
             reasoning_effort,
+            target_id,
         } = options;
         let actor = actor.into();
         let session = self
@@ -9060,6 +9065,46 @@ impl SessionHandle {
                 }
             }
             Some(parsed.as_str().to_string())
+        } else {
+            None
+        };
+        let target_id = if let Some(target_id) = target_id {
+            let target_id = target_id.trim().to_string();
+            if target_id.is_empty() {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    "target_id must not be empty; omit it to use the default Execution Target",
+                )));
+            }
+            let target = self
+                .runtime
+                .inner
+                .store
+                .get_execution_target(&target_id)
+                .await?
+                .ok_or_else(|| {
+                    Box::new(MessageIngressError::new(
+                        MessageIngressErrorKind::InvalidArgument,
+                        format!("Execution Target '{target_id}' does not exist"),
+                    )) as RuntimeError
+                })?;
+            if target.owner_principal_id.is_some()
+                && target.owner_principal_id.as_deref() != Some(principal_id.as_str())
+            {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Forbidden,
+                    format!(
+                        "Principal '{principal_id}' cannot route to Execution Target '{target_id}'"
+                    ),
+                )));
+            }
+            if !target.status.accepts_jobs() {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Conflict,
+                    format!("Execution Target '{target_id}' is not online"),
+                )));
+            }
+            Some(target_id)
         } else {
             None
         };
@@ -9195,6 +9240,9 @@ impl SessionHandle {
         }
         if let Some(reasoning_effort) = reasoning_effort {
             payload.insert("reasoning_effort".to_string(), json!(reasoning_effort));
+        }
+        if let Some(target_id) = target_id {
+            payload.insert("target_id".to_string(), json!(target_id));
         }
         if !canonical_references.is_empty() {
             payload.insert("references".to_string(), Value::Array(canonical_references));
@@ -11617,6 +11665,211 @@ mod tests {
         assert!(error
             .to_string()
             .contains("is not present in the discovered and enabled model catalog"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_sessions_bind_new_dialogue_threads_to_distinct_requested_targets() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let principal_id = runtime.identity().principal_id.clone();
+        for target_id in ["edge-session-a", "edge-session-b"] {
+            runtime
+                .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                    id: target_id.to_string(),
+                    owner_principal_id: Some(principal_id.clone()),
+                    provider_node_id: None,
+                    kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                    name: target_id.to_string(),
+                    status: crate::memory::ExecutionTargetStatus::Online,
+                    platform: Some("linux-x86_64".to_string()),
+                    workspace_root: None,
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({"test": "message_ingress_target_affinity"}),
+                    policy_digest: format!("policy-{target_id}"),
+                    last_seen_at: Some(chrono::Utc::now()),
+                })
+                .await
+                .unwrap();
+        }
+        let session_a = runtime
+            .ensure_session(NewSession {
+                id: "session-target-a".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Target A".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let session_b = runtime
+            .ensure_session(NewSession {
+                id: "session-target-b".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Target B".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(&session_a.id).await.unwrap();
+        runtime.bind_default_principal(&session_b.id).await.unwrap();
+
+        let (receipt_a, receipt_b) = tokio::join!(
+            session_a.send_as_principal_with_options(
+                "work only on target A",
+                "User-Test",
+                principal_id.clone(),
+                Some("client-target-a".to_string()),
+                SessionMessageOptions {
+                    target_id: Some("edge-session-a".to_string()),
+                    ..SessionMessageOptions::default()
+                },
+            ),
+            session_b.send_as_principal_with_options(
+                "work only on target B",
+                "User-Test",
+                principal_id.clone(),
+                Some("client-target-b".to_string()),
+                SessionMessageOptions {
+                    target_id: Some("edge-session-b".to_string()),
+                    ..SessionMessageOptions::default()
+                },
+            )
+        );
+        let receipt_a = receipt_a.unwrap();
+        let receipt_b = receipt_b.unwrap();
+        let (thread_a, thread_b) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let thread_a = runtime
+                    .inner
+                    .store
+                    .get_thread_by_root(&receipt_a.event_id)
+                    .await
+                    .unwrap();
+                let thread_b = runtime
+                    .inner
+                    .store
+                    .get_thread_by_root(&receipt_b.event_id)
+                    .await
+                    .unwrap();
+                if let (Some(thread_a), Some(thread_b)) = (thread_a, thread_b) {
+                    break (thread_a, thread_b);
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both Dialogue Threads were not persisted");
+        assert_eq!(thread_a.target_id.as_deref(), Some("edge-session-a"));
+        assert_eq!(thread_b.target_id.as_deref(), Some("edge-session-b"));
+        assert_ne!(thread_a.target_id, thread_b.target_id);
+
+        for (event_id, target_id) in [
+            (&receipt_a.event_id, "edge-session-a"),
+            (&receipt_b.event_id, "edge-session-b"),
+        ] {
+            let event = runtime
+                .query_events(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(event.payload["target_id"], target_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn message_ingress_rejects_missing_offline_and_foreign_targets_before_commit() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let principal_id = runtime.identity().principal_id.clone();
+        for (target_id, owner, status) in [
+            (
+                "edge-offline",
+                principal_id.as_str(),
+                crate::memory::ExecutionTargetStatus::Offline,
+            ),
+            (
+                "edge-foreign",
+                "principal-foreign",
+                crate::memory::ExecutionTargetStatus::Online,
+            ),
+        ] {
+            runtime
+                .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                    id: target_id.to_string(),
+                    owner_principal_id: Some(owner.to_string()),
+                    provider_node_id: None,
+                    kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                    name: target_id.to_string(),
+                    status,
+                    platform: None,
+                    workspace_root: None,
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({}),
+                    policy_digest: format!("policy-{target_id}"),
+                    last_seen_at: Some(chrono::Utc::now()),
+                })
+                .await
+                .unwrap();
+        }
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-target-rejections".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Target rejections".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(&session.id).await.unwrap();
+
+        for (index, target_id, expected) in [
+            (1, "edge-missing", "does not exist"),
+            (2, "edge-offline", "is not online"),
+            (3, "edge-foreign", "cannot route"),
+        ] {
+            let error = session
+                .send_as_principal_with_options(
+                    "this message must not commit",
+                    "User-Test",
+                    principal_id.clone(),
+                    Some(format!("client-target-rejection-{index}")),
+                    SessionMessageOptions {
+                        target_id: Some(target_id.to_string()),
+                        ..SessionMessageOptions::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        let events = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id.clone()),
+                topic: Some(TYPE_USER_MESSAGE.to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(events.is_empty());
     }
 
     #[tokio::test]
