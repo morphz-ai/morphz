@@ -5519,6 +5519,28 @@ async fn monitor_pipe<R>(
     }
 }
 
+const EXEC_OUTPUT_DRAIN_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+
+async fn drain_exec_output_monitors(
+    stdout_task: &mut tokio::task::JoinHandle<()>,
+    stderr_task: &mut tokio::task::JoinHandle<()>,
+    timeout: tokio::time::Duration,
+) -> bool {
+    let drained = tokio::time::timeout(timeout, async {
+        let _ = (&mut *stdout_task).await;
+        let _ = (&mut *stderr_task).await;
+    })
+    .await
+    .is_ok();
+    if !drained {
+        stdout_task.abort();
+        stderr_task.abort();
+        let _ = stdout_task.await;
+        let _ = stderr_task.await;
+    }
+    drained
+}
+
 #[derive(Debug)]
 struct FileSnapshot {
     content: String,
@@ -7989,7 +8011,7 @@ impl Tool for ExecuteCommandTool {
         let buffer_out = Arc::clone(&buffer);
         let publish_out = Arc::clone(&publish_flag);
         let stdout_sink = output_sink.clone();
-        let stdout_task = tokio::spawn(async move {
+        let mut stdout_task = tokio::spawn(async move {
             monitor_pipe(
                 stdout,
                 buffer_out,
@@ -8002,7 +8024,7 @@ impl Tool for ExecuteCommandTool {
 
         let buffer_err = Arc::clone(&buffer);
         let publish_err = Arc::clone(&publish_flag);
-        let stderr_task = tokio::spawn(async move {
+        let mut stderr_task = tokio::spawn(async move {
             monitor_pipe(
                 stderr,
                 buffer_err,
@@ -8033,8 +8055,12 @@ impl Tool for ExecuteCommandTool {
                 // Process exit does not imply asynchronous pipe readers have drained their kernel
                 // pipes. Wait for both readers before loading the preview so artifacts and returned
                 // results include trailing output.
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
+                let output_drained = drain_exec_output_monitors(
+                    &mut stdout_task,
+                    &mut stderr_task,
+                    EXEC_OUTPUT_DRAIN_TIMEOUT,
+                )
+                .await;
                 let code = exit_status_res
                     .map(|s| s.code().unwrap_or(-1))
                     .unwrap_or(-1);
@@ -8044,6 +8070,12 @@ impl Tool for ExecuteCommandTool {
                 if residual_processes_terminated {
                     return Err(format!(
                         "exec detected child processes still alive after the shell process exited and terminated the entire remaining process group. Self-backgrounding is prohibited; let the foreground command run past wait_ms so the Runtime can manage it.\n--- Captured output ---\n{output_str}"
+                    )
+                    .into());
+                }
+                if !output_drained {
+                    return Err(format!(
+                        "exec shell exited but inherited output pipes remained open. A detached descendant escaped the managed process group; self-daemonizing commands are prohibited because their completion cannot be tracked safely. Run the service in the foreground and let wait_ms hand it off to the Runtime.\n--- Captured output ---\n{output_str}"
                     )
                     .into());
                 }
@@ -8078,8 +8110,12 @@ impl Tool for ExecuteCommandTool {
                                 nix::sys::signal::Signal::SIGKILL,
                             );
                             let _ = child.wait().await;
-                            let _ = stdout_task.await;
-                            let _ = stderr_task.await;
+                            let _ = drain_exec_output_monitors(
+                                &mut stdout_task,
+                                &mut stderr_task,
+                                EXEC_OUTPUT_DRAIN_TIMEOUT,
+                            )
+                            .await;
                             tasks.remove(&task_id);
                             return Err(format!(
                                 "background process could not be handed off to a persistent ExecutionJob, so its process group was terminated: {error}"
@@ -8121,17 +8157,29 @@ impl Tool for ExecuteCommandTool {
                     let wait_res = child.wait().await;
                     process_group_guard.disarm();
                     let residual_cleanup = terminate_residual_process_group(pid);
-                    let _ = stdout_task.await;
-                    let _ = stderr_task.await;
+                    let output_drained = drain_exec_output_monitors(
+                        &mut stdout_task,
+                        &mut stderr_task,
+                        EXEC_OUTPUT_DRAIN_TIMEOUT,
+                    )
+                    .await;
                     buffer_cleanup.flush_pending_now().await;
                     let tasks_cleanup = get_tasks_map();
 
-                    let code = wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                    let code = if output_drained {
+                        wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
+                    } else {
+                        -1
+                    };
                     let output_str = buffer_cleanup.get_all();
-                    let residual_note = match residual_cleanup {
+                    let residual_note = if !output_drained {
+                        "\n[Runtime stopped waiting for inherited output pipes after the managed shell exited. A self-daemonized descendant escaped the managed process group, so this execution was failed instead of leaving its Activation permanently running.]"
+                    } else {
+                        match residual_cleanup {
                         Ok(true) => "\n[Runtime terminated an unmanaged child process group left after the shell exited. Do not self-background processes in exec commands.]",
                         Ok(false) => "",
                         Err(_) => "\n[Runtime could not confirm that the process group was fully cleaned up after the shell exited.]",
+                        }
                     };
                     if let Some(scheduler) = &background_scheduler_cleanup {
                         if scheduler.execution_jobs.is_some() {
@@ -12512,6 +12560,23 @@ Body
             .unwrap_err();
 
         assert!(error.to_string().contains("prohibits using shell '&'"));
+    }
+
+    #[tokio::test]
+    async fn exec_output_monitor_drain_is_bounded_and_cancels_stuck_readers() {
+        let mut stdout_task = tokio::spawn(std::future::pending::<()>());
+        let mut stderr_task = tokio::spawn(std::future::pending::<()>());
+
+        let drained = drain_exec_output_monitors(
+            &mut stdout_task,
+            &mut stderr_task,
+            tokio::time::Duration::from_millis(10),
+        )
+        .await;
+
+        assert!(!drained);
+        assert!(stdout_task.is_finished());
+        assert!(stderr_task.is_finished());
     }
 
     #[tokio::test]

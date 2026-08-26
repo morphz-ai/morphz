@@ -16,25 +16,75 @@ from benchmarks.harbor.morphz_agent import (
 
 
 class _ExecResult:
-    return_code = 0
-    stdout = ""
-    stderr = ""
+    def __init__(
+        self, return_code: int = 0, stdout: str = "", stderr: str = ""
+    ) -> None:
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class _SetupEnvironment:
-    def __init__(self) -> None:
+    def __init__(self, exec_results: list[_ExecResult] | None = None) -> None:
         self.uploads: list[tuple[Path, str]] = []
         self.commands: list[str] = []
+        self.exec_results = list(exec_results or [])
 
     async def upload_file(self, source: Path, destination: str) -> None:
         self.uploads.append((source, destination))
 
     async def exec(self, command: str, **_kwargs: object) -> _ExecResult:
         self.commands.append(command)
-        return _ExecResult()
+        return self.exec_results.pop(0) if self.exec_results else _ExecResult()
 
 
 class HarnessBindingSetupTest(unittest.TestCase):
+    def test_workspace_discovery_prefers_app_and_falls_back_to_task_cwd(self) -> None:
+        async def scenario() -> None:
+            for discovered in ("/app\n", "/workspace/task\n"):
+                environment = _SetupEnvironment(
+                    [_ExecResult(stdout=discovered)]
+                )
+                agent = MorphzAgent(logs_dir=Path("/tmp"), extra_env={})
+
+                self.assertEqual(
+                    await agent._resolve_workspace_root(environment),
+                    discovered.strip(),
+                )
+                self.assertEqual(
+                    environment.commands,
+                    ["if [ -d /app ]; then printf '%s\\n' /app; else pwd -P; fi"],
+                )
+
+        asyncio.run(scenario())
+
+    def test_workspace_discovery_accepts_an_explicit_absolute_override(self) -> None:
+        async def scenario() -> None:
+            environment = _SetupEnvironment()
+            agent = MorphzAgent(
+                logs_dir=Path("/tmp"),
+                extra_env={"MORPHZ_HARBOR_WORKSPACE_ROOT": "/workspace/override"},
+            )
+
+            self.assertEqual(
+                await agent._resolve_workspace_root(environment),
+                "/workspace/override",
+            )
+            self.assertEqual(environment.commands, [])
+
+        asyncio.run(scenario())
+
+    def test_workspace_discovery_rejects_a_relative_override(self) -> None:
+        async def scenario() -> None:
+            agent = MorphzAgent(
+                logs_dir=Path("/tmp"),
+                extra_env={"MORPHZ_HARBOR_WORKSPACE_ROOT": "relative/task"},
+            )
+            with self.assertRaisesRegex(ValueError, "must be an absolute path"):
+                await agent._resolve_workspace_root(_SetupEnvironment())
+
+        asyncio.run(scenario())
+
     def test_checked_in_package_matches_the_frozen_source_digest(self) -> None:
         lock_path = Path(__file__).parents[1] / "toolchain.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))

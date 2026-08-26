@@ -53,6 +53,31 @@ class MorphzAgent(BaseAgent):
             raise ValueError(f"Morphz Harbor adapter requires {name}")
         return value.strip()
 
+    async def _resolve_workspace_root(self, environment: BaseEnvironment) -> str:
+        configured = self.extra_env.get(
+            "MORPHZ_HARBOR_WORKSPACE_ROOT"
+        ) or os.environ.get("MORPHZ_HARBOR_WORKSPACE_ROOT")
+        if configured is not None and configured.strip():
+            workspace_root = configured.strip()
+        else:
+            result = await environment.exec(
+                command="if [ -d /app ]; then printf '%s\\n' /app; else pwd -P; fi"
+            )
+            if result.return_code != 0:
+                raise RuntimeError(
+                    "failed to discover the Harbor task workspace: "
+                    + (result.stderr or result.stdout or f"exit {result.return_code}")
+                )
+            workspace_root = result.stdout.strip()
+        if not workspace_root or "\n" in workspace_root:
+            raise ValueError("Harbor task workspace discovery returned no unique path")
+        if not Path(workspace_root).is_absolute():
+            raise ValueError(
+                "MORPHZ_HARBOR_WORKSPACE_ROOT must be an absolute path, got "
+                f"{workspace_root!r}"
+            )
+        return workspace_root
+
     async def setup(self, environment: BaseEnvironment) -> None:
         binary = Path(self._setting("MORPHZ_HARBOR_BINARY")).expanduser().resolve()
         if not binary.is_file():
@@ -175,11 +200,12 @@ class MorphzAgent(BaseAgent):
             "MORPHZ_PROVIDER_API_KEY_ENV", "MORPHZ_PROVIDER_API_KEY"
         )
         credential = self._setting(credential_env)
+        workspace_root = await self._resolve_workspace_root(environment)
         env = {
             credential_env: credential,
             "MORPHZ_SESSION_ID": session_id,
             "MORPHZ_CONTEXT_ID": context_id,
-            "MORPHZ_WORKSPACE_ROOT": "/app",
+            "MORPHZ_WORKSPACE_ROOT": workspace_root,
             "MORPHZ_ARTIFACT_DIR": "/logs/artifacts",
             "MORPHZ_STORAGE_SQLITE_PATH": "/logs/agent/morphz.db",
             "MORPHZ_CODING_EVAL_MODE": "true",
