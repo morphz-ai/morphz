@@ -36,7 +36,7 @@
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；当前实现 token 约 16.4× | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本和高 token 成本限制，不重复补跑 |
-| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 Agent 集合与更新版评测边界已选，尚无 Letta Gate 或效果结果 | `v2-selected / letta-gate-pending / updated-evaluator-gate-pending` | [`v2 candidate`](./me_07_state_bench_protocol_v2.md) | 实现并验证 Letta 完整 Runtime adapter、三组真实产物与 GPT-5.6 Sol 更新评测器 smoke |
+| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 三臂 adapter、持久化重载、精确模型绑定和同题 scored smoke 已通过；正式训练正在运行，尚无正式效果结果 | `v2-gates-passed / formal-training-running / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md) | 完成三个领域训练快照、30 条双人盲评校准、2,250 个正式 trial 与聚类统计；任何 terminal failure 计零且不静默重跑 |
 | ME-08 | Terminal-Bench 2.1 完整 89 题 Morphz/Codex 双臂外部系统验证 | 外部效度 | P1 | Morphz 70/89，Codex 73/89；差 −3.37pp，配对 `p=0.678` | `external-complete` | [`result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md) | 写入论文；保留单次采样、宽区间和非 leaderboard 边界，不选择性补跑 |
 
 ## 依赖

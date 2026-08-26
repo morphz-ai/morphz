@@ -1,7 +1,8 @@
 # Morphz 论文实验中心
 
-> 状态：论文收口阶段（ME-01～ME-06 与 ME-08 已完成；ME-07 已将冷门 A-MEM 替换为
-> 公开 Agent Runtime Letta，v2 的 Letta adapter、产物 Gate 与更新版评测器 Gate 待完成）
+> 状态：论文收口阶段（ME-01～ME-06 与原始 ME-08 已完成；ME-07 已完成 Morphz、
+> Letta、Mem0 三臂 adapter、持久化与真实 scored smoke Gate，正式训练正在运行；ME-08
+> 修复后错题复测作为独立诊断运行，不改写原始 89 题分数）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
@@ -20,6 +21,7 @@
 - [ME-05 九模型跨模型结果](./artifacts/me05_nine_model_p1_20260826/RESULT.md)：144/144 完整，严格合同与事后语义诊断分开报告；
 - [ME-06 长程 paired 结果](./artifacts/me06_long_horizon_p11_20260826/RESULT.md)：两臂 3/3 fixture、24/24 最终字段、3/3 行动；Morphz 额外状态语义与 16.4× token 成本；
 - [ME-07 当前 v2 协议](./me_07_state_bench_protocol_v2.md)：STATE-Bench Agent Learning 上公开 Agent 系统 Morphz、Letta 与 Mem0-backed reference agent 的端到端对照；使用更新版 GPT-5.6 Sol 评测器，不冒充官方历史榜分；
+- [ME-07 Letta 训练失败与恢复 Gate](./me_07_letta_training_failure_and_recovery_20260826.md)：保留原始活动 Context 膨胀失败，验证公开 `reset-messages`、原子 checkpoint 与恢复语义；正式 Letta 训练使用该已冻结路径；
 - [ME-07 历史 v1 协议](./me_07_state_bench_protocol_v1.md)：A-MEM-compatible 旧方案已被 v2 取代，仅保留审计；
 - [ME-07 无模型 Adapter Gate](./artifacts/me07_state_bench_adapter_gate_20260826/RESULT.md)：官方 300 条训练轨迹、版本锁、extension discovery、检索往返与固定 top-k 全部通过；模型调用为 0，不作为效果结果；
 - [ME-07 历史 v1 学习产物 Gate](./artifacts/me07_state_bench_artifact_gate_20260826/RESULT.md)：Morphz、A-MEM、Mem0 的旧 Gate 仅证明 v1 路径，不能替代 Letta v2 Gate；

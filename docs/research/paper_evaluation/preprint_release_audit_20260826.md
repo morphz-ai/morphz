@@ -16,7 +16,7 @@
 | 项目 | 当前状态 | 发布要求 |
 | --- | --- | --- |
 | ME-01～ME-06 | 已完成并进入中英文稿 | 保持冻结数字、协议边界和限制条件 |
-| ME-07 | v2 已选 Morphz/Letta/Mem0 公开 Agent 系统；Letta adapter、真实产物与更新评测器 Gate 未完成 | 不报告旧 LongMemEval 或 A-MEM v1 局部结果；v2 完成前只写方法与预注册边界 |
+| ME-07 | v2 Morphz/Letta/Mem0 adapter、持久化重载、精确模型绑定与三臂 scored smoke Gate 已通过；正式训练运行中，双人盲评与正式批次未完成 | 不报告旧 LongMemEval 或 A-MEM v1 局部结果；正式统计及人工校准闭合前只写方法、Gate 与预注册边界 |
 | ME-08 前 40 题 | 已冻结，Morphz 30/40、official Codex 28/40 | 只作冻结子集历史，不作为最终主结果 |
 | ME-08 后 49 题 | 已完成，Morphz 40/49、official Codex 45/49 | 与前 40 的身份和任务集合核验后合并 |
 | ME-08 完整 89 题 | 已完成，Morphz 70/89、Codex 73/89；差 −3.37pp，`p=0.678` | 同环境 paired 主结果；每题每 arm 一次；不得声称采样方差、形式化非劣或普遍优越 |
