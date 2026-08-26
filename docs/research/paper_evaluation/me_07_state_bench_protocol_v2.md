@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / formal-training-pending / evaluator-human-validation-pending`
+> 状态：`three-arm-scored-smoke-passed / formal-training-running / evaluator-human-validation-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -48,9 +48,10 @@ Letta（原 MemGPT）不是一个临时记忆检索模块，而是具有主动�
 - Morphz Runtime 基线：commit
   `ad60e300f115fe84e03a8cd3ab70940deb06ae68`，包含 Harbor workspace/exec drain 修复和
   Objective 通用收敛契约；生产 STATE-Bench Runtime adapter commit 为
-  `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 runner/adapter commit 为
-  `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`。后续替换任一身份都必须生成新 lock 和回归
-  证据，不得隐式跟随 `main`。
+  `3902cb4df3c400ffb8136ccd3587488a3560cf41`；三臂 adapter 与训练 runner commit 为
+  `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；正式配对 runner、统计器与人工盲评包生成器
+  commit 为 `d0ed3b7b79841e30059e2997b1670030863a89ea`。后续替换任一身份都必须生成新 lock
+  和回归证据，不得隐式跟随 `main`。
 
 版本、容器镜像 digest、Python/Node 依赖锁、数据库版本和配置哈希必须在真实 smoke 前写入
 机器可读 lock；`latest` 镜像不得进入正式运行。
@@ -109,6 +110,12 @@ v2 不再把 STATE-Bench 历史协议中的 Azure GPT-5.4 当作不可替换的�
 
 正式规模保持上游完整任务：3 domains × 50 held-out tasks × 5 runs = 750 trials/arm，三组
 共 2,250 trials。真实 smoke 只用于 Gate，不得混入正式分数。
+
+正式队列以 `20260826` 为固定随机种子，将同一 `(domain, task, run)` 定义为一个配对单元；
+每个单元内三个 arm 最多并行运行，因而不同系统承受相近的外部时间条件，但同一 arm 任一时刻
+最多只有一个任务。每个任务只允许一次正式尝试。terminal 失败保留并计零，不自动重试；进程
+中断恢复时只运行尚未形成 terminal receipt 的缺失任务。每个 terminal receipt 在进入下一个
+配对单元前原子写入。
 
 - 主指标：更新评测协议下的 pass@1；
 - 主要配对差：Morphz−Letta、Morphz−Mem0；

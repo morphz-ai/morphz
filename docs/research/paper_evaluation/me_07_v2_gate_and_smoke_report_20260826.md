@@ -80,12 +80,14 @@ Morphz Gate 的一次 episode 产生 1 次 Context Transaction，Mind version `0
   `3902cb4df3c400ffb8136ccd3587488a3560cf41`；
 - ME-07 三臂 runner/adapters：
   `ac75c05bf30725d7e3791ed7fce9ca36b16fbafa`；
+- 正式配对 runner、聚类统计与盲评包生成器：
+  `d0ed3b7b79841e30059e2997b1670030863a89ea`；
 - Gate binary SHA-256：
   `92efe2c3a54887136909366b9437de0b47e7b41f676dae6858cd702189983edd`。
 
 ## 尚未完成
 
-- 三个领域、每个 arm 各 100 条训练轨迹的正式冻结快照；
+- 三个领域、每个 arm 各 100 条训练轨迹的正式冻结快照（已开始，尚未闭合）；
 - 30 条评分的双人盲化 evaluator 复核；
 - 正式交错队列、恢复合同、完整批次和统计；
 - 可进入论文效果表的 ME-07 结果。
