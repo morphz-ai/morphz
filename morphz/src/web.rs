@@ -11096,7 +11096,19 @@ account = "xai-account"
         let provider_app = axum::Router::new()
             .route(
                 "/models",
-                get(|| async {
+                get(|headers: HeaderMap| async move {
+                    let authorized = headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| {
+                            matches!(
+                                value,
+                                "Bearer ephemeral-test-key" | "Bearer durable-test-key"
+                            )
+                        });
+                    if !authorized {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    }
                     Json(json!({
                         "data": [
                             {
@@ -11108,11 +11120,19 @@ account = "xai-account"
                             { "id": "model-b" }
                         ]
                     }))
+                    .into_response()
                 }),
             )
             .route(
                 "/responses",
-                post(|| async {
+                post(|headers: HeaderMap| async move {
+                    if headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        != Some("Bearer durable-test-key")
+                    {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    }
                     Json(json!({
                         "status": "completed",
                         "output": [{
@@ -11120,6 +11140,7 @@ account = "xai-account"
                             "content": [{ "type": "output_text", "text": "E2E_OK" }]
                         }]
                     }))
+                    .into_response()
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -11131,6 +11152,13 @@ account = "xai-account"
 
         let temp = tempfile::tempdir().unwrap();
         let database_path = temp.path().join("morphz.db");
+        let secret_store = Arc::new(
+            SecretStore::new(
+                temp.path().join("managed-secrets.json"),
+                Arc::new(WebTestSecretBackend::default()),
+            )
+            .unwrap(),
+        );
         let initial_config = AppConfig::default();
         let routed_client = Arc::new(crate::provider::routing::RoutedClient::empty(
             initial_config.llm.clone(),
@@ -11141,7 +11169,7 @@ account = "xai-account"
             initial_config,
             routed_client.clone(),
             None,
-            None,
+            Some(Arc::clone(&secret_store)),
         )
         .await;
 
@@ -11183,14 +11211,25 @@ account = "xai-account"
                 },
                 account_id: "local-account".to_string(),
                 account: AuthAccountConfig {
-                    auth_adapter: "none".to_string(),
+                    auth_adapter: "credential".to_string(),
+                    credential_ref: "local-provider-api-key".to_string(),
                     provider: Some("local-provider".to_string()),
                     label: Some("Local test".to_string()),
                     ..AuthAccountConfig::default()
                 },
-                credential_id: None,
-                credential: None,
-                managed_secret: None,
+                credential_id: Some("local-provider-api-key".to_string()),
+                credential: Some(crate::config::CredentialConfig {
+                    source: crate::config::CredentialSource::Env,
+                    name: Some("MORPHZ_WEB_TEST_LOCAL_PROVIDER_API_KEY".to_string()),
+                    ..crate::config::CredentialConfig::default()
+                }),
+                managed_secret: Some(PutManagedSecretRequest {
+                    name: "MORPHZ_WEB_TEST_LOCAL_PROVIDER_API_KEY".to_string(),
+                    value: "durable-test-key".to_string(),
+                    scope_kind: crate::secret_store::SecretScopeKind::Runtime,
+                    scope_id: None,
+                    value_backend: None,
+                }),
                 route_id: "route-a".to_string(),
                 route: ModelRouteConfig {
                     candidates: vec![crate::config::ModelRouteCandidateConfig {
@@ -11393,10 +11432,22 @@ account = "xai-account"
             Some(300_000)
         );
 
-        let restarted =
+        let restarted_client = Arc::new(
             crate::provider::routing::RoutedClient::new(&persisted, persisted.llm.model.clone())
-                .unwrap();
-        let restarted_completion = restarted
+                .unwrap(),
+        );
+        let restart_database_path = temp.path().join("restarted.db");
+        let (_restarted_state, _restarted_runtime) =
+            test_state_at_with_config_client_auth_and_secrets(
+                &restart_database_path,
+                false,
+                persisted,
+                restarted_client.clone(),
+                None,
+                Some(secret_store),
+            )
+            .await;
+        let restarted_completion = restarted_client
             .create_completion(
                 vec![Message {
                     role: "user".to_string(),

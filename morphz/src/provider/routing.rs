@@ -7,9 +7,9 @@
 use super::auth::ProviderAuthManager;
 use super::{resolve_credential, DiscoveredProviderModel, ProtocolClient, ProviderError};
 use crate::config::{
-    AppConfig, AuthAccountConfig, CredentialConfig, LlmConfig, ModelProtocol, ModelRouteAffinity,
-    ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection, ProviderConfig,
-    ProviderInstanceConfig,
+    AppConfig, AuthAccountConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol,
+    ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection,
+    ProviderConfig, ProviderInstanceConfig,
 };
 use crate::llm::{
     Client, Message, ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
@@ -1350,7 +1350,30 @@ impl RoutedClient {
                             binding.auth_account_id, account.credential_ref
                         )
                     })?;
-                resolve_credential(&account.credential_ref, config)?
+                if config.source == CredentialSource::Env {
+                    let alias = config.name.as_deref().ok_or_else(|| {
+                        format!(
+                            "Credential '{}' is missing an environment variable name",
+                            account.credential_ref
+                        )
+                    })?;
+                    Some(match self.auth_manager() {
+                        Some(manager) => manager
+                            .materialize_static_credential(alias)?
+                            .ok_or_else(|| {
+                                format!(
+                                    "Credential '{}' requires managed secret or environment variable {alias}",
+                                    account.credential_ref
+                                )
+                            })?,
+                        None => resolve_credential(&account.credential_ref, config)?
+                            .ok_or_else(|| {
+                                format!("Credential '{}' resolved no value", account.credential_ref)
+                            })?,
+                    })
+                } else {
+                    resolve_credential(&account.credential_ref, config)?
+                }
             }
             adapter if adapter.ends_with("-oauth") => {
                 let manager = self.auth_manager().ok_or_else(|| {
