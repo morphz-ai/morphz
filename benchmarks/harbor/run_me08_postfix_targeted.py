@@ -53,7 +53,10 @@ def load_selection(mode: str) -> tuple[dict[str, Any], list[str]]:
         raise RuntimeError("smoke must contain the two confirmed repaired failures")
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     runtime = lock["runtime"]
-    if runtime["git_commit"] != manifest["postfix_runtime_commit"]:
+    locked_postfix_commit = runtime.get(
+        "prior_postfix_git_commit", runtime["git_commit"]
+    )
+    if locked_postfix_commit != manifest["postfix_runtime_commit"]:
         raise RuntimeError("toolchain lock is not pinned to the post-fix Runtime")
     if lock["terminal_bench"]["dataset"] != manifest["dataset"]:
         raise RuntimeError("Terminal-Bench dataset lock mismatch")

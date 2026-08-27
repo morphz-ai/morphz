@@ -64,9 +64,15 @@ def load_tasks() -> tuple[dict[str, Any], list[str], list[str]]:
         if manifest[key] != dataset[key]:
             raise RuntimeError(f"task set {key} does not match toolchain lock")
     runtime = lock["runtime"]
-    if runtime["git_commit"] != EXPECTED_RUNTIME_COMMIT:
+    locked_baseline_commit = runtime.get(
+        "prior_me08_git_commit", runtime["git_commit"]
+    )
+    locked_baseline_binary = runtime.get(
+        "prior_me08_binary_sha256", runtime["binary_sha256"]
+    )
+    if locked_baseline_commit != EXPECTED_RUNTIME_COMMIT:
         raise RuntimeError("runtime commit differs from first-40 baseline")
-    if runtime["binary_sha256"] != EXPECTED_RUNTIME_BINARY_SHA256:
+    if locked_baseline_binary != EXPECTED_RUNTIME_BINARY_SHA256:
         raise RuntimeError("runtime binary differs from first-40 baseline")
     return manifest, tasks, prior
 

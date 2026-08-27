@@ -76,7 +76,10 @@ class RuntimeCancellationTests(unittest.TestCase):
             agent = MorphzAgent(
                 logs_dir=logs_dir,
                 model_name="custom/gpt-5.6-sol",
-                extra_env={"MORPHZ_PROVIDER_API_KEY": "test-only"},
+                extra_env={
+                    "MORPHZ_PROVIDER_API_KEY": "test-only",
+                    "MORPHZ_HARBOR_WORKSPACE_ROOT": "/app",
+                },
             )
             environment = _CancellationEnvironment()
             run = asyncio.create_task(
