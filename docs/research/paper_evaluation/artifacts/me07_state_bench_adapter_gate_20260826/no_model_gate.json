@@ -1,0 +1,40 @@
+{
+  "gate": "ME-07-STATE-Bench-no-model-v1",
+  "protocol_id": "ME-07-STATE-Bench-strong-memory-v1",
+  "checks": {
+    "protocol_lock_valid": true,
+    "state_bench_commit": true,
+    "official_train_split_complete": true,
+    "extension_discovery": true,
+    "memory_tool_round_trip": true,
+    "fixed_top_k_enforced": true,
+    "formal_arm_set_excludes_no_memory": true
+  },
+  "required_checks": [
+    "extension_discovery",
+    "fixed_top_k_enforced",
+    "formal_arm_set_excludes_no_memory",
+    "memory_tool_round_trip",
+    "official_train_split_complete",
+    "protocol_lock_valid",
+    "state_bench_commit"
+  ],
+  "details": {
+    "protocol_lock_errors": [],
+    "state_bench_commit": "5644b1838d96bc4483da29642d058ecaa6f80f7f",
+    "train_counts": {
+      "travel": 100,
+      "customer_support": 100,
+      "shopping_assistant": 100
+    },
+    "canonical_train_digests": {
+      "travel": "ae6f1539c779252f61c29753adffc66c86d650c35fa5e0452d4b7e32bfe1623d",
+      "customer_support": "2431c31ba3fe85ce99f419d982556535af8c88a53788dcb215dfe004d7f096bc",
+      "shopping_assistant": "ff8d97a9ca7517b84f4c377d242b9676f715c28084a846da5621a6a1d2651869"
+    },
+    "overlay_tree_sha256": "724f598d24695effb4813328ffb1bf17f52a5c5ecc2230e49f1fe821d9149224",
+    "protocol_lock_sha256": "3c3338cdea622961d1e4c008fdbe71750547e8b5d651563c0d3cdd35aab66b9a"
+  },
+  "gate_passed": true,
+  "real_model_calls": 0
+}

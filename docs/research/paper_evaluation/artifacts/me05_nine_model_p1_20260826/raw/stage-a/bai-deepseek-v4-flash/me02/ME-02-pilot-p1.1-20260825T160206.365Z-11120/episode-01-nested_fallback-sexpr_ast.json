@@ -1,0 +1,3726 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "nested_fallback",
+  "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+  "success": false,
+  "semantic_success": true,
+  "score": 4,
+  "max_score": 5,
+  "attempts": 6,
+  "prompt_chars": 346,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "primary"
+      },
+      "output": {
+        "error": "PRIMARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "secondary"
+      },
+      "output": {
+        "error": "SECONDARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "tertiary"
+      },
+      "output": {
+        "name": "tertiary",
+        "ok": true,
+        "token": "EP-T-5541"
+      }
+    },
+    {
+      "attempt": 4,
+      "name": "verify_endpoint",
+      "arguments": {
+        "name": "tertiary",
+        "token": "EP-T-5541"
+      },
+      "output": {
+        "delivery_token": "ENDPOINT-VERIFIED-7752",
+        "ok": true
+      }
+    },
+    {
+      "attempt": 5,
+      "name": "make_value",
+      "arguments": {
+        "name": "ENDPOINT-VERIFIED-7752"
+      },
+      "output": {
+        "error": "UNKNOWN_NAME",
+        "ok": false
+      }
+    }
+  ],
+  "final_answer": "The program's REPLY step has been evaluated. The final answer is the delivery token from the verified endpoint:\n\n**ENDPOINT-VERIFIED-7752**",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\", \"make_value:ENDPOINT-VERIFIED-7752:\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": false,
+      "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\", \"make_value:ENDPOINT-VERIFIED-7752:\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"The program's REPLY step has been evaluated. The final answer is the delivery token from the verified endpoint:\\n\\n**ENDPOINT-VERIFIED-7752**\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1398,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1398,
+        "calibration_key": 9911926562002233031,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "I'll execute this program step by step, starting with the primary probe endpoint call.",
+        "tool_calls": [
+          {
+            "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\": \"primary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " analyze"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " this"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IND"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " F"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "BACK"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "  "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " -"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "=\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "  "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " -"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Fall"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "back"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " F"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "BACK"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "    "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " -"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "=\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "secondary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "    "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " -"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "=\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ter"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ti"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IND"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " CALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".d"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "el"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "F"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "BACK"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " evaluates"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " its"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " backup"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " only"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " after"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " returns"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " an"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " explicit"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " failure"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " So"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " first"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " see"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " what"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " happens"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " start"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " by"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calling"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "I"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'ll"
+        },
+        {
+          "kind": "text_delta",
+          "text": " execute"
+        },
+        {
+          "kind": "text_delta",
+          "text": " this"
+        },
+        {
+          "kind": "text_delta",
+          "text": " program"
+        },
+        {
+          "kind": "text_delta",
+          "text": " step"
+        },
+        {
+          "kind": "text_delta",
+          "text": " by"
+        },
+        {
+          "kind": "text_delta",
+          "text": " step"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " starting"
+        },
+        {
+          "kind": "text_delta",
+          "text": " with"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "text_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "text_delta",
+          "text": " endpoint"
+        },
+        {
+          "kind": "text_delta",
+          "text": " call"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "primary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1613,
+            "uncached_input_tokens": 1613,
+            "cached_input_tokens": 0,
+            "output_tokens": 201,
+            "reasoning_tokens": 139,
+            "total_tokens": 1814,
+            "raw": [
+              {
+                "input_tokens": 1613,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 201,
+                "output_tokens_details": {
+                  "reasoning_tokens": 139
+                },
+                "total_tokens": 1814
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_37fb9f9a-7fc4-4077-bf97-522a65b8e3b9_0",
+                "summary": [
+                  {
+                    "text": "Let me analyze this program.\n\nThe program is:\n1. BIND selected = FALLBACK:\n   - Primary: CALL probe_endpoint(name=\"primary\")\n   - Fallback: FALLBACK:\n     - CALL probe_endpoint(name=\"secondary\")\n     - CALL probe_endpoint(name=\"tertiary\")\n2. BIND verified = CALL verify_endpoint(name=ref selected.name, token=ref selected.token)\n3. REPLY verified.delivery_token\n\nFALLBACK evaluates its backup only after the primary returns an explicit failure. So I need to first call probe_endpoint with name \"primary\" and see what happens.\n\nLet me start by calling probe_endpoint(\"primary\").",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1613,
+        "uncached_input_tokens": 1613,
+        "cached_input_tokens": 0,
+        "output_tokens": 201,
+        "reasoning_tokens": 139,
+        "total_tokens": 1814,
+        "raw": [
+          {
+            "input_tokens": 1613,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 201,
+            "output_tokens_details": {
+              "reasoning_tokens": 139
+            },
+            "total_tokens": 1814
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1674,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1674,
+        "calibration_key": 17161588176360813344,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_37fb9f9a-7fc4-4077-bf97-522a65b8e3b9_0\",\"summary\":[{\"text\":\"Let me analyze this program.\\n\\nThe program is:\\n1. BIND selected = FALLBACK:\\n   - Primary: CALL probe_endpoint(name=\\\"primary\\\")\\n   - Fallback: FALLBACK:\\n     - CALL probe_endpoint(name=\\\"secondary\\\")\\n     - CALL probe_endpoint(name=\\\"tertiary\\\")\\n2. BIND verified = CALL verify_endpoint(name=ref selected.name, token=ref selected.token)\\n3. REPLY verified.delivery_token\\n\\nFALLBACK evaluates its backup only after the primary returns an explicit failure. So I need to first call probe_endpoint with name \\\"primary\\\" and see what happens.\\n\\nLet me start by calling probe_endpoint(\\\"primary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll execute this program step by step, starting with the primary probe endpoint call.",
+          "tool_calls": [
+            {
+              "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_tZIewF5zveOAEYKyTR6L0795"
+        }
+      ],
+      "response": {
+        "content": "The primary probe returned an explicit failure, so the fallback proceeds to the secondary probe.",
+        "tool_calls": [
+          {
+            "id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\": \"secondary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " returned"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " an"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " explicit"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " failure"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " false"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " error"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " PRIMARY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_U"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "NA"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "VA"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ILABLE"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " So"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " F"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "BACK"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " moves"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " its"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " backup"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " which"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " another"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " F"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "BACK"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " secondary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " as"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "secondary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "text_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "text_delta",
+          "text": " returned"
+        },
+        {
+          "kind": "text_delta",
+          "text": " an"
+        },
+        {
+          "kind": "text_delta",
+          "text": " explicit"
+        },
+        {
+          "kind": "text_delta",
+          "text": " failure"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " so"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " fall"
+        },
+        {
+          "kind": "text_delta",
+          "text": "back"
+        },
+        {
+          "kind": "text_delta",
+          "text": " proceeds"
+        },
+        {
+          "kind": "text_delta",
+          "text": " to"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " secondary"
+        },
+        {
+          "kind": "text_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "secondary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1839,
+            "uncached_input_tokens": 47,
+            "cached_input_tokens": 1792,
+            "output_tokens": 112,
+            "reasoning_tokens": 49,
+            "total_tokens": 1951,
+            "raw": [
+              {
+                "input_tokens": 1839,
+                "input_tokens_details": {
+                  "cached_tokens": 1792
+                },
+                "output_tokens": 112,
+                "output_tokens_details": {
+                  "reasoning_tokens": 49
+                },
+                "total_tokens": 1951
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_321da4be-f2ae-4edd-8824-dd3e258d57ce_0",
+                "summary": [
+                  {
+                    "text": "The primary probe returned an explicit failure (ok: false, error PRIMARY_UNAVAILABLE). So the FALLBACK moves to its backup, which is another FALLBACK with secondary as primary. Let me call probe_endpoint(\"secondary\").",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1839,
+        "uncached_input_tokens": 47,
+        "cached_input_tokens": 1792,
+        "output_tokens": 112,
+        "reasoning_tokens": 49,
+        "total_tokens": 1951,
+        "raw": [
+          {
+            "input_tokens": 1839,
+            "input_tokens_details": {
+              "cached_tokens": 1792
+            },
+            "output_tokens": 112,
+            "output_tokens_details": {
+              "reasoning_tokens": 49
+            },
+            "total_tokens": 1951
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1858,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1858,
+        "calibration_key": 2308040143844282351,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_37fb9f9a-7fc4-4077-bf97-522a65b8e3b9_0\",\"summary\":[{\"text\":\"Let me analyze this program.\\n\\nThe program is:\\n1. BIND selected = FALLBACK:\\n   - Primary: CALL probe_endpoint(name=\\\"primary\\\")\\n   - Fallback: FALLBACK:\\n     - CALL probe_endpoint(name=\\\"secondary\\\")\\n     - CALL probe_endpoint(name=\\\"tertiary\\\")\\n2. BIND verified = CALL verify_endpoint(name=ref selected.name, token=ref selected.token)\\n3. REPLY verified.delivery_token\\n\\nFALLBACK evaluates its backup only after the primary returns an explicit failure. So I need to first call probe_endpoint with name \\\"primary\\\" and see what happens.\\n\\nLet me start by calling probe_endpoint(\\\"primary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll execute this program step by step, starting with the primary probe endpoint call.",
+          "tool_calls": [
+            {
+              "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_tZIewF5zveOAEYKyTR6L0795"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_321da4be-f2ae-4edd-8824-dd3e258d57ce_0\",\"summary\":[{\"text\":\"The primary probe returned an explicit failure (ok: false, error PRIMARY_UNAVAILABLE). So the FALLBACK moves to its backup, which is another FALLBACK with secondary as primary. Let me call probe_endpoint(\\\"secondary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The primary probe returned an explicit failure, so the fallback proceeds to the secondary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184"
+        }
+      ],
+      "response": {
+        "content": "The secondary also failed, so the fallback proceeds to the tertiary probe.",
+        "tool_calls": [
+          {
+            "id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\": \"tertiary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " secondary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " also"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " failed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " So"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fall"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "back"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " proceeds"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " tertiary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " secondary"
+        },
+        {
+          "kind": "text_delta",
+          "text": " also"
+        },
+        {
+          "kind": "text_delta",
+          "text": " failed"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " so"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " fall"
+        },
+        {
+          "kind": "text_delta",
+          "text": "back"
+        },
+        {
+          "kind": "text_delta",
+          "text": " proceeds"
+        },
+        {
+          "kind": "text_delta",
+          "text": " to"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " tertiary"
+        },
+        {
+          "kind": "text_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ter"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ti"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1977,
+            "uncached_input_tokens": 57,
+            "cached_input_tokens": 1920,
+            "output_tokens": 75,
+            "reasoning_tokens": 13,
+            "total_tokens": 2052,
+            "raw": [
+              {
+                "input_tokens": 1977,
+                "input_tokens_details": {
+                  "cached_tokens": 1920
+                },
+                "output_tokens": 75,
+                "output_tokens_details": {
+                  "reasoning_tokens": 13
+                },
+                "total_tokens": 2052
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_cc70e986-b9c5-449a-9f1a-25c1202bd077_0",
+                "summary": [
+                  {
+                    "text": "The secondary also failed. So the fallback proceeds to tertiary.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1977,
+        "uncached_input_tokens": 57,
+        "cached_input_tokens": 1920,
+        "output_tokens": 75,
+        "reasoning_tokens": 13,
+        "total_tokens": 2052,
+        "raw": [
+          {
+            "input_tokens": 1977,
+            "input_tokens_details": {
+              "cached_tokens": 1920
+            },
+            "output_tokens": 75,
+            "output_tokens_details": {
+              "reasoning_tokens": 13
+            },
+            "total_tokens": 2052
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2001,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2001,
+        "calibration_key": 1409763454865678416,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_37fb9f9a-7fc4-4077-bf97-522a65b8e3b9_0\",\"summary\":[{\"text\":\"Let me analyze this program.\\n\\nThe program is:\\n1. BIND selected = FALLBACK:\\n   - Primary: CALL probe_endpoint(name=\\\"primary\\\")\\n   - Fallback: FALLBACK:\\n     - CALL probe_endpoint(name=\\\"secondary\\\")\\n     - CALL probe_endpoint(name=\\\"tertiary\\\")\\n2. BIND verified = CALL verify_endpoint(name=ref selected.name, token=ref selected.token)\\n3. REPLY verified.delivery_token\\n\\nFALLBACK evaluates its backup only after the primary returns an explicit failure. So I need to first call probe_endpoint with name \\\"primary\\\" and see what happens.\\n\\nLet me start by calling probe_endpoint(\\\"primary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll execute this program step by step, starting with the primary probe endpoint call.",
+          "tool_calls": [
+            {
+              "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_tZIewF5zveOAEYKyTR6L0795"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_321da4be-f2ae-4edd-8824-dd3e258d57ce_0\",\"summary\":[{\"text\":\"The primary probe returned an explicit failure (ok: false, error PRIMARY_UNAVAILABLE). So the FALLBACK moves to its backup, which is another FALLBACK with secondary as primary. Let me call probe_endpoint(\\\"secondary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The primary probe returned an explicit failure, so the fallback proceeds to the secondary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_cc70e986-b9c5-449a-9f1a-25c1202bd077_0\",\"summary\":[{\"text\":\"The secondary also failed. So the fallback proceeds to tertiary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The secondary also failed, so the fallback proceeds to the tertiary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178"
+        }
+      ],
+      "response": {
+        "content": "The tertiary probe succeeded. Now I'll call verify_endpoint using the selected name and token.",
+        "tool_calls": [
+          {
+            "id": "call_00_ZMsii3SgO4rycnxlECDz1293",
+            "type": "function",
+            "func_name": "verify_endpoint",
+            "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " tertiary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " succeeded"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " returning"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ter"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ti"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-T"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "554"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "So"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " `"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "`"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " {"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ter"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ti"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-T"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "554"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"}"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "(name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ter"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ti"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-T"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "554"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\")."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " tertiary"
+        },
+        {
+          "kind": "text_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "text_delta",
+          "text": " succeeded"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " Now"
+        },
+        {
+          "kind": "text_delta",
+          "text": " I"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'ll"
+        },
+        {
+          "kind": "text_delta",
+          "text": " call"
+        },
+        {
+          "kind": "text_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "text_delta",
+          "text": "point"
+        },
+        {
+          "kind": "text_delta",
+          "text": " using"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " selected"
+        },
+        {
+          "kind": "text_delta",
+          "text": " name"
+        },
+        {
+          "kind": "text_delta",
+          "text": " and"
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_ZMsii3SgO4rycnxlECDz1293",
+          "name": "verify_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ter"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ti"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ary"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ", "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "token"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "EP"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-T"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "554"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1259,
+            "uncached_input_tokens": 1259,
+            "cached_input_tokens": 0,
+            "output_tokens": 130,
+            "reasoning_tokens": 0,
+            "total_tokens": 1389,
+            "raw": [
+              {
+                "input_tokens": 1259,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 130,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1389
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_8862b0d7-416a-4565-9055-0305db5a1352_0",
+                "summary": [
+                  {
+                    "text": "The tertiary probe succeeded, returning:\n- name: \"tertiary\"\n- ok: true\n- token: \"EP-T-5541\"\n\nSo `selected` = {name: \"tertiary\", token: \"EP-T-5541\"}.\n\nNow, step 2: verify_endpoint(name=ref selected.name = \"tertiary\", token=ref selected.token = \"EP-T-5541\").",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1259,
+        "uncached_input_tokens": 1259,
+        "cached_input_tokens": 0,
+        "output_tokens": 130,
+        "reasoning_tokens": 0,
+        "total_tokens": 1389,
+        "raw": [
+          {
+            "input_tokens": 1259,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 130,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1389
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 5,
+      "prompt_measurement": {
+        "tokens": 2207,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2207,
+        "calibration_key": 17813971618612198256,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_37fb9f9a-7fc4-4077-bf97-522a65b8e3b9_0\",\"summary\":[{\"text\":\"Let me analyze this program.\\n\\nThe program is:\\n1. BIND selected = FALLBACK:\\n   - Primary: CALL probe_endpoint(name=\\\"primary\\\")\\n   - Fallback: FALLBACK:\\n     - CALL probe_endpoint(name=\\\"secondary\\\")\\n     - CALL probe_endpoint(name=\\\"tertiary\\\")\\n2. BIND verified = CALL verify_endpoint(name=ref selected.name, token=ref selected.token)\\n3. REPLY verified.delivery_token\\n\\nFALLBACK evaluates its backup only after the primary returns an explicit failure. So I need to first call probe_endpoint with name \\\"primary\\\" and see what happens.\\n\\nLet me start by calling probe_endpoint(\\\"primary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll execute this program step by step, starting with the primary probe endpoint call.",
+          "tool_calls": [
+            {
+              "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_tZIewF5zveOAEYKyTR6L0795"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_321da4be-f2ae-4edd-8824-dd3e258d57ce_0\",\"summary\":[{\"text\":\"The primary probe returned an explicit failure (ok: false, error PRIMARY_UNAVAILABLE). So the FALLBACK moves to its backup, which is another FALLBACK with secondary as primary. Let me call probe_endpoint(\\\"secondary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The primary probe returned an explicit failure, so the fallback proceeds to the secondary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_cc70e986-b9c5-449a-9f1a-25c1202bd077_0\",\"summary\":[{\"text\":\"The secondary also failed. So the fallback proceeds to tertiary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The secondary also failed, so the fallback proceeds to the tertiary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_8862b0d7-416a-4565-9055-0305db5a1352_0\",\"summary\":[{\"text\":\"The tertiary probe succeeded, returning:\\n- name: \\\"tertiary\\\"\\n- ok: true\\n- token: \\\"EP-T-5541\\\"\\n\\nSo `selected` = {name: \\\"tertiary\\\", token: \\\"EP-T-5541\\\"}.\\n\\nNow, step 2: verify_endpoint(name=ref selected.name = \\\"tertiary\\\", token=ref selected.token = \\\"EP-T-5541\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The tertiary probe succeeded. Now I'll call verify_endpoint using the selected name and token.",
+          "tool_calls": [
+            {
+              "id": "call_00_ZMsii3SgO4rycnxlECDz1293",
+              "type": "function",
+              "function": {
+                "name": "verify_endpoint",
+                "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}",
+          "name": "verify_endpoint",
+          "tool_call_id": "call_00_ZMsii3SgO4rycnxlECDz1293"
+        }
+      ],
+      "response": {
+        "content": "The verify call succeeded. The program's REPLY step evaluates, emitting the final answer.",
+        "tool_calls": [
+          {
+            "id": "call_00_t23SPWbfLaM9xVjCIsYN4849",
+            "type": "function",
+            "func_name": "make_value",
+            "arguments": "{\"name\": \"ENDPOINT-VERIFIED-7752\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_end"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "point"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " returned"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EN"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "DP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "O"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "INT"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "775"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".d"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "el"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EN"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "DP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "O"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "INT"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "775"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "text_delta",
+          "text": " call"
+        },
+        {
+          "kind": "text_delta",
+          "text": " succeeded"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " program"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'s"
+        },
+        {
+          "kind": "text_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "text_delta",
+          "text": " step"
+        },
+        {
+          "kind": "text_delta",
+          "text": " evaluates"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " emitting"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " final"
+        },
+        {
+          "kind": "text_delta",
+          "text": " answer"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_00_t23SPWbfLaM9xVjCIsYN4849",
+          "name": "make_value"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "EN"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "DP"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "O"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "INT"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-V"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "ER"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "IFIED"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "775"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2285,
+            "uncached_input_tokens": 237,
+            "cached_input_tokens": 2048,
+            "output_tokens": 121,
+            "reasoning_tokens": 52,
+            "total_tokens": 2406,
+            "raw": [
+              {
+                "input_tokens": 2285,
+                "input_tokens_details": {
+                  "cached_tokens": 2048
+                },
+                "output_tokens": 121,
+                "output_tokens_details": {
+                  "reasoning_tokens": 52
+                },
+                "total_tokens": 2406
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_3879d4a2-1ec6-40b7-b837-2f2063547bb1_0",
+                "summary": [
+                  {
+                    "text": "The verify_endpoint returned:\n- delivery_token: \"ENDPOINT-VERIFIED-7752\"\n- ok: true\n\nNow step 3: REPLY with verified.delivery_token = \"ENDPOINT-VERIFIED-7752\".",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2285,
+        "uncached_input_tokens": 237,
+        "cached_input_tokens": 2048,
+        "output_tokens": 121,
+        "reasoning_tokens": 52,
+        "total_tokens": 2406,
+        "raw": [
+          {
+            "input_tokens": 2285,
+            "input_tokens_details": {
+              "cached_tokens": 2048
+            },
+            "output_tokens": 121,
+            "output_tokens_details": {
+              "reasoning_tokens": 52
+            },
+            "total_tokens": 2406
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 6,
+      "prompt_measurement": {
+        "tokens": 2377,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "bai-deepseek-v4-flash",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2377,
+        "calibration_key": 5700650581074462460,
+        "calibration_shape": 6853307171424649457
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_37fb9f9a-7fc4-4077-bf97-522a65b8e3b9_0\",\"summary\":[{\"text\":\"Let me analyze this program.\\n\\nThe program is:\\n1. BIND selected = FALLBACK:\\n   - Primary: CALL probe_endpoint(name=\\\"primary\\\")\\n   - Fallback: FALLBACK:\\n     - CALL probe_endpoint(name=\\\"secondary\\\")\\n     - CALL probe_endpoint(name=\\\"tertiary\\\")\\n2. BIND verified = CALL verify_endpoint(name=ref selected.name, token=ref selected.token)\\n3. REPLY verified.delivery_token\\n\\nFALLBACK evaluates its backup only after the primary returns an explicit failure. So I need to first call probe_endpoint with name \\\"primary\\\" and see what happens.\\n\\nLet me start by calling probe_endpoint(\\\"primary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "I'll execute this program step by step, starting with the primary probe endpoint call.",
+          "tool_calls": [
+            {
+              "id": "call_00_tZIewF5zveOAEYKyTR6L0795",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_tZIewF5zveOAEYKyTR6L0795"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_321da4be-f2ae-4edd-8824-dd3e258d57ce_0\",\"summary\":[{\"text\":\"The primary probe returned an explicit failure (ok: false, error PRIMARY_UNAVAILABLE). So the FALLBACK moves to its backup, which is another FALLBACK with secondary as primary. Let me call probe_endpoint(\\\"secondary\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The primary probe returned an explicit failure, so the fallback proceeds to the secondary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_4YHsYCvX9eN8Cg1SNYgg6184"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_cc70e986-b9c5-449a-9f1a-25c1202bd077_0\",\"summary\":[{\"text\":\"The secondary also failed. So the fallback proceeds to tertiary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The secondary also failed, so the fallback proceeds to the tertiary probe.",
+          "tool_calls": [
+            {
+              "id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\": \"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_00_xJ6oqUFAdTEZo9dIbBaU9178"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_8862b0d7-416a-4565-9055-0305db5a1352_0\",\"summary\":[{\"text\":\"The tertiary probe succeeded, returning:\\n- name: \\\"tertiary\\\"\\n- ok: true\\n- token: \\\"EP-T-5541\\\"\\n\\nSo `selected` = {name: \\\"tertiary\\\", token: \\\"EP-T-5541\\\"}.\\n\\nNow, step 2: verify_endpoint(name=ref selected.name = \\\"tertiary\\\", token=ref selected.token = \\\"EP-T-5541\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The tertiary probe succeeded. Now I'll call verify_endpoint using the selected name and token.",
+          "tool_calls": [
+            {
+              "id": "call_00_ZMsii3SgO4rycnxlECDz1293",
+              "type": "function",
+              "function": {
+                "name": "verify_endpoint",
+                "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}",
+          "name": "verify_endpoint",
+          "tool_call_id": "call_00_ZMsii3SgO4rycnxlECDz1293"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_3879d4a2-1ec6-40b7-b837-2f2063547bb1_0\",\"summary\":[{\"text\":\"The verify_endpoint returned:\\n- delivery_token: \\\"ENDPOINT-VERIFIED-7752\\\"\\n- ok: true\\n\\nNow step 3: REPLY with verified.delivery_token = \\\"ENDPOINT-VERIFIED-7752\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "The verify call succeeded. The program's REPLY step evaluates, emitting the final answer.",
+          "tool_calls": [
+            {
+              "id": "call_00_t23SPWbfLaM9xVjCIsYN4849",
+              "type": "function",
+              "function": {
+                "name": "make_value",
+                "arguments": "{\"name\": \"ENDPOINT-VERIFIED-7752\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"UNKNOWN_NAME\",\"ok\":false}",
+          "name": "make_value",
+          "tool_call_id": "call_00_t23SPWbfLaM9xVjCIsYN4849"
+        }
+      ],
+      "response": {
+        "content": "The program's REPLY step has been evaluated. The final answer is the delivery token from the verified endpoint:\n\n**ENDPOINT-VERIFIED-7752**",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Wait"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " made"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " an"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " error"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " just"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " emits"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " final"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " answer"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " —"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " it"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " doesn"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "'t"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " require"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " a"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " tool"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " should"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " not"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " have"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " called"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " make"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_value"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " emits"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EN"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "DP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "O"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "INT"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "775"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " as"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " final"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " tool"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-free"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " answer"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " mistakenly"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " called"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " make"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_value"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " which"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " was"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " not"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " part"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " of"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ended"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " at"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " final"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " answer"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " is"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EN"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "DP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "O"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "INT"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "775"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " program"
+        },
+        {
+          "kind": "text_delta",
+          "text": "'s"
+        },
+        {
+          "kind": "text_delta",
+          "text": " REPLY"
+        },
+        {
+          "kind": "text_delta",
+          "text": " step"
+        },
+        {
+          "kind": "text_delta",
+          "text": " has"
+        },
+        {
+          "kind": "text_delta",
+          "text": " been"
+        },
+        {
+          "kind": "text_delta",
+          "text": " evaluated"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " final"
+        },
+        {
+          "kind": "text_delta",
+          "text": " answer"
+        },
+        {
+          "kind": "text_delta",
+          "text": " is"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": " from"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "text_delta",
+          "text": " endpoint"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "EN"
+        },
+        {
+          "kind": "text_delta",
+          "text": "DP"
+        },
+        {
+          "kind": "text_delta",
+          "text": "O"
+        },
+        {
+          "kind": "text_delta",
+          "text": "INT"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "775"
+        },
+        {
+          "kind": "text_delta",
+          "text": "2"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2428,
+            "uncached_input_tokens": 2428,
+            "cached_input_tokens": 0,
+            "output_tokens": 128,
+            "reasoning_tokens": 94,
+            "total_tokens": 2556,
+            "raw": [
+              {
+                "input_tokens": 2428,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 128,
+                "output_tokens_details": {
+                  "reasoning_tokens": 94
+                },
+                "total_tokens": 2556
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_3873e607-d08d-467d-8e5b-454dee9e2d91_0",
+                "summary": [
+                  {
+                    "text": "Wait, I made an error. The REPLY step just emits the final answer — it doesn't require a tool call. I should not have called make_value. The REPLY emits \"ENDPOINT-VERIFIED-7752\" as the final tool-free answer. I mistakenly called make_value, which was not part of the program.\n\nThe program ended at REPLY. The final answer is the delivery_token: \"ENDPOINT-VERIFIED-7752\".",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2428,
+        "uncached_input_tokens": 2428,
+        "cached_input_tokens": 0,
+        "output_tokens": 128,
+        "reasoning_tokens": 94,
+        "total_tokens": 2556,
+        "raw": [
+          {
+            "input_tokens": 2428,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 128,
+            "output_tokens_details": {
+              "reasoning_tokens": 94
+            },
+            "total_tokens": 2556
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

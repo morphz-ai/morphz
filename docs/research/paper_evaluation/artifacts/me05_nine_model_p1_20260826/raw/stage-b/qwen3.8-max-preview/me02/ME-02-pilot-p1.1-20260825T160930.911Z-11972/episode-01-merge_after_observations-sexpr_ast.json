@@ -1,0 +1,1219 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "merge_after_observations",
+  "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 335,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "alpha"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-A-1937"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "beta"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-B-7391"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "merge_records",
+      "arguments": {
+        "alpha": "REC-A-1937",
+        "beta": "REC-B-7391"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "MERGED-AB-4472"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_merge",
+      "arguments": {
+        "receipt": "MERGED-AB-4472"
+      },
+      "output": {
+        "delivery_token": "MERGE-VERIFIED-5208",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "MERGE-VERIFIED-5208",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"MERGE-VERIFIED-5208\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1395,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1395,
+        "calibration_key": 17048989606501797988,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_b9b3e091147047da94dafb47",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"alpha\"}"
+          },
+          {
+            "id": "call_7ba44beebb6c4bd78c357dbd",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"beta\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "We"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need execute"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the program. User"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " provided recursive operational program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". Need evaluate"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " via real function calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". Let's parse"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\n(seq\n "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha (call fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record (arg name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (literal alpha))))"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n  (bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta (call fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record (arg name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (literal beta))))"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n  (bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merged (call merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_records (arg alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (ref alpha token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ")) (arg beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (ref beta token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "))))\n  ("
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "bind verified (call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify_merge (arg"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt (ref merged"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt))))\n "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " (reply (ref"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified delivery_token)))"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\nNeed call fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record name alpha and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta. Are these"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent? Yes both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch_record calls no"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " dependency. Can call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in parallel. Then"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merge_records"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " uses alpha.token and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".token from results."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Then verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_merge uses merged.re"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ceipt. Then reply"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with verified.delivery_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n\nNeed be careful"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ": functions schema:"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch_record requires name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_records alpha, beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". verify_merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt. Let's"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " start"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with two fetch_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " same block since independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_b9b3e091147047da94dafb47",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\": \"alpha"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_7ba44beebb6c4bd78c357dbd",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{\"name\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\"beta"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1690,
+            "uncached_input_tokens": 666,
+            "cached_input_tokens": 1024,
+            "output_tokens": 256,
+            "reasoning_tokens": 200,
+            "total_tokens": 1946,
+            "raw": [
+              {
+                "input_tokens": 1690,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 256,
+                "output_tokens_details": {
+                  "reasoning_tokens": 200
+                },
+                "total_tokens": 1946
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-3ab14e12-67e9-4018-9065-aa44818a21c8_0",
+                "summary": [
+                  {
+                    "text": "We need execute the program. User provided recursive operational program. Need evaluate via real function calls. Let's parse:\n\n(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))\n\nNeed call fetch_record name alpha and beta. Are these independent? Yes both fetch_record calls no dependency. Can call in parallel. Then merge_records uses alpha.token and beta.token from results. Then verify_merge uses merged.receipt. Then reply with verified.delivery_token.\n\nNeed be careful: functions schema: fetch_record requires name. merge_records alpha, beta. verify_merge receipt. Let's start with two fetch_record calls in same block since independent.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1690,
+        "uncached_input_tokens": 666,
+        "cached_input_tokens": 1024,
+        "output_tokens": 256,
+        "reasoning_tokens": 200,
+        "total_tokens": 1946,
+        "raw": [
+          {
+            "input_tokens": 1690,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 256,
+            "output_tokens_details": {
+              "reasoning_tokens": 200
+            },
+            "total_tokens": 1946
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1785,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1785,
+        "calibration_key": 14395430823825251349,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3ab14e12-67e9-4018-9065-aa44818a21c8_0\",\"summary\":[{\"text\":\"We need execute the program. User provided recursive operational program. Need evaluate via real function calls. Let's parse:\\n\\n(seq\\n  (bind alpha (call fetch_record (arg name (literal alpha))))\\n  (bind beta (call fetch_record (arg name (literal beta))))\\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\\n  (reply (ref verified delivery_token)))\\n\\nNeed call fetch_record name alpha and beta. Are these independent? Yes both fetch_record calls no dependency. Can call in parallel. Then merge_records uses alpha.token and beta.token from results. Then verify_merge uses merged.receipt. Then reply with verified.delivery_token.\\n\\nNeed be careful: functions schema: fetch_record requires name. merge_records alpha, beta. verify_merge receipt. Let's start with two fetch_record calls in same block since independent.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_b9b3e091147047da94dafb47",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_7ba44beebb6c4bd78c357dbd",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_b9b3e091147047da94dafb47"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_7ba44beebb6c4bd78c357dbd"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_e17b7f1412534d529b60d100",
+            "type": "function",
+            "func_name": "merge_records",
+            "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "We"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " have alpha.token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " = REC-A-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1937"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ", beta.token ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REC-B-7"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "391."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Now call merge_records"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with alpha=REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-A-19"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "37 beta="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "REC-B-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "7391"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_e17b7f1412534d529b60d100",
+          "name": "merge_records"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"alpha\": \"REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-A-19"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "37"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", \"beta\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"REC-B-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "7391"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1995,
+            "uncached_input_tokens": 971,
+            "cached_input_tokens": 1024,
+            "output_tokens": 103,
+            "reasoning_tokens": 48,
+            "total_tokens": 2098,
+            "raw": [
+              {
+                "input_tokens": 1995,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 103,
+                "output_tokens_details": {
+                  "reasoning_tokens": 48
+                },
+                "total_tokens": 2098
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-f78deca3-800c-450f-baac-58d56a8d5e74_0",
+                "summary": [
+                  {
+                    "text": "We have alpha.token = REC-A-1937, beta.token = REC-B-7391. Now call merge_records with alpha=REC-A-1937 beta=REC-B-7391.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1995,
+        "uncached_input_tokens": 971,
+        "cached_input_tokens": 1024,
+        "output_tokens": 103,
+        "reasoning_tokens": 48,
+        "total_tokens": 2098,
+        "raw": [
+          {
+            "input_tokens": 1995,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 103,
+            "output_tokens_details": {
+              "reasoning_tokens": 48
+            },
+            "total_tokens": 2098
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1918,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1918,
+        "calibration_key": 17704795681840953053,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3ab14e12-67e9-4018-9065-aa44818a21c8_0\",\"summary\":[{\"text\":\"We need execute the program. User provided recursive operational program. Need evaluate via real function calls. Let's parse:\\n\\n(seq\\n  (bind alpha (call fetch_record (arg name (literal alpha))))\\n  (bind beta (call fetch_record (arg name (literal beta))))\\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\\n  (reply (ref verified delivery_token)))\\n\\nNeed call fetch_record name alpha and beta. Are these independent? Yes both fetch_record calls no dependency. Can call in parallel. Then merge_records uses alpha.token and beta.token from results. Then verify_merge uses merged.receipt. Then reply with verified.delivery_token.\\n\\nNeed be careful: functions schema: fetch_record requires name. merge_records alpha, beta. verify_merge receipt. Let's start with two fetch_record calls in same block since independent.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_b9b3e091147047da94dafb47",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_7ba44beebb6c4bd78c357dbd",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_b9b3e091147047da94dafb47"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_7ba44beebb6c4bd78c357dbd"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-f78deca3-800c-450f-baac-58d56a8d5e74_0\",\"summary\":[{\"text\":\"We have alpha.token = REC-A-1937, beta.token = REC-B-7391. Now call merge_records with alpha=REC-A-1937 beta=REC-B-7391.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_e17b7f1412534d529b60d100",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_e17b7f1412534d529b60d100"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_d6776dd7b1ae4e0ab5407166",
+            "type": "function",
+            "func_name": "verify_merge",
+            "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "merged"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".receipt = MER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "GED-AB-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4472"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". Call verify_merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_d6776dd7b1ae4e0ab5407166",
+          "name": "verify_merge"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"receipt\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"MERGED-AB"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-447"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2129,
+            "uncached_input_tokens": 1105,
+            "cached_input_tokens": 1024,
+            "output_tokens": 58,
+            "reasoning_tokens": 19,
+            "total_tokens": 2187,
+            "raw": [
+              {
+                "input_tokens": 2129,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 58,
+                "output_tokens_details": {
+                  "reasoning_tokens": 19
+                },
+                "total_tokens": 2187
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-27a50b71-32b4-4917-8c9b-e1a7c204649e_0",
+                "summary": [
+                  {
+                    "text": "merged.receipt = MERGED-AB-4472. Call verify_merge receipt.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2129,
+        "uncached_input_tokens": 1105,
+        "cached_input_tokens": 1024,
+        "output_tokens": 58,
+        "reasoning_tokens": 19,
+        "total_tokens": 2187,
+        "raw": [
+          {
+            "input_tokens": 2129,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 58,
+            "output_tokens_details": {
+              "reasoning_tokens": 19
+            },
+            "total_tokens": 2187
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2034,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2034,
+        "calibration_key": 9963836180793415344,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3ab14e12-67e9-4018-9065-aa44818a21c8_0\",\"summary\":[{\"text\":\"We need execute the program. User provided recursive operational program. Need evaluate via real function calls. Let's parse:\\n\\n(seq\\n  (bind alpha (call fetch_record (arg name (literal alpha))))\\n  (bind beta (call fetch_record (arg name (literal beta))))\\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\\n  (reply (ref verified delivery_token)))\\n\\nNeed call fetch_record name alpha and beta. Are these independent? Yes both fetch_record calls no dependency. Can call in parallel. Then merge_records uses alpha.token and beta.token from results. Then verify_merge uses merged.receipt. Then reply with verified.delivery_token.\\n\\nNeed be careful: functions schema: fetch_record requires name. merge_records alpha, beta. verify_merge receipt. Let's start with two fetch_record calls in same block since independent.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_b9b3e091147047da94dafb47",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_7ba44beebb6c4bd78c357dbd",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_b9b3e091147047da94dafb47"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_7ba44beebb6c4bd78c357dbd"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-f78deca3-800c-450f-baac-58d56a8d5e74_0\",\"summary\":[{\"text\":\"We have alpha.token = REC-A-1937, beta.token = REC-B-7391. Now call merge_records with alpha=REC-A-1937 beta=REC-B-7391.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_e17b7f1412534d529b60d100",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_e17b7f1412534d529b60d100"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-27a50b71-32b4-4917-8c9b-e1a7c204649e_0\",\"summary\":[{\"text\":\"merged.receipt = MERGED-AB-4472. Call verify_merge receipt.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_d6776dd7b1ae4e0ab5407166",
+              "type": "function",
+              "function": {
+                "name": "verify_merge",
+                "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"MERGE-VERIFIED-5208\",\"ok\":true}",
+          "name": "verify_merge",
+          "tool_call_id": "call_d6776dd7b1ae4e0ab5407166"
+        }
+      ],
+      "response": {
+        "content": "MERGE-VERIFIED-5208",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " reply verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".delivery_token ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " MERGE-VER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED-52"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "08. Need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " final answer. No"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " more tools.\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "MERGE-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "VERIFIED-5"
+        },
+        {
+          "kind": "text_delta",
+          "text": "208"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2220,
+            "uncached_input_tokens": 172,
+            "cached_input_tokens": 2048,
+            "output_tokens": 40,
+            "reasoning_tokens": 25,
+            "total_tokens": 2260,
+            "raw": [
+              {
+                "input_tokens": 2220,
+                "input_tokens_details": {
+                  "cached_tokens": 2048
+                },
+                "output_tokens": 40,
+                "output_tokens_details": {
+                  "reasoning_tokens": 25
+                },
+                "total_tokens": 2260
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-371e1ced-7810-4b26-b305-c928679524a6_0",
+                "summary": [
+                  {
+                    "text": "Now reply verified.delivery_token = MERGE-VERIFIED-5208. Need final answer. No more tools.\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2220,
+        "uncached_input_tokens": 172,
+        "cached_input_tokens": 2048,
+        "output_tokens": 40,
+        "reasoning_tokens": 25,
+        "total_tokens": 2260,
+        "raw": [
+          {
+            "input_tokens": 2220,
+            "input_tokens_details": {
+              "cached_tokens": 2048
+            },
+            "output_tokens": 40,
+            "output_tokens_details": {
+              "reasoning_tokens": 25
+            },
+            "total_tokens": 2260
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

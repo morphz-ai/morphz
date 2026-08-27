@@ -1,0 +1,1394 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": 3,
+  "selected": [
+    "blue_green",
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-risk-control-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\"release-risk-control-v1\"],\n  \"explanation\": \"Selected two gradual, reversible mechanisms with no forbidden rapid property; the pair collectively covers both required groups.\",\n  \"selected\": [\"blue_green\", \"canary\"]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 731,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "k3-256k",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 731,
+      "calibration_key": 11895784340580146511,
+      "calibration_shape": 189258929373905428
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\"release-risk-control-v1\"],\n  \"explanation\": \"Selected two gradual, reversible mechanisms with no forbidden rapid property; the pair collectively covers both required groups.\",\n  \"selected\": [\"blue_green\", \"canary\"]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " solve"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " nond"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "eterm"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "inistic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selection"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " task"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " that"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "1"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Have"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\")\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Collect"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " every"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " group"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "grad"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "re"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "versible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Let"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_he"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "avy"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " —"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " alone"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " observ"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ability"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " —"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " capacity"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_light"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " —"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " but"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " lacks"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hot"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_swap"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "..."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " feature"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_flag"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "..."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " big"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_b"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ang"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "..."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "="
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Avoid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Options"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " {"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "}"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "+"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "re"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "versible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Also"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " {"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "}:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "+"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "grad"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " so"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collective"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " —"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " {"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "}"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " too"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Many"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " options"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Pick"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " {"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "}"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " —"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " individually"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " satisfy"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " all"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " requirements"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " clean"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "est"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " must"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " contain"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " NON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "D"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "release"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-risk"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-control"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "1"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " markdown"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "release"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-risk"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-control"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "1"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "text_delta",
+        "text": "planation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": " two"
+      },
+      {
+        "kind": "text_delta",
+        "text": " gradual"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " reversible"
+      },
+      {
+        "kind": "text_delta",
+        "text": " mechanisms"
+      },
+      {
+        "kind": "text_delta",
+        "text": " with"
+      },
+      {
+        "kind": "text_delta",
+        "text": " no"
+      },
+      {
+        "kind": "text_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rapid"
+      },
+      {
+        "kind": "text_delta",
+        "text": " property"
+      },
+      {
+        "kind": "text_delta",
+        "text": ";"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " pair"
+      },
+      {
+        "kind": "text_delta",
+        "text": " collectively"
+      },
+      {
+        "kind": "text_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "text_delta",
+        "text": " both"
+      },
+      {
+        "kind": "text_delta",
+        "text": " required"
+      },
+      {
+        "kind": "text_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "text_delta",
+        "text": ".\",\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "blue"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_green"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\","
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "can"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 681,
+          "uncached_input_tokens": 681,
+          "cached_input_tokens": 0,
+          "output_tokens": 325,
+          "reasoning_tokens": 292,
+          "total_tokens": 1006,
+          "raw": [
+            {
+              "input_tokens": 681,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 325,
+              "output_tokens_details": {
+                "reasoning_tokens": 292
+              },
+              "total_tokens": 1006
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "xLJPKIsTNdLRd1gvuEiep4eHs7t1hW2uxK3XzlP2BeSd5RY4Sx4HdWObe54N8cK7e+P2WytRypaUGxNDlUU8cj0OgAn/E6yIkvgdBTUvdBfCDMrFX2gS8LkEIxNCKrGQOGUDSFDUl1HZ9LzvRk3Qjgt1fhucIGx7e9LnMGjKAsPZqDKrXF0OnD+umL1aX9CicXHU0lftYOH08MZTqPgvJ60Hc87c2ddiHUfLod8mJZXN/8zcbtRQMseNX0Uq93Wp1f5q8Cv6ABvf/+vb60VdX+Sd0pN9g5cBPSw8LvS9t30qDslzi8iemyYPmc45BvVhrWzGxH+156CXobzTin9Fj8KqhP2hzRb2uN2LfjBGzlIxGKCFp2yJFSntJskqe9R1pQ1tWEF+KIMLVw7wYvqJVcDckcyS22W/aDjvpw8AY8wr13ScG+1Cqei4kqW1x+5JgA345K8aiza6ArqlOZl4FL7f9OwPldtwA3QJVprCYRox7pqCigHkYbXlpOdiKtFotmsKWbxEQtHy8JP4JMLgYpjaherOML00LaPvTWG0lFIC6D4LCYG1jz3krI8h852P5yIcdzuQNxdB8VWDrcnl3/OeOQi1qswDXmHY5RpH6dMDUirqr01+Rfu/euG+kD1CTmPc9P5lQQrmbFLfKJMUB50/r80M1/lwtB6SUQHIriQbG2SMbYVL0ma4tbrs9IcH/MQ2ZnLVO0Vxnrp6w3ZdMQkJbAE23FmNQb8aTIpJJEr66sT/GwbUcoyuxCGnUOmTUXFqU8DhqTvbQ/4tdZ9Ilr7K2879RHVyNOWfaFFx2bQuxrSqJiusB454SthAP72/iiTyvI31YmKgIWTTQ1GEV/q1yuVCzZNolJuvfHeDI+Vk75LzgCAge7KMK8+9OQpu8Y/CJno1mgpnOcN8rxX0hzid0xwTSUCb7MzI8uPAT97DGeU3a8dUF7YX397lCiw0Sl9B7ny/dBzJXVIWgtAHxDeEs0xztpccKx7E9L64SOYzXuETnIVAlEWE5s4OAhRauqSS+itdTtJwSjZWD/sPL9yTzpGNkUCi+8d/edCXLZ085S5ouqM+eOyBbfbQW8sxtZUPiFFrjTTSCLUk43wdmvikYTKK9ocE1et0c03JaHEwR2PPoZm9ktxLYNPJ6Z6KBWaRye7P6LWOthQ0jtRoe1iGx5XEt8OlLlT1f0WkuD1Ele1mEPlpUFvJ2rOyibFeldVx+CpEO312j9HHHZUE0wROl6w1PZBuEIRGszJT24mP/3ugczUM5k5T9FPJZ9gmL4XjXEZjzvrY/wu10j8nlz1oimUr2a4+IYW+z9a0JG+zD5ks3xvWP9aGrKWB1U/Yt8CF5izXZT+2FaCPcYPu6RyslClWQRx5PBIWRbp935FB4SwMmTvzBViFIgjaECdT5BJBxnN93HkhS02S3OG7N9ruzYO7rpmXj8a7lINgWRLt1bIvIFqrhVwnNBfvQPF8P/TCg34fHeiMnKV6bCOCmiHe9oamE9BS0aApThhSMU5e6TLy9YXzOqsYHhPbzvcGoGKYWiwOUMSfBvOJJ3eN83KANirjObEaBGvy65cRsYN6m2ZxjtvKZ037egAyq39Yl2kzxo3dy1NF/TShd8s84O8cnI5EadNRwWifEAK8nruvvCHewkosTXNTns2IyVJQW4diAi1Y22sfqm6tnCw6IxfDfCpRwfCOM7R0tvFiw2eYNmQjczvjSK0Z5cNdv3C5WZQ0vrMBrk9pp4z4BF5FkJtRg3WVeiOUWV1PkH1/J0Sf5q54qJzUyKNfgQ5X5iaTAvTSUK9eTQQkM0lyFQSTIV05brt14kGFJUrsXO7u69oZh3DN38c9SAIOsKCSbO0erzpQmtyBmp6Q9lbEUu+9IdVvYbXvwDmKIzubuRa1Kdh6bIFnd/95PeYLpBEbHkN1AMmoJkrtgDIXlhYVEI5H/y86EcQs3nH5cZC0awfrX0hxrWNuL4q72JHdm756KWYUxH8Cfay38NJiXosafkEV+vRIix0UgWhVhU0cyeiJ3WOskeQoNvxhy2kQ9MGSqagZamUnNn48tpHhynLr5KB8Xyig1e/+GsdlXyYbU0x2gLegXBdULEwy7wvMvD3FONjSHeu4jgb+c/uXOqQz+DiRzP87rjBPuE4f96EVYXFtPD437T8wHaKcudL3ba1bhinj9hF+QRj86QvLYzVgqFP3CG6lqDhY8FBCd7gb4qcdEaQ+aQklPNwzuMdUC0OYnWUtq7ovyVinWrj+e3GZbkdNKS6GrWEJ/jvU6gYoJEWKixYEqxIbaShTue1Q32YI+k6hWBu1Wsbk7sb11M7Js9SqakArPnDd4fxidl45x5x2lEMH8530qi5dVmXT/o8COZ/fkr5k/7fTgn/Dy/ITxGWRMesGwYg2DViPckWza0PYBkGtWnL0ohczPW5uIpNwdrXS5Rv0rO6V1bLUggLujN2XFiCQ42OLjp9N1iBauPY9rL2jJ+czszB06tAerZN+vqFV/HIFBJkQrKUiCm2yKSPuJAoSCrXr5r9Xb1jrTby1Fjm+bzXN5iRMU62H3gwIZuDLBH7rkSPq8KzCmES0DmNxVRwQhX1mRewsf9c/aKwCQSs8nKeLcmUczqvjWpxJbC2niTECy42O5OJPAfbKIHvXs4eAp6vkw3K3hwUWDLZXRfSOcx9my1IUUu3Sx5WmMUGbo7qhySwmeKZXH7Nw1otnBrypxNuakc21TCFPfPB5k5VF3408M2+QeFg0G9vDodWn0+Nxl8d9CpqyqY5C3n85IVKfJpslRQS57jAC+kP8PWM0qLXnXwx8y66IF4pftmmgQTe9w8t6zLINiWmyMH4spdCQwQij3IiWOVov8WSxyHNL6vMS+VGPVZmEY3m8MgQlso+f70t9rsFwu4OF3OF5C1+b2SiD65DXI3YNcFUebcjMQGcVAaIzR2slF98lgG6BUaMFBsnOoa/LUGx8dgZck99VibmZyeTAL/zvwgTSaBywNF/Dy7X72sHqgWtNiIdPHvvQt9o0yRVE3sIr7X0X2KDor5JycjuQQwx2D+AyqnQMRoI2VFmQgJGhs6Kub6oKjTh8xN6EwMb9EY9zo27KVExybU2HZhuz+ftTJdivN467JXQwFg7+PKnVBeJAgD63WMvJu0p7kmBcecBvLAdZsNZaVdaxaCixHc+wfQGDt+UUnM7OVx7q/bAbLUBwG/SbTe+TkPkkDTjUeuPq3NruWO0u5XDHlr0sXzBZS1Mer1jfHjw0SDdlkg1ejbZ/IhQ5arpOUTF+kYXPkhjzX4Fyw4zIJcdETTOgVFmyVdx6whpvG1u74sR5tmKxlGUr4iwPrT/c5sfARUnxkZVqCJeIGNmVPuKIeh9oTEXMCeAkS3OvD/ZwoEP3qUpK/JKkc9eheYA9WiNbfteBHdh2qPlA+RL+go0lXfBzEnXMRV/r9cyXFU6lLIubURPyzCqy0eKxHEW5bIZALF/u01JHVlhJhWeT1N61bBLI8Fg5sBV/EfZVH1B5T64ZqqcjT1825ju6sAbKji33U+0VSetWvBReiHNKlFOG4kVfJBK4NVIjYGURR1I1z7FB9l1np1aRjO+pqlR6FRdz4zjDhsyWDYhzBBgbmP2oMaCDm7yaa2t9OLAkmfmKLB+4K19/7MnOd5xpmbeBCbXTo/n97/aE9c3BE15x+Rpc5NZSa3Sz0e6KQvuR8D3Fks6VfMOmJ4Qv2zs6qYQAh0Huld4R/OvudBHnjJ46LDsVTQ/GMeYjiPCEI93h37LME9U/AeTtD8XyoM0DaoQynSVIfpslU/Aj+HdVMPNH/XKutA6kDvGwvcXCF58DGYcGAHYJWUI0w8AREQ+atReDQzoMUZoFRhkIaoiGxyCBfaLCeI4YQrFbNtvktuNL9Jvt2wrsCWWpb0+T5fZcSCD2dMOJ9Ydt0rsp+MAY3L9A5MByxeZY9pkb70qJRvHn6oo8hcm+5lODExG/gXrTT0cajrgaov1DNzg+IJl1fP0/y850LzeWrfvnqAvMBbVu30GM+oS2Oa5Iy9vMXlKr42aEaf0ge4M82zFO2a5+qUug7FBfGpn3PqCBtWuUAtDh+5N96h32thYlqoNi2648aVLfRDrNF/BtUQP2SrIB/2r/QoUUY30BomawOHMSIbY6IZkYwuB5wAs2WjXDypwKNu6LqRwdGSuaGyI9yRWV8fPF7B/Z0T9KTZE0Mfv1u7gLdd0SHM9vAZRfnAkW1cuHKIrywGPIATuRMW7lQVBEJdpoPght37Psgqk+tF2AYx4/TIitJ+4ABAk0hMXi5r9wCsrPZcyKL5pXvAdabLCp0eVui9al2SzJ9MWznm47wH2ndks8TDiT",
+              "id": "rs_msg_kCxrmdR8hRJkf1hJWf3fj07C_0",
+              "summary": [
+                {
+                  "text": "The user wants me to solve a nondeterministic selection task. I need to choose exactly 2 distinct candidates that:\n1. Have no forbidden property (\"rapid\")\n2. Collectively cover at least one property from every required group: [\"gradual\"] and [\"reversible\"]\n\nLet me evaluate candidates:\n- blue_green: gradual, reversible, capacity_heavy — no rapid. Covers gradual + reversible alone. Valid.\n- canary: gradual, reversible, observability — no rapid. Covers both. Valid.\n- rolling: gradual, capacity_light — no rapid, but lacks reversible.\n- hot_swap: rapid... forbidden.\n- feature_flag: rapid... forbidden.\n- big_bang: rapid... forbidden.\n\nNeed select_count=2. Need collectively cover gradual and reversible. Avoid rapid.\n\nOptions: {blue_green, canary} covers gradual+reversible, both no rapid. Also {blue_green, rolling}: blue_green covers reversible+gradual so collective covers both, rolling no rapid — valid. {canary, rolling} valid too. Many options.\n\nPick {blue_green, canary} — both individually satisfy all requirements, cleanest.\n\nbasis must contain context id for NONDETERMINISTIC: \"release-risk-control-v1\".\n\nReturn exactly one JSON object, no markdown.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 681,
+      "uncached_input_tokens": 681,
+      "cached_input_tokens": 0,
+      "output_tokens": 325,
+      "reasoning_tokens": 292,
+      "total_tokens": 1006,
+      "raw": [
+        {
+          "input_tokens": 681,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 325,
+          "output_tokens_details": {
+            "reasoning_tokens": 292
+          },
+          "total_tokens": 1006
+        }
+      ]
+    },
+    "error": null
+  }
+}

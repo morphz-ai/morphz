@@ -1,0 +1,134 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": 5,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: unknown field `kind`, expected one of `selected`, `basis`, `explanation` at line 2 column 8"
+    }
+  ],
+  "raw_output": "{\n  \"kind\": \"NONDETERMINISTIC\",\n  \"selected\": [\"notify_affected\", \"preserve_logs\"],\n  \"basis\": [\"incident-accountability-v2\"],\n  \"explanation\": \"Two distinct non-disruptive actions: notify_affected covers transparency (and evidence), preserve_logs covers evidence; one admissible result among several.\"\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 768,
+      "source": "anthropic-messages-serialized-request-estimate",
+      "model": "claude-opus-5",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 768,
+      "calibration_key": 13334823999885687146,
+      "calibration_shape": 6585425193993932596
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"kind\": \"NONDETERMINISTIC\",\n  \"selected\": [\"notify_affected\", \"preserve_logs\"],\n  \"basis\": [\"incident-accountability-v2\"],\n  \"explanation\": \"Two distinct non-disruptive actions: notify_affected covers transparency (and evidence), preserve_logs covers evidence; one admissible result among several.\"\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 1090,
+          "uncached_input_tokens": 2,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 1088,
+          "raw": [
+            {
+              "cache_creation": {
+                "ephemeral_1h_input_tokens": 1088,
+                "ephemeral_5m_input_tokens": 0
+              },
+              "cache_creation_input_tokens": 1088,
+              "cache_read_input_tokens": 0,
+              "inference_geo": "not_available",
+              "input_tokens": 2,
+              "output_tokens": 2,
+              "service_tier": "standard"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n  \"kind\": \"NONDETERMINISTIC\",\n  \"selected\": [\"notify_affected\", \"preserve_logs\"],\n  \"basis\": [\"incident-accountability-v2\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "],\n  \"explanation\": \"Two distinct non-disruptive actions: notify_affected covers transparency (and evidence), preserve_logs covers evidence; one admissible result among several.\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "output_tokens": 489,
+          "raw": [
+            {
+              "cache_creation_input_tokens": 1088,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 489,
+              "output_tokens_details": {
+                "thinking_tokens": 365
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 1090,
+      "uncached_input_tokens": 2,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 1088,
+      "output_tokens": 489,
+      "total_tokens": 1579,
+      "raw": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1088,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 1088,
+          "cache_read_input_tokens": 0,
+          "inference_geo": "not_available",
+          "input_tokens": 2,
+          "output_tokens": 2,
+          "service_tier": "standard"
+        },
+        {
+          "cache_creation_input_tokens": 1088,
+          "cache_read_input_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 489,
+          "output_tokens_details": {
+            "thinking_tokens": 365
+          }
+        }
+      ]
+    },
+    "error": null
+  }
+}

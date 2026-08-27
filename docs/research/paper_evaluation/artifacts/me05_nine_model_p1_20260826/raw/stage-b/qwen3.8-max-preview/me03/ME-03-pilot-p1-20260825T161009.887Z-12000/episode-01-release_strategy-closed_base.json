@@ -1,0 +1,520 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "closed_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": null,
+  "selected": [
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"Selected the unique candidate with the highest closed_score.\",\n  \"selected\": [\n    \"canary\"\n  ]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 709,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "qwen3.8-max-preview",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 709,
+      "calibration_key": 4251739083581649624,
+      "calibration_shape": 15960451244876841423
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"Selected the unique candidate with the highest closed_score.\",\n  \"selected\": [\n    \"canary\"\n  ]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need answer user's"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " request. Need produce"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly one JSON object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no Markdown. Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " analyze.\n\nInput"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": kind DETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_CONTROL. Rule:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select_count 1"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", semantics: Ignore"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open-preference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints and select the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique candidate with greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed_score.\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Candidates closed_score:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " blue"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_green 82"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", canary "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "91, rolling"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 76,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hot_swap 8"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "5, feature_flag"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 89"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", big_bang"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 58."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Max is canary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 91"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Need return basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": for DETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_CONTROL closed-score-rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". selected array with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate ids [\"can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ary\"]. explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " short. Must return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON only. Ensure"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " basis non-empty array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containing closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-score-rule? Returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " basis says \"non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty array containing the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current context id for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " NONDETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC, or closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-score-rule for D"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETERMINISTIC_CONTROL"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\". Could be [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "closed-score-rule\"]."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need JSON object with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " fields basis, explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected.\n\nNeed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe ignore context forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_properties? Deterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says ignore open-pre"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ference constraints? Context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden rapid etc maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open-preference?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " D"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETERMINISTIC_CONTROL"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " apply declared deterministic rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly. Context preferences"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " relevant only to nond"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "eterministic don't"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " override. So"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose canary even"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " if"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " gradual reversible etc?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Yes.\n\nFinal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n{\"basis\":[\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "closed-score-rule\"],\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "explanation\":\"Selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the unique candidate with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " highest closed_score.\",\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "selected\":[\"canary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n  \"basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\": [\n   "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-score-rule\"\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "  ],\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"explanation\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"Selected the unique"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidate with the highest"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed_score.\",\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "  \"selected\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\n    \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "canary\"\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "  ]\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 718,
+          "uncached_input_tokens": 718,
+          "cached_input_tokens": 0,
+          "output_tokens": 339,
+          "reasoning_tokens": 283,
+          "total_tokens": 1057,
+          "raw": [
+            {
+              "input_tokens": 718,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 339,
+              "output_tokens_details": {
+                "reasoning_tokens": 283
+              },
+              "total_tokens": 1057
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_chatcmpl-fd5b03e1-152d-4aa2-aac4-71db1d441fc7_0",
+              "summary": [
+                {
+                  "text": "We need answer user's request. Need produce exactly one JSON object no Markdown. Need analyze.\n\nInput: kind DETERMINISTIC_CONTROL. Rule: select_count 1, semantics: Ignore open-preference constraints and select the unique candidate with greatest closed_score.\nCandidates closed_score: blue_green 82, canary 91, rolling 76, hot_swap 85, feature_flag 89, big_bang 58. Max is canary 91. Need return basis: for DETERMINISTIC_CONTROL closed-score-rule. selected array with candidate ids [\"canary\"]. explanation short. Must return JSON only. Ensure basis non-empty array containing closed-score-rule? Returns basis says \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\". Could be [\"closed-score-rule\"]. Need JSON object with fields basis, explanation, selected.\n\nNeed maybe ignore context forbidden_properties? Deterministic rule says ignore open-preference constraints? Context forbidden rapid etc maybe open-preference? DETERMINISTIC_CONTROL apply declared deterministic rule exactly. Context preferences relevant only to nondeterministic don't override. So choose canary even if gradual reversible etc? Yes.\n\nFinal JSON:\n{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Selected the unique candidate with the highest closed_score.\",\"selected\":[\"canary\"]}",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 718,
+      "uncached_input_tokens": 718,
+      "cached_input_tokens": 0,
+      "output_tokens": 339,
+      "reasoning_tokens": 283,
+      "total_tokens": 1057,
+      "raw": [
+        {
+          "input_tokens": 718,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 339,
+          "output_tokens_details": {
+            "reasoning_tokens": 283
+          },
+          "total_tokens": 1057
+        }
+      ]
+    },
+    "error": null
+  }
+}

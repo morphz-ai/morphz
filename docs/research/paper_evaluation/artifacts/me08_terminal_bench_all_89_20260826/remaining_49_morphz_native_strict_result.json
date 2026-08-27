@@ -1,0 +1,532 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/two-arm-runs/remaining-49-v1-20260826/jobs/morphz-native/2026-08-26__01-47-59",
+  "run_identity": {
+    "infrastructure_git_commit": "e7268eaf3aa8c9a3febc6e4e47b3c223e6ee1209",
+    "infrastructure_git_tags": [
+      "terminal-bench-four-arm-prior-40-v1"
+    ],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "paper-eval-runtime-v4",
+    "runtime_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
+    "runtime_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness_mode": "none",
+    "harness_profile": null,
+    "harness": null,
+    "attempts": 1,
+    "concurrency": 1,
+    "max_retries": 0,
+    "task_filters": [
+      "bn-fit-modify",
+      "break-filter-js-from-html",
+      "build-pmars",
+      "cancel-async-tasks",
+      "chess-best-move",
+      "code-from-image",
+      "constraints-scheduling",
+      "count-dataset-tokens",
+      "crack-7z-hash",
+      "custom-memory-heap-crash",
+      "db-wal-recovery",
+      "distribution-search",
+      "extract-moves-from-video",
+      "feal-differential-cryptanalysis",
+      "feal-linear-cryptanalysis",
+      "financial-document-processor",
+      "fix-code-vulnerability",
+      "fix-git",
+      "git-leak-recovery",
+      "git-multibranch",
+      "headless-terminal",
+      "hf-model-inference",
+      "install-windows-3.11",
+      "large-scale-text-editing",
+      "largest-eigenval",
+      "mailman",
+      "make-mips-interpreter",
+      "modernize-scientific-stack",
+      "multi-source-data-merger",
+      "overfull-hbox",
+      "password-recovery",
+      "path-tracing-reverse",
+      "polyglot-c-py",
+      "polyglot-rust-c",
+      "portfolio-optimization",
+      "protein-assembly",
+      "prove-plus-comm",
+      "pytorch-model-cli",
+      "qemu-startup",
+      "query-optimize",
+      "reshard-c4-data",
+      "rstan-to-pystan",
+      "sanitize-git-repo",
+      "sparql-university",
+      "sqlite-db-truncate",
+      "sqlite-with-gcov",
+      "tune-mjcf",
+      "video-processing",
+      "winning-avg-corewars"
+    ]
+  },
+  "trial_count": 49,
+  "expected_trial_count": 49,
+  "trial_count_matches": true,
+  "missing_expected_tasks": {},
+  "unexpected_tasks": [],
+  "audit_complete": true,
+  "disqualified_trials": 1,
+  "integrity_gate_passed": false,
+  "raw_mean_reward": 0.8163265306122449,
+  "strict_mean_reward": 0.7959183673469388,
+  "trials": [
+    {
+      "trial": "bn-fit-modify__qk2fYnh",
+      "task_name": "terminal-bench/bn-fit-modify",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "break-filter-js-from-html__esANhzu",
+      "task_name": "terminal-bench/break-filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-pmars__My42DBQ",
+      "task_name": "terminal-bench/build-pmars",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "cancel-async-tasks__gULhyZp",
+      "task_name": "terminal-bench/cancel-async-tasks",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "chess-best-move__yXKqQda",
+      "task_name": "terminal-bench/chess-best-move",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "code-from-image__T5htzGw",
+      "task_name": "terminal-bench/code-from-image",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "constraints-scheduling__VosKkRr",
+      "task_name": "terminal-bench/constraints-scheduling",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "count-dataset-tokens__xQG4FB7",
+      "task_name": "terminal-bench/count-dataset-tokens",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "crack-7z-hash__mwbDbMz",
+      "task_name": "terminal-bench/crack-7z-hash",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "custom-memory-heap-crash__9WfmByv",
+      "task_name": "terminal-bench/custom-memory-heap-crash",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "db-wal-recovery__imgV7NS",
+      "task_name": "terminal-bench/db-wal-recovery",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "distribution-search__PeBRuKA",
+      "task_name": "terminal-bench/distribution-search",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-moves-from-video__9BkUyhT",
+      "task_name": "terminal-bench/extract-moves-from-video",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "feal-differential-cryptanalysis__ZDLxH9f",
+      "task_name": "terminal-bench/feal-differential-cryptanalysis",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "feal-linear-cryptanalysis__mN6Hn3E",
+      "task_name": "terminal-bench/feal-linear-cryptanalysis",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "financial-document-processor__2j7zgD7",
+      "task_name": "terminal-bench/financial-document-processor",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-code-vulnerability__s2H33g6",
+      "task_name": "terminal-bench/fix-code-vulnerability",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-git__eeM53H9",
+      "task_name": "terminal-bench/fix-git",
+      "raw_reward": 1.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": true,
+      "finding_count": 1
+    },
+    {
+      "trial": "git-leak-recovery__6T4rTHk",
+      "task_name": "terminal-bench/git-leak-recovery",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "git-multibranch__t955Mz6",
+      "task_name": "terminal-bench/git-multibranch",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "headless-terminal__95NLbtV",
+      "task_name": "terminal-bench/headless-terminal",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "hf-model-inference__3JWByEx",
+      "task_name": "terminal-bench/hf-model-inference",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "install-windows-3.11__9Wqj6mJ",
+      "task_name": "terminal-bench/install-windows-3.11",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "large-scale-text-editing__spdmiju",
+      "task_name": "terminal-bench/large-scale-text-editing",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "largest-eigenval__32x65Uf",
+      "task_name": "terminal-bench/largest-eigenval",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mailman__NHTM8bG",
+      "task_name": "terminal-bench/mailman",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "make-mips-interpreter__haGduQv",
+      "task_name": "terminal-bench/make-mips-interpreter",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "modernize-scientific-stack__REFe3yG",
+      "task_name": "terminal-bench/modernize-scientific-stack",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "multi-source-data-merger__UJJZ6Vh",
+      "task_name": "terminal-bench/multi-source-data-merger",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "overfull-hbox__8pLtikr",
+      "task_name": "terminal-bench/overfull-hbox",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "password-recovery__WWP6JKB",
+      "task_name": "terminal-bench/password-recovery",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "path-tracing-reverse__qhAHdYT",
+      "task_name": "terminal-bench/path-tracing-reverse",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "polyglot-c-py__E8Fgwiz",
+      "task_name": "terminal-bench/polyglot-c-py",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "polyglot-rust-c__7uUkUtQ",
+      "task_name": "terminal-bench/polyglot-rust-c",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "portfolio-optimization__nJhfJom",
+      "task_name": "terminal-bench/portfolio-optimization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "protein-assembly__CCKQFub",
+      "task_name": "terminal-bench/protein-assembly",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "prove-plus-comm__UYRBXnR",
+      "task_name": "terminal-bench/prove-plus-comm",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pytorch-model-cli__bVvWj4F",
+      "task_name": "terminal-bench/pytorch-model-cli",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "qemu-startup__FXDAMFb",
+      "task_name": "terminal-bench/qemu-startup",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "query-optimize__UxnqLgE",
+      "task_name": "terminal-bench/query-optimize",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "reshard-c4-data__E8t9hAf",
+      "task_name": "terminal-bench/reshard-c4-data",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "rstan-to-pystan__jTgzLrU",
+      "task_name": "terminal-bench/rstan-to-pystan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sanitize-git-repo__XShoTDf",
+      "task_name": "terminal-bench/sanitize-git-repo",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sparql-university__mnAmhan",
+      "task_name": "terminal-bench/sparql-university",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sqlite-db-truncate__UdAw8aF",
+      "task_name": "terminal-bench/sqlite-db-truncate",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sqlite-with-gcov__bipt594",
+      "task_name": "terminal-bench/sqlite-with-gcov",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "tune-mjcf__58zqB8h",
+      "task_name": "terminal-bench/tune-mjcf",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "video-processing__empQyRb",
+      "task_name": "terminal-bench/video-processing",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "winning-avg-corewars__hb2tMrf",
+      "task_name": "terminal-bench/winning-avg-corewars",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    }
+  ]
+}

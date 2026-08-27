@@ -1,0 +1,149 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "closed_intervention",
+  "context_id": "research-causal-v2",
+  "valid_open_set_count": null,
+  "selected": [
+    "controlled_trial"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"controlled_trial\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"Selected controlled_trial as the unique candidate with the greatest closed_score under the deterministic rule.\",\n  \"selected\": [\n    \"controlled_trial\"\n  ]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 715,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gemini-3.7-flash-high",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 715,
+      "calibration_key": 1803958758971222628,
+      "calibration_shape": 6417341132265401514
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"Selected controlled_trial as the unique candidate with the greatest closed_score under the deterministic rule.\",\n  \"selected\": [\n    \"controlled_trial\"\n  ]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n  \"basis\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\n    \"closed-score-rule\"\n  ],\n  \"explanation\": \"Selected controlled_trial as the unique candidate with the greatest closed_score under the deterministic rule.\",\n  \"selected\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\n    \"controlled_trial\"\n  ]\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 683,
+          "uncached_input_tokens": 683,
+          "cached_input_tokens": 0,
+          "output_tokens": 62,
+          "reasoning_tokens": 759,
+          "total_tokens": 1504,
+          "raw": [
+            {
+              "input_tokens": 683,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 62,
+              "output_tokens_details": {
+                "reasoning_tokens": 759
+              },
+              "total_tokens": 1504
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "cpa-gemini-responses-carrier-v1:previous:text:RXFnYkNxVWJBUkZOTWcrWmNaVkk2a1B3bGg5SEdWQVJYWjI3MWdQQXZWOFBwV3lSQ3lyMU91eWZsY2lOeTI2ZGMrMHlqbEliYWwzNkpzcWZLdGZtQXdjZzRNVitoSk1GcVBneTE4WDNQV3c0Ui8rOEU1ZS9RNmFFTEFyZHRsWXAxMzQ4TDlZQlI1MlpqZVVqQW1BZHcxeEsvWlg5R2dkQ1BJSjBHMjlyUEVHUFJBd1JpTGRlV1RRdXM5cUJSUXpjQWxEUDlJcnRTVFBMTnlmRzEvR052dStZakVhZWNyREhNdElIdnpDZURiYTBjUUhyWE1SS1ExQlowS29kOVQyZFNRZXhLNGozMmNicEtmWGNJODg5WUR1aUYvOUE2dFRpQ0pQTng0VUx5VUVVMHpCRnR4blJidGZ6NUVCclhVaVpwTFFYWEZmbjVkcjRrYkxVTFN4WDIwUzF2STNMTUlLY0tmY21GYThZdFMwS1FwT1loZDQzTWFRM0srTnlDT3l2UitMcWJHTzV3U3hoZ1ByQjZ1MEQ3TDNrd2t6TG5PbEJFcUM3Q3FKUGVpSEE3OGxtYkRlbVBjYmNvZUsrTXFGdlZKTUJGR3BuM3J4N3hDc0k3Rk1tV2hYemdlSWsybzQvMG5oSlVYNDV6SUpHR2U0UnlRQTRENFpiQzREaEU0cFVPNE96LzRKWEZCNjg0ZThpaHFQME9vMytjRFlCQUdSNFNXVWhvWnEzTWMyemZ5cktXZkd5YW1IcUZJcUFOdkFYeDQ5K2FiY2F4VWxheURYWXFBdTRiR3ZFMmhrNWQvVWUyTGRLd2FWcWlXRENDQzIxN0JYRnRjUU5LTkNkd0NPMUorUTAvQnoreGRJQVNoVHlHSHBwWW1HYVNnem1oZEVqbWNCSTRheERURTF1MnJBckJqY0JoOStyeUIwR1lzemk2RFNSaXhTRldWbVE4ZG5UTFAxZmQwSW4yaHk3WW5lb0x4UndUdS9CZVY2Ty9oR2IxQzdVaHl4K1VzZzZKd1hMRnlMZGltQXA0RGt4b3EyTU1ScTZKcTN6RW1qMkYwRytBUGtrcDV2Rkg0SGJrMG4vU3ArZHQvVG1hcElXRURwOFUrNldocjdkMmpLYXFSR1RzWnMwdWhRQUpBUWc5cW5ndFFZRkpnSkdacTNtSjY1OFFmSm1KMVI0OGdZSFJOYlBwWUxaY0wvZVRRd2o4QlJBcDZXTTNBS2I5MnlyMGw4WXd5OWZvUmk1dlo4b3ZwU05EalRzU0xGeU9zemlpZmdJWEcrZWQwcE41amF2MXBEV3hScTk3OTZQT0UwUUZZaExJTWQ0UWxGWXp4S054dWhoSUk5UmYzMGR3WngrenFYdHlveE5md1I0MEttdkR0S0dKbTV4NlYvUFZWSlJWMHE4NGNSUXZoSmgxS0YwN2tMRS8zOThvZTVSUmloM1NXaXpnR2FxelNLdEE1aFFONEJQdjF2Nm9QVURwVzJwdnc0THRZbG5MR3M4VDF1TTJ5Q1dlemFUSVp6YXNmL29sQlpUeml0QzUrOEZvWGhGNVQ0V05sZnBML3B3MUpEVHNhcEhGcEdvd0gzOFF1MjVWTXVUNnRNTThlalZPbmlId0drTG1RV0NLL0U3Rk4vOHNBWnVKRHRwTnByR3IrcU1QUFFCWVdsRTRIYzJtVmVCaFhVRGEyUTB2bUdnbTdvUTBpNnJETGx3VzMxbjNWZW9BNUpqQjJSZnR4Y2F3dWNCVUNodk1OKy9XNnJaSHJIaEIwVk04d05iSmN6eXNOdmFjMWVEOHA5QU05V3AzK3FUSXpaWDJsdHc4T3BoS1pqNW4zZkpSN3BmaHJKWHhPQkF4enFudzNTVEFVYm8zLzhRNzFFWGNtc1ZhZEdMaE8zRTUyT1FaZjh2Uk8zZVNkTXg5K0pSRkJEeEdVQUlLZ1plUUMvSHZmK0laNkhhRitjbFYxSytxZ2FhRTNoZTErNCtzKzI2dVdTR2RBdzgvOFFCREdKZW1BN1kzb2pqcGtKYUZ3UERPOUlEb2ZRSDFBREs1TWlyYnlFRjc0SDNWMEltZFhicGJ1N1FkNmF0aW1nb1V5TThxZnVKanp1U0hwRjJXMHZMZ3JKbFh2RnR5OVA5L0pJcUMrem9ZVlRXenpzYjNuNHJNQ1NlRHB4b2I3bnlKVDYycWRBNkhRLzdqcUxIMXkwRlVSVURrcHJNRmJKdWZKS2xKaTRCUDhwbDhMR2YvZ1hRNU5GZzNMNjhCZ2pDQ1FxVjhvNVdKdDRXaGQ0dVNrWUhORUJJN29tZnlkRzVBTnJuY0JFMmZ2MWNKTXlwazBBUENzbzFKQlo0eldxSFg5UkNLcUxwb1NnZDdJaCtrSmluOHFlUXJFeENMQVJzYU5EQlh1VkxkQzVGWWFyeGNyMjdPU0Zrb2l3MUJMYmJTUGhVRmRROElpQkEyaEtRakhqUk5GQzVrMlArdTZlK05kS0M3RXdwU0xTVXEwQVlmNWNQOFRxcmwxSzNTSDRWUHRiaDhvZVRKZEtiSWRRZ0tMQWVkSUJ6bDMrbkdBdmtrZ05yd21hWTdDaGxJZjU3NUFwWXlpU21jL01MVjFSZTE3MTZwbWIxNDc1aHVrWTNSSUZqNjdRUGkvL2c4bk40ZzBCNzNqR2VucTBUdWtZK1JmOFVkb3BFUHRrUk1ueXZTMW9HdnhKZzNtNll4cEdQbkZ0a25FdXZSQTlyZ3hVa2txSlpOTFhwdEdsTWFOQjJZY3pzKzVuRnZiaVpmWVVCOThuNUNaY3ZSYllOM3k2OGhINEMxeVhqN3ZMR1pOWEFUOTUxNVJXQzE3Z2pBdXFPNjJZdFdvRjFDM0lXRElQblQwTFNJT3MxN3ZyS0E5ZlFvUm1XSWxEdGRGUkdJOUIxc05BVTdNTmdXZm9saEhBaE9WVEprMVl2am02eW9WbWRyQkJOTHdvNGNiS0ZVejRuT0dwNUVzeFhCQnU3YWdxbHAvSW1mNVlMeWlvZjU3b2FuZDNHaFhkZkVrKzFUYlJ3U2lHZjUra2EvRWpadWhlL1BXeUpGbS9Za0FHNjNRUnlYMVFkNkRvQmYyeThPSHVrV2d4SnZzOG1DRlA3d2FwZVNGWnJyeUpQUjlod1UycHB0N3RYM1l4bCs2azZjWHdPUVl3M1RmVTNEcjFrMldiT1h4Rzd2ZWQ2MmJQVVNZNXhLMUhvSjhHRlEzZVdnMTYrb1hHN0NaK05HWk9JemZyckJyNmxxWW9PQWp4dWRtbE4wNVRmNDQ1enhUQXBHVm5DZ0d3MndjWXU4SmtuTXhHSGtsbHFiT0pvZjU1OUs5b1BlaTdjTWhaeHJuMWVUaTlkWHZvd2MwMjN3bGVSKzJRdXkvc0tDMFdndWRXY2FuemplbEV6QVNXTkdxOFFoZDcvWXRmSTBPNWx3SGJIcDc0RkhEQnQvNC9zZmxSTHp6eFFYSEp2Q2ZwQkR1TXYzZEtxY0dURTFOVHlWaEFRZ0M5Sk1kQkphd1JPV3JFKzlwalMxaWdiZ1BsY0RjSFBRcE9EOFdHeCsxeC95b0dhZkNVMHJwWVdtZ3BvTmNXQXh1eWg1cDdGOEpjQmJEa092Z2xXbm81RTFwTE1ybGtLWlFOdk9JZ25rQ2IzYWhZelBod2xaR1c4TUwvaTZ1Z1kyZ2E0NGp1akdpSXB6d3ZaV1BmSldQZEdlSGFqWGxYZzYrUnFWdEVOMWE4RGlZWmVXSjhUUzdPaDdDcklxS21iSmxSMFR5cXl1cXJkUlN4eWZvbWIzNWt2REkzdWUvN2g3U2h3U1RHSno3TjQyNHdnclBGTWhiR3RIRGV2R2ZUejFYdUNaM0xnYjdYMHEyekd1VmljV25CNE5JYTY4ekJxYXBJeVRqNys1RENLNGREK1oxdHdjU2FNMFFsdDNCZlZveUtCaURraWNQZWVvTlMrSjlPNkprazY4eE9qTmZGTW9QL0x3ZDg3eDkwaUFGTDFmU3FOQUlvclNPMFVycHloNFkxc0VyVlM3WGN0Y1VHcGxJMVRvY0syaU5vS3ZraWU2RFBTVXROa09tcjNRTXd1c1pFVkNZNFdyQ094dXJkNnArSUJreFRWVlFGV2taMmp2QW5pdDM3TjJNV2haTGRXZHFlTlh1MU11Y1lNMGI1cXlicm9EMm0zN213NjJvdnJBbThYeHVBVVdkdGRMN3h2S2d4UkNobkQ2VWRLQ05VS2xSenRaL2lKNEduU2tVeHJjZnRTMTZybkZZM1FwdDlyTzVGdjFzKytMSnFLdHBzWTMzL1RGZkJ5Zm12Um05bkFGamZ5dUdtZUo3UTY1a1BtZEdvWWR2WVliUW5jTzR1MnE3ZHAwd2JzSTlmTXl4S21NK2xvbnJtSXk1ekh4Vm1jUkNXVHVQTWltR1hwVC9MdlNWd2xiOVNqVmxuNFRscHNlMEFER3g2aksrYmJ1SmtQcVJwNVlYTGh4K3FxbjB1Q1JEUmpqS2hONktnWGdGV21tNEdIZHFvRVB4cFdYbmlKbnZFNGhnVlYwWUNpNTBxN3NTWDFvKzFlQ3JvZTQ2RWNVbDRSK0tQdzhCZW9CR0svMEEwTWduS1BFVDRrZTUycUJZZk5RYnQrWkhJekphWUxzV2dtZkxKRTBuWXBQd3NVSXVZeTdUSUh5ZStKQWxmMzJIU0ZLR2tUaDlaZUloWllhdkw2VVhuT1MxYXVlWDN3RzVoWmZwRmNpT1JlT2lvUVp6S0c2OVJGSHVhVjU0OWU0OUNWNS85YmY0N0RPNFBsTVVQTjFKd3hydktBdWpiYTNoRzRnSzhCbGlXaGl2VU8vVWQxeTd5MExlZ1hkdnJENU9YWm4yQm1nM0hjQWxsNGRiUjlvS3VlVnYrUERZNEZpSSs0SzU3cG85R2xWVTZxdkVuQkNTV1pBWWRDU0l0aEtWNGJUVkdoOFRFTEY0Y3U4N2xRVXU0dmhTbzFsRGQ1VGNXUjVpeHY4MWc3SVl3UVFmQXJ2L0FLLzFVenBwSHdYT1NyNmN1NXZhc1RNM2JuRDIydzlWMEU1Wm9jMUc4M0hwcHg0NytQZmdUcDB1dnAyV2FMQ1FOSG1aY3ZUaS9xVitROHJCMW5mNFZKSGpDQ1lKbFc0S3NBUk16b0E5QWZBdWJNMnREc0NxN2lUQ1h0VEsybHliUERoVkFNamlMRzR6bTgvWVdtdW1EcUlKZlUyS1hldVcrVkt4M2JVZkdWOGRZakt2Y2l6a24rOVdYdzhrRkNTUDBxaWFvVVdNdkEzSlg3NUgvWEd6YjduMlRndEpIb0Q3NlZuc2c0RU9sNEcxUmV5TTAvWURPd3VCekR1MU93aVNZT0g4ZXJPZzMrb3ZXbEZucWNqVGZqa21nckREUkhaT04zZUx3b1h1UzdPNGtwRTFpUFQyUFNIQi9BYk9tQmZVTWt2ZlN1Y2l5K1lGSktpNUd4dzJJQUw0Rmp0bXNPUSt0dExWblIvTmkrcU1ZbituT1dZcC9yREJoMzJHaXE3K09sRFJScjl2c2pKLy9qS2I5cUJWU3pROGlZSXgwblUwVEVINjloWlFRWFBFYXFyZDdjb1RncTcvTHV1TksrR3RwYkUwZk1lNGNtSWs5em1GZ3ZpV3VFQWpTWFE5NEUwS2JBd0Z2ODdzbUgwcXBwV2xOSWtXVytnS3RjT2hEVlcxaENxL3J1NFBpbkVCRlBueGpzZjZRNkl1ZEJtd0J2elNpc0Q4ZUw5dWVCN005aHJaZ3NoeUJNaE9ITUNPRjY2Y25yVTVMWm9Lckcrcms5aFU5ckRKS3o0dUdxVDJ1bFFQS2Jsc1RtRC9vdmNLbzZmZ1hZQ0tDU0JlaWdjcm9ENUQ4Y1VWekFjc3ZJUC9oQS9uMjVsV0dybXJTSVNzMzh5bFNLQnVkSXh0Q2JGOTc0TWFSQ2dXbTdMcTlieFl5Unh2MTl5WkNBU01pVlc5Q0Fqck5jUVB0QWNJZUcxK01MQzJ4cjZjR21FNzRkOHZ3UmIzOVRCUlg3ZG9Nekp3WnlROEo0TEVUQlpyNTE3SWZaSDlmdnBpSnpDMGJ2WWQrZDZoRm9Qc0diSVZZVDZTQmpKS1d3cXIwWmE0QnBKSFplZjRpZnJRSnhSQ2NVNmF3T3dlYVJJNVBnSHIxZHJaVXhpNVdUWnJ4d1ZxRmVjOUN2RG8wS05LQ2k0aXpBK3lOc3BIbXl5dUhlZTV2cUxUVWxLdkJnMHMvUkZ1VW5Ydz09",
+              "id": "rs_resp_2r2NaqKFMNmD-8YP5s9-_detached_after_1",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 683,
+      "uncached_input_tokens": 683,
+      "cached_input_tokens": 0,
+      "output_tokens": 62,
+      "reasoning_tokens": 759,
+      "total_tokens": 1504,
+      "raw": [
+        {
+          "input_tokens": 683,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 62,
+          "output_tokens_details": {
+            "reasoning_tokens": 759
+          },
+          "total_tokens": 1504
+        }
+      ]
+    },
+    "error": null
+  }
+}

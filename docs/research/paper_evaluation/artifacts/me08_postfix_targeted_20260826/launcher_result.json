@@ -1,0 +1,9 @@
+{
+  "protocol": "me08-terminal-bench-postfix-targeted-v1",
+  "phase": "targeted",
+  "completed_at": "2026-08-26T11:52:53.795489+00:00",
+  "runner_return_code": 3,
+  "complete_official_results": true,
+  "summary": "/opt/morphz-benchmark/postfix-runs/me08-postfix-targeted-v1/targeted-run-3/postfix_summary.json",
+  "error": null
+}

@@ -1,0 +1,101 @@
+{
+    "id": "7060ff1a-7ccf-42a0-86a3-f1e22c805a38",
+    "started_at": "2026-08-26T01:48:00.237438",
+    "updated_at": "2026-08-26T08:01:29.731778",
+    "finished_at": "2026-08-26T08:01:29.731778",
+    "n_total_trials": 49,
+    "stats": {
+        "n_completed_trials": 49,
+        "n_errored_trials": 5,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "codex__gpt-5.6-sol__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 49,
+                "n_errors": 5,
+                "metrics": [
+                    {
+                        "mean": 0.9183673469387755
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "overfull-hbox__vy82TkH",
+                            "video-processing__NdN9PWz",
+                            "sanitize-git-repo__39GAyLJ",
+                            "qemu-startup__KndA33M",
+                            "reshard-c4-data__WDCg58j",
+                            "feal-differential-cryptanalysis__p9tWT68",
+                            "rstan-to-pystan__WiBbMfL",
+                            "make-mips-interpreter__QEqnBZW",
+                            "sqlite-db-truncate__XiUGWcU",
+                            "query-optimize__RSarccM",
+                            "financial-document-processor__CvXxzKG",
+                            "install-windows-3.11__QgByznE",
+                            "polyglot-c-py__ELF8Y7M",
+                            "pytorch-model-cli__TNm55Vz",
+                            "db-wal-recovery__GjDYqZk",
+                            "largest-eigenval__T7YQYwT",
+                            "large-scale-text-editing__2Uo6QXb",
+                            "count-dataset-tokens__fPuQ9NG",
+                            "extract-moves-from-video__y6ntCmD",
+                            "path-tracing-reverse__NHSWGhH",
+                            "chess-best-move__fATe8iD",
+                            "prove-plus-comm__ygGsSaB",
+                            "git-multibranch__5JyQdmL",
+                            "multi-source-data-merger__8RetA9c",
+                            "sqlite-with-gcov__DfPEUgx",
+                            "polyglot-rust-c__9HN4oPy",
+                            "feal-linear-cryptanalysis__4tbQ5xv",
+                            "crack-7z-hash__Td3EZ4t",
+                            "sparql-university__SWXuAbE",
+                            "protein-assembly__9AkK5J4",
+                            "custom-memory-heap-crash__6rPrfGB",
+                            "code-from-image__xaownWX",
+                            "fix-git__yvks9Zm",
+                            "winning-avg-corewars__xyzFzrG",
+                            "modernize-scientific-stack__MTJjDTy",
+                            "git-leak-recovery__WTCeNPm",
+                            "distribution-search__Zg4LHT7",
+                            "build-pmars__bEoF8CL",
+                            "mailman__AdjQ93d",
+                            "headless-terminal__GqRZnVr",
+                            "bn-fit-modify__XSCqWzP",
+                            "constraints-scheduling__dkvLrbM",
+                            "tune-mjcf__jRC6sHQ",
+                            "fix-code-vulnerability__GLYjhpb",
+                            "portfolio-optimization__MJJZwWP"
+                        ],
+                        "0.0": [
+                            "hf-model-inference__aUjrYR5",
+                            "password-recovery__y4cjy7q",
+                            "cancel-async-tasks__nkyesLj",
+                            "break-filter-js-from-html__w7RuVvE"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentSafetyRefusalError": [
+                        "feal-differential-cryptanalysis__p9tWT68",
+                        "break-filter-js-from-html__w7RuVvE"
+                    ],
+                    "AgentTimeoutError": [
+                        "password-recovery__y4cjy7q",
+                        "query-optimize__RSarccM"
+                    ],
+                    "ApiRateLimitError": [
+                        "fix-git__yvks9Zm"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 31409413,
+        "n_cache_tokens": 28551296,
+        "n_output_tokens": 558758,
+        "cost_usd": 34.0281464
+    }
+}

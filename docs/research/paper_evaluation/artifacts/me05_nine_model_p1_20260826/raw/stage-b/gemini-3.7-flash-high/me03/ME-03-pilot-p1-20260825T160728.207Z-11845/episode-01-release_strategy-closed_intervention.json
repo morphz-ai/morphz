@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "closed_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": null,
+  "selected": [
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Selected candidate canary as it has the highest closed_score per the deterministic rule.\",\"selected\":[\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 714,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gemini-3.7-flash-high",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 714,
+      "calibration_key": 9288650157354502508,
+      "calibration_shape": 6417341132265401514
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Selected candidate canary as it has the highest closed_score per the deterministic rule.\",\"selected\":[\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\"closed-score-rule\"],\"explanation\":\"Selected candidate canary as it has the highest closed_score per the deterministic rule.\",\"selected\":[\"canary\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 687,
+          "uncached_input_tokens": 687,
+          "cached_input_tokens": 0,
+          "output_tokens": 33,
+          "reasoning_tokens": 404,
+          "total_tokens": 1124,
+          "raw": [
+            {
+              "input_tokens": 687,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 33,
+              "output_tokens_details": {
+                "reasoning_tokens": 404
+              },
+              "total_tokens": 1124
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "cpa-gemini-responses-carrier-v1:previous:text:RXZFTkN1NE5BUkZOTWc5azBqbXdWWm5YbmdFZVkzdXFLeFRSNXcvZkVlNzl2RlkrOXVCV2RHZnQwdWorb1Z1dWZzL1paRnJ0WWZXNXVyVTFqSzAvbkhIVzUxU2NtaE9hdGdRL2cxaklGdXRhWnhsY0krYmtlbEtQdko1SFBGOFpVa0diQzhwdmZlNHY2czRLMytkYmZ5Vi9PWFd6Rm5Sd1lHRVlsa3Y2Uk0wdjVxdWtMMVlUaVQ0MExTaVhheFZ0SjZFWXgranZZQXgyRjJuTDNlOWNZdWNSZFYyNE9LWmxLWXUrVXNnUjNHczI2VHNHbCtFZEpxcmFJaTNBQlhFVVlpWWhEVTBZdEcyMURGNzEyS0tKN092eDduTUVPSytjb0ZKMzhTQlFLVVdZVUN6d1p4UnFYU0JhNE5PbHNnd2RNcFZmeHBpS0dhWWwvL0NWTWNNaHp6QzdZZ0hqd3U2bzVTMTRHU05TaXZ0bGNXdkc4bG9TVXlhdG1zK2lIM3l4cXd0UmdBdCttdXBialgzM3NkMzNEb28zZlFQOWw4R1poam5CMkpjR2hGMWFFbmlEUjNYS0ZwR2Z2WVhwUGNON0JrVndQaEhxblhzbUJlWHc1SUo1ako5aktaYWZrV3NDM0tCZ1p2RUZYb2pGNkhQbzl4RnB6eUVaSHRrU1kyOWR1dE5hL1pldlZFUXFUcEc0RmN0ekg5cS9yWU1JZjNNRU9lMklScno4NDRSZElZQjBjQW9zenVjbmdnWnpKcVZpdCt4S2c1d2dGUDBGRTNLdGdDYVJYU3FIUVFJOC9aRmlMTUIzVWVkTFZ4SU9xc1pITnh5VU0yTGhESXlyRlhDQXlzTjFtbXEwdXNWVHEraXF4c2F0MEpTOVo5NURrbEMwN1hVZGJpdWJFcEhUWUV2cG0vcHVzUEkrNUU0eFYzYWRGOGFEUFE1K0p1YldleFcyNzdBQXpxcXRiOEZPenJUMkJzZHhsUEV3Y0x4eGhsZDdsM3VxM056N2RNQ2hkejUxTGJXVHFYT1N4R25lMXpoTERZc3ZMMGI4L1N6ZUh6NC9VajJxeGFBWkVpUmJHZHRxRWNtb3M5M1A0empoVkp1YUk1aTBEaTZxWFh6R3lVUHl5RFQ1SXVwdStTbU1NNWZNZ3dwMGNjRTlFMnFVN1E2M1hWYTJGZ2E2REZTVE95OWZQdDhNY01tRXl1b3BFN0lpZGJSMjVCRTZLZWdjTE9KZ2FEUmlIdE8xaGM2STJ1clVxN0NNZGM2Rm1nVW5FdGpMaktMazJNdDVoaGFXcGdOQi9ZNHoraUMyeEFCQ1d6dWFyNmtYNXQ3Zjc4UXNpQVR4bzZwT2IzdFJFa3BqMmo0NzRXdUJkSnFwUXBDbXJiL1VPTkRTT1ozN3FXaXB2TE1WOTRsOWVmM2QrUzgwcWdOcWhTNEp1c3I2T3JzR1lodXNHV3RBZC9qOXBvVWM4UVR3SEtoUGkwMGJ2V3lQWm5QMDlPTlAxN1pLTUpsWitOR1NYWVBSNU4xQzBGbGxwWEZ6QjFXdTNNcEVTaVh5a3M0Y1JBSHpLZWJwVGVxTnZYQ0FYQXRtU01jMFY4SW9Ja2E3SkN3R1VwVHBMWGRlak1nTHNVaW1FNnpDVEo5a3Jqc2dhd04rVGJLZHczOUhpd2tQYm9qUmZXdGcyaGN4anVrQldKcjFpL3ZDdk1yc08wemg4OWtnTVoxT2wwaXRpL0x5K3Y2SjNhYk0vSVYwNjF3OC8vZ3Fjanl6UStFZjBZdDZHVjAvK3hrb095NEdQT0NQNEZWS2JrSWc2RDNRUWM2a0dSc08rdVJDcmsvSGhqL29ZN2Z2NWF3M3RFaCtkNmdjQnpkRDZiV2FtNEZNUENBbzBsRmFObG5FVjlXTUxBaXlhTEVXTFVoalRiZUcwTHg1bTdpWG5OV2lVOGkyTXdYbE5DaG1qcVFDam9wNWJLVWl0cjg0eHR4S0RXT3UwVDdwSWl1MTdEZldSOEdQTTBObXhBVHdSOFlhUXI0WGQwUjBPQWZXcld2WG5wTXRxUTlnTmdoNktWMEFtaFRRUC9jdy9OZitpc3FBTE1oR2svZnhUTmRwN3Q2TlVPUVlWVDFDaXp0TGt2cTZzSzBEL1B4L2tBMzdKVlJIR0lta09OclJveW1yb1BCKzdzQnRvUG5CUnJjTENDNDY5djh2blBWMGcvMzZqMFlEdVBNd2JsREVTRGplUGN3d0s1MG1NajRKN3BvZDMvaVFiQnNZMUNwSlV3bS9lNEoxTFhVZi9RaWd5UlVpUlpNQUgya0xqWVJQQWJlVU9FMjFZVTRQRUlvYlo0MTVsSEhBV0hPZ2l0cE5ReFo5UGl0Nm91eVpHbTFJWUh0Q2oxbWtyUmhWbDd5WGN6WkRsTE9USW1JM0VFU0ZmNTh2VE9BQldrUTBjdkJZR01Pd1h6Y3NmWTV5NnFJRmVmNHNSZUViY1dYY25KdXVuNUxBbUtlcDk4aE5BZXJpWjRrQzRLNDArQWMzZ09qZDhQZnVMdXZiMjVsREp2WWRNQVJxaWo2UDZzbnRYZzZWNkFHRXFuQ2ttZE1VQU95MzlhUWNQR1NGVGZyUllrMzlJR0duZFJzQ0FLa0lxT3U2R1N4TnFrWVJsRTUwakUyYzZMZ2Z2WnNwdWVCYnprQzdncGowODN2bWxKVU9aYVhyUC8xVWhzaCtvZGJaeDRkcTBFSXJYZTU4R041bkdhRWJEeXQ5SDhNaHo4WG9leUZUNHJrb2pjc0R4T0hEWXNVSnh4YVMzRzZoKzFiYUwzOUhGWEdBSEU5TmpPcnF2NVZLekQ3ejdqWnBZTE5IVVdkNVpyc0N3TjFBZ21xN1owTHRQZnJjSDdNYW0vUnoyTGRDYWlsbHo4aHd5UEhlbmpMNDVBTHh1aSszbGFwakdHbllaMS9GL0NCNXRpS2ltOWFMU0luVEZmVklDeVBNSXZvcytkeXp3UTI1dENTMmhQVmpmZ2lWZTlsb1R5a3NUSVd6UUJqdnNZQUs2Yk8zanE3cTltd1lsV2tFYzRuY2l4ZkgwR0ZUR0xjNERiSFVFb0Q3cjIvT1c5MVJIeUlXOGN0ZWt3SDlFdVA3RVNCbERSQUdlRGd5N0ZpRnMxcjhZQ2xpR2M3aHJaTzhmV2dPOWlQcEtZUXMyQT09",
+              "id": "rs_resp_yr2NaumcJYmMjrEP-JfuyAc_detached_after_1",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 687,
+      "uncached_input_tokens": 687,
+      "cached_input_tokens": 0,
+      "output_tokens": 33,
+      "reasoning_tokens": 404,
+      "total_tokens": 1124,
+      "raw": [
+        {
+          "input_tokens": 687,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 33,
+          "output_tokens_details": {
+            "reasoning_tokens": 404
+          },
+          "total_tokens": 1124
+        }
+      ]
+    },
+    "error": null
+  }
+}

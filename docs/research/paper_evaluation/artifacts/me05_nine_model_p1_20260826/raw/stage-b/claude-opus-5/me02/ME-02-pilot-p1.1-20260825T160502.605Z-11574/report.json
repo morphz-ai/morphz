@@ -1,0 +1,415 @@
+{
+  "id": "ME-02-pilot-p1.1-20260825T160502.605Z-11574",
+  "created_at": "2026-08-25T16:05:10.857007+00:00",
+  "model": "claude-opus-5",
+  "provider": "custom",
+  "protocol": "anthropic-messages",
+  "immutable_binding": {
+    "requested_alias": "claude-opus-5",
+    "route_id": "claude-opus-5",
+    "route_revision": "sha256:a365836a2902197e02a3f2dff333ead6b66a266802e61ce195b776fac15acd1b",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "claude-opus-5",
+    "protocol": "anthropic-messages",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-b/claude-opus-5/me02/ME-02-pilot-p1.1-20260825T160502.605Z-11574",
+  "summaries": {
+    "json_ast": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "markdown_program": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "sexpr_ast": {
+      "episodes": 3,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": 1.0,
+      "mean_tool_calls": 0.0
+    }
+  },
+  "episodes": [
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "alternating_branches",
+      "semantic_digest": "94bcde6fffb37bd248eff72389f5d2631917d3c62a8ef8302cf4b5bbe0346633",
+      "success": false,
+      "semantic_success": false,
+      "score": 1,
+      "max_score": 5,
+      "attempts": 1,
+      "prompt_chars": 1375,
+      "tool_trace": [],
+      "final_answer": "",
+      "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal",
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": false,
+          "evidence": "missing=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]; actual=[]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": false,
+          "evidence": "expected=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]; actual=[]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": false,
+          "evidence": "violations=[\"read_case:C1->route_true:C1:Q-C1-8264:None->None\", \"read_case:C2->route_false:C2:Q-C2-2684:None->None\", \"read_case:C3->route_true:C3:Q-C3-8426:None->None\", \"read_case:C4->route_false:C4:Q-C4-2846:None->None\"]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": false,
+          "evidence": "missing=[\"ROUTES-VERIFIED-2609\"]; final=\"\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1540,
+            "source": "anthropic-messages-serialized-request-estimate",
+            "model": "claude-opus-5",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1540,
+            "calibration_key": 11705865621956897404,
+            "calibration_shape": 16819325337791764233
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": null,
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 3142,
+                "uncached_input_tokens": 2,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 3140,
+                "raw": [
+                  {
+                    "cache_creation": {
+                      "ephemeral_1h_input_tokens": 3140,
+                      "ephemeral_5m_input_tokens": 0
+                    },
+                    "cache_creation_input_tokens": 3140,
+                    "cache_read_input_tokens": 0,
+                    "inference_geo": "not_available",
+                    "input_tokens": 2,
+                    "output_tokens": 0,
+                    "service_tier": "standard"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "failed",
+              "message": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+            }
+          ],
+          "usage": {
+            "input_tokens": 3142,
+            "uncached_input_tokens": 2,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 3140,
+            "raw": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 3140,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 3140,
+                "cache_read_input_tokens": 0,
+                "inference_geo": "not_available",
+                "input_tokens": 2,
+                "output_tokens": 0,
+                "service_tier": "standard"
+              }
+            ]
+          },
+          "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+        }
+      ]
+    },
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "shared_reference",
+      "semantic_digest": "40ed5d28331135a4bfcb5790f614a85c4a395643d71fb90cbd9b038bae6b23ab",
+      "success": false,
+      "semantic_success": false,
+      "score": 1,
+      "max_score": 5,
+      "attempts": 1,
+      "prompt_chars": 398,
+      "tool_trace": [],
+      "final_answer": "",
+      "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal",
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": false,
+          "evidence": "missing=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]; actual=[]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": false,
+          "evidence": "expected=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]; actual=[]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": false,
+          "evidence": "violations=[\"fetch_piece:shared->transform_piece:left:SH-8813:None->None\", \"fetch_piece:shared->transform_piece:right:SH-8813:None->None\"]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": false,
+          "evidence": "missing=[\"SHARED-VERIFIED-3490\"]; final=\"\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1294,
+            "source": "anthropic-messages-serialized-request-estimate",
+            "model": "claude-opus-5",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1294,
+            "calibration_key": 15998954023141112116,
+            "calibration_shape": 16819325337791764233
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": null,
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2683,
+                "uncached_input_tokens": 2,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 2681,
+                "raw": [
+                  {
+                    "cache_creation": {
+                      "ephemeral_1h_input_tokens": 2681,
+                      "ephemeral_5m_input_tokens": 0
+                    },
+                    "cache_creation_input_tokens": 2681,
+                    "cache_read_input_tokens": 0,
+                    "inference_geo": "not_available",
+                    "input_tokens": 2,
+                    "output_tokens": 0,
+                    "service_tier": "standard"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "failed",
+              "message": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2683,
+            "uncached_input_tokens": 2,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 2681,
+            "raw": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 2681,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 2681,
+                "cache_read_input_tokens": 0,
+                "inference_geo": "not_available",
+                "input_tokens": 2,
+                "output_tokens": 0,
+                "service_tier": "standard"
+              }
+            ]
+          },
+          "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+        }
+      ]
+    },
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "merge_after_observations",
+      "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+      "success": false,
+      "semantic_success": false,
+      "score": 1,
+      "max_score": 5,
+      "attempts": 1,
+      "prompt_chars": 335,
+      "tool_trace": [],
+      "final_answer": "",
+      "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal",
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": false,
+          "evidence": "missing=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": false,
+          "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": false,
+          "evidence": "violations=[\"fetch_record:alpha->merge_records:REC-A-1937:REC-B-7391:None->None\", \"fetch_record:beta->merge_records:REC-A-1937:REC-B-7391:None->None\"]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": false,
+          "evidence": "missing=[\"MERGE-VERIFIED-5208\"]; final=\"\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1279,
+            "source": "anthropic-messages-serialized-request-estimate",
+            "model": "claude-opus-5",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1279,
+            "calibration_key": 1983776121371138569,
+            "calibration_shape": 16819325337791764233
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": null,
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2671,
+                "uncached_input_tokens": 2,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 2669,
+                "raw": [
+                  {
+                    "cache_creation": {
+                      "ephemeral_1h_input_tokens": 2669,
+                      "ephemeral_5m_input_tokens": 0
+                    },
+                    "cache_creation_input_tokens": 2669,
+                    "cache_read_input_tokens": 0,
+                    "inference_geo": "not_available",
+                    "input_tokens": 2,
+                    "output_tokens": 0,
+                    "service_tier": "standard"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "failed",
+              "message": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2671,
+            "uncached_input_tokens": 2,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 2669,
+            "raw": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 2669,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 2669,
+                "cache_read_input_tokens": 0,
+                "inference_geo": "not_available",
+                "input_tokens": 2,
+                "output_tokens": 0,
+                "service_tier": "standard"
+              }
+            ]
+          },
+          "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+        }
+      ]
+    }
+  ],
+  "conclusion_boundary": "ME-02 p1 changes only the serialization of one canonical recursive program. A Pilot result can diagnose feasibility, ceiling/floor effects and format bias; it is not a confirmatory claim that S-expression is superior, nor evidence about Context transactions, long-term memory, concurrency or public benchmark performance."
+}

@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": 3,
+  "selected": [
+    "feature_flag",
+    "hot_swap"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"feature_flag\", \"hot_swap\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-deadline-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Both are non-gradual and rapid; hot_swap provides capacity_light coverage.\",\"selected\":[\"hot_swap\",\"feature_flag\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 737,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 737,
+      "calibration_key": 12290187989363008677,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Both are non-gradual and rapid; hot_swap provides capacity_light coverage.\",\"selected\":[\"hot_swap\",\"feature_flag\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"release-deadline-v2\"],\"explanation\":\"Both are non-gradual and rapid; hot_swap provides capacity_light coverage.\",\"selected\":[\"hot_swap\",\"feature_flag\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 890,
+          "uncached_input_tokens": 890,
+          "cached_input_tokens": 0,
+          "output_tokens": 155,
+          "reasoning_tokens": 111,
+          "total_tokens": 1045,
+          "raw": [
+            {
+              "input_tokens": 890,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 155,
+              "output_tokens_details": {
+                "reasoning_tokens": 111
+              },
+              "total_tokens": 1045
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjb2fiXiJxEuBp4zdst1Bv5ZomABaFqZo1SeHLNWj2MGzBQueaJawcXvNFMhGGK64iR-U87-KCHlw7y7xg3kjVydGTn70w3bmqQ9FZDhFSc4E2-rBiMj2WFfn2_AuAhigGr8YjcK49E6VaZ4yXfQOYwXTEtxj-rcdVfi9tlMYrq6YKhbd8hdt_M5ia4pENvDfvAknqWtocOVoY0AX60_uC8ehveYLzASBbDRNQMvhBfdoBThlrQdCg4EmVfOfEOfxjFFVxIFa-DDRC2obvbI22ABqxh5J0Rjok0fvkS_Fr7i_GQ96zS_2Oz5lgcO7g2CiomILT14sXAZlwIzMATYZKUCLEUVUnFqAeYbBFqgyHSqr6jMD8c9lBEuml5PJQZ5junKWqqaYX6utLS1kPmWFJhoO9HTrAlg53v5hEJDFQfyFFm_hRpPGWzM67DJ1qYywnu25QrVcf9mILZdIsllkjbFcpNSyNMolXRqJJnTS7u0XxldnsGKMB11LWcgxtzZl1U_VBRBrilbn4CqgvucF7KKphWXJmF09x7OfGDJkEviY755P4lYd-EJPtKJHOAEhZWM_MssEqBKmJqe-IWqQzvIiee2dBs39fwlxYKpCRGU_sYTIsDARdpQSUw7kGfEVjdj6GTB0lMnaUKK72WLhDkW-kECIrZTMizE-beIQodTDMpe5FX2-EbUSV6mI-r31LcY5MGRo0s-iND0fSO-h-5DOqv2zlh0HiwqkdUFaXV8vji-A8ZwKpRQSeBWwdwDLn0JFc4uQl98mHm0ZpRbtNLF8IRupOCa1aszXRE7scF4a--SzDeF_eh7glrCXh52E_yZILN9Y1c2y3nE644_lsSgUlhI_T4Q2SN09zUIHmLEdwo-Bn2ZB-GnIiazS4c0UJW6Z7K2tISeI2Bm54zWEAmMH3NkBZbrvl6VWKtNlLJ51jA1DFAv44Zl_qGeIJJEhPZIVEO_TdqdqwJvCFOAS4dANobpqGS0H0nE-gJXPeFGz-4pe0zTkcJ9W60MxMGIf64JwKJkOkN3ZvOAWvCMlFY4YQGAYX4vkLG_SXw3x2sOtFcnAzYoQgf_sGezmWg-MQ7nzoUM9NZU-wKdjCerb42Hki65klMdDtQ-Mh7zIdC1PGs86tpFmMvw3xTgxJrULPVVUuBWilrdam2KecVujaEzpSjUMVM8xPZc5RyYQ8nAYptC48wNUbp3fOYjQvPwN_O3zD6FAypfazS7LIeF9Z1LcMpvTBfj6ZMQpbvRUZtYUCaAXkDFgSP_7FmrZeQpInJ1ftserH-LXVvDM2LfenZNg2G_c4iasXg04qFyHKe5iQjWN4LEjVJB54bZ4KMVD36rYUsesDFbpzYcUvatW4XzxEJfEjGMapn0_kCqeVYt6Uvt2k5CM8Il8I_Qxs7lpKLjpGbEMHt32qvCsA2QN-9BAsxnzOqEz8_qTY1Aia1xx80j-ZIZwr1ZtNYkM4HsZd02m-EGYXdLziyd-qSyERjCzM3nAyQ1mUZKBKJL5FmcK7-FaXCpbWzSAKMVi86j0WmNzBDPK2G98-PvmEPvNwrL1vakgk2agQxR4QrFag8gwKX2orO1-58UD4fk9RhzkWjS7mLY_nesfkoKUJAgOu16Wv6UpSjTrFT5uiRlIMF5_kcZZqAv91Ilx2XkZwpzN1toAOrEUi_4OvjMOfChngtpM3pLQB76JeosJlfivD9bCxJkPMs8iE_hrRI9SCPkjdcpLoQjsJ8-Gpr4JGMeyrbgF7z3KM1ZaZFxQN1n4N6EBNwgJG0GMbqV1i_t0NWvS9F26qkEnlTABm6lgwiljBlxl_QxYF4GOrqla9WGl4s9UvtIxIXb8SDQjWffnoGB1A03H43EycoBildpwN89EBOiLZDBxhC4-LQ7dw8YVpdYxO4qntTlz8hrZ20idHDF6kk8pVQQePoAdIJmCmtys1k_b1JGJkMEcbRRfEOuPx4gB6TzzkLq0HvjyeRu63R3Qqivrs1QdupxhydNj-aFi-oZ6_Fdt2uZdBTaAStNhGOlkEJc=",
+              "id": "rs_0d4ff8473d1fd24c016a8dbd9f0aa087d0a5eb3b716e05f267",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 890,
+      "uncached_input_tokens": 890,
+      "cached_input_tokens": 0,
+      "output_tokens": 155,
+      "reasoning_tokens": 111,
+      "total_tokens": 1045,
+      "raw": [
+        {
+          "input_tokens": 890,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 155,
+          "output_tokens_details": {
+            "reasoning_tokens": 111
+          },
+          "total_tokens": 1045
+        }
+      ]
+    },
+    "error": null
+  }
+}

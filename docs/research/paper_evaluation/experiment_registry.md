@@ -1,11 +1,22 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-25
+> 最后更新：2026-08-27
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
 
-论文、路演和公开 Benchmark 的新实验当前默认 Runtime 源码基线为 [`paper-eval-runtime-v4`](./runtime_baseline_v4.md)，对应完整 commit `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`。历史 v3 继续对应 [`f875b93869282a14b738edec2f3a4069fd003600`](./runtime_baseline_v3.md)，历史 v2 对应 [`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应 [`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
+实验不再继承一个会随开发主线漂移的“默认 Runtime”。每个正式 Run 必须在启动前冻结并记录
+精确源码 commit 与二进制 SHA-256：ME-07 使用组合 commit
+`2249878536ce5f7a8d7449add2f5c8743395b69b`；当前 ME-08 与 ME-09 对照使用
+`4bbc3d63f4bda09947dc79dc5656edc71f8c02fa`、二进制 SHA-256
+`31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`。已完成的
+ME-06 与原始 ME-08 仍保留其历史
+[`paper-eval-runtime-v4`](./runtime_baseline_v4.md) 基线
+`5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；历史 v3 继续对应
+[`f875b93869282a14b738edec2f3a4069fd003600`](./runtime_baseline_v3.md)，历史 v2 对应
+[`03a32f864a3c38026672b4076855137e0bbb5627`](./runtime_baseline_v2.md)，历史 v1 对应
+[`cbfc540cedcdba8fba2dcbfbe6f37f1cc37d6df5`](./runtime_baseline_v1.md)。每个 Run 必须记录
+实际 Runtime 与实验包 commit；后续修复不得静默改写既有基线或追改历史结果。
 
 ## 新实验统一运行约束
 
@@ -14,22 +25,24 @@
   校验为 `gpt-5.6-sol`，且 `fallback=false`；
 - 授权模式：隔离实验节点使用 `full-access`，episode 中不得混入人工审批等待；
 - 隔离：专用 Morphz 节点、专用数据库、专用 Context；不同 arm/run 使用独立可写
-  状态，不读取共享 Context、产品数据库或历史 Session；
+  状态，不读取共享 Context、产品数据库或历史 Session；只有协议明确把共享 Context 本身定义为
+  处理变量时才可例外，并必须另列隔离控制（当前 ME-09 把单 Agent 的共享 Context 定义为处理变量）；
 - `full-access` 不改变公开 Benchmark 自身的 sandbox、网络、数据和工具规则。
 
 ## 总览
 
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
-| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
-| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F` | `protocol-draft` | 历史 v1；正式 p1 待写 | 修正信息量和样本设计 |
-| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | 理论与个案 | `planned` | — | 定义 bounded-open、干预和 closed control |
-| ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
-| ME-05 | 跨模型能力与采用倾向 | RQ5 | P1 | `F` | `planned` | — | 冻结模型矩阵与 capacity/adoption 分组 |
-| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | `F` | `planned` | 历史协议多版 | 固定事件流、基线和隐藏行动评分 |
-| ME-07 | Mem2ActBench 外部验证 | RQ5 | P1 | 无 | `planned` | — | 完成许可/环境/适配范围审计 |
-| ME-08 | 第二公开 Benchmark | RQ5/RQ6 | P2 | 无 | `planned` | — | ME-07 后选择 |
+| ME-00 | 实验基础设施与校准 | 全部 | P0 | ME-01～ME-08 均已使用冻结协议、运行身份、原始结果、校验和与持久证据入口 | `infrastructure-complete / incorporated` | — | 后续实验继续沿用并维护；不再作为当前论文阻断项 |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete / incorporated` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 天花板已记录，同类扩样关闭；p2 只作未来增强 |
+| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete / incorporated` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；更长组合压力任务列为未来增强 |
+| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（非确定性合同 12/12；Context shift 6/6；确定性对照严格 11/12） | `pilot-complete / incorporated` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 重叠合法集合软干预列为可选 p2 |
+| ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete / incorporated` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 未来 Runtime 基线变化按回归策略重跑 |
+| ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete / incorporated` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 不重复简单样本；扩展只作未来增强 |
+| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
+| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation | `formal-complete / trace-audit-complete / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md) | 盲化人工评测器校准是可选增强项；不得把系统级效果全部归因于 Mind Frame |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题同期运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），官方 Codex 74/89（83.15%）；差 −2.25pp，95% CI [−11.24,+6.74]，精确配对 `p=0.804` | `external-complete / incorporated` | [`current full-89 pair`](./artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md) | 当前论文证据已闭合；只有研究题内采样方差时才需要重复运行 |
+| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 额度截止前 43 题有效前缀：共享 Context 25/43，ME-08 同题隔离 Context 33/43；只观察到 1 条跨 Session 显式 Frame 引用，未形成正向迁移案例 | `stopped / exploratory-only / excluded-from-current-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`stop audit`](./me_09_shared_context_interim_stop_audit_2026_08_27.md) | 不为原协议续跑；如重启，先设计任务条件投影与可复用经验层级 |
 
 ## 依赖
 
@@ -38,7 +51,8 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-02 ───────────┤
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
-       └─> ME-07 ─> ME-08
+       ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
+       └─> ME-08 ─> ME-09 (探索性运行已停止；不进入当前论文)
 ```
 
 ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-06 只有在核心状态机制及评分器稳定后才扩成长运行。
@@ -54,12 +68,213 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | `morphz_concurrent_objective_coordination_*` | ME-04/ME-06 | F | 并发、恢复案例和后续故障 fixture 来源 |
 | `morphz_reality_contract_v1_validation.md` | ME-01/ME-04 | F/D | 提炼来源、时序和权威冲突评分项 |
 | Rust/CLI/集成测试 | ME-04 | D | 建立“主张—测试—commit”覆盖矩阵 |
-| Harbor、π-Bench adapter | 通用能力 | F | 附录/系统案例；不替代 ME-07 |
+| Harbor、Terminal-Bench、π-Bench adapter | ME-08 / 通用能力 | F/P | Terminal-Bench 前 40 题四臂结果登记为外部系统能力 Pilot；不替代机制消融或专门记忆验证 |
 
 ## 状态更新记录
 
+### 2026-08-27
+
+- **当前权威 ME-08 证据已更新为两个独立完整 89 题的同期配对运行，不是前 40 题与后 49 题
+  拼接。** 两组均使用 `gpt-5.6-sol`/max、同一 Linux 主机和数据集、并发 8、每题一次、零重试。
+  Morphz 为 72/89（80.90%），官方 Codex 原始评分为 74/89（83.15%）；共同通过 65、共同
+  失败 8、仅 Morphz 通过 7、仅 Codex 通过 9；差 −2.25pp，任务级自助法 95% CI
+  `[-11.24,+6.74]`，双侧精确配对 `p=0.803619`。Morphz 使用 Runtime
+  `4bbc3d63f4bda09947dc79dc5656edc71f8c02fa` 和固定二进制
+  `31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`；Codex 为 CLI
+  `0.149.1`。完整报告见
+  [`artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md`](./artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md)。
+  旧 40+49 合并结果、历史 70/89 对 73/89 和两次 Morphz-only 刷新继续保留作工程历史，
+  但不再作为论文当前主结果；
+
+- ME-07 单次正式批次已完整闭合：150 个 paired held-out cell、450 个 terminal trial，所有
+  terminal failure 原样保留并计零。主要结果为 Morphz 122/150（81.33%）、Letta 93/150
+  （62.00%）、Mem0-backed reference 96/150（64.00%）；Morphz−Letta 为 +19.33pp，
+  task-clustered bootstrap 95% CI `[+10.67,+28.00]`；Morphz−Mem0 为 +17.33pp，
+  CI `[+10.00,+24.67]`；两项 Holm 校正 paired sign-flip `p=0.000060`。该结果是完整
+  Agent 系统边界对照，不把全部分差单独归因于 Mind Frame；
+- ME-07 只读 Mind Frame transfer audit 在 150/150 held-out task 上通过：三个领域各有
+  100 次训练 Context transaction 并冻结于 revision 100，共形成 144 个活跃 Mind Frame、
+  395 条 Relation 和 795 个 retired object；每个 held-out task 都从对应的精确 revision-100
+  Context 开始，三个购物任务又通过六次事务继续更新 Context。该证据证明训练经验实际成为
+  held-out 求值的结构化计算状态；
+- ME-07 原始 Morphz Token 计数 3,555,918,978 重复包含每个 clone 的累计训练历史，不能进入
+  论文。按领域冻结训练基线对每个有效 clone 固定扣除一次后，held-out 总量为 Morphz
+  138,942,200、Letta 40,143,631、Mem0 7,364,662；原始计数继续保留供审计，三组均排除训练
+  成本。正式结果与脱敏证据见
+  [`artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；
+- ME-09 八 Session/八 Execution Target smoke 8/8 闭合，正式运行随后因订阅额度耗尽停止。
+  截止首次 `usage_limit_reached` 前的 43 题有效前缀为共享 Context 25/43、ME-08 同题隔离
+  Context 33/43；唯一一条跨 Session 显式 Frame 引用没有带来成功提升。该结果只作为探索性
+  设计证据，不进入当前论文；详见
+  [`me_09_shared_context_interim_stop_audit_2026_08_27.md`](./me_09_shared_context_interim_stop_audit_2026_08_27.md)；
+- 【历史单臂刷新，已由本日完整同期配对取代】ME-08 `4bbc3d63` Morphz-only 完整 89 题
+  刷新已经闭合：官方 verifier
+  72/89（80.90%，Wilson 95% CI `[71.52%,87.72%]`），并发 8、每题一次、零重试；
+  `strict_result.json` 含 89 个唯一任务且完整性 Gate 通过。三个 `AgentTimeoutError` 与其余
+  失败均按零保留。Provider 报告输入 57,541,202、输出 1,246,760，总逻辑 Token
+  58,787,962；缓存输入子集 9,389,568，不作为架构效率评分。报告与脱敏产物见
+  [`artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md`](./artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md)；
+- 【历史状态，已由本日完整 89 题同期 Codex 运行 supersede】该 72/89 在当时没有同期 Codex
+  arm，不能替换历史 70/89 对 73/89 的 paired 统计。相对前一次
+  `ad60e` Morphz-only 73/89，本轮 4 题由错转对、5 题由对转错；这说明单次运行同时包含
+  任务采样波动和实现变化，不能把一分差解释为 Runtime 修复的单调因果效果；
+- 【历史单臂刷新】ME-08 `ad60e` Morphz 单臂完整 89 题刷新已经闭合：官方 verifier 73/89
+  （82.02%，Wilson 95% CI `[72.77%, 88.62%]`），89 个唯一任务、完整性 Gate 和资源记录
+  均通过。该数值与历史 Codex 73/89 相同，但 Codex 没有在本轮重跑，故只可称为相同任务、
+  模型和评分器下的非同期参考，不是新的严格配对或等价性结论。报告和脱敏原始 JSON 见
+  [`artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md)；
+- 16 个官方失败中有 6 个 AgentTimeout。只读轨迹将其分为：2 个永久 `cyber_policy` 拒绝被
+  错误归入可恢复服务故障；2 个视觉 Observation 在 Context 维护后反复读取、没有沉淀可行动
+  语义；1 个无 Context 维护的拟合过度优化；1 个持续产生真实构建证据但在复杂任务时限内
+  未完成。另有 `build-pov-ray` 虽 Harbor timeout，但官方产物通过；其单 Runtime 终态交付
+  竞态由 `ac3344ef...` 修复。本轮每题拥有独立 SQLite，不能把任何上述问题归因于八道题
+  共享数据库。诊断不覆盖官方分数，也不生成剔除外因后的主分；
+- 【随后由用户显式追加授权 supersede】当时按成本边界作出的“停止完整重跑”决定，后来由
+  `4bbc3d63` 单次全 89 题刷新取代；两次结果分别冻结，未用新分数静默追改旧分数；
+
+### 2026-08-26
+
+- ME-07 的本机—云端交接已经实际完成，而非仅停留在预案：本机 Morphz travel、Letta 三领域
+  和 Mem0 travel 的完整训练 receipt 全部通过，16 个显式文件（约 34 MiB）上传到云端新建
+  staging 目录；云端 finalizer 已 active，本机一次性 LaunchAgent exit code 0 后卸载。从此
+  云端训练、assembly、smoke、正式批次、统计和盲评包生成不依赖本机在线。formal 服务当前
+  inactive 是预期状态，等待云端 Morphz/Mem0 剩余训练和 ME-08 节点释放；详见
+  [`me_07_cloud_execution_handoff_20260826.md`](./me_07_cloud_execution_handoff_20260826.md)；
+
+- 【当时 v1 规模，已被 450-trial v2 单次协议取代】ME-08 新完整批次暴露了一条 terminal
+  commit—delivery 竞态：任务结果已持久化成功，但交付 future 被终态监控提前取消，并可留下
+  未回滚事务。为避免当时规划的 ME-07 2,250 个正式 trial 使用
+  已知有缺陷的旧二进制，云端 finalizer 已增加显式 Runtime release receipt Gate；训练继续
+  运行，但正式 smoke/批次只有在修复回归、Linux release build 和无模型 Gate 全部通过后才会
+  启动。不得把这一运行时修复解释为记忆机制调参，也不得复用旧二进制身份；
+
+- 上述 release Gate 已闭合：正式 Runtime commit `2249878`、Linux binary SHA-256
+  `7b0c63cd…b356e`；组合分支 Morphz lib 1004 项、Evals 87+3 项全部通过，Linux 无模型 Gate
+  直接验证 durable reply 唯一、terminal outcome 已交付、退出后 SQLite writer 可立即重获且
+  model calls 为 0。release receipt 已写入云端，finalizer 仍等待训练闭合，不会提前启动正式
+  batch；
+
+- ME-07 v2 将 A-MEM 从正式 arm 中移除，改为公开 Agent Runtime Letta 0.16.8。当前正式
+  系统为 Morphz、Letta 与 Mem0-backed frozen reference agent；无记忆组继续排除。该变化
+  把主问题提升为公开 Agent 系统端到端对照，Morphz–Letta 差异不能被解释为单一记忆算法
+  的纯因果效应。历史 A-MEM adapter/产物 Gate 继续保留但不进入 v2。v2 同时放弃把 Azure
+  GPT-5.4 当作不可替换评测边界，改用盲化的 GPT-5.6 Sol/max 更新版 STATE-Bench 协议；
+  因此结果只能称为更新协议本地结果，不能与官方历史榜数字直接比较；
+
+- ME-08 后 49 题双臂批次正常结束，并与冻结的前 40 题合并为完整 89 题：Morphz
+  70/89（78.65%），official Codex 73/89（82.02%）；Morphz-only/Codex-only 为 10/13，
+  both-pass/both-fail 为 60/6，配对差 −3.37pp，双侧精确 `p=0.677639`，配对 bootstrap
+  95% CI `[-13.48%, +6.74%]`。本地 `/tests` 字符串扫描的两条 finding 均来自
+  `-path /tests -prune` 排除表达式，认定为误报；按预注册规则仍以官方 verifier raw reward
+  为主。后 49 题整机 942 个样本显示 16 logical CPU 的 1m load 平均 0.727、内存平均
+  1.88 GiB/峰值 4.95 GiB，64 GiB 节点明显过量；
+- 【v1 历史记录】ME-07 A-MEM 三臂真实学习产物 Gate 完成。Morphz 通过生产 `context_tx`、checkpoint、Recall
+  audit 和新进程检索；A-MEM 与 Mem0 分别通过原生模型归纳、持久化关闭与新实例检索。
+  三组使用同一官方训练轨迹并核验 `gpt-5.6-sol`/max。Mem0 adapter 修正了 procedural
+  memory 必须按 `agent_id` 而非 `user_id` 检索的静默空结果问题。该 Gate 只证明三臂不是
+  fixture，不提供效果结论；该 Gate 已被 Letta v2 取代，不能作为当前三臂 Gate；
+- 【v1 历史决策】ME-07 当时重选为 STATE-Bench Agent Learning Track。该 Track 使用历史 train trajectories 形成
+  可复用 learnings，并在 held-out 企业工具任务上评分，允许 custom `BaseAgent`/client 与
+  只读 `retrieve_learnings(top_k=3)`，因此比 LongMemEval-V2 的长期问答投影更贴合
+  “认知改变后续行动”的论文主张。初始 no-learning control 设计经用户审查后撤回：它只能
+  证明“记忆有用”，不能区分 Morphz 的价值。当前冻结候选为生产 Morphz、A-MEM 和 Mem0
+  三个都有长期学习能力的 arms；Agent 均使用 `gpt-5.6-sol`/max/CLIProxyAPI，官方
+  simulator/judge 必须使用协议锁定的 GPT-5.4 Azure client。正式规模为每臂 750 trials、
+  合计 2,250 trials；
+  该 v1 决策随后已被上文 Morphz/Letta/Mem0 与更新评测器的 v2 协议取代。原
+  LongMemEval-V2 方案继续作为已取消历史保留，不提供效果证据；
+- ME-07 方法边界复核确认：`morphz_structured_projection` 是有意隔离结构化记忆表示与投影
+  方法的 reference implementation，而不是生产 Morphz 产品替身。它实现稳定 Frame、来源
+  引用、顺序 Relation、逻辑 Context/版本和确定性 FTS/BM25 投影，并保持两臂 Reader/Judge
+  与官方评分器一致；这种方法组件实验本身可以成立。由于对照同时改变“是否检索”和“是否
+  结构化”，它只能支持“该投影向固定 Reader 提供可用长期证据”，不能证明结构化表示优于
+  普通 RAG，也不能代表完整 Morphz Agent。未经授权使用 Qwen 的全量运行仍然无效；用户当时
+  决定取消该 LongMemEval 方案、不再补跑。其后 ME-07 重选为 STATE-Bench Agent Learning，
+  但截至当前仍无新的效果结果；
+- ME-07 v1 错误地把 ME-05 九模型探测中可用的 Qwen 3.8 Max route 擅自提升为 LongMemEval
+  的 substitute reader/judge；这不属于用户对主实验模型的授权。完整运行已于 07:12
+  （Asia/Shanghai）终止，原目录 `/private/tmp/me07-full-v1-20260826` 保留为中止审计，所有
+  部分分数均撤出论文证据。后继协议必须使用总账规定的 `gpt-5.6-sol` / `max` /
+  CLIProxyAPI Responses，或者在改变模型前取得用户明确确认；
+- 【已撤回的历史记录】ME-07 Qwen substitute 运行的 Web no-retrieval cell 曾完成，官方任务
+  评分为 7/240（2.92%）；该分数因模型选择未获授权而不进入论文。运行时曾观察到
+  “没有长期记忆时只能偶然命中”的负对照定位；Provider 报告 73,510 prompt、177,090
+  completion、250,600 total tokens。Structured Projection Web 已完成 100 条 trajectory
+  的 source-linked Context 建库和 240 题 Prompt 构造；06:10 左右的一次 reader 请求在
+  Qwen 上游等待 17m13s 后以 EOF/HTTP 500 结束，官方 harness 的 OpenAI 客户端按冻结的
+  retry policy 自动重试并恢复，未人工重启、删题或改并发。该 Provider incident 只保留在
+  中止运行审计中；
+- ME-06 p1.1 六个真实 cell 全部完成。受控 compaction 与完整 Morphz 均为 3/3 fixture
+  语义成功、24/24 最终状态字段和 3/3 唯一行动；Morphz 额外真实执行 40 次 Frame 事务、
+  跨 Session、版本冲突重读、进程恢复、Context 隔离与因果审计。原始字符串评分错误拒绝
+  语义等价 decision rule 和具体事件 evidence ID；不调用模型的确定性重评分已修正并同时
+  保留原评分。当前 Morphz 实现使用 5,093,621 total tokens，受控基线为 310,336（约
+  16.4×），故本实验支持“额外能力且未观察到任务退化”，不支持 token 或准确率优越；
+- 【已 supersede 的历史记录】ME-07 v1 曾冻结 LongMemEval-V2 官方仓库 commit `2cc8c54`、
+  数据 commit `f152293` 与 451 题
+  Small tier。真实 smoke 的四个 cell 均完成：no-retrieval 与 Morphz 结构化投影分别覆盖
+  web/enterprise 首题，reader 和 judge 统一绑定 CLIProxyAPI 的 Qwen 3.8 Max；完整运行按
+  每 cell 内部并发 1 启动。由于官方论文的 Qwen3.5-9B reader / GPT-5.2 judge 路线当前不可
+  获得，本结果只作为官方数据与评分协议上的配对实验，不申报官方 leaderboard 分数；
+- ME-06 真实 runner 在模型结果产生前暴露并修复 provider-control 父目录缺失；第二次启动
+  随后暴露 baseline 600 秒与生产 stage 900 秒不一致、且成功调用只在 cell 结束时落盘的
+  公平性/可观测性缺陷。第三次启动在生产臂首个 checkpoint 前暴露 10k/12k 共同任务状态
+  预算被错误地直接用作包含约 17.2k 固定生产 scaffold 的完整请求阈值，导致 S1 即进入不可
+  解除的 critical maintenance。三个 suite 及其哈希均永久保留，不计作有效 paired 结果。
+  p1.1 统一单请求 900 秒、逐调用原子保存，取消人为小窗口：Morphz 恢复生产
+  196,608/262,144/3,000 Context 配置，受控基线在 S6 前固定执行一次 compaction；完整实际
+  Token 成本仍全部记录，fixture、模型、评分和批次并发 1 均不变；
+- ME-05 p1 九模型矩阵完成：来自冻结 commit `38d9d84` 的 Stage A 45 cells 与 Stage B
+  99 cells 共 144/144 完整，无补跑。冻结严格评分 98/144；ME-02 严格程序轨迹 26/36、
+  最终值 32/36，四个未交付均为 Claude Provider safety refusal；ME-03 严格合同 72/108。
+  明确标注为事后诊断的语义选择重评分为 104/108，四个未通过均为空响应/Provider 失败；
+  所有 104 个可解析选择都满足原始可见 Context 合同。该结果支持跨模型机制可执行性，同时
+  显示严格 schema 和程序轨迹仍需要确定性 Runtime 校验。结果与 222 个校验后的原始 JSON
+  见 [`artifacts/me05_nine_model_p1_20260826/RESULT.md`](./artifacts/me05_nine_model_p1_20260826/RESULT.md)；
+
 ### 2026-08-25
 
+- 建立 ME-05 p1 candidate：固定九个模型全部经 `mini-m4.local` CLIProxyAPI、单候选、
+  `fallback=false` 和 `reasoning=max`；使用 ME-02 的四个 S-expression 程序求值任务与
+  ME-03 的三个非确定性认知求值任务族，不重新发明题目。Stage A 的每模型 5 个 smoke
+  cell 只有在协议和运行器不变且完整性 Gate 全过时才计入最终 144-cell 矩阵，避免重复
+  消耗。每个 `model × stage × ME` 使用独立 SQLite/Context；Kimi K3 逐请求记录 usage，
+  不设置人为 100 元截断线，只在异常消耗或线路故障时暂停审计。协议见
+  [`me_05_nine_model_generality_protocol_p1.md`](./me_05_nine_model_generality_protocol_p1.md)；
+- ME-05 p1 Gate 关闭：ME-02/ME-03 的全部确定性正负 scorer Gate 通过；九条 route 的逻辑
+  模型、物理模型、custom Provider、CLIProxyAPI endpoint、精确协议、max 请求和零 completion
+  均核对通过。Claude 经同一 CLIProxyAPI 绑定为 `anthropic-messages`，其余八个为
+  `openai-responses`，没有直接订阅线路。矩阵 runner 的 144-cell 数量、协议替换、错误数量、
+  独立数据库和目录复用负例 6/6 通过；完整 `morphz-evals` 93 个库测试和 3 个 Harness 测试
+  通过，Clippy `-D warnings` 与 diff-check 通过。审计见
+  [`me_05_no_model_and_binding_gate_2026_08_25.md`](./me_05_no_model_and_binding_gate_2026_08_25.md)；
+- ME-03 p1.1 真实 Pilot 完成：非确定性条件 12/12 严格满足类型、候选、数量、Context 依据和
+  语义约束；六个 Base/Intervention 配对 6/6 发生符合预注册合法集合的变化。确定性控制严格
+  11/12；唯一失败选择了正确 `canary`，但把数组 `basis` 输出成字符串，按冻结 scorer
+  保留失败且不补跑。相同 task/Context 的两次重复选择一致，未观察到重复间多样性；该结果
+  支持“契约允许多值、Context 约束选择”，不支持随机性或高熵输出主张。报告见
+  [`artifacts/me03_real_pilot_p1_20260825/RESULT.md`](./artifacts/me03_real_pilot_p1_20260825/RESULT.md)；
+- Terminal-Bench 前 40 题四臂结果现登记为 ME-08 外部系统能力 Pilot，而不是 ME-05。
+  官方 scorer 下原生 Morphz 30/40、同模型 Codex 28/40；每题单次，任务虽已被用户和实验
+  统筹观察，但各 trial 的 Agent 使用独立空 Context、没有题目记忆。该结果仍不能当作公开
+  榜单或显著优越性结论。ME-05 继续只承担核心机制跨模型验证；旧 ME-07 LongMemEval
+  方法组件轨道已取消，后继 STATE-Bench 方案另行进入 Gate；
+- ME-03 p1.1 协议冻结：三个任务的 Base/Intervention 非确定性合法集合分别为 6/5、3/3、
+  4/5，所有干预前后集合不相交；每个任务的确定性分数最大值唯一。scorer 对全部合法集合
+  正例以及任意文本、未知候选、错误数量、错误 Context 依据和错误确定性值负例均正确判定。
+  首次候选 Gate 后、真实模型调用前发现任务数量措辞与确定性单选冲突，且非确定性 Prompt 暴露
+  无关 `closed_score`；p1.1 修正后二次 Gate 全部通过。零 completion 精确绑定为
+  `gpt-5.6-sol`/max/单候选/no-fallback。报告见
+  [`me_03_no_model_gate_2026_08_25.md`](./me_03_no_model_gate_2026_08_25.md)；
+- ME-02 p1.1 真实 Pilot 完成：同一 Canonical Program IR 生成的 S-expression AST、
+  JSON AST 和 Markdown Program 在六个任务上均为 6/6 严格通过，共 18/18；96 次模型
+  请求、78 次工具调用无 Provider 错误，15 个发生工具调用的 episode 均正确回放
+  Responses continuation。结果支持 S-expression 作为统一程序/数据表示的可行性和当前
+  条件下未观察到退化，不支持其优于另两种表示。三组全通过构成天花板效应，不再机械重复
+  容易样本；如需确认性结果，应先冻结更长组合求值、嵌套作用域、共享引用和干扰压力任务。
+  p1 因布尔字符串类型错误和缺失 continuation 永久无效并独立保留；p1.1 从冻结 commit
+  `f42f906` 全量重跑。报告见
+  [`artifacts/me02_real_pilot_p11_20260825/RESULT.md`](./artifacts/me02_real_pilot_p11_20260825/RESULT.md)；
 - ME-04 p1 确定性 Gate 完成：八类 Runtime 权威边界与故障注入全部通过；完整 lib
   989/989、6 个精确 `attempt_loop` 跨组件测试 6/6、Runtime Store conformance 5/5，
   模型调用为 0。新增恶意 Observation 正负控制：fake Provider 按恶意文本返回未开放
@@ -178,10 +393,10 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   形成独立 `terminal-task-dialectical-practice@0.1.0` Mind Frame。该包不复制长篇原文、
   不含固定任务流程，作为探索性第四 Arm；来源见
   [`dialectical_practice_mind_frame_provenance_2026_08_24.md`](./dialectical_practice_mind_frame_provenance_2026_08_24.md)；
-- 新增 `terminal-bench-four-arm-prior-40-v1` 协议：在此前已经观察过的两个 20 题 cohort
-  上，分别运行原生 Morphz、Morphz+v0.5、官方 Codex CLI 和 Morphz+辩证实践 Mind
-  Frame，各 40×1、零重试；四臂同时各并发 1，总并发 4。该实验用于开发归因，不是未见
-  题或公开榜分；协议见
+- 新增 `terminal-bench-four-arm-prior-40-v1` 协议：在用户和实验统筹已经观察过、但每个
+  Agent trial 均以独立空 Context 启动的两个 20 题 cohort 上，分别运行原生 Morphz、
+  Morphz+v0.5、官方 Codex CLI 和 Morphz+辩证实践 Mind Frame，各 40×1、零重试；四臂
+  同时各并发 1，总并发 4。该实验用于开发归因，不是公开榜分；协议见
   [`terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md`](./terminal_bench_2_1_four_arm_prior_40_protocol_2026_08_24.md)；
 - 完成 `raman-fitting` 三种 Agent 方式的同题单次归因对照：原生 Morphz（明确无
   Harness）raw/strict reward 1.0，18 次模型求值并正常写入结果；v0.4 Harness 继续为

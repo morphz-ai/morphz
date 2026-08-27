@@ -1,0 +1,1734 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "alternating_branches",
+  "semantic_digest": "94bcde6fffb37bd248eff72389f5d2631917d3c62a8ef8302cf4b5bbe0346633",
+  "success": false,
+  "semantic_success": false,
+  "score": 3,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 1375,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "read_case",
+      "arguments": {
+        "case": "C1"
+      },
+      "output": {
+        "enabled": true,
+        "ok": true,
+        "token": "Q-C1-8264"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "read_case",
+      "arguments": {
+        "case": "C2"
+      },
+      "output": {
+        "enabled": false,
+        "ok": true,
+        "token": "Q-C2-2684"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "read_case",
+      "arguments": {
+        "case": "C3"
+      },
+      "output": {
+        "enabled": true,
+        "ok": true,
+        "token": "Q-C3-8426"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "read_case",
+      "arguments": {
+        "case": "C4"
+      },
+      "output": {
+        "enabled": false,
+        "ok": true,
+        "token": "Q-C4-2846"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "route_true",
+      "arguments": {
+        "case": "C1",
+        "token": "Q-C1-8264"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RT-C1"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "route_false",
+      "arguments": {
+        "case": "C2",
+        "token": "Q-C2-2684"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RF-C2"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "route_true",
+      "arguments": {
+        "case": "C3",
+        "token": "Q-C3-8426"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RT-C3"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "route_false",
+      "arguments": {
+        "case": "C4",
+        "token": "Q-C4-2846"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "RF-C4"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_routes",
+      "arguments": {
+        "four": "RF-C4",
+        "one": "RT-C1",
+        "three": "RT-C3",
+        "two": "RF-C2"
+      },
+      "output": {
+        "delivery_token": "ROUTES-VERIFIED-2609",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "ROUTES-VERIFIED-2609",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": false,
+      "evidence": "missing=[\"read_case:C2\", \"read_case:C3\", \"read_case:C4\"]; actual=[\"read_case:C1\", \"read_case:C2\", \"read_case:C3\", \"read_case:C4\", \"route_true:C1:Q-C1-8264\", \"route_false:C2:Q-C2-2684\", \"route_true:C3:Q-C3-8426\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": false,
+      "evidence": "expected=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]; actual=[\"read_case:C1\", \"read_case:C2\", \"read_case:C3\", \"read_case:C4\", \"route_true:C1:Q-C1-8264\", \"route_false:C2:Q-C2-2684\", \"route_true:C3:Q-C3-8426\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"ROUTES-VERIFIED-2609\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1656,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1656,
+        "calibration_key": 5562427917256917802,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_081d31bcd43b4a0bb5a5bb2a",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\": \"C1\"}"
+          },
+          {
+            "id": "call_19bdd52e05904da4b055da55",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\": \"C2\"}"
+          },
+          {
+            "id": "call_d7230311321340c59cd667e9",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\": \"C3\"}"
+          },
+          {
+            "id": "call_88df4292e5434547a85e32ca",
+            "type": "function",
+            "func_name": "read_case",
+            "arguments": "{\"case\": \"C4\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need to execute this"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program. First,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " read_case for C"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1. Then"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " conditional branching based on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " enabled"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". Since there are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " dependencies, calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " can't be batch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ed... actually,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " reads for C1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "〜"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "C4 are independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " of each other."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " The routing depends on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " read result for each"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " case. Can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I batch the four"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " read_case calls together"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "? Each is independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". Yes,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " all four read_case"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls are independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so they can be"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " batch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ed. But note"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ": the IF branches"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " depend on each result"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ". If I batch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " all"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the reads first,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " then I can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " do the routing afterward"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\nLet me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " start with the four"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " read_case"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_081d31bcd43b4a0bb5a5bb2a",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"case\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"C1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_19bdd52e05904da4b055da55",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{\"case\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\"C2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 3,
+          "id": "call_d7230311321340c59cd667e9",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "{\"case\": \"C"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 4,
+          "id": "call_88df4292e5434547a85e32ca",
+          "name": "read_case"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "{\"case\": \"C4"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 3
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 4
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2005,
+            "uncached_input_tokens": 981,
+            "cached_input_tokens": 1024,
+            "output_tokens": 241,
+            "reasoning_tokens": 129,
+            "total_tokens": 2246,
+            "raw": [
+              {
+                "input_tokens": 2005,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 241,
+                "output_tokens_details": {
+                  "reasoning_tokens": 129
+                },
+                "total_tokens": 2246
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-769cf71a-2e52-4fd9-9285-5bc0bdfc604d_0",
+                "summary": [
+                  {
+                    "text": "I need to execute this program. First, read_case for C1. Then conditional branching based on enabled. Since there are dependencies, calls can't be batched... actually, the reads for C1〜C4 are independent of each other. The routing depends on the read result for each case. Can I batch the four read_case calls together? Each is independent. Yes, all four read_case calls are independent so they can be batched. But note: the IF branches depend on each result. If I batch all the reads first, then I can do the routing afterward.\n\nLet me start with the four read_case calls.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2005,
+        "uncached_input_tokens": 981,
+        "cached_input_tokens": 1024,
+        "output_tokens": 241,
+        "reasoning_tokens": 129,
+        "total_tokens": 2246,
+        "raw": [
+          {
+            "input_tokens": 2005,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 241,
+            "output_tokens_details": {
+              "reasoning_tokens": 129
+            },
+            "total_tokens": 2246
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 2091,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2091,
+        "calibration_key": 405835735803456417,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-769cf71a-2e52-4fd9-9285-5bc0bdfc604d_0\",\"summary\":[{\"text\":\"I need to execute this program. First, read_case for C1. Then conditional branching based on enabled. Since there are dependencies, calls can't be batched... actually, the reads for C1〜C4 are independent of each other. The routing depends on the read result for each case. Can I batch the four read_case calls together? Each is independent. Yes, all four read_case calls are independent so they can be batched. But note: the IF branches depend on each result. If I batch all the reads first, then I can do the routing afterward.\\n\\nLet me start with the four read_case calls.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_081d31bcd43b4a0bb5a5bb2a",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C1\"}"
+              }
+            },
+            {
+              "id": "call_19bdd52e05904da4b055da55",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C2\"}"
+              }
+            },
+            {
+              "id": "call_d7230311321340c59cd667e9",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C3\"}"
+              }
+            },
+            {
+              "id": "call_88df4292e5434547a85e32ca",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_081d31bcd43b4a0bb5a5bb2a"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_19bdd52e05904da4b055da55"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_d7230311321340c59cd667e9"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+          "name": "read_case",
+          "tool_call_id": "call_88df4292e5434547a85e32ca"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_8060b5acf5c44d0dba2bab43",
+            "type": "function",
+            "func_name": "route_true",
+            "arguments": "{\"case\": \"C1\", \"token\": \"Q-C1-8264\"}"
+          },
+          {
+            "id": "call_2c17380600a4470595687564",
+            "type": "function",
+            "func_name": "route_false",
+            "arguments": "{\"case\": \"C2\", \"token\": \"Q-C2-2684\"}"
+          },
+          {
+            "id": "call_531efe2c333049a3b8d21031",
+            "type": "function",
+            "func_name": "route_true",
+            "arguments": "{\"case\": \"C3\", \"token\": \"Q-C3-8426\"}"
+          },
+          {
+            "id": "call_d19b4e38a393433bb3e8f689",
+            "type": "function",
+            "func_name": "route_false",
+            "arguments": "{\"case\": \"C4\", \"token\": \"Q-C4-2846\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Currently"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":\n- C"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1: enabled=true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " → route_true,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token Q-C1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-826"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4\n- C"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2: enabled=false"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " → route_false,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token Q-C2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-268"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4\n- C"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "3: enabled=true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " → route_true,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token Q-C3"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-842"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "6\n- C"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4: enabled=false"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " → route_false,"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token Q-C4"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-284"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "6\n\nThese "
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "4 route calls are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent of"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " each other. Execute"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " them together.\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_8060b5acf5c44d0dba2bab43",
+          "name": "route_true"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"case\": \"C"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", \"token\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"Q-C1-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "8264"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_2c17380600a4470595687564",
+          "name": "route_false"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{\"case\": \"C2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ", \"token\": \"Q"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-C2-2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "684"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 3,
+          "id": "call_531efe2c333049a3b8d21031",
+          "name": "route_true"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "{\"case\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\"C3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": ", \"token\": \"Q-C"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "3-84"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "26"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 4,
+          "id": "call_d19b4e38a393433bb3e8f689",
+          "name": "route_false"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "{\"case\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "\"C4"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": ", \"token\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "\"Q-C4"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "-284"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "6"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 4,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 3
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 4
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2355,
+            "uncached_input_tokens": 1331,
+            "cached_input_tokens": 1024,
+            "output_tokens": 290,
+            "reasoning_tokens": 98,
+            "total_tokens": 2645,
+            "raw": [
+              {
+                "input_tokens": 2355,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 290,
+                "output_tokens_details": {
+                  "reasoning_tokens": 98
+                },
+                "total_tokens": 2645
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-c94a73ab-b39b-4a2f-9432-ea4476eb6fc3_0",
+                "summary": [
+                  {
+                    "text": "Currently:\n- C1: enabled=true → route_true, token Q-C1-8264\n- C2: enabled=false → route_false, token Q-C2-2684\n- C3: enabled=true → route_true, token Q-C3-8426\n- C4: enabled=false → route_false, token Q-C4-2846\n\nThese 4 route calls are independent of each other. Execute them together.\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2355,
+        "uncached_input_tokens": 1331,
+        "cached_input_tokens": 1024,
+        "output_tokens": 290,
+        "reasoning_tokens": 98,
+        "total_tokens": 2645,
+        "raw": [
+          {
+            "input_tokens": 2355,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 290,
+            "output_tokens_details": {
+              "reasoning_tokens": 98
+            },
+            "total_tokens": 2645
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 2466,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2466,
+        "calibration_key": 4987849030428930455,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-769cf71a-2e52-4fd9-9285-5bc0bdfc604d_0\",\"summary\":[{\"text\":\"I need to execute this program. First, read_case for C1. Then conditional branching based on enabled. Since there are dependencies, calls can't be batched... actually, the reads for C1〜C4 are independent of each other. The routing depends on the read result for each case. Can I batch the four read_case calls together? Each is independent. Yes, all four read_case calls are independent so they can be batched. But note: the IF branches depend on each result. If I batch all the reads first, then I can do the routing afterward.\\n\\nLet me start with the four read_case calls.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_081d31bcd43b4a0bb5a5bb2a",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C1\"}"
+              }
+            },
+            {
+              "id": "call_19bdd52e05904da4b055da55",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C2\"}"
+              }
+            },
+            {
+              "id": "call_d7230311321340c59cd667e9",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C3\"}"
+              }
+            },
+            {
+              "id": "call_88df4292e5434547a85e32ca",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_081d31bcd43b4a0bb5a5bb2a"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_19bdd52e05904da4b055da55"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_d7230311321340c59cd667e9"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+          "name": "read_case",
+          "tool_call_id": "call_88df4292e5434547a85e32ca"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-c94a73ab-b39b-4a2f-9432-ea4476eb6fc3_0\",\"summary\":[{\"text\":\"Currently:\\n- C1: enabled=true → route_true, token Q-C1-8264\\n- C2: enabled=false → route_false, token Q-C2-2684\\n- C3: enabled=true → route_true, token Q-C3-8426\\n- C4: enabled=false → route_false, token Q-C4-2846\\n\\nThese 4 route calls are independent of each other. Execute them together.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8060b5acf5c44d0dba2bab43",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\": \"C1\", \"token\": \"Q-C1-8264\"}"
+              }
+            },
+            {
+              "id": "call_2c17380600a4470595687564",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\": \"C2\", \"token\": \"Q-C2-2684\"}"
+              }
+            },
+            {
+              "id": "call_531efe2c333049a3b8d21031",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\": \"C3\", \"token\": \"Q-C3-8426\"}"
+              }
+            },
+            {
+              "id": "call_d19b4e38a393433bb3e8f689",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\": \"C4\", \"token\": \"Q-C4-2846\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8060b5acf5c44d0dba2bab43"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_2c17380600a4470595687564"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+          "name": "route_true",
+          "tool_call_id": "call_531efe2c333049a3b8d21031"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C4\"}",
+          "name": "route_false",
+          "tool_call_id": "call_d19b4e38a393433bb3e8f689"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_ec29f00afe994efca8b0e73d",
+            "type": "function",
+            "func_name": "verify_routes",
+            "arguments": "{\"one\": \"RT-C1\", \"two\": \"RF-C2\", \"three\": \"RT-C3\", \"four\": \"RF-C4\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " will"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " now call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify_routes with the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " following arguments:\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "- one = routed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_c1 receipt ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " RT-C1\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "- two = routed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_c2 receipt ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " RF-C2\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "- three = routed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_c3 receipt ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " RT-C3\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "- four = routed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_c4 receipt ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " RF-C4\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_ec29f00afe994efca8b0e73d",
+          "name": "verify_routes"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"one\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"RT-C1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", \"two\": \"RF"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-C2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", \"three\": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"RT-C3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", \"four\": \"RF"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-C4"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2718,
+            "uncached_input_tokens": 670,
+            "cached_input_tokens": 2048,
+            "output_tokens": 134,
+            "reasoning_tokens": 59,
+            "total_tokens": 2852,
+            "raw": [
+              {
+                "input_tokens": 2718,
+                "input_tokens_details": {
+                  "cached_tokens": 2048
+                },
+                "output_tokens": 134,
+                "output_tokens_details": {
+                  "reasoning_tokens": 59
+                },
+                "total_tokens": 2852
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-383c741c-94e4-4ae1-b193-3581a94c67fe_0",
+                "summary": [
+                  {
+                    "text": "I will now call verify_routes with the following arguments:\n- one = routed_c1 receipt = RT-C1\n- two = routed_c2 receipt = RF-C2\n- three = routed_c3 receipt = RT-C3\n- four = routed_c4 receipt = RF-C4\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2718,
+        "uncached_input_tokens": 670,
+        "cached_input_tokens": 2048,
+        "output_tokens": 134,
+        "reasoning_tokens": 59,
+        "total_tokens": 2852,
+        "raw": [
+          {
+            "input_tokens": 2718,
+            "input_tokens_details": {
+              "cached_tokens": 2048
+            },
+            "output_tokens": 134,
+            "output_tokens_details": {
+              "reasoning_tokens": 59
+            },
+            "total_tokens": 2852
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2631,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "qwen3.8-max-preview",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2631,
+        "calibration_key": 17407494082800341811,
+        "calibration_shape": 7805679360077801913
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-769cf71a-2e52-4fd9-9285-5bc0bdfc604d_0\",\"summary\":[{\"text\":\"I need to execute this program. First, read_case for C1. Then conditional branching based on enabled. Since there are dependencies, calls can't be batched... actually, the reads for C1〜C4 are independent of each other. The routing depends on the read result for each case. Can I batch the four read_case calls together? Each is independent. Yes, all four read_case calls are independent so they can be batched. But note: the IF branches depend on each result. If I batch all the reads first, then I can do the routing afterward.\\n\\nLet me start with the four read_case calls.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_081d31bcd43b4a0bb5a5bb2a",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C1\"}"
+              }
+            },
+            {
+              "id": "call_19bdd52e05904da4b055da55",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C2\"}"
+              }
+            },
+            {
+              "id": "call_d7230311321340c59cd667e9",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C3\"}"
+              }
+            },
+            {
+              "id": "call_88df4292e5434547a85e32ca",
+              "type": "function",
+              "function": {
+                "name": "read_case",
+                "arguments": "{\"case\": \"C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+          "name": "read_case",
+          "tool_call_id": "call_081d31bcd43b4a0bb5a5bb2a"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+          "name": "read_case",
+          "tool_call_id": "call_19bdd52e05904da4b055da55"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+          "name": "read_case",
+          "tool_call_id": "call_d7230311321340c59cd667e9"
+        },
+        {
+          "role": "tool",
+          "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+          "name": "read_case",
+          "tool_call_id": "call_88df4292e5434547a85e32ca"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-c94a73ab-b39b-4a2f-9432-ea4476eb6fc3_0\",\"summary\":[{\"text\":\"Currently:\\n- C1: enabled=true → route_true, token Q-C1-8264\\n- C2: enabled=false → route_false, token Q-C2-2684\\n- C3: enabled=true → route_true, token Q-C3-8426\\n- C4: enabled=false → route_false, token Q-C4-2846\\n\\nThese 4 route calls are independent of each other. Execute them together.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_8060b5acf5c44d0dba2bab43",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\": \"C1\", \"token\": \"Q-C1-8264\"}"
+              }
+            },
+            {
+              "id": "call_2c17380600a4470595687564",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\": \"C2\", \"token\": \"Q-C2-2684\"}"
+              }
+            },
+            {
+              "id": "call_531efe2c333049a3b8d21031",
+              "type": "function",
+              "function": {
+                "name": "route_true",
+                "arguments": "{\"case\": \"C3\", \"token\": \"Q-C3-8426\"}"
+              }
+            },
+            {
+              "id": "call_d19b4e38a393433bb3e8f689",
+              "type": "function",
+              "function": {
+                "name": "route_false",
+                "arguments": "{\"case\": \"C4\", \"token\": \"Q-C4-2846\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+          "name": "route_true",
+          "tool_call_id": "call_8060b5acf5c44d0dba2bab43"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+          "name": "route_false",
+          "tool_call_id": "call_2c17380600a4470595687564"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+          "name": "route_true",
+          "tool_call_id": "call_531efe2c333049a3b8d21031"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"RF-C4\"}",
+          "name": "route_false",
+          "tool_call_id": "call_d19b4e38a393433bb3e8f689"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-383c741c-94e4-4ae1-b193-3581a94c67fe_0\",\"summary\":[{\"text\":\"I will now call verify_routes with the following arguments:\\n- one = routed_c1 receipt = RT-C1\\n- two = routed_c2 receipt = RF-C2\\n- three = routed_c3 receipt = RT-C3\\n- four = routed_c4 receipt = RF-C4\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_ec29f00afe994efca8b0e73d",
+              "type": "function",
+              "function": {
+                "name": "verify_routes",
+                "arguments": "{\"one\": \"RT-C1\", \"two\": \"RF-C2\", \"three\": \"RT-C3\", \"four\": \"RF-C4\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ROUTES-VERIFIED-2609\",\"ok\":true}",
+          "name": "verify_routes",
+          "tool_call_id": "call_ec29f00afe994efca8b0e73d"
+        }
+      ],
+      "response": {
+        "content": "ROUTES-VERIFIED-2609",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Reply"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ": ROUT"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ES-VERIFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-260"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "9."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "RO"
+        },
+        {
+          "kind": "text_delta",
+          "text": "UTES-VERIFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-260"
+        },
+        {
+          "kind": "text_delta",
+          "text": "9"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2885,
+            "uncached_input_tokens": 837,
+            "cached_input_tokens": 2048,
+            "output_tokens": 28,
+            "reasoning_tokens": 13,
+            "total_tokens": 2913,
+            "raw": [
+              {
+                "input_tokens": 2885,
+                "input_tokens_details": {
+                  "cached_tokens": 2048
+                },
+                "output_tokens": 28,
+                "output_tokens_details": {
+                  "reasoning_tokens": 13
+                },
+                "total_tokens": 2913
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_chatcmpl-f4f88946-f8f3-4a8f-9ccf-bf0fb6f7ab13_0",
+                "summary": [
+                  {
+                    "text": "Reply: ROUTES-VERIFIED-2609.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2885,
+        "uncached_input_tokens": 837,
+        "cached_input_tokens": 2048,
+        "output_tokens": 28,
+        "reasoning_tokens": 13,
+        "total_tokens": 2913,
+        "raw": [
+          {
+            "input_tokens": 2885,
+            "input_tokens_details": {
+              "cached_tokens": 2048
+            },
+            "output_tokens": 28,
+            "output_tokens_details": {
+              "reasoning_tokens": 13
+            },
+            "total_tokens": 2913
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

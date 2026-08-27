@@ -1,0 +1,1638 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "shared_reference",
+  "semantic_digest": "40ed5d28331135a4bfcb5790f614a85c4a395643d71fb90cbd9b038bae6b23ab",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 398,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_piece",
+      "arguments": {
+        "key": "shared"
+      },
+      "output": {
+        "ok": true,
+        "token": "SH-8813"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "transform_piece",
+      "arguments": {
+        "lane": "left",
+        "token": "SH-8813"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "L-8813"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "transform_piece",
+      "arguments": {
+        "lane": "right",
+        "token": "SH-8813"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "R-8813"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_shared",
+      "arguments": {
+        "left": "L-8813",
+        "right": "R-8813"
+      },
+      "output": {
+        "delivery_token": "SHARED-VERIFIED-3490",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "The program executed successfully:\n\n1. **fetch_piece** (`shared`) → token `SH-8813`\n2. **transform_piece** (left lane, token `SH-8813`) → receipt `L-8813`\n3. **transform_piece** (right lane, token `SH-8813`) → receipt `R-8813`\n4. **verify_shared** (left `L-8813`, right `R-8813`) → ok, delivery token `SHARED-VERIFIED-3490`\n\n**REPLY:** `SHARED-VERIFIED-3490`",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]; actual=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"The program executed successfully:\\n\\n1. **fetch_piece** (`shared`) → token `SH-8813`\\n2. **transform_piece** (left lane, token `SH-8813`) → receipt `L-8813`\\n3. **transform_piece** (right lane, token `SH-8813`) → receipt `R-8813`\\n4. **verify_shared** (left `L-8813`, right `R-8813`) → ok, delivery token `SHARED-VERIFIED-3490`\\n\\n**REPLY:** `SHARED-VERIFIED-3490`\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1408,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "glm-5.3",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1408,
+        "calibration_key": 12935850484827936028,
+        "calibration_shape": 8226964239569330916
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_63dc3cd222884c60aede1364",
+            "type": "function",
+            "func_name": "fetch_piece",
+            "arguments": "{\"key\":\"shared\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Start"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " by"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetching"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " piece"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ";"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " transform"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " depend"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " source"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " sequential"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " But"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " transforms"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " depend"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " only"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " source"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " they"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " be"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " parallel"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " after"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " source"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " returns"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_63dc3cd222884c60aede1364",
+          "name": "fetch_piece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "key"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "shared"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1372,
+            "uncached_input_tokens": 156,
+            "cached_input_tokens": 1216,
+            "output_tokens": 48,
+            "reasoning_tokens": 0,
+            "total_tokens": 1420,
+            "raw": [
+              {
+                "input_tokens": 1372,
+                "input_tokens_details": {
+                  "cached_tokens": 1216
+                },
+                "output_tokens": 48,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1420
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0",
+                "summary": [
+                  {
+                    "text": "Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1372,
+        "uncached_input_tokens": 156,
+        "cached_input_tokens": 1216,
+        "output_tokens": 48,
+        "reasoning_tokens": 0,
+        "total_tokens": 1420,
+        "raw": [
+          {
+            "input_tokens": 1372,
+            "input_tokens_details": {
+              "cached_tokens": 1216
+            },
+            "output_tokens": 48,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1420
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1549,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "glm-5.3",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1549,
+        "calibration_key": 12981100083817806169,
+        "calibration_shape": 8226964239569330916
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0\",\"summary\":[{\"text\":\"Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_63dc3cd222884c60aede1364",
+              "type": "function",
+              "function": {
+                "name": "fetch_piece",
+                "arguments": "{\"key\":\"shared\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+          "name": "fetch_piece",
+          "tool_call_id": "call_63dc3cd222884c60aede1364"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_1d28ad1b0d06413483354ec9",
+            "type": "function",
+            "func_name": "transform_piece",
+            "arguments": "{\"lane\":\"left\",\"token\":\"SH-8813\"}"
+          },
+          {
+            "id": "call_2f7a530ee9f0400f893b66a0",
+            "type": "function",
+            "func_name": "transform_piece",
+            "arguments": "{\"lane\":\"right\",\"token\":\"SH-8813\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " transform"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " left"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " right"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " parallel"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_1d28ad1b0d06413483354ec9",
+          "name": "transform_piece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "lane"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "left"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ",\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "token"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "SH"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "88"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_2f7a530ee9f0400f893b66a0",
+          "name": "transform_piece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "lane"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "right"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ",\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "token"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "SH"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "88"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1437,
+            "uncached_input_tokens": 93,
+            "cached_input_tokens": 1344,
+            "output_tokens": 50,
+            "reasoning_tokens": 0,
+            "total_tokens": 1487,
+            "raw": [
+              {
+                "input_tokens": 1437,
+                "input_tokens_details": {
+                  "cached_tokens": 1344
+                },
+                "output_tokens": 50,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1487
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_021787674186744ad6c77bbc9dd3a58ea6d8fc22d5c50747ec97c_0",
+                "summary": [
+                  {
+                    "text": "Now transform left and right in parallel.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1437,
+        "uncached_input_tokens": 93,
+        "cached_input_tokens": 1344,
+        "output_tokens": 50,
+        "reasoning_tokens": 0,
+        "total_tokens": 1487,
+        "raw": [
+          {
+            "input_tokens": 1437,
+            "input_tokens_details": {
+              "cached_tokens": 1344
+            },
+            "output_tokens": 50,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1487
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1727,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "glm-5.3",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1727,
+        "calibration_key": 14109396872895853331,
+        "calibration_shape": 8226964239569330916
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0\",\"summary\":[{\"text\":\"Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_63dc3cd222884c60aede1364",
+              "type": "function",
+              "function": {
+                "name": "fetch_piece",
+                "arguments": "{\"key\":\"shared\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+          "name": "fetch_piece",
+          "tool_call_id": "call_63dc3cd222884c60aede1364"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674186744ad6c77bbc9dd3a58ea6d8fc22d5c50747ec97c_0\",\"summary\":[{\"text\":\"Now transform left and right in parallel.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1d28ad1b0d06413483354ec9",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\":\"left\",\"token\":\"SH-8813\"}"
+              }
+            },
+            {
+              "id": "call_2f7a530ee9f0400f893b66a0",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\":\"right\",\"token\":\"SH-8813\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"L-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_1d28ad1b0d06413483354ec9"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"R-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_2f7a530ee9f0400f893b66a0"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_a91044e39a8b40a8b0af81cd",
+            "type": "function",
+            "func_name": "verify_shared",
+            "arguments": "{\"left\":\"L-8813\",\"right\":\"R-8813\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 0,
+          "id": "call_a91044e39a8b40a8b0af81cd",
+          "name": "verify_shared"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "{\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "left"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "L"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "88"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "3"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": ",\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "right"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "\":\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "R"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "8813\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 0,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 0
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1519,
+            "uncached_input_tokens": 111,
+            "cached_input_tokens": 1408,
+            "output_tokens": 26,
+            "reasoning_tokens": 0,
+            "total_tokens": 1545,
+            "raw": [
+              {
+                "input_tokens": 1519,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 26,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1545
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1519,
+        "uncached_input_tokens": 111,
+        "cached_input_tokens": 1408,
+        "output_tokens": 26,
+        "reasoning_tokens": 0,
+        "total_tokens": 1545,
+        "raw": [
+          {
+            "input_tokens": 1519,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 26,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1545
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 1800,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "glm-5.3",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1800,
+        "calibration_key": 6288886893563087028,
+        "calibration_shape": 8226964239569330916
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0\",\"summary\":[{\"text\":\"Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_63dc3cd222884c60aede1364",
+              "type": "function",
+              "function": {
+                "name": "fetch_piece",
+                "arguments": "{\"key\":\"shared\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+          "name": "fetch_piece",
+          "tool_call_id": "call_63dc3cd222884c60aede1364"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674186744ad6c77bbc9dd3a58ea6d8fc22d5c50747ec97c_0\",\"summary\":[{\"text\":\"Now transform left and right in parallel.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1d28ad1b0d06413483354ec9",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\":\"left\",\"token\":\"SH-8813\"}"
+              }
+            },
+            {
+              "id": "call_2f7a530ee9f0400f893b66a0",
+              "type": "function",
+              "function": {
+                "name": "transform_piece",
+                "arguments": "{\"lane\":\"right\",\"token\":\"SH-8813\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"L-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_1d28ad1b0d06413483354ec9"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"R-8813\"}",
+          "name": "transform_piece",
+          "tool_call_id": "call_2f7a530ee9f0400f893b66a0"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_a91044e39a8b40a8b0af81cd",
+              "type": "function",
+              "function": {
+                "name": "verify_shared",
+                "arguments": "{\"left\":\"L-8813\",\"right\":\"R-8813\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"SHARED-VERIFIED-3490\",\"ok\":true}",
+          "name": "verify_shared",
+          "tool_call_id": "call_a91044e39a8b40a8b0af81cd"
+        }
+      ],
+      "response": {
+        "content": "The program executed successfully:\n\n1. **fetch_piece** (`shared`) → token `SH-8813`\n2. **transform_piece** (left lane, token `SH-8813`) → receipt `L-8813`\n3. **transform_piece** (right lane, token `SH-8813`) → receipt `R-8813`\n4. **verify_shared** (left `L-8813`, right `R-8813`) → ok, delivery token `SHARED-VERIFIED-3490`\n\n**REPLY:** `SHARED-VERIFIED-3490`",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "The"
+        },
+        {
+          "kind": "text_delta",
+          "text": " program"
+        },
+        {
+          "kind": "text_delta",
+          "text": " executed"
+        },
+        {
+          "kind": "text_delta",
+          "text": " successfully"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " **"
+        },
+        {
+          "kind": "text_delta",
+          "text": "fetch"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_piece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " (`"
+        },
+        {
+          "kind": "text_delta",
+          "text": "shared"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`)"
+        },
+        {
+          "kind": "text_delta",
+          "text": " →"
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "2"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " **"
+        },
+        {
+          "kind": "text_delta",
+          "text": "transform"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_piece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ("
+        },
+        {
+          "kind": "text_delta",
+          "text": "left"
+        },
+        {
+          "kind": "text_delta",
+          "text": " lane"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`)"
+        },
+        {
+          "kind": "text_delta",
+          "text": " →"
+        },
+        {
+          "kind": "text_delta",
+          "text": " receipt"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "L"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " **"
+        },
+        {
+          "kind": "text_delta",
+          "text": "transform"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_piece"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ("
+        },
+        {
+          "kind": "text_delta",
+          "text": "right"
+        },
+        {
+          "kind": "text_delta",
+          "text": " lane"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`)"
+        },
+        {
+          "kind": "text_delta",
+          "text": " →"
+        },
+        {
+          "kind": "text_delta",
+          "text": " receipt"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "R"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "4"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " **"
+        },
+        {
+          "kind": "text_delta",
+          "text": "verify"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_shared"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ("
+        },
+        {
+          "kind": "text_delta",
+          "text": "left"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "L"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`,"
+        },
+        {
+          "kind": "text_delta",
+          "text": " right"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "R"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "88"
+        },
+        {
+          "kind": "text_delta",
+          "text": "1"
+        },
+        {
+          "kind": "text_delta",
+          "text": "3"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`)"
+        },
+        {
+          "kind": "text_delta",
+          "text": " →"
+        },
+        {
+          "kind": "text_delta",
+          "text": " ok"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ARED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "34"
+        },
+        {
+          "kind": "text_delta",
+          "text": "9"
+        },
+        {
+          "kind": "text_delta",
+          "text": "0"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "RE"
+        },
+        {
+          "kind": "text_delta",
+          "text": "PLY"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":**"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "SH"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ARED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-3490`"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1567,
+            "uncached_input_tokens": 95,
+            "cached_input_tokens": 1472,
+            "output_tokens": 133,
+            "reasoning_tokens": 0,
+            "total_tokens": 1700,
+            "raw": [
+              {
+                "input_tokens": 1567,
+                "input_tokens_details": {
+                  "cached_tokens": 1472
+                },
+                "output_tokens": 133,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1700
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1567,
+        "uncached_input_tokens": 95,
+        "cached_input_tokens": 1472,
+        "output_tokens": 133,
+        "reasoning_tokens": 0,
+        "total_tokens": 1700,
+        "raw": [
+          {
+            "input_tokens": 1567,
+            "input_tokens_details": {
+              "cached_tokens": 1472
+            },
+            "output_tokens": 133,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1700
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

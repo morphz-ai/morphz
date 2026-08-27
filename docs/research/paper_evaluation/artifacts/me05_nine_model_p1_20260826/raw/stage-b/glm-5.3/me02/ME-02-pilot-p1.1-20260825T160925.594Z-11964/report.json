@@ -1,0 +1,4723 @@
+{
+  "id": "ME-02-pilot-p1.1-20260825T160925.594Z-11964",
+  "created_at": "2026-08-25T16:10:12.960374+00:00",
+  "model": "glm-5.3",
+  "provider": "custom",
+  "protocol": "openai-responses",
+  "immutable_binding": {
+    "requested_alias": "glm-5.3",
+    "route_id": "glm-5.3",
+    "route_revision": "sha256:d2a40315eda1713861dcdc732f44cf5ab3dff83ecf133f3c71289ccc50827eac",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "glm-5.3",
+    "protocol": "openai-responses",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-b/glm-5.3/me02/ME-02-pilot-p1.1-20260825T160925.594Z-11964",
+  "summaries": {
+    "json_ast": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "markdown_program": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "sexpr_ast": {
+      "episodes": 3,
+      "passed": 2,
+      "pass_rate": 0.6666666666666666,
+      "semantic_passed": 2,
+      "semantic_pass_rate": 0.6666666666666666,
+      "mean_attempts": 4.333333333333333,
+      "mean_tool_calls": 5.666666666666667
+    }
+  },
+  "episodes": [
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "alternating_branches",
+      "semantic_digest": "94bcde6fffb37bd248eff72389f5d2631917d3c62a8ef8302cf4b5bbe0346633",
+      "success": false,
+      "semantic_success": false,
+      "score": 3,
+      "max_score": 5,
+      "attempts": 4,
+      "prompt_chars": 1375,
+      "tool_trace": [
+        {
+          "attempt": 1,
+          "name": "read_case",
+          "arguments": {
+            "case": "C1"
+          },
+          "output": {
+            "enabled": true,
+            "ok": true,
+            "token": "Q-C1-8264"
+          }
+        },
+        {
+          "attempt": 1,
+          "name": "read_case",
+          "arguments": {
+            "case": "C2"
+          },
+          "output": {
+            "enabled": false,
+            "ok": true,
+            "token": "Q-C2-2684"
+          }
+        },
+        {
+          "attempt": 1,
+          "name": "read_case",
+          "arguments": {
+            "case": "C3"
+          },
+          "output": {
+            "enabled": true,
+            "ok": true,
+            "token": "Q-C3-8426"
+          }
+        },
+        {
+          "attempt": 1,
+          "name": "read_case",
+          "arguments": {
+            "case": "C4"
+          },
+          "output": {
+            "enabled": false,
+            "ok": true,
+            "token": "Q-C4-2846"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "route_true",
+          "arguments": {
+            "case": "C1",
+            "token": "Q-C1-8264"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "RT-C1"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "route_false",
+          "arguments": {
+            "case": "C2",
+            "token": "Q-C2-2684"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "RF-C2"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "route_true",
+          "arguments": {
+            "case": "C3",
+            "token": "Q-C3-8426"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "RT-C3"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "route_false",
+          "arguments": {
+            "case": "C4",
+            "token": "Q-C4-2846"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "RF-C4"
+          }
+        },
+        {
+          "attempt": 3,
+          "name": "verify_routes",
+          "arguments": {
+            "four": "RF-C4",
+            "one": "RT-C1",
+            "three": "RT-C3",
+            "two": "RF-C2"
+          },
+          "output": {
+            "delivery_token": "ROUTES-VERIFIED-2609",
+            "ok": true
+          }
+        }
+      ],
+      "final_answer": "ROUTES-VERIFIED-2609",
+      "error": null,
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": false,
+          "evidence": "missing=[\"read_case:C2\", \"read_case:C3\", \"read_case:C4\"]; actual=[\"read_case:C1\", \"read_case:C2\", \"read_case:C3\", \"read_case:C4\", \"route_true:C1:Q-C1-8264\", \"route_false:C2:Q-C2-2684\", \"route_true:C3:Q-C3-8426\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": false,
+          "evidence": "expected=[\"read_case:C1\", \"route_true:C1:Q-C1-8264\", \"read_case:C2\", \"route_false:C2:Q-C2-2684\", \"read_case:C3\", \"route_true:C3:Q-C3-8426\", \"read_case:C4\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]; actual=[\"read_case:C1\", \"read_case:C2\", \"read_case:C3\", \"read_case:C4\", \"route_true:C1:Q-C1-8264\", \"route_false:C2:Q-C2-2684\", \"route_true:C3:Q-C3-8426\", \"route_false:C4:Q-C4-2846\", \"verify_routes:RT-C1:RF-C2:RT-C3:RF-C4\"]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": true,
+          "evidence": "violations=[]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": true,
+          "evidence": "missing=[]; final=\"ROUTES-VERIFIED-2609\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1653,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1653,
+            "calibration_key": 10429913531311139556,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_1471525758ce48d581e78487",
+                "type": "function",
+                "func_name": "read_case",
+                "arguments": "{\"case\":\"C1\"}"
+              },
+              {
+                "id": "call_efd7e365c1cd412ea25dd01b",
+                "type": "function",
+                "func_name": "read_case",
+                "arguments": "{\"case\":\"C2\"}"
+              },
+              {
+                "id": "call_569cc3b064a04d35bd969c9e",
+                "type": "function",
+                "func_name": "read_case",
+                "arguments": "{\"case\":\"C3\"}"
+              },
+              {
+                "id": "call_97d6b2a768254328a8f74789",
+                "type": "function",
+                "func_name": "read_case",
+                "arguments": "{\"case\":\"C4\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "Start"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " with"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " read"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_case"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "1"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " But"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "1"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "-C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "4"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " reads"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " are"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " independent"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ";"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " but"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " the"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " routing"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " depends"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " on"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " them"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " Can"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " I"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " call"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " read"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_case"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " for"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " all"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " four"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " in"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " parallel"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "?"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " They"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "'re"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " independent"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " Yes"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_1471525758ce48d581e78487",
+              "name": "read_case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 2,
+              "id": "call_efd7e365c1cd412ea25dd01b",
+              "name": "read_case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "2"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 3,
+              "id": "call_569cc3b064a04d35bd969c9e",
+              "name": "read_case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 4,
+              "id": "call_97d6b2a768254328a8f74789",
+              "name": "read_case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "4\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 2
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 3
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 4
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1663,
+                "uncached_input_tokens": 447,
+                "cached_input_tokens": 1216,
+                "output_tokens": 86,
+                "reasoning_tokens": 0,
+                "total_tokens": 1749,
+                "raw": [
+                  {
+                    "input_tokens": 1663,
+                    "input_tokens_details": {
+                      "cached_tokens": 1216
+                    },
+                    "output_tokens": 86,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1749
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_021787674166651ad6c77bbc9dd3a58ea6d8fc22d5c5074dda126_0",
+                    "summary": [
+                      {
+                        "text": "Start with read_case C1. But C1-C4 reads are independent; but the routing depends on them. Can I call read_case for all four in parallel? They're independent. Yes.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1663,
+            "uncached_input_tokens": 447,
+            "cached_input_tokens": 1216,
+            "output_tokens": 86,
+            "reasoning_tokens": 0,
+            "total_tokens": 1749,
+            "raw": [
+              {
+                "input_tokens": 1663,
+                "input_tokens_details": {
+                  "cached_tokens": 1216
+                },
+                "output_tokens": 86,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1749
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 2,
+          "prompt_measurement": {
+            "tokens": 1986,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1986,
+            "calibration_key": 14874199949275701647,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674166651ad6c77bbc9dd3a58ea6d8fc22d5c5074dda126_0\",\"summary\":[{\"text\":\"Start with read_case C1. But C1-C4 reads are independent; but the routing depends on them. Can I call read_case for all four in parallel? They're independent. Yes.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_1471525758ce48d581e78487",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C1\"}"
+                  }
+                },
+                {
+                  "id": "call_efd7e365c1cd412ea25dd01b",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C2\"}"
+                  }
+                },
+                {
+                  "id": "call_569cc3b064a04d35bd969c9e",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C3\"}"
+                  }
+                },
+                {
+                  "id": "call_97d6b2a768254328a8f74789",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C4\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+              "name": "read_case",
+              "tool_call_id": "call_1471525758ce48d581e78487"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+              "name": "read_case",
+              "tool_call_id": "call_efd7e365c1cd412ea25dd01b"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+              "name": "read_case",
+              "tool_call_id": "call_569cc3b064a04d35bd969c9e"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+              "name": "read_case",
+              "tool_call_id": "call_97d6b2a768254328a8f74789"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_d8f33c49e9254561a5fa05ca",
+                "type": "function",
+                "func_name": "route_true",
+                "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+              },
+              {
+                "id": "call_3373207c505d4c59b19ae6ea",
+                "type": "function",
+                "func_name": "route_false",
+                "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+              },
+              {
+                "id": "call_68fc0096a5ed42eab6724340",
+                "type": "function",
+                "func_name": "route_true",
+                "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+              },
+              {
+                "id": "call_ac1187090efa454ab508e1a4",
+                "type": "function",
+                "func_name": "route_false",
+                "arguments": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "1"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " enabled"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " →"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " route"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_true"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "2"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " disabled"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " →"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " route"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_false"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "3"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " enabled"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " →"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " route"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_true"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " C"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "4"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " disabled"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " →"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " route"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_false"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " All"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " independent"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " now"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_d8f33c49e9254561a5fa05ca",
+              "name": "route_true"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "token"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "Q"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "8"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "26"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "4"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 2,
+              "id": "call_3373207c505d4c59b19ae6ea",
+              "name": "route_false"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "2"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "token"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "Q"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "2"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "26"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "8"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "4"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 3,
+              "id": "call_68fc0096a5ed42eab6724340",
+              "name": "route_true"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "token"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "Q"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "8"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "42"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "6"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 3,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 4,
+              "id": "call_ac1187090efa454ab508e1a4",
+              "name": "route_false"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "case"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "4"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "token"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "Q"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "4"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "2846\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 4,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 2
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 3
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 4
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1835,
+                "uncached_input_tokens": 235,
+                "cached_input_tokens": 1600,
+                "output_tokens": 126,
+                "reasoning_tokens": 0,
+                "total_tokens": 1961,
+                "raw": [
+                  {
+                    "input_tokens": 1835,
+                    "input_tokens_details": {
+                      "cached_tokens": 1600
+                    },
+                    "output_tokens": 126,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1961
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_021787674171093ad6c77bbc9dd3a58ea6d8fc22d5c507497a268_0",
+                    "summary": [
+                      {
+                        "text": "C1 enabled → route_true, C2 disabled → route_false, C3 enabled → route_true, C4 disabled → route_false. All independent now.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1835,
+            "uncached_input_tokens": 235,
+            "cached_input_tokens": 1600,
+            "output_tokens": 126,
+            "reasoning_tokens": 0,
+            "total_tokens": 1961,
+            "raw": [
+              {
+                "input_tokens": 1835,
+                "input_tokens_details": {
+                  "cached_tokens": 1600
+                },
+                "output_tokens": 126,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1961
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 3,
+          "prompt_measurement": {
+            "tokens": 2317,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 2317,
+            "calibration_key": 3934070022588924264,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674166651ad6c77bbc9dd3a58ea6d8fc22d5c5074dda126_0\",\"summary\":[{\"text\":\"Start with read_case C1. But C1-C4 reads are independent; but the routing depends on them. Can I call read_case for all four in parallel? They're independent. Yes.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_1471525758ce48d581e78487",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C1\"}"
+                  }
+                },
+                {
+                  "id": "call_efd7e365c1cd412ea25dd01b",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C2\"}"
+                  }
+                },
+                {
+                  "id": "call_569cc3b064a04d35bd969c9e",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C3\"}"
+                  }
+                },
+                {
+                  "id": "call_97d6b2a768254328a8f74789",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C4\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+              "name": "read_case",
+              "tool_call_id": "call_1471525758ce48d581e78487"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+              "name": "read_case",
+              "tool_call_id": "call_efd7e365c1cd412ea25dd01b"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+              "name": "read_case",
+              "tool_call_id": "call_569cc3b064a04d35bd969c9e"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+              "name": "read_case",
+              "tool_call_id": "call_97d6b2a768254328a8f74789"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674171093ad6c77bbc9dd3a58ea6d8fc22d5c507497a268_0\",\"summary\":[{\"text\":\"C1 enabled → route_true, C2 disabled → route_false, C3 enabled → route_true, C4 disabled → route_false. All independent now.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_d8f33c49e9254561a5fa05ca",
+                  "type": "function",
+                  "function": {
+                    "name": "route_true",
+                    "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+                  }
+                },
+                {
+                  "id": "call_3373207c505d4c59b19ae6ea",
+                  "type": "function",
+                  "function": {
+                    "name": "route_false",
+                    "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+                  }
+                },
+                {
+                  "id": "call_68fc0096a5ed42eab6724340",
+                  "type": "function",
+                  "function": {
+                    "name": "route_true",
+                    "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+                  }
+                },
+                {
+                  "id": "call_ac1187090efa454ab508e1a4",
+                  "type": "function",
+                  "function": {
+                    "name": "route_false",
+                    "arguments": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+              "name": "route_true",
+              "tool_call_id": "call_d8f33c49e9254561a5fa05ca"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+              "name": "route_false",
+              "tool_call_id": "call_3373207c505d4c59b19ae6ea"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+              "name": "route_true",
+              "tool_call_id": "call_68fc0096a5ed42eab6724340"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RF-C4\"}",
+              "name": "route_false",
+              "tool_call_id": "call_ac1187090efa454ab508e1a4"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_4e8f20a7d2744150b88dbe6d",
+                "type": "function",
+                "func_name": "verify_routes",
+                "arguments": "{\"four\":\"RF-C4\",\"one\":\"RT-C1\",\"three\":\"RT-C3\",\"two\":\"RF-C2\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 0,
+              "id": "call_4e8f20a7d2744150b88dbe6d",
+              "name": "verify_routes"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "four"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "RF"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "4"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "one"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "RT"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "three"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "RT"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "two"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "RF"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-C"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "2"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 0
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2015,
+                "uncached_input_tokens": 223,
+                "cached_input_tokens": 1792,
+                "output_tokens": 38,
+                "reasoning_tokens": 0,
+                "total_tokens": 2053,
+                "raw": [
+                  {
+                    "input_tokens": 2015,
+                    "input_tokens_details": {
+                      "cached_tokens": 1792
+                    },
+                    "output_tokens": 38,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 2053
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2015,
+            "uncached_input_tokens": 223,
+            "cached_input_tokens": 1792,
+            "output_tokens": 38,
+            "reasoning_tokens": 0,
+            "total_tokens": 2053,
+            "raw": [
+              {
+                "input_tokens": 2015,
+                "input_tokens_details": {
+                  "cached_tokens": 1792
+                },
+                "output_tokens": 38,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 2053
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 4,
+          "prompt_measurement": {
+            "tokens": 2398,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 2398,
+            "calibration_key": 14482711437230764199,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674166651ad6c77bbc9dd3a58ea6d8fc22d5c5074dda126_0\",\"summary\":[{\"text\":\"Start with read_case C1. But C1-C4 reads are independent; but the routing depends on them. Can I call read_case for all four in parallel? They're independent. Yes.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_1471525758ce48d581e78487",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C1\"}"
+                  }
+                },
+                {
+                  "id": "call_efd7e365c1cd412ea25dd01b",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C2\"}"
+                  }
+                },
+                {
+                  "id": "call_569cc3b064a04d35bd969c9e",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C3\"}"
+                  }
+                },
+                {
+                  "id": "call_97d6b2a768254328a8f74789",
+                  "type": "function",
+                  "function": {
+                    "name": "read_case",
+                    "arguments": "{\"case\":\"C4\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C1-8264\"}",
+              "name": "read_case",
+              "tool_call_id": "call_1471525758ce48d581e78487"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C2-2684\"}",
+              "name": "read_case",
+              "tool_call_id": "call_efd7e365c1cd412ea25dd01b"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":true,\"ok\":true,\"token\":\"Q-C3-8426\"}",
+              "name": "read_case",
+              "tool_call_id": "call_569cc3b064a04d35bd969c9e"
+            },
+            {
+              "role": "tool",
+              "content": "{\"enabled\":false,\"ok\":true,\"token\":\"Q-C4-2846\"}",
+              "name": "read_case",
+              "tool_call_id": "call_97d6b2a768254328a8f74789"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674171093ad6c77bbc9dd3a58ea6d8fc22d5c507497a268_0\",\"summary\":[{\"text\":\"C1 enabled → route_true, C2 disabled → route_false, C3 enabled → route_true, C4 disabled → route_false. All independent now.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_d8f33c49e9254561a5fa05ca",
+                  "type": "function",
+                  "function": {
+                    "name": "route_true",
+                    "arguments": "{\"case\":\"C1\",\"token\":\"Q-C1-8264\"}"
+                  }
+                },
+                {
+                  "id": "call_3373207c505d4c59b19ae6ea",
+                  "type": "function",
+                  "function": {
+                    "name": "route_false",
+                    "arguments": "{\"case\":\"C2\",\"token\":\"Q-C2-2684\"}"
+                  }
+                },
+                {
+                  "id": "call_68fc0096a5ed42eab6724340",
+                  "type": "function",
+                  "function": {
+                    "name": "route_true",
+                    "arguments": "{\"case\":\"C3\",\"token\":\"Q-C3-8426\"}"
+                  }
+                },
+                {
+                  "id": "call_ac1187090efa454ab508e1a4",
+                  "type": "function",
+                  "function": {
+                    "name": "route_false",
+                    "arguments": "{\"case\":\"C4\",\"token\":\"Q-C4-2846\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RT-C1\"}",
+              "name": "route_true",
+              "tool_call_id": "call_d8f33c49e9254561a5fa05ca"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RF-C2\"}",
+              "name": "route_false",
+              "tool_call_id": "call_3373207c505d4c59b19ae6ea"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RT-C3\"}",
+              "name": "route_true",
+              "tool_call_id": "call_68fc0096a5ed42eab6724340"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"RF-C4\"}",
+              "name": "route_false",
+              "tool_call_id": "call_ac1187090efa454ab508e1a4"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_4e8f20a7d2744150b88dbe6d",
+                  "type": "function",
+                  "function": {
+                    "name": "verify_routes",
+                    "arguments": "{\"four\":\"RF-C4\",\"one\":\"RT-C1\",\"three\":\"RT-C3\",\"two\":\"RF-C2\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"delivery_token\":\"ROUTES-VERIFIED-2609\",\"ok\":true}",
+              "name": "verify_routes",
+              "tool_call_id": "call_4e8f20a7d2744150b88dbe6d"
+            }
+          ],
+          "response": {
+            "content": "ROUTES-VERIFIED-2609",
+            "tool_calls": []
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "text_delta",
+              "text": "RO"
+            },
+            {
+              "kind": "text_delta",
+              "text": "UTES"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "VER"
+            },
+            {
+              "kind": "text_delta",
+              "text": "IFIED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "260"
+            },
+            {
+              "kind": "text_delta",
+              "text": "9"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2074,
+                "uncached_input_tokens": 90,
+                "cached_input_tokens": 1984,
+                "output_tokens": 10,
+                "reasoning_tokens": 0,
+                "total_tokens": 2084,
+                "raw": [
+                  {
+                    "input_tokens": 2074,
+                    "input_tokens_details": {
+                      "cached_tokens": 1984
+                    },
+                    "output_tokens": 10,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 2084
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2074,
+            "uncached_input_tokens": 90,
+            "cached_input_tokens": 1984,
+            "output_tokens": 10,
+            "reasoning_tokens": 0,
+            "total_tokens": 2084,
+            "raw": [
+              {
+                "input_tokens": 2074,
+                "input_tokens_details": {
+                  "cached_tokens": 1984
+                },
+                "output_tokens": 10,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 2084
+              }
+            ]
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "shared_reference",
+      "semantic_digest": "40ed5d28331135a4bfcb5790f614a85c4a395643d71fb90cbd9b038bae6b23ab",
+      "success": true,
+      "semantic_success": true,
+      "score": 5,
+      "max_score": 5,
+      "attempts": 4,
+      "prompt_chars": 398,
+      "tool_trace": [
+        {
+          "attempt": 1,
+          "name": "fetch_piece",
+          "arguments": {
+            "key": "shared"
+          },
+          "output": {
+            "ok": true,
+            "token": "SH-8813"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "transform_piece",
+          "arguments": {
+            "lane": "left",
+            "token": "SH-8813"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "L-8813"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "transform_piece",
+          "arguments": {
+            "lane": "right",
+            "token": "SH-8813"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "R-8813"
+          }
+        },
+        {
+          "attempt": 3,
+          "name": "verify_shared",
+          "arguments": {
+            "left": "L-8813",
+            "right": "R-8813"
+          },
+          "output": {
+            "delivery_token": "SHARED-VERIFIED-3490",
+            "ok": true
+          }
+        }
+      ],
+      "final_answer": "The program executed successfully:\n\n1. **fetch_piece** (`shared`) → token `SH-8813`\n2. **transform_piece** (left lane, token `SH-8813`) → receipt `L-8813`\n3. **transform_piece** (right lane, token `SH-8813`) → receipt `R-8813`\n4. **verify_shared** (left `L-8813`, right `R-8813`) → ok, delivery token `SHARED-VERIFIED-3490`\n\n**REPLY:** `SHARED-VERIFIED-3490`",
+      "error": null,
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": true,
+          "evidence": "missing=[]; actual=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": true,
+          "evidence": "expected=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]; actual=[\"fetch_piece:shared\", \"transform_piece:left:SH-8813\", \"transform_piece:right:SH-8813\", \"verify_shared:L-8813:R-8813\"]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": true,
+          "evidence": "violations=[]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": true,
+          "evidence": "missing=[]; final=\"The program executed successfully:\\n\\n1. **fetch_piece** (`shared`) → token `SH-8813`\\n2. **transform_piece** (left lane, token `SH-8813`) → receipt `L-8813`\\n3. **transform_piece** (right lane, token `SH-8813`) → receipt `R-8813`\\n4. **verify_shared** (left `L-8813`, right `R-8813`) → ok, delivery token `SHARED-VERIFIED-3490`\\n\\n**REPLY:** `SHARED-VERIFIED-3490`\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1408,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1408,
+            "calibration_key": 12935850484827936028,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_63dc3cd222884c60aede1364",
+                "type": "function",
+                "func_name": "fetch_piece",
+                "arguments": "{\"key\":\"shared\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "Start"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " by"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " fetching"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " the"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " piece"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ";"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " transform"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " calls"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " depend"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " on"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " source"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " token"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " so"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " sequential"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " But"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " left"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " and"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " right"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " transforms"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " both"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " depend"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " only"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " on"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " source"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " so"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " they"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " can"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " be"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " parallel"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " after"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " source"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " returns"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_63dc3cd222884c60aede1364",
+              "name": "fetch_piece"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "key"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "shared"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1372,
+                "uncached_input_tokens": 156,
+                "cached_input_tokens": 1216,
+                "output_tokens": 48,
+                "reasoning_tokens": 0,
+                "total_tokens": 1420,
+                "raw": [
+                  {
+                    "input_tokens": 1372,
+                    "input_tokens_details": {
+                      "cached_tokens": 1216
+                    },
+                    "output_tokens": 48,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1420
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0",
+                    "summary": [
+                      {
+                        "text": "Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1372,
+            "uncached_input_tokens": 156,
+            "cached_input_tokens": 1216,
+            "output_tokens": 48,
+            "reasoning_tokens": 0,
+            "total_tokens": 1420,
+            "raw": [
+              {
+                "input_tokens": 1372,
+                "input_tokens_details": {
+                  "cached_tokens": 1216
+                },
+                "output_tokens": 48,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1420
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 2,
+          "prompt_measurement": {
+            "tokens": 1549,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1549,
+            "calibration_key": 12981100083817806169,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0\",\"summary\":[{\"text\":\"Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_63dc3cd222884c60aede1364",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_piece",
+                    "arguments": "{\"key\":\"shared\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+              "name": "fetch_piece",
+              "tool_call_id": "call_63dc3cd222884c60aede1364"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_1d28ad1b0d06413483354ec9",
+                "type": "function",
+                "func_name": "transform_piece",
+                "arguments": "{\"lane\":\"left\",\"token\":\"SH-8813\"}"
+              },
+              {
+                "id": "call_2f7a530ee9f0400f893b66a0",
+                "type": "function",
+                "func_name": "transform_piece",
+                "arguments": "{\"lane\":\"right\",\"token\":\"SH-8813\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "Now"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " transform"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " left"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " and"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " right"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " in"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " parallel"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_1d28ad1b0d06413483354ec9",
+              "name": "transform_piece"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "lane"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "left"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "token"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "SH"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "88"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 2,
+              "id": "call_2f7a530ee9f0400f893b66a0",
+              "name": "transform_piece"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "lane"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "right"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "token"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "SH"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "88"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 2,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 2
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1437,
+                "uncached_input_tokens": 93,
+                "cached_input_tokens": 1344,
+                "output_tokens": 50,
+                "reasoning_tokens": 0,
+                "total_tokens": 1487,
+                "raw": [
+                  {
+                    "input_tokens": 1437,
+                    "input_tokens_details": {
+                      "cached_tokens": 1344
+                    },
+                    "output_tokens": 50,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1487
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_021787674186744ad6c77bbc9dd3a58ea6d8fc22d5c50747ec97c_0",
+                    "summary": [
+                      {
+                        "text": "Now transform left and right in parallel.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1437,
+            "uncached_input_tokens": 93,
+            "cached_input_tokens": 1344,
+            "output_tokens": 50,
+            "reasoning_tokens": 0,
+            "total_tokens": 1487,
+            "raw": [
+              {
+                "input_tokens": 1437,
+                "input_tokens_details": {
+                  "cached_tokens": 1344
+                },
+                "output_tokens": 50,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1487
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 3,
+          "prompt_measurement": {
+            "tokens": 1727,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1727,
+            "calibration_key": 14109396872895853331,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0\",\"summary\":[{\"text\":\"Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_63dc3cd222884c60aede1364",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_piece",
+                    "arguments": "{\"key\":\"shared\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+              "name": "fetch_piece",
+              "tool_call_id": "call_63dc3cd222884c60aede1364"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674186744ad6c77bbc9dd3a58ea6d8fc22d5c50747ec97c_0\",\"summary\":[{\"text\":\"Now transform left and right in parallel.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_1d28ad1b0d06413483354ec9",
+                  "type": "function",
+                  "function": {
+                    "name": "transform_piece",
+                    "arguments": "{\"lane\":\"left\",\"token\":\"SH-8813\"}"
+                  }
+                },
+                {
+                  "id": "call_2f7a530ee9f0400f893b66a0",
+                  "type": "function",
+                  "function": {
+                    "name": "transform_piece",
+                    "arguments": "{\"lane\":\"right\",\"token\":\"SH-8813\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"L-8813\"}",
+              "name": "transform_piece",
+              "tool_call_id": "call_1d28ad1b0d06413483354ec9"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"R-8813\"}",
+              "name": "transform_piece",
+              "tool_call_id": "call_2f7a530ee9f0400f893b66a0"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_a91044e39a8b40a8b0af81cd",
+                "type": "function",
+                "func_name": "verify_shared",
+                "arguments": "{\"left\":\"L-8813\",\"right\":\"R-8813\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 0,
+              "id": "call_a91044e39a8b40a8b0af81cd",
+              "name": "verify_shared"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "left"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "L"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "88"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "right"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "R"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "8813\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 0
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1519,
+                "uncached_input_tokens": 111,
+                "cached_input_tokens": 1408,
+                "output_tokens": 26,
+                "reasoning_tokens": 0,
+                "total_tokens": 1545,
+                "raw": [
+                  {
+                    "input_tokens": 1519,
+                    "input_tokens_details": {
+                      "cached_tokens": 1408
+                    },
+                    "output_tokens": 26,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1545
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1519,
+            "uncached_input_tokens": 111,
+            "cached_input_tokens": 1408,
+            "output_tokens": 26,
+            "reasoning_tokens": 0,
+            "total_tokens": 1545,
+            "raw": [
+              {
+                "input_tokens": 1519,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 26,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1545
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 4,
+          "prompt_measurement": {
+            "tokens": 1800,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1800,
+            "calibration_key": 6288886893563087028,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674181396ad6c77bbc9dd3a58ea6d8fc22d5c50746ec0d0_0\",\"summary\":[{\"text\":\"Start by fetching the piece; transform calls depend on source token, so sequential. But left and right transforms both depend only on source, so they can be parallel after source returns.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_63dc3cd222884c60aede1364",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_piece",
+                    "arguments": "{\"key\":\"shared\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"SH-8813\"}",
+              "name": "fetch_piece",
+              "tool_call_id": "call_63dc3cd222884c60aede1364"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674186744ad6c77bbc9dd3a58ea6d8fc22d5c50747ec97c_0\",\"summary\":[{\"text\":\"Now transform left and right in parallel.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_1d28ad1b0d06413483354ec9",
+                  "type": "function",
+                  "function": {
+                    "name": "transform_piece",
+                    "arguments": "{\"lane\":\"left\",\"token\":\"SH-8813\"}"
+                  }
+                },
+                {
+                  "id": "call_2f7a530ee9f0400f893b66a0",
+                  "type": "function",
+                  "function": {
+                    "name": "transform_piece",
+                    "arguments": "{\"lane\":\"right\",\"token\":\"SH-8813\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"L-8813\"}",
+              "name": "transform_piece",
+              "tool_call_id": "call_1d28ad1b0d06413483354ec9"
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"R-8813\"}",
+              "name": "transform_piece",
+              "tool_call_id": "call_2f7a530ee9f0400f893b66a0"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_a91044e39a8b40a8b0af81cd",
+                  "type": "function",
+                  "function": {
+                    "name": "verify_shared",
+                    "arguments": "{\"left\":\"L-8813\",\"right\":\"R-8813\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"delivery_token\":\"SHARED-VERIFIED-3490\",\"ok\":true}",
+              "name": "verify_shared",
+              "tool_call_id": "call_a91044e39a8b40a8b0af81cd"
+            }
+          ],
+          "response": {
+            "content": "The program executed successfully:\n\n1. **fetch_piece** (`shared`) → token `SH-8813`\n2. **transform_piece** (left lane, token `SH-8813`) → receipt `L-8813`\n3. **transform_piece** (right lane, token `SH-8813`) → receipt `R-8813`\n4. **verify_shared** (left `L-8813`, right `R-8813`) → ok, delivery token `SHARED-VERIFIED-3490`\n\n**REPLY:** `SHARED-VERIFIED-3490`",
+            "tool_calls": []
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "text_delta",
+              "text": "The"
+            },
+            {
+              "kind": "text_delta",
+              "text": " program"
+            },
+            {
+              "kind": "text_delta",
+              "text": " executed"
+            },
+            {
+              "kind": "text_delta",
+              "text": " successfully"
+            },
+            {
+              "kind": "text_delta",
+              "text": ":\n\n"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "."
+            },
+            {
+              "kind": "text_delta",
+              "text": " **"
+            },
+            {
+              "kind": "text_delta",
+              "text": "fetch"
+            },
+            {
+              "kind": "text_delta",
+              "text": "_piece"
+            },
+            {
+              "kind": "text_delta",
+              "text": "**"
+            },
+            {
+              "kind": "text_delta",
+              "text": " (`"
+            },
+            {
+              "kind": "text_delta",
+              "text": "shared"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`)"
+            },
+            {
+              "kind": "text_delta",
+              "text": " →"
+            },
+            {
+              "kind": "text_delta",
+              "text": " token"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "SH"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`\n"
+            },
+            {
+              "kind": "text_delta",
+              "text": "2"
+            },
+            {
+              "kind": "text_delta",
+              "text": "."
+            },
+            {
+              "kind": "text_delta",
+              "text": " **"
+            },
+            {
+              "kind": "text_delta",
+              "text": "transform"
+            },
+            {
+              "kind": "text_delta",
+              "text": "_piece"
+            },
+            {
+              "kind": "text_delta",
+              "text": "**"
+            },
+            {
+              "kind": "text_delta",
+              "text": " ("
+            },
+            {
+              "kind": "text_delta",
+              "text": "left"
+            },
+            {
+              "kind": "text_delta",
+              "text": " lane"
+            },
+            {
+              "kind": "text_delta",
+              "text": ","
+            },
+            {
+              "kind": "text_delta",
+              "text": " token"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "SH"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`)"
+            },
+            {
+              "kind": "text_delta",
+              "text": " →"
+            },
+            {
+              "kind": "text_delta",
+              "text": " receipt"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "L"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`\n"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "."
+            },
+            {
+              "kind": "text_delta",
+              "text": " **"
+            },
+            {
+              "kind": "text_delta",
+              "text": "transform"
+            },
+            {
+              "kind": "text_delta",
+              "text": "_piece"
+            },
+            {
+              "kind": "text_delta",
+              "text": "**"
+            },
+            {
+              "kind": "text_delta",
+              "text": " ("
+            },
+            {
+              "kind": "text_delta",
+              "text": "right"
+            },
+            {
+              "kind": "text_delta",
+              "text": " lane"
+            },
+            {
+              "kind": "text_delta",
+              "text": ","
+            },
+            {
+              "kind": "text_delta",
+              "text": " token"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "SH"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`)"
+            },
+            {
+              "kind": "text_delta",
+              "text": " →"
+            },
+            {
+              "kind": "text_delta",
+              "text": " receipt"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "R"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`\n"
+            },
+            {
+              "kind": "text_delta",
+              "text": "4"
+            },
+            {
+              "kind": "text_delta",
+              "text": "."
+            },
+            {
+              "kind": "text_delta",
+              "text": " **"
+            },
+            {
+              "kind": "text_delta",
+              "text": "verify"
+            },
+            {
+              "kind": "text_delta",
+              "text": "_shared"
+            },
+            {
+              "kind": "text_delta",
+              "text": "**"
+            },
+            {
+              "kind": "text_delta",
+              "text": " ("
+            },
+            {
+              "kind": "text_delta",
+              "text": "left"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "L"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`,"
+            },
+            {
+              "kind": "text_delta",
+              "text": " right"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "R"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "88"
+            },
+            {
+              "kind": "text_delta",
+              "text": "1"
+            },
+            {
+              "kind": "text_delta",
+              "text": "3"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`)"
+            },
+            {
+              "kind": "text_delta",
+              "text": " →"
+            },
+            {
+              "kind": "text_delta",
+              "text": " ok"
+            },
+            {
+              "kind": "text_delta",
+              "text": ","
+            },
+            {
+              "kind": "text_delta",
+              "text": " delivery"
+            },
+            {
+              "kind": "text_delta",
+              "text": " token"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "SH"
+            },
+            {
+              "kind": "text_delta",
+              "text": "ARED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "VER"
+            },
+            {
+              "kind": "text_delta",
+              "text": "IFIED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "34"
+            },
+            {
+              "kind": "text_delta",
+              "text": "9"
+            },
+            {
+              "kind": "text_delta",
+              "text": "0"
+            },
+            {
+              "kind": "text_delta",
+              "text": "`\n\n"
+            },
+            {
+              "kind": "text_delta",
+              "text": "**"
+            },
+            {
+              "kind": "text_delta",
+              "text": "RE"
+            },
+            {
+              "kind": "text_delta",
+              "text": "PLY"
+            },
+            {
+              "kind": "text_delta",
+              "text": ":**"
+            },
+            {
+              "kind": "text_delta",
+              "text": " `"
+            },
+            {
+              "kind": "text_delta",
+              "text": "SH"
+            },
+            {
+              "kind": "text_delta",
+              "text": "ARED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "VER"
+            },
+            {
+              "kind": "text_delta",
+              "text": "IFIED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-3490`"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1567,
+                "uncached_input_tokens": 95,
+                "cached_input_tokens": 1472,
+                "output_tokens": 133,
+                "reasoning_tokens": 0,
+                "total_tokens": 1700,
+                "raw": [
+                  {
+                    "input_tokens": 1567,
+                    "input_tokens_details": {
+                      "cached_tokens": 1472
+                    },
+                    "output_tokens": 133,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1700
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1567,
+            "uncached_input_tokens": 95,
+            "cached_input_tokens": 1472,
+            "output_tokens": 133,
+            "reasoning_tokens": 0,
+            "total_tokens": 1700,
+            "raw": [
+              {
+                "input_tokens": 1567,
+                "input_tokens_details": {
+                  "cached_tokens": 1472
+                },
+                "output_tokens": 133,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1700
+              }
+            ]
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "merge_after_observations",
+      "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+      "success": true,
+      "semantic_success": true,
+      "score": 5,
+      "max_score": 5,
+      "attempts": 5,
+      "prompt_chars": 335,
+      "tool_trace": [
+        {
+          "attempt": 1,
+          "name": "fetch_record",
+          "arguments": {
+            "name": "alpha"
+          },
+          "output": {
+            "ok": true,
+            "token": "REC-A-1937"
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "fetch_record",
+          "arguments": {
+            "name": "beta"
+          },
+          "output": {
+            "ok": true,
+            "token": "REC-B-7391"
+          }
+        },
+        {
+          "attempt": 3,
+          "name": "merge_records",
+          "arguments": {
+            "alpha": "REC-A-1937",
+            "beta": "REC-B-7391"
+          },
+          "output": {
+            "ok": true,
+            "receipt": "MERGED-AB-4472"
+          }
+        },
+        {
+          "attempt": 4,
+          "name": "verify_merge",
+          "arguments": {
+            "receipt": "MERGED-AB-4472"
+          },
+          "output": {
+            "delivery_token": "MERGE-VERIFIED-5208",
+            "ok": true
+          }
+        }
+      ],
+      "final_answer": "MERGE-VERIFIED-5208",
+      "error": null,
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": true,
+          "evidence": "missing=[]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": true,
+          "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": true,
+          "evidence": "violations=[]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": true,
+          "evidence": "missing=[]; final=\"MERGE-VERIFIED-5208\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1392,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1392,
+            "calibration_key": 730512238593756953,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_62a8e0ad3c6143789c82a508",
+                "type": "function",
+                "func_name": "fetch_record",
+                "arguments": "{\"name\":\"alpha\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "Execute"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " sequentially"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " with"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " dependencies"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_62a8e0ad3c6143789c82a508",
+              "name": "fetch_record"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "name"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "alpha"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1357,
+                "uncached_input_tokens": 141,
+                "cached_input_tokens": 1216,
+                "output_tokens": 17,
+                "reasoning_tokens": 0,
+                "total_tokens": 1374,
+                "raw": [
+                  {
+                    "input_tokens": 1357,
+                    "input_tokens_details": {
+                      "cached_tokens": 1216
+                    },
+                    "output_tokens": 17,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1374
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_021787674200911ad6c77bbc9dd3a58ea6d8fc22d5c50746f2fa5_0",
+                    "summary": [
+                      {
+                        "text": "Execute sequentially with dependencies.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1357,
+            "uncached_input_tokens": 141,
+            "cached_input_tokens": 1216,
+            "output_tokens": 17,
+            "reasoning_tokens": 0,
+            "total_tokens": 1374,
+            "raw": [
+              {
+                "input_tokens": 1357,
+                "input_tokens_details": {
+                  "cached_tokens": 1216
+                },
+                "output_tokens": 17,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1374
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 2,
+          "prompt_measurement": {
+            "tokens": 1497,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1497,
+            "calibration_key": 1493850943165243246,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674200911ad6c77bbc9dd3a58ea6d8fc22d5c50746f2fa5_0\",\"summary\":[{\"text\":\"Execute sequentially with dependencies.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_62a8e0ad3c6143789c82a508",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"alpha\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_62a8e0ad3c6143789c82a508"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_818777bd4f6e487a93307f9c",
+                "type": "function",
+                "func_name": "fetch_record",
+                "arguments": "{\"name\":\"beta\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 0,
+              "id": "call_818777bd4f6e487a93307f9c",
+              "name": "fetch_record"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "name"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "beta\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 0
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1392,
+                "uncached_input_tokens": 48,
+                "cached_input_tokens": 1344,
+                "output_tokens": 12,
+                "reasoning_tokens": 0,
+                "total_tokens": 1404,
+                "raw": [
+                  {
+                    "input_tokens": 1392,
+                    "input_tokens_details": {
+                      "cached_tokens": 1344
+                    },
+                    "output_tokens": 12,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1404
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1392,
+            "uncached_input_tokens": 48,
+            "cached_input_tokens": 1344,
+            "output_tokens": 12,
+            "reasoning_tokens": 0,
+            "total_tokens": 1404,
+            "raw": [
+              {
+                "input_tokens": 1392,
+                "input_tokens_details": {
+                  "cached_tokens": 1344
+                },
+                "output_tokens": 12,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1404
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 3,
+          "prompt_measurement": {
+            "tokens": 1559,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1559,
+            "calibration_key": 12512288653947998055,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674200911ad6c77bbc9dd3a58ea6d8fc22d5c50746f2fa5_0\",\"summary\":[{\"text\":\"Execute sequentially with dependencies.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_62a8e0ad3c6143789c82a508",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"alpha\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_62a8e0ad3c6143789c82a508"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_818777bd4f6e487a93307f9c",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"beta\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_818777bd4f6e487a93307f9c"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_5a173e656cba442997b17033",
+                "type": "function",
+                "func_name": "merge_records",
+                "arguments": "{\"alpha\":\"REC-A-1937\",\"beta\":\"REC-B-7391\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 0,
+              "id": "call_5a173e656cba442997b17033",
+              "name": "merge_records"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "alpha"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "REC"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-A"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "19"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "3"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "7"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": ",\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "beta"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "REC"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-B"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "7"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "39"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "1"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 0
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1422,
+                "uncached_input_tokens": 78,
+                "cached_input_tokens": 1344,
+                "output_tokens": 28,
+                "reasoning_tokens": 0,
+                "total_tokens": 1450,
+                "raw": [
+                  {
+                    "input_tokens": 1422,
+                    "input_tokens_details": {
+                      "cached_tokens": 1344
+                    },
+                    "output_tokens": 28,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1450
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1422,
+            "uncached_input_tokens": 78,
+            "cached_input_tokens": 1344,
+            "output_tokens": 28,
+            "reasoning_tokens": 0,
+            "total_tokens": 1450,
+            "raw": [
+              {
+                "input_tokens": 1422,
+                "input_tokens_details": {
+                  "cached_tokens": 1344
+                },
+                "output_tokens": 28,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1450
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 4,
+          "prompt_measurement": {
+            "tokens": 1630,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1630,
+            "calibration_key": 7018906802089011380,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674200911ad6c77bbc9dd3a58ea6d8fc22d5c50746f2fa5_0\",\"summary\":[{\"text\":\"Execute sequentially with dependencies.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_62a8e0ad3c6143789c82a508",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"alpha\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_62a8e0ad3c6143789c82a508"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_818777bd4f6e487a93307f9c",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"beta\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_818777bd4f6e487a93307f9c"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_5a173e656cba442997b17033",
+                  "type": "function",
+                  "function": {
+                    "name": "merge_records",
+                    "arguments": "{\"alpha\":\"REC-A-1937\",\"beta\":\"REC-B-7391\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+              "name": "merge_records",
+              "tool_call_id": "call_5a173e656cba442997b17033"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_86366041535a459bbac1f12f",
+                "type": "function",
+                "func_name": "verify_merge",
+                "arguments": "{\"receipt\":\"MERGED-AB-4472\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 0,
+              "id": "call_86366041535a459bbac1f12f",
+              "name": "verify_merge"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "{\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "receipt"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "\":\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "MER"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "GED"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "AB"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "4"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "472\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 0,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 0
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1470,
+                "uncached_input_tokens": 62,
+                "cached_input_tokens": 1408,
+                "output_tokens": 19,
+                "reasoning_tokens": 0,
+                "total_tokens": 1489,
+                "raw": [
+                  {
+                    "input_tokens": 1470,
+                    "input_tokens_details": {
+                      "cached_tokens": 1408
+                    },
+                    "output_tokens": 19,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1489
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1470,
+            "uncached_input_tokens": 62,
+            "cached_input_tokens": 1408,
+            "output_tokens": 19,
+            "reasoning_tokens": 0,
+            "total_tokens": 1489,
+            "raw": [
+              {
+                "input_tokens": 1470,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 19,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1489
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 5,
+          "prompt_measurement": {
+            "tokens": 1699,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "glm-5.3",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1699,
+            "calibration_key": 6608782021121698579,
+            "calibration_shape": 8226964239569330916
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_021787674200911ad6c77bbc9dd3a58ea6d8fc22d5c50746f2fa5_0\",\"summary\":[{\"text\":\"Execute sequentially with dependencies.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_62a8e0ad3c6143789c82a508",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"alpha\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_62a8e0ad3c6143789c82a508"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_818777bd4f6e487a93307f9c",
+                  "type": "function",
+                  "function": {
+                    "name": "fetch_record",
+                    "arguments": "{\"name\":\"beta\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+              "name": "fetch_record",
+              "tool_call_id": "call_818777bd4f6e487a93307f9c"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_5a173e656cba442997b17033",
+                  "type": "function",
+                  "function": {
+                    "name": "merge_records",
+                    "arguments": "{\"alpha\":\"REC-A-1937\",\"beta\":\"REC-B-7391\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+              "name": "merge_records",
+              "tool_call_id": "call_5a173e656cba442997b17033"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_86366041535a459bbac1f12f",
+                  "type": "function",
+                  "function": {
+                    "name": "verify_merge",
+                    "arguments": "{\"receipt\":\"MERGED-AB-4472\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"delivery_token\":\"MERGE-VERIFIED-5208\",\"ok\":true}",
+              "name": "verify_merge",
+              "tool_call_id": "call_86366041535a459bbac1f12f"
+            }
+          ],
+          "response": {
+            "content": "MERGE-VERIFIED-5208",
+            "tool_calls": []
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "text_delta",
+              "text": "MER"
+            },
+            {
+              "kind": "text_delta",
+              "text": "GE"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "VER"
+            },
+            {
+              "kind": "text_delta",
+              "text": "IFIED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-"
+            },
+            {
+              "kind": "text_delta",
+              "text": "520"
+            },
+            {
+              "kind": "text_delta",
+              "text": "8"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1510,
+                "uncached_input_tokens": 102,
+                "cached_input_tokens": 1408,
+                "output_tokens": 10,
+                "reasoning_tokens": 0,
+                "total_tokens": 1520,
+                "raw": [
+                  {
+                    "input_tokens": 1510,
+                    "input_tokens_details": {
+                      "cached_tokens": 1408
+                    },
+                    "output_tokens": 10,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 0
+                    },
+                    "total_tokens": 1520
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1510,
+            "uncached_input_tokens": 102,
+            "cached_input_tokens": 1408,
+            "output_tokens": 10,
+            "reasoning_tokens": 0,
+            "total_tokens": 1520,
+            "raw": [
+              {
+                "input_tokens": 1510,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 10,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1520
+              }
+            ]
+          },
+          "error": null
+        }
+      ]
+    }
+  ],
+  "conclusion_boundary": "ME-02 p1 changes only the serialization of one canonical recursive program. A Pilot result can diagnose feasibility, ceiling/floor effects and format bias; it is not a confirmatory claim that S-expression is superior, nor evidence about Context transactions, long-term memory, concurrency or public benchmark performance."
+}

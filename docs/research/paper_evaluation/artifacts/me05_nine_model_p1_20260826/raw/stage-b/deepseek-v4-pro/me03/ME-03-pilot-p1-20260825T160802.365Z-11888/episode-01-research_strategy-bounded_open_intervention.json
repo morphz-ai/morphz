@@ -1,0 +1,4168 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "bounded_open_intervention",
+  "context_id": "research-causal-v2",
+  "valid_open_set_count": 5,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "provider-completion",
+      "passed": false,
+      "evidence": "model response contains neither non-empty content nor tool calls"
+    }
+  ],
+  "raw_output": "",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 737,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "deepseek-v4-pro",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 737,
+      "calibration_key": 5763588457190754336,
+      "calibration_shape": 14930450097791904756
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": null,
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " answer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " as"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evalu"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ator"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " produce"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " mark"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "down"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " understand"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " task"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " have"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " properties"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " kind"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "OND"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ids"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ["
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "],"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ["
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "],"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " semantics"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " set"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " every"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " group"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Let"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "'s"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "C"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "andidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "broad"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "scan"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " fast"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exclude"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "pert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " qualitative"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "re"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "plication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " verification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "dataset"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "aud"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "it"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " verification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exclude"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " among"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " among"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Selection"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Possible"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " pairs"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " among"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "pert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " properties"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "qual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "itative"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "pert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "qual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ver"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "pert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "qual"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " invalid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ver"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "re"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "plication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ver"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Since"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "OND"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " multiple"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containing"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "OND"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "research"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " short"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " string"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " of"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ids"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " can"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " pick"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " pair"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " prefer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " statement"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " using"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " but"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " is"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " research"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " statement"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " mentions"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " But"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " doesn"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "'t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " require"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "OND"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " result"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " satisfying"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " declared"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " contract"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Does"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " matter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " It"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "New"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " funding"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " author"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "izes"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " using"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-only"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " methods"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " excluded"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " H"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "mm"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " there"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " is"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " an"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " implicit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " But"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " declared"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " does"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " not"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " include"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " in"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " should"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " apply"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " semantic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " contract"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Since"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "OND"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " result"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " that"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " satisfies"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " declared"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " contract"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Do"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " not"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " search"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " hidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " optimum"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " mentions"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " That"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " could"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " make"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " more"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " aligned"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " because"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " it"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " But"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " pair"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " needs"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Could"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " But"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " expert"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_inter"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "views"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " lacks"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Best"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " aligned"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " field"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "observation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Statement"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "using"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Could"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " But"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " requires"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Not"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " in"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " but"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " statement"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "author"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "izes"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " using"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " If"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selecting"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " two"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-only"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " methods"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " excluded"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " That"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " mirrors"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " validation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " using"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " suggests"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " There"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " is"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " group"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " However"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Since"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " if"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " This"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " seems"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " reasonable"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ensure"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " set"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " least"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " from"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " every"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_pro"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "perty"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_group"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " For"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " causal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " verification"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Valid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " replication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " secondary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " depth"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " primary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containing"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Include"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " mark"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "down"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " check"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " if"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containing"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " id"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "OND"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Could"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " be"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "research"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Yes"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " of"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ids"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Use"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Let"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "'s"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " craft"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " final"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " avoid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Mark"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "down"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Just"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " maybe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " include"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "research"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-c"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ausal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "expl"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "anation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \"..."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "controlled"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_t"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rial"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "re"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "plication"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "].\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Double"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-check"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " all"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "",
+              "id": "rs_4ad22018-40cf-4109-ba2e-414f1c2f1f95_0",
+              "summary": [
+                {
+                  "text": "We need answer as evaluator. Need infer request. We need produce JSON object only no markdown. Need understand task. We have candidates with properties. Context/rule: kind NONDETERMINISTIC. Returns selected array candidate ids. rule: forbidden secondary, required groups [depth], [primary], select_count 2, semantics choose any two distinct candidates no forbidden and selected set collectively covers at least one property from every required group.\n\nWe need choose candidates. Let's evaluate.\n\nCandidates:\nbroad_scan: breadth, secondary, fast -> forbidden secondary exclude.\nexpert_interviews: breadth, primary, qualitative -> allowed? no secondary. Has primary.\ncontrolled_trial: depth, primary, causal -> allowed. Has depth, primary.\nreplication: depth, primary, verification -> allowed. Has depth, primary.\ndataset_audit: depth, secondary, verification -> forbidden secondary exclude.\nfield_observation: breadth, primary, field -> allowed. Has primary.\n\nRequired groups: need at least depth among selected; at least primary among selected. Selection count 2 distinct. Need no selected secondary.\n\nPossible pairs among allowed:\nexpert_interviews + controlled_trial: properties breadth/primary/qualitative + depth/primary/causal -> covers depth, primary. valid.\nexpert_interviews + replication: breadth/primary/qual + depth/primary/verification -> covers depth and primary. valid.\nexpert_interviews + field_observation: breadth/primary/qual + breadth/primary/field -> no depth. invalid.\ncontrolled_trial + replication: depth/primary/causal + depth/primary/verification -> covers depth/primary. valid.\ncontrolled_trial + field_observation: depth/primary/causal + breadth/primary/field -> covers depth/primary. valid.\nreplication + field_observation: depth/primary/verification + breadth/primary/field -> covers depth/primary. valid.\n\nNeed select any two distinct candidates. Since NONDETERMINISTIC, multiple valid. Need return exactly one JSON object. The returns basis non-empty array containing current context id for NONDETERMINISTIC: [\"research-causal-v2\"]. Explanation non-empty short string. selected array of candidate ids.\n\nWe can pick any valid pair. Need maybe prefer context? Context statement says \"causal validation using primary evidence\" but required groups only depth, primary. Candidate controlled_trial has causal. The context id is research-causal-v2, statement mentions causal validation. But rule doesn't require causal property. NONDETERMINISTIC says select any result satisfying current Context and declared contract. Does context preference \"causal validation\" matter? It says \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\" Hmm maybe there is an implicit preference for causal? But the declared rule does not include causal in required. We should apply semantic contract. Since NONDETERMINISTIC: \"Select any result that satisfies the current Context and the declared contract. Do not search for hidden unique optimum.\" Context mentions causal validation. That could make controlled_trial more aligned because it has \"causal\". But pair needs two. Could choose controlled_trial and replication? Both primary depth, one causal. But expert_interviews lacks depth? no. Need cover depth/primary. Best aligned with causal validation maybe controlled_trial + replication? Or controlled_trial + field_observation? Statement \"using primary evidence\" primary.\n\nCould select controlled_trial and replication. But maybe \"causal validation\" requires causal property? Not in rule; but context statement \"authorizes causal validation using primary evidence\". If selecting any two distinct candidates no forbidden and cover required groups. The context says \"secondary-only methods are excluded.\" That mirrors forbidden secondary. \"causal validation using primary evidence\" suggests primary evidence and causal. Required property groups are depth and primary. There is no required causal group. However candidate controlled_trial has causal. Since select_count 2, if choose controlled_trial + replication, covers required. Both are primary and depth. This seems reasonable.\n\nNeed ensure selected set collectively covers at least one property from every required_property_group. For controlled_trial + replication: controlled_trial has depth, primary, causal; replication has depth, primary, verification. Both no secondary. Valid. Explanation: \"Selected controlled_trial and replication: both are depth/primary, no secondary; collectively cover required depth and primary.\" Need returns basis array containing current context id. Include selected. Exactly one JSON object no markdown.\n\nNeed check if \"basis\": non-empty array containing current context id for NONDETERMINISTIC. Could be [\"research-causal-v2\"]. Yes.\n\nNeed maybe the returns selected array of candidate ids. Use JSON.\n\nLet's craft final.\n\nNeed avoid Markdown. Just JSON.\n\nNeed maybe include \"basis\": [\"research-causal-v2\"], \"explanation\": \"...\", \"selected\": [\"controlled_trial\",\"replication\"].\n\nDouble-check all constraints: \"no selected candidate has a",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "failed",
+        "message": "model response contains neither non-empty content nor tool calls"
+      }
+    ],
+    "usage": {},
+    "error": "model response contains neither non-empty content nor tool calls"
+  }
+}

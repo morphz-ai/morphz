@@ -1,0 +1,1805 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "merge_after_observations",
+  "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 335,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "alpha"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-A-1937"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "beta"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-B-7391"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "merge_records",
+      "arguments": {
+        "alpha": "REC-A-1937",
+        "beta": "REC-B-7391"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "MERGED-AB-4472"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_merge",
+      "arguments": {
+        "receipt": "MERGED-AB-4472"
+      },
+      "output": {
+        "delivery_token": "MERGE-VERIFIED-5208",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "MERGE-VERIFIED-5208",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"MERGE-VERIFIED-5208\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1394,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "deepseek-v4-pro",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1394,
+        "calibration_key": 6406722660246310022,
+        "calibration_shape": 603534521727485471
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_00_R6AOlSmMJrEtxbCn3l3l5343",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"alpha\"}"
+          },
+          {
+            "id": "call_01_VoNRlu8TvpgzFAUp36xs6908",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"beta\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "We"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " execute"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " this"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " real"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " function"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " parse"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " seq"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " binds"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ";"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " bind"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " These"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " two"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "?"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " They"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " depend"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " only"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " liter"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "als"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " same"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " block"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " But"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " instructions"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " \""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Never"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " issue"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " data"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-dependent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " same"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " model"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " response"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " These"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " are"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " not"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " data"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-dependent"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Can"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " issue"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " both"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " in"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " same"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " block"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Then"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " wait"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " results"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " before"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_rec"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ords"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " since"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " it"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " depends"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Then"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " depends"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " on"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merged"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".re"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ce"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Then"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " reply"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "'s"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " make"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " tool"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_00_R6AOlSmMJrEtxbCn3l3l5343",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "alpha"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_01_VoNRlu8TvpgzFAUp36xs6908",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "name"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "beta"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1613,
+            "uncached_input_tokens": 205,
+            "cached_input_tokens": 1408,
+            "output_tokens": 203,
+            "reasoning_tokens": 129,
+            "total_tokens": 1816,
+            "raw": [
+              {
+                "input_tokens": 1613,
+                "input_tokens_details": {
+                  "cached_tokens": 1408
+                },
+                "output_tokens": 203,
+                "output_tokens_details": {
+                  "reasoning_tokens": 129
+                },
+                "total_tokens": 1816
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_7dab11f7-2670-4431-8662-b8bab0a1d707_0",
+                "summary": [
+                  {
+                    "text": "We need execute this program with real function calls. Need parse: seq with binds. bind alpha fetch_record name alpha; bind beta fetch_record name beta. These two are independent? They depend only on literals, so can call both in same block. But instructions: \"Never issue data-dependent calls in same model response.\" These are not data-dependent. Can issue both fetch_record calls in same block. Then need wait results before merge_records since it depends on alpha.token and beta.token. Then verify_merge depends on merged.receipt. Then reply delivery_token.\n\nLet's make tool calls: fetch_record name alpha and name beta.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1613,
+        "uncached_input_tokens": 205,
+        "cached_input_tokens": 1408,
+        "output_tokens": 203,
+        "reasoning_tokens": 129,
+        "total_tokens": 1816,
+        "raw": [
+          {
+            "input_tokens": 1613,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 203,
+            "output_tokens_details": {
+              "reasoning_tokens": 129
+            },
+            "total_tokens": 1816
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1707,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "deepseek-v4-pro",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1707,
+        "calibration_key": 2086889479499711027,
+        "calibration_shape": 603534521727485471
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_7dab11f7-2670-4431-8662-b8bab0a1d707_0\",\"summary\":[{\"text\":\"We need execute this program with real function calls. Need parse: seq with binds. bind alpha fetch_record name alpha; bind beta fetch_record name beta. These two are independent? They depend only on literals, so can call both in same block. But instructions: \\\"Never issue data-dependent calls in same model response.\\\" These are not data-dependent. Can issue both fetch_record calls in same block. Then need wait results before merge_records since it depends on alpha.token and beta.token. Then verify_merge depends on merged.receipt. Then reply delivery_token.\\n\\nLet's make tool calls: fetch_record name alpha and name beta.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_R6AOlSmMJrEtxbCn3l3l5343",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_01_VoNRlu8TvpgzFAUp36xs6908",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_00_R6AOlSmMJrEtxbCn3l3l5343"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_01_VoNRlu8TvpgzFAUp36xs6908"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_00_0KlFUPGtbwKK0h9vAOlS7269",
+            "type": "function",
+            "func_name": "merge_records",
+            "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_rec"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ords"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-A"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "193"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "7"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " REC"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-B"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "739"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_00_0KlFUPGtbwKK0h9vAOlS7269",
+          "name": "merge_records"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "alpha"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-A"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "193"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "7"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "beta"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-B"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "739"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1862,
+            "uncached_input_tokens": 70,
+            "cached_input_tokens": 1792,
+            "output_tokens": 89,
+            "reasoning_tokens": 20,
+            "total_tokens": 1951,
+            "raw": [
+              {
+                "input_tokens": 1862,
+                "input_tokens_details": {
+                  "cached_tokens": 1792
+                },
+                "output_tokens": 89,
+                "output_tokens_details": {
+                  "reasoning_tokens": 20
+                },
+                "total_tokens": 1951
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_0f44c9d4-5ca9-4d03-87f3-79905fb23f27_0",
+                "summary": [
+                  {
+                    "text": "Now merge_records with alpha token REC-A-1937 beta token REC-B-7391.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1862,
+        "uncached_input_tokens": 70,
+        "cached_input_tokens": 1792,
+        "output_tokens": 89,
+        "reasoning_tokens": 20,
+        "total_tokens": 1951,
+        "raw": [
+          {
+            "input_tokens": 1862,
+            "input_tokens_details": {
+              "cached_tokens": 1792
+            },
+            "output_tokens": 89,
+            "output_tokens_details": {
+              "reasoning_tokens": 20
+            },
+            "total_tokens": 1951
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 1827,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "deepseek-v4-pro",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1827,
+        "calibration_key": 16437106988240904156,
+        "calibration_shape": 603534521727485471
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_7dab11f7-2670-4431-8662-b8bab0a1d707_0\",\"summary\":[{\"text\":\"We need execute this program with real function calls. Need parse: seq with binds. bind alpha fetch_record name alpha; bind beta fetch_record name beta. These two are independent? They depend only on literals, so can call both in same block. But instructions: \\\"Never issue data-dependent calls in same model response.\\\" These are not data-dependent. Can issue both fetch_record calls in same block. Then need wait results before merge_records since it depends on alpha.token and beta.token. Then verify_merge depends on merged.receipt. Then reply delivery_token.\\n\\nLet's make tool calls: fetch_record name alpha and name beta.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_R6AOlSmMJrEtxbCn3l3l5343",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_01_VoNRlu8TvpgzFAUp36xs6908",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_00_R6AOlSmMJrEtxbCn3l3l5343"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_01_VoNRlu8TvpgzFAUp36xs6908"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_0f44c9d4-5ca9-4d03-87f3-79905fb23f27_0\",\"summary\":[{\"text\":\"Now merge_records with alpha token REC-A-1937 beta token REC-B-7391.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_0KlFUPGtbwKK0h9vAOlS7269",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_00_0KlFUPGtbwKK0h9vAOlS7269"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_00_8JIgQFlaDCFZILcIqmgl3272",
+            "type": "function",
+            "func_name": "verify_merge",
+            "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verify"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "merge"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " receipt"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " MER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "G"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "AB"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "447"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_00_8JIgQFlaDCFZILcIqmgl3272",
+          "name": "verify_merge"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "rece"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "ipt"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ": "
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "M"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "ERG"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "ED"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "AB"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "447"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1980,
+            "uncached_input_tokens": 60,
+            "cached_input_tokens": 1920,
+            "output_tokens": 67,
+            "reasoning_tokens": 14,
+            "total_tokens": 2047,
+            "raw": [
+              {
+                "input_tokens": 1980,
+                "input_tokens_details": {
+                  "cached_tokens": 1920
+                },
+                "output_tokens": 67,
+                "output_tokens_details": {
+                  "reasoning_tokens": 14
+                },
+                "total_tokens": 2047
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_0f6d2a36-8c07-42c3-8049-96a4ebb0ac76_0",
+                "summary": [
+                  {
+                    "text": "Now verify_merge receipt MERGED-AB-4472.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1980,
+        "uncached_input_tokens": 60,
+        "cached_input_tokens": 1920,
+        "output_tokens": 67,
+        "reasoning_tokens": 14,
+        "total_tokens": 2047,
+        "raw": [
+          {
+            "input_tokens": 1980,
+            "input_tokens_details": {
+              "cached_tokens": 1920
+            },
+            "output_tokens": 67,
+            "output_tokens_details": {
+              "reasoning_tokens": 14
+            },
+            "total_tokens": 2047
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 1937,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "deepseek-v4-pro",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1937,
+        "calibration_key": 11277541695213975893,
+        "calibration_shape": 603534521727485471
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_7dab11f7-2670-4431-8662-b8bab0a1d707_0\",\"summary\":[{\"text\":\"We need execute this program with real function calls. Need parse: seq with binds. bind alpha fetch_record name alpha; bind beta fetch_record name beta. These two are independent? They depend only on literals, so can call both in same block. But instructions: \\\"Never issue data-dependent calls in same model response.\\\" These are not data-dependent. Can issue both fetch_record calls in same block. Then need wait results before merge_records since it depends on alpha.token and beta.token. Then verify_merge depends on merged.receipt. Then reply delivery_token.\\n\\nLet's make tool calls: fetch_record name alpha and name beta.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_R6AOlSmMJrEtxbCn3l3l5343",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_01_VoNRlu8TvpgzFAUp36xs6908",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_00_R6AOlSmMJrEtxbCn3l3l5343"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_01_VoNRlu8TvpgzFAUp36xs6908"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_0f44c9d4-5ca9-4d03-87f3-79905fb23f27_0\",\"summary\":[{\"text\":\"Now merge_records with alpha token REC-A-1937 beta token REC-B-7391.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_0KlFUPGtbwKK0h9vAOlS7269",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_00_0KlFUPGtbwKK0h9vAOlS7269"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_0f6d2a36-8c07-42c3-8049-96a4ebb0ac76_0\",\"summary\":[{\"text\":\"Now verify_merge receipt MERGED-AB-4472.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_00_8JIgQFlaDCFZILcIqmgl3272",
+              "type": "function",
+              "function": {
+                "name": "verify_merge",
+                "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"MERGE-VERIFIED-5208\",\"ok\":true}",
+          "name": "verify_merge",
+          "tool_call_id": "call_00_8JIgQFlaDCFZILcIqmgl3272"
+        }
+      ],
+      "response": {
+        "content": "MERGE-VERIFIED-5208",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " reply"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".d"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "el"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " ="
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " MER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "GE"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "520"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "8"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "MER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "GE"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-V"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "520"
+        },
+        {
+          "kind": "text_delta",
+          "text": "8"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2076,
+            "uncached_input_tokens": 156,
+            "cached_input_tokens": 1920,
+            "output_tokens": 26,
+            "reasoning_tokens": 17,
+            "total_tokens": 2102,
+            "raw": [
+              {
+                "input_tokens": 2076,
+                "input_tokens_details": {
+                  "cached_tokens": 1920
+                },
+                "output_tokens": 26,
+                "output_tokens_details": {
+                  "reasoning_tokens": 17
+                },
+                "total_tokens": 2102
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "id": "rs_7c932a05-b06f-4f54-a9a6-6d8f8a7a87d9_0",
+                "summary": [
+                  {
+                    "text": "Now reply verified.delivery_token = MERGE-VERIFIED-5208.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2076,
+        "uncached_input_tokens": 156,
+        "cached_input_tokens": 1920,
+        "output_tokens": 26,
+        "reasoning_tokens": 17,
+        "total_tokens": 2102,
+        "raw": [
+          {
+            "input_tokens": 2076,
+            "input_tokens_details": {
+              "cached_tokens": 1920
+            },
+            "output_tokens": 26,
+            "output_tokens_details": {
+              "reasoning_tokens": 17
+            },
+            "total_tokens": 2102
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

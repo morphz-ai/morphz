@@ -1,0 +1,494 @@
+[
+  {
+    "task": "alternating_branches",
+    "canonical_program": {
+      "op": "seq",
+      "steps": [
+        {
+          "expression": {
+            "arguments": {
+              "case": {
+                "kind": "literal",
+                "value": "C1"
+              }
+            },
+            "op": "call",
+            "tool": "read_case"
+          },
+          "name": "observed_c1",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "equals": {
+              "kind": "boolean",
+              "value": true
+            },
+            "left": {
+              "binding": "observed_c1",
+              "field": "enabled",
+              "kind": "reference"
+            },
+            "op": "if",
+            "when_false": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C1"
+                },
+                "token": {
+                  "binding": "observed_c1",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_false"
+            },
+            "when_true": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C1"
+                },
+                "token": {
+                  "binding": "observed_c1",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_true"
+            }
+          },
+          "name": "routed_c1",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "case": {
+                "kind": "literal",
+                "value": "C2"
+              }
+            },
+            "op": "call",
+            "tool": "read_case"
+          },
+          "name": "observed_c2",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "equals": {
+              "kind": "boolean",
+              "value": true
+            },
+            "left": {
+              "binding": "observed_c2",
+              "field": "enabled",
+              "kind": "reference"
+            },
+            "op": "if",
+            "when_false": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C2"
+                },
+                "token": {
+                  "binding": "observed_c2",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_false"
+            },
+            "when_true": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C2"
+                },
+                "token": {
+                  "binding": "observed_c2",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_true"
+            }
+          },
+          "name": "routed_c2",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "case": {
+                "kind": "literal",
+                "value": "C3"
+              }
+            },
+            "op": "call",
+            "tool": "read_case"
+          },
+          "name": "observed_c3",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "equals": {
+              "kind": "boolean",
+              "value": true
+            },
+            "left": {
+              "binding": "observed_c3",
+              "field": "enabled",
+              "kind": "reference"
+            },
+            "op": "if",
+            "when_false": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C3"
+                },
+                "token": {
+                  "binding": "observed_c3",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_false"
+            },
+            "when_true": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C3"
+                },
+                "token": {
+                  "binding": "observed_c3",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_true"
+            }
+          },
+          "name": "routed_c3",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "case": {
+                "kind": "literal",
+                "value": "C4"
+              }
+            },
+            "op": "call",
+            "tool": "read_case"
+          },
+          "name": "observed_c4",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "equals": {
+              "kind": "boolean",
+              "value": true
+            },
+            "left": {
+              "binding": "observed_c4",
+              "field": "enabled",
+              "kind": "reference"
+            },
+            "op": "if",
+            "when_false": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C4"
+                },
+                "token": {
+                  "binding": "observed_c4",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_false"
+            },
+            "when_true": {
+              "arguments": {
+                "case": {
+                  "kind": "literal",
+                  "value": "C4"
+                },
+                "token": {
+                  "binding": "observed_c4",
+                  "field": "token",
+                  "kind": "reference"
+                }
+              },
+              "op": "call",
+              "tool": "route_true"
+            }
+          },
+          "name": "routed_c4",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "four": {
+                "binding": "routed_c4",
+                "field": "receipt",
+                "kind": "reference"
+              },
+              "one": {
+                "binding": "routed_c1",
+                "field": "receipt",
+                "kind": "reference"
+              },
+              "three": {
+                "binding": "routed_c3",
+                "field": "receipt",
+                "kind": "reference"
+              },
+              "two": {
+                "binding": "routed_c2",
+                "field": "receipt",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "verify_routes"
+          },
+          "name": "verified",
+          "op": "bind"
+        },
+        {
+          "op": "reply",
+          "values": [
+            {
+              "binding": "verified",
+              "field": "delivery_token",
+              "kind": "reference"
+            }
+          ]
+        }
+      ]
+    },
+    "semantic_digest": "94bcde6fffb37bd248eff72389f5d2631917d3c62a8ef8302cf4b5bbe0346633",
+    "arms": [
+      {
+        "arm": "sexpr_ast",
+        "semantic_digest": "94bcde6fffb37bd248eff72389f5d2631917d3c62a8ef8302cf4b5bbe0346633",
+        "system_contract_sha256": "5264c5c689332a4deb75bdfa263b3607edffd09cbdfb8965eab202354cf8a6cb",
+        "prompt_chars": 1375,
+        "prompt_bytes": 1375,
+        "prompt": "(seq\n  (bind observed_c1 (call read_case (arg case (literal C1))))\n  (bind routed_c1 (if (= (ref observed_c1 enabled) (boolean true)) (call route_true (arg case (literal C1)) (arg token (ref observed_c1 token))) (call route_false (arg case (literal C1)) (arg token (ref observed_c1 token)))))\n  (bind observed_c2 (call read_case (arg case (literal C2))))\n  (bind routed_c2 (if (= (ref observed_c2 enabled) (boolean true)) (call route_true (arg case (literal C2)) (arg token (ref observed_c2 token))) (call route_false (arg case (literal C2)) (arg token (ref observed_c2 token)))))\n  (bind observed_c3 (call read_case (arg case (literal C3))))\n  (bind routed_c3 (if (= (ref observed_c3 enabled) (boolean true)) (call route_true (arg case (literal C3)) (arg token (ref observed_c3 token))) (call route_false (arg case (literal C3)) (arg token (ref observed_c3 token)))))\n  (bind observed_c4 (call read_case (arg case (literal C4))))\n  (bind routed_c4 (if (= (ref observed_c4 enabled) (boolean true)) (call route_true (arg case (literal C4)) (arg token (ref observed_c4 token))) (call route_false (arg case (literal C4)) (arg token (ref observed_c4 token)))))\n  (bind verified (call verify_routes (arg four (ref routed_c4 receipt)) (arg one (ref routed_c1 receipt)) (arg three (ref routed_c3 receipt)) (arg two (ref routed_c2 receipt))))\n  (reply (ref verified delivery_token)))"
+      }
+    ]
+  },
+  {
+    "task": "shared_reference",
+    "canonical_program": {
+      "op": "seq",
+      "steps": [
+        {
+          "expression": {
+            "arguments": {
+              "key": {
+                "kind": "literal",
+                "value": "shared"
+              }
+            },
+            "op": "call",
+            "tool": "fetch_piece"
+          },
+          "name": "source",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "lane": {
+                "kind": "literal",
+                "value": "left"
+              },
+              "token": {
+                "binding": "source",
+                "field": "token",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "transform_piece"
+          },
+          "name": "left",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "lane": {
+                "kind": "literal",
+                "value": "right"
+              },
+              "token": {
+                "binding": "source",
+                "field": "token",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "transform_piece"
+          },
+          "name": "right",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "left": {
+                "binding": "left",
+                "field": "receipt",
+                "kind": "reference"
+              },
+              "right": {
+                "binding": "right",
+                "field": "receipt",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "verify_shared"
+          },
+          "name": "verified",
+          "op": "bind"
+        },
+        {
+          "op": "reply",
+          "values": [
+            {
+              "binding": "verified",
+              "field": "delivery_token",
+              "kind": "reference"
+            }
+          ]
+        }
+      ]
+    },
+    "semantic_digest": "40ed5d28331135a4bfcb5790f614a85c4a395643d71fb90cbd9b038bae6b23ab",
+    "arms": [
+      {
+        "arm": "sexpr_ast",
+        "semantic_digest": "40ed5d28331135a4bfcb5790f614a85c4a395643d71fb90cbd9b038bae6b23ab",
+        "system_contract_sha256": "5264c5c689332a4deb75bdfa263b3607edffd09cbdfb8965eab202354cf8a6cb",
+        "prompt_chars": 398,
+        "prompt_bytes": 398,
+        "prompt": "(seq\n  (bind source (call fetch_piece (arg key (literal shared))))\n  (bind left (call transform_piece (arg lane (literal left)) (arg token (ref source token))))\n  (bind right (call transform_piece (arg lane (literal right)) (arg token (ref source token))))\n  (bind verified (call verify_shared (arg left (ref left receipt)) (arg right (ref right receipt))))\n  (reply (ref verified delivery_token)))"
+      }
+    ]
+  },
+  {
+    "task": "merge_after_observations",
+    "canonical_program": {
+      "op": "seq",
+      "steps": [
+        {
+          "expression": {
+            "arguments": {
+              "name": {
+                "kind": "literal",
+                "value": "alpha"
+              }
+            },
+            "op": "call",
+            "tool": "fetch_record"
+          },
+          "name": "alpha",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "name": {
+                "kind": "literal",
+                "value": "beta"
+              }
+            },
+            "op": "call",
+            "tool": "fetch_record"
+          },
+          "name": "beta",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "alpha": {
+                "binding": "alpha",
+                "field": "token",
+                "kind": "reference"
+              },
+              "beta": {
+                "binding": "beta",
+                "field": "token",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "merge_records"
+          },
+          "name": "merged",
+          "op": "bind"
+        },
+        {
+          "expression": {
+            "arguments": {
+              "receipt": {
+                "binding": "merged",
+                "field": "receipt",
+                "kind": "reference"
+              }
+            },
+            "op": "call",
+            "tool": "verify_merge"
+          },
+          "name": "verified",
+          "op": "bind"
+        },
+        {
+          "op": "reply",
+          "values": [
+            {
+              "binding": "verified",
+              "field": "delivery_token",
+              "kind": "reference"
+            }
+          ]
+        }
+      ]
+    },
+    "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+    "arms": [
+      {
+        "arm": "sexpr_ast",
+        "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+        "system_contract_sha256": "5264c5c689332a4deb75bdfa263b3607edffd09cbdfb8965eab202354cf8a6cb",
+        "prompt_chars": 335,
+        "prompt_bytes": 335,
+        "prompt": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+      }
+    ]
+  }
+]

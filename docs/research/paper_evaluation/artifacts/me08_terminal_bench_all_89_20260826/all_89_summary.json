@@ -1,0 +1,599 @@
+{
+  "protocol": "ME-08-terminal-bench-2.1-all-89-paired-v1",
+  "official_verifier_raw_reward_is_primary": true,
+  "task_count": 89,
+  "arms": {
+    "morphz-native": {
+      "passed": 70,
+      "score": 0.7865168539325843,
+      "wilson_95_ci": [
+        0.690471517751574,
+        0.8588520349782139
+      ]
+    },
+    "official-codex": {
+      "passed": 73,
+      "score": 0.8202247191011236,
+      "wilson_95_ci": [
+        0.727748780546544,
+        0.8862010725043955
+      ]
+    }
+  },
+  "paired": {
+    "difference": -0.033707865168539325,
+    "paired_bootstrap_95_ci": [
+      -0.1348314606741573,
+      0.06741573033707865
+    ],
+    "morphz_wins": 10,
+    "codex_wins": 13,
+    "both_pass": 60,
+    "both_fail": 6,
+    "exact_two_sided_p": 0.6776394844055176
+  },
+  "subsets": {
+    "first_40": {
+      "morphz_passed": 30,
+      "codex_passed": 28
+    },
+    "remaining_49": {
+      "morphz_passed": 40,
+      "codex_passed": 45
+    }
+  },
+  "per_task": [
+    {
+      "task": "adaptive-rejection-sampler",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "bn-fit-modify",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "break-filter-js-from-html",
+      "morphz": 0,
+      "codex": 0
+    },
+    {
+      "task": "build-cython-ext",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "build-pmars",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "build-pov-ray",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "caffe-cifar-10",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "cancel-async-tasks",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "chess-best-move",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "circuit-fibsqrt",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "cobol-modernization",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "code-from-image",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "compile-compcert",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "configure-git-webserver",
+      "morphz": 0,
+      "codex": 0
+    },
+    {
+      "task": "constraints-scheduling",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "count-dataset-tokens",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "crack-7z-hash",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "custom-memory-heap-crash",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "db-wal-recovery",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "distribution-search",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "dna-assembly",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "dna-insert",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "extract-elf",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "extract-moves-from-video",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "feal-differential-cryptanalysis",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "feal-linear-cryptanalysis",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "filter-js-from-html",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "financial-document-processor",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "fix-code-vulnerability",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "fix-git",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "fix-ocaml-gc",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "gcode-to-text",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "git-leak-recovery",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "git-multibranch",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "gpt2-codegolf",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "headless-terminal",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "hf-model-inference",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "install-windows-3.11",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "kv-store-grpc",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "large-scale-text-editing",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "largest-eigenval",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "llm-inference-batching-scheduler",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "log-summary-date-ranges",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "mailman",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "make-doom-for-mips",
+      "morphz": 0,
+      "codex": 0
+    },
+    {
+      "task": "make-mips-interpreter",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "mcmc-sampling-stan",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "merge-diff-arc-agi-task",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "model-extraction-relu-logits",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "modernize-scientific-stack",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "mteb-leaderboard",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "mteb-retrieve",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "multi-source-data-merger",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "nginx-request-logging",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "openssl-selfsigned-cert",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "overfull-hbox",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "password-recovery",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "path-tracing",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "path-tracing-reverse",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "polyglot-c-py",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "polyglot-rust-c",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "portfolio-optimization",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "protein-assembly",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "prove-plus-comm",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "pypi-server",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "pytorch-model-cli",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "pytorch-model-recovery",
+      "morphz": 0,
+      "codex": 0
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "qemu-startup",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "query-optimize",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "raman-fitting",
+      "morphz": 0,
+      "codex": 0
+    },
+    {
+      "task": "regex-chess",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "regex-log",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "reshard-c4-data",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "rstan-to-pystan",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "sam-cell-seg",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "sanitize-git-repo",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "schemelike-metacircular-eval",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "sparql-university",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "sqlite-db-truncate",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "sqlite-with-gcov",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "torch-pipeline-parallelism",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "torch-tensor-parallelism",
+      "morphz": 1,
+      "codex": 0
+    },
+    {
+      "task": "train-fasttext",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "tune-mjcf",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "video-processing",
+      "morphz": 0,
+      "codex": 1
+    },
+    {
+      "task": "vulnerable-secret",
+      "morphz": 0,
+      "codex": 0
+    },
+    {
+      "task": "winning-avg-corewars",
+      "morphz": 1,
+      "codex": 1
+    },
+    {
+      "task": "write-compressor",
+      "morphz": 1,
+      "codex": 1
+    }
+  ],
+  "input_sha256": {
+    "first_40_morphz_strict_result": "75f04f693d77bab61ed8fefcab0c6eba5011f9ccba06e53fb8d01d36fa0f485d",
+    "first_40_codex_strict_result": "d3a67e93dfdabefbc07fe1abb785f9313286818e421728a5fd209198817f69ec",
+    "remaining_49_two_arm_summary": "9d52fb3e088bf77b01f739d8f56038e40dcbc62ac943716f9ba10c5dd88ae658",
+    "remaining_49_resource_samples": "80a4892f743c8e2087603aeb8d3dbee8141f2b03595c66ba42d10c8dcb082ed3",
+    "first_40_morphz_job_result": "b8c40828b11d3299caff7b75c3b74e6d7e18af66b12767ad6c5138df007047dd",
+    "first_40_codex_job_result": "eb6e762ab98ee5d2a84684439141a222f9f71bb3d39e1358ed88307717b7e7e9",
+    "remaining_49_morphz_job_result": "946e848feb29d15f458f0bd7ea28324c6c0a8a1e44a3849d041822a005da2189",
+    "remaining_49_codex_job_result": "53db62940cbed00f02e125cdbdf1fe88ca26c7ed27f139d4ed28f1fa31b5ffc6"
+  },
+  "bootstrap": {
+    "seed": 20260826,
+    "repetitions": 10000
+  },
+  "host_resources": {
+    "sample_count": 942,
+    "first_captured_at": "2026-08-25T17:47:58.441359+00:00",
+    "last_captured_at": "2026-08-26T01:38:36.802025+00:00",
+    "cpu_count": 16,
+    "memory_total_kib": 64508056,
+    "load_1m": {
+      "mean": 0.7267895352308917,
+      "p95": 1.8855712890624985,
+      "max": 21.45947265625
+    },
+    "load_5m": {
+      "mean": 0.7209540041135881,
+      "p95": 2.750952148437496,
+      "max": 6.33203125
+    },
+    "memory_used_kib": {
+      "mean": 1967347.363057325,
+      "p95": 2432343.4,
+      "max": 5194464
+    },
+    "docker_running_containers": {
+      "mean": 1.7611464968152866,
+      "max": 2
+    }
+  },
+  "execution": {
+    "morphz-native": {
+      "provider_reported_input_tokens": 51876233,
+      "provider_reported_cache_tokens": 4196352,
+      "provider_reported_output_tokens": 1329856,
+      "wall_time_seconds_across_two_subsets": 58191.92625,
+      "errored_trials": 13,
+      "harbor_estimated_cost_usd": null,
+      "subsets": {
+        "first_40": {
+          "started_at": "2026-08-25T00:01:37.695931",
+          "finished_at": "2026-08-25T08:20:51.508877",
+          "wall_time_seconds": 29953.812946,
+          "trial_count": 40,
+          "errored_trials": 5,
+          "provider_reported_input_tokens": 28920857,
+          "provider_reported_cache_tokens": 2260480,
+          "provider_reported_output_tokens": 664135,
+          "harbor_estimated_cost_usd": null
+        },
+        "remaining_49": {
+          "started_at": "2026-08-26T01:48:00.335217",
+          "finished_at": "2026-08-26T09:38:38.448521",
+          "wall_time_seconds": 28238.113304,
+          "trial_count": 49,
+          "errored_trials": 8,
+          "provider_reported_input_tokens": 22955376,
+          "provider_reported_cache_tokens": 1935872,
+          "provider_reported_output_tokens": 665721,
+          "harbor_estimated_cost_usd": null
+        }
+      }
+    },
+    "official-codex": {
+      "provider_reported_input_tokens": 72086336,
+      "provider_reported_cache_tokens": 66423296,
+      "provider_reported_output_tokens": 1160938,
+      "wall_time_seconds_across_two_subsets": 49177.771241,
+      "errored_trials": 9,
+      "harbor_estimated_cost_usd": 72.4402384,
+      "subsets": {
+        "first_40": {
+          "started_at": "2026-08-25T00:01:46.979245",
+          "finished_at": "2026-08-25T07:27:55.256146",
+          "wall_time_seconds": 26768.276901,
+          "trial_count": 40,
+          "errored_trials": 4,
+          "provider_reported_input_tokens": 40676923,
+          "provider_reported_cache_tokens": 37872000,
+          "provider_reported_output_tokens": 602180,
+          "harbor_estimated_cost_usd": 38.412092
+        },
+        "remaining_49": {
+          "started_at": "2026-08-26T01:48:00.237438",
+          "finished_at": "2026-08-26T08:01:29.731778",
+          "wall_time_seconds": 22409.49434,
+          "trial_count": 49,
+          "errored_trials": 5,
+          "provider_reported_input_tokens": 31409413,
+          "provider_reported_cache_tokens": 28551296,
+          "provider_reported_output_tokens": 558758,
+          "harbor_estimated_cost_usd": 34.0281464
+        }
+      }
+    },
+    "cost_note": "Harbor cost fields are nominal estimates; the experiment used subscription/OAuth routes rather than developer API billing."
+  }
+}

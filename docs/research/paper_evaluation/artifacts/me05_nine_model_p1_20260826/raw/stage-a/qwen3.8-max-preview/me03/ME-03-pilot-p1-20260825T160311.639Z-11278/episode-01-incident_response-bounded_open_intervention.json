@@ -1,0 +1,621 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": 5,
+  "selected": [
+    "preserve_logs",
+    "publish_status"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis incident-accountability-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\n    \"incident-accountability-v2\"\n  ],\n  \"explanation\": \"Selected two distinct allowed candidates that collectively cover transparency and evidence without including any forbidden disruptive property.\",\n  \"selected\": [\n    \"publish_status\",\n    \"preserve_logs\"\n  ]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 768,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "qwen3.8-max-preview",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 768,
+      "calibration_key": 5652864886794676298,
+      "calibration_shape": 15960451244876841423
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\n    \"incident-accountability-v2\"\n  ],\n  \"explanation\": \"Selected two distinct allowed candidates that collectively cover transparency and evidence without including any forbidden disruptive property.\",\n  \"selected\": [\n    \"publish_status\",\n    \"preserve_logs\"\n  ]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need answer JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only. Need solve"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". User provides infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-request. Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose candidates satisfying rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Rule: select_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 2."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden_properties disruptive."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_property_groups: ["
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "transparency], ["
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "evidence]. Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose any two distinct"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates no forbidden and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " collectively cover at least"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one property from every"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " group. Candidates:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "isolate_edge:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containment"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", disruptive, internal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> forbidden due disruptive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " invalid"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\nrotate_tokens"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": containment, low"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_disruption, internal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> no transparency/e"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "vidence."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\nrate_limit:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " containment, low_dis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ruption, reversible,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " internal -> no transparency"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "/evidence.\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "publish_status: transparency"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", low_disruption"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", external -> covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " transparency, no evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", allowed.\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "notify_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "affected: transparency,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence, external ->"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers both, allowed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\npreserve_logs"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": evidence, low"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_disruption, internal"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " -> covers evidence,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed.\nNeed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2 distinct, collectively"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " transparency"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and evidence. Options"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": notify_affected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " + any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " allowed non-disrupt"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ive ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "covers both already)."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " publish_status + preserve"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_logs. Need any"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " valid. Since select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count exactly 2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Could"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " choose publish_status and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preserve_logs"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " because each covers one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " group and no forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Or"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " notify_affected and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preserve_logs etc."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " array containing current context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " id for NONDE"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "TERMINISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": [\"incident-account"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ability-v"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2\"]. Explanation short"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". selected array ids"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". Ensure exact JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " markdown.\n\nNeed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " final"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON: {\"basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\":[\"incident"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-accountability-v2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"],\"explanation\":\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Selected two allowed candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covering transparency and evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " without disruptive properties.\",\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\":[\"publish_status\",\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "preserve_logs\"]}\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Check distinct yes."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " No forbidden."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers transparency via publish"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_status, evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " via preserve_logs."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Good."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"basis\": ["
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n    \"incident"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-accountability-v2"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"\n  ],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n  \"ex"
+      },
+      {
+        "kind": "text_delta",
+        "text": "planation\": \"Selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": " two distinct allowed candidates"
+      },
+      {
+        "kind": "text_delta",
+        "text": " that collectively"
+      },
+      {
+        "kind": "text_delta",
+        "text": " cover transparency and evidence"
+      },
+      {
+        "kind": "text_delta",
+        "text": " without including any forbidden"
+      },
+      {
+        "kind": "text_delta",
+        "text": " disruptive"
+      },
+      {
+        "kind": "text_delta",
+        "text": " property.\",\n "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"selected\": ["
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n    \"publish"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_status\",\n   "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \"preserve_logs\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "\n  ]\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 747,
+          "uncached_input_tokens": 747,
+          "cached_input_tokens": 0,
+          "output_tokens": 407,
+          "reasoning_tokens": 335,
+          "total_tokens": 1154,
+          "raw": [
+            {
+              "input_tokens": 747,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 407,
+              "output_tokens_details": {
+                "reasoning_tokens": 335
+              },
+              "total_tokens": 1154
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_chatcmpl-5e554b44-6009-4542-b6d6-3e8cdc2f7cab_0",
+              "summary": [
+                {
+                  "text": "We need answer JSON only. Need solve. User provides infer-request. Need choose candidates satisfying rule.\n\nRule: select_count 2. forbidden_properties disruptive. required_property_groups: [transparency], [evidence]. Need choose any two distinct candidates no forbidden and collectively cover at least one property from every group. Candidates:\nisolate_edge: containment, disruptive, internal -> forbidden due disruptive invalid.\nrotate_tokens: containment, low_disruption, internal -> no transparency/evidence.\nrate_limit: containment, low_disruption, reversible, internal -> no transparency/evidence.\npublish_status: transparency, low_disruption, external -> covers transparency, no evidence, allowed.\nnotify_affected: transparency, evidence, external -> covers both, allowed.\npreserve_logs: evidence, low_disruption, internal -> covers evidence, allowed.\nNeed select 2 distinct, collectively transparency and evidence. Options: notify_affected + any allowed non-disruptive (covers both already). Or publish_status + preserve_logs. Need any valid. Since select_count exactly 2. Could choose publish_status and preserve_logs because each covers one required group and no forbidden. Or notify_affected and preserve_logs etc. Need basis array containing current context id for NONDETERMINISTIC: [\"incident-accountability-v2\"]. Explanation short. selected array ids. Ensure exact JSON no markdown.\n\nNeed final JSON: {\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected two allowed candidates covering transparency and evidence without disruptive properties.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}\n\nCheck distinct yes. No forbidden. covers transparency via publish_status, evidence via preserve_logs. Good.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 747,
+      "uncached_input_tokens": 747,
+      "cached_input_tokens": 0,
+      "output_tokens": 407,
+      "reasoning_tokens": 335,
+      "total_tokens": 1154,
+      "raw": [
+        {
+          "input_tokens": 747,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 407,
+          "output_tokens_details": {
+            "reasoning_tokens": 335
+          },
+          "total_tokens": 1154
+        }
+      ]
+    },
+    "error": null
+  }
+}

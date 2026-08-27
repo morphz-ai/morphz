@@ -1,0 +1,146 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "bounded_open_base",
+  "context_id": "release-risk-control-v1",
+  "valid_open_set_count": 3,
+  "selected": [
+    "blue_green",
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"blue_green\", \"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis release-risk-control-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Selected blue_green and canary, which avoid forbidden properties and satisfy the required property coverage.\",\"selected\":[\"blue_green\",\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 734,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gemini-3.7-flash-high",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 734,
+      "calibration_key": 676434959707621125,
+      "calibration_shape": 6417341132265401514
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Selected blue_green and canary, which avoid forbidden properties and satisfy the required property coverage.\",\"selected\":[\"blue_green\",\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"release-risk-control-v1\"],\"explanation\":\"Selected blue_green and canary, which avoid"
+      },
+      {
+        "kind": "text_delta",
+        "text": " forbidden properties and satisfy the required property coverage.\",\"selected\":[\"blue_green\",\"canary\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 684,
+          "uncached_input_tokens": 684,
+          "cached_input_tokens": 0,
+          "output_tokens": 42,
+          "reasoning_tokens": 639,
+          "total_tokens": 1365,
+          "raw": [
+            {
+              "input_tokens": 684,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 42,
+              "output_tokens_details": {
+                "reasoning_tokens": 639
+              },
+              "total_tokens": 1365
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "cpa-gemini-responses-carrier-v1:previous:text:RXRZVkN0TVZBUkZOTWcvODAxTGxYNVpwRFkrYTN0WFVab3lzZW1MWFc4dk9FbUV0NWd0SHNOaEZRSVFVZFVudE5wWXlqZnR2cTFsaE04ZFVxcW5RcUVnWnQ1ZXpFc0RUUTAyZmJjWDBWR25RTkpLaVdjUm9yV1BnMjFuTitlVVNjRWQ2YXlKbCt6UnllUWZ5UlhLQm5ZZjBOazN1Z0xYejBzWkJkSTFpanBFUkh6M2p0amF0bTBTbUhIT1M0a2JISWVIbGV2Y1VhYTFWQTVCbklBbDhiTUE2MG5ucE5rckRCMTdERWM3YVlQbVZaYXpCMFFwR296RU5YaTllY0lNY2pid1FFeHVEd3VNYk96eXgzQ3B5Uktvc3VwMU1WZC9WQWRYREFFSnJjMTNZRUlYMzMvOXpZeEJMOVladklyM0dZUGwvRkFyNm1zaDcrSGg4czdnaVVyK3Q4bUhvb05YeHhtaGMrRGZNVFdySm1Lb0RvczRiY2VhazlPWHBoN1RSRWR3SndJcjVzc01yQUQ5Nit4aUlzK0d0cVc3RkFMWW50cVRPb3NzT0taYkxsUWQ0S001enZCT2RLSEhnSkFxQ2h0bmdETW5tdzNsNTEzTmxXNFlnVzJTa3pocUJrTDc5eVYzTXdhZWYwZyt3UTA0dmlsYXoxd3JHZEdLaW1GdXNHQ21udExBWFEzU0MwMUFSRjFCbkF2SFJkSE1XbGl3TkVlSUpnTERrbktBRko4UWlrdUltRzZZLys1a05DdHg3NDBNc0pPaEh6VERNbElvYzZYckllZGdNMnVmSG1ZSEFmYWEzSXNXdVh1L05NZUZ2R1Z0eVF2a0d2amhYY29HK0NzcEYvK3A0MXpjaDJ2ZDNOUGY5Rkh2N1Z2TCtudnVJUXMwL1cvUUQ1ZHYrS3E0NFZRSE93RCs0bnpLRWp1V01MT3BGWlJNRzVQcnJ3aGhqR01ENnUrdHo5SEJUM2V3by9MNVJuTVhYV1JXVWIwWEtWdExWbXZMNXZmUmhkYTliSVR0YnFqbHhHazlVMy9ucnJKVGR4UVdDbVpUWUhGYnZ0a2NSR0tvUHpiaE1qa2FMcW9oV3RLbXZPemxyeGJLbm1QUE8reGxwWXh3b0VSMy83bXYwOEIrUnZyWXpmMmkyek1nNFlncHVMUVNyOW9RaEk3YU1DQUpkT2hJMElvOWpHU2s1WTltN2tGTFNVdmpxbXd4YVhXY2RFdk9kbXZ5bjVHQjFERm9yNDhaT3B3VWlTb0hWZDZsWFhTM1hZZDhJbnFmcGlLVE82NTUwVzJZWmYwT0VMWkl6U3pMUzVWbWFNTW5iZUdpT1ZsRWtMMWFGOWFYM2ZuUkU4NHZSZEJRbHdvMktUdFZVcWtyUzJBTUloaTg4SmFWQUhGcnE4Q0NpODFjSlZ1U2NRTlhnbkhrbTJxTXUzRnhPM200ajdETTg5WWxxaHpMZjlmRUUvMlhRWmpNZUpHUDJ5OUVGZU9IZllNWjh5b2MvRUtlZFU3amFQOWwwNXpOekpwYmN3R2hBMUJDVXVKUml4SmFGYU9MY0hUdFcvQWZsanF3bmRyTmVkdGxJUXg5MzBXSEVEWmJiclJZNGhXbmloRUo2Um9IN0FKZkNUWmtPK0p3Y1dicVJsT1dIN1JjcytkSkJEeE9DMCtod2JTME5jY1hldGRGdWxXaCtidGFodS9YbE5EL2NxcHJXQzZmbitZQitkVGhXYkl5OXB3bE45Z3BLa21hWEFrVGRNUW5tZDhaL202aFdaay9YODhFNmRYOHRyOVZld2dDVllDRVEwYVJyVlpIUnFuZlRycjFvaEtkK3cxdWtVbnhlZnJwK1hqSDlIa2ltcjUyYkR4aFBXcUpOeHdWVzRmUW9FMHJ6QTE3THVPL3dpdENnemxvRmxkMW9IN1dVcjVlTmFtUDlQNWw0cHdseWFreWwvUUpUZFZWdnBUMTJKeDF4K3lzWnhZU2VvNzJRV0FkbjNHWWMybEFObzcyZ3grdlNDODRMcTYvV0toUDV6dmRmWVVoSkNvaXdoZzg1cURpdTNONXRvWGZZVXBqTXE0Q2tDRE9rQzRZbDRPTk9jOWUzUXdOK2Rla05sMElhazFUU2c4UTRmVXlaN0kxYnpwcGdocEx3RjQxVjBLdnFUcTl1RlpvWEdNTE52TlRSQXgzeURHMzBiMi92K0ptcXFJS2ltZWJ3UUwweHZocHp5UkpyZHdwUEYxM2VjRlRMckdMZ2tESFhwT3ZCUmxjcHVTaDdLeUhFTmdMNE11R1Nmdzd5cnhDbUxyQ1RYY1Z6YTc4NGNPQjVBUmQ1REpsNmZrTFQvdklPL2pHOHIzVkVxUjNzeEFnckZNVDBjczJPWHpVaGFYTjI4MXEycFRzMStnR3pNTythVEQ1c3F0OXpuSU5vT3d2WEUzUzRuODY3V0JkRTBhMlpUemc1M1BldWNzTjJReGZOcUJwM1NhK2FMOEowZ0YxZWx1K3ZORGNHSU9sQk40Rnl4VitpZ2NjaUcwVnBjbE1hRkI5WUZRRFdZMzNjK3VDV21xMkZDNkQ5bHU2aDZTNjhFamliNm5hWmlDU0RXSjJmNVl5NHk3ZUpVa0o2bUxiWmE0SmhzMFR5dmQwc21HaitrMnhRRXdPeUZtSUZPVHM2aEszaHZzdkxuelNJdStEVGs4T29ibnd6dFY2NGxtaXp2dU1nckRUa3JYTVBhWDV2dkl0WUs3cTF1cFJQalpjQ0laQjZ6bDcvalBkM0M3NUF0SHRSc1V4QjVHTi9saXkvc2t3akVadExuN3BxZStzcWp1dC9Mb2JpTFZQenpNM25VSEVBQWFvTDBaSk0rSXByd05BcFpNb1QrSGhydGxSajZucDhmT2ErOFhXTjNrK0NtZlZTeVgrbDNpNXBYTkVVTEZqSm5IWkVNeUFmVVNCOTYxbyt3U25hZmhLY3ZhQlI5dE9zOGpFVGs5U1YwSjFhQWVnTlJsaHh3dmtFR3ZrQWNTczZ0T0JOOFZYSXA1dE05czRWUnRMb1NNa0crcUdYMURoYUpiQUJPS0ZZM2ZsSUNJT2laRnc1T1BLTUVtamVMRkpzWVkwSFJEY1gwUUZIYm4yb0h2WEwreTE3TDBjdWROdGJteVdkNnJESENYTEhyVE93a0RmWDI4cVJ6Ky9hcXJCL2s5Nko4cGdrTW9Oa205Y0d0eW5DWWdsMWl2a3lFZFI1RWRSTFBRVFZqa3V4cEVzeFdZbnF0T1lHWkJxemIveVE5U25sbklQNDNld28vUzN5OEZEbS9Ib294ZklKYW5DNEgvSUI4bnBXUEx0MHlqUHRVV25oTDhwamk5L3FjRy9JSm1KZVhaMXJUQ0FkVGZZbTdhL28xd1BhWlRXZjdjL2xFLzYzVFhvdHJRMmdHdlpvb2E0cFJ0SXUrRDVtMnRIUm5JQWVqekR2RE5aT2p5QjRPQlR3dzZhSWd4SmFmR1d5Yk5xWkxCQVV0ME5ad3NqOW5zTXQxekc5dHhFVUdlRGpaamY2YmpGN2NHWlltV2N5WERwUDExS085QTRYQ3djcDVyZnZGTElPZkFjQlhmd0p0MHd2SWhSbTdGWUVmQWZsZFV0V2xnZURwQ1ZNR0crdFVSa0dEd09oYTNPN3NoV25NeFZRK3VjcUh6RGMxUXVkSFBXMVFKUllEaE03WjlJeGNua2piQXFlMmdoQjgrc3Z4NGlvZmh2L0laeWJrUlVxT0pmRHo2YVZzWUE5VlFkd0JndWczNjIzcmV1N1ZQRjFoZzk1MDhvRVJzbTZsSWdJbklIbWdsd3ZmTUpwSGloV3I3Q3RNUEw5Zm8xVDdOQmxqWlg4d3BGYjg4QnhIVm51RUlHS0JCTUZoVjM4aDZMdGtaQXBoWUI4bnV2VkJ1SHppTnhSRUYxcTk3RjFCVEd4YUJxWnF2Yjh6N2tUQ0IrN21qbitnWHhqSmM4U1hNaDluY3NSemswR0huRmROWG1oTDNRTWJadThXdHV1NEtGaEh4K3NiakNJdUxGRWJaSG9yOGM1MStuTU5sYmFKVW4wVFJTbjhNYkpPaEtpSzFGSjFRZEdIeVMxYk9mSjJueE91enlBbjRwMTdDaXBqSVg5Mkh5cmlzbDRYdEVlUUpmQzc2NitYcTVFbVRZZWZiUlloSTBSRnVGdVJ1SXVNR1dzRTBuTDhsck9ZTGlOOXpsaFFkRmpwdkJ6RXVVbGhla3g2UHQ2elZFcXpSaDFPaGVBRHZQNWpHM0FqS0VqSElYMm9KakxxV3l1alJ2cnVaTjJHMGxNcDNsYXFaWGVud0hDWWw1SVFxN0M2alhOWVdSdm5KSUJjR1NyYUIra0RmakpFYmtTMklYaUdWcEtMYjFOKzBXTm83Q3FSTDRFQmNZWWR0SmVVRWZZU2U2cXlZRlBOOW1UbWplelNseS9MYm5GZ09ZZWRJQTZuaXlXWkt0QUFDVWQ5S0pCVUY5ZzBGdXYrVUhZc3ArYVU3WStQVjZBR0VlTFdaTWU1ZmdLVE9HVTZ4M2JyWDNrNzE3QStVK3UvUFo0YmNTY0s5dkFIb0FFYUV4NzJqa1Y1eUo4L3FlK01DRC9IcHFTMFBjMklWZDFXb0hQdys4YnNTSWFoQS9pOURxRVpCc1pPMUhzbzVJajlCOU0zNzNCY3VueXpGd1hVdXVZT29OaWdHRzREZitrRGZ0bHNQRElKSW5kdUNuZXA4eUdCWHQrWTlSVUhoTEozTHBZT3NYTDVUK3pybUh2ODBqTThvY2szNDBKbTRCUVgrQVlPRnN4b0EzYkNKM1RJUHhmMis2NFFqTnV3REx4aWo3dE5KRFdCYmRjcmdhQmRyTzgrcklialVJRVZEL3I2WTFkU2YrOEJnbWxsajlwbitkWUwvaGNwUVh6dEhFaXBMRDVIVHVYRktib0R6NWJLbW1MVklHbGFCWT0",
+              "id": "rs_resp_wr2NataTCuqt-8YPiffPwAs_detached_after_1",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 684,
+      "uncached_input_tokens": 684,
+      "cached_input_tokens": 0,
+      "output_tokens": 42,
+      "reasoning_tokens": 639,
+      "total_tokens": 1365,
+      "raw": [
+        {
+          "input_tokens": 684,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 42,
+          "output_tokens_details": {
+            "reasoning_tokens": 639
+          },
+          "total_tokens": 1365
+        }
+      ]
+    },
+    "error": null
+  }
+}

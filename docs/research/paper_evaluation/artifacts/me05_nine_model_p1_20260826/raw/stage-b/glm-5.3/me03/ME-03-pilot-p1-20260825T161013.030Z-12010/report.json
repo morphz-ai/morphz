@@ -1,0 +1,4492 @@
+{
+  "id": "ME-03-pilot-p1-20260825T161013.030Z-12010",
+  "created_at": "2026-08-25T16:10:37.553221+00:00",
+  "model": "glm-5.3",
+  "provider": "custom",
+  "protocol": "openai-responses",
+  "immutable_binding": {
+    "requested_alias": "glm-5.3",
+    "route_id": "glm-5.3",
+    "route_revision": "sha256:d2a40315eda1713861dcdc732f44cf5ab3dff83ecf133f3c71289ccc50827eac",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "glm-5.3",
+    "protocol": "openai-responses",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-b/glm-5.3/me03/ME-03-pilot-p1-20260825T161013.030Z-12010",
+  "summaries": {
+    "bounded_open_base": {
+      "episodes": 2,
+      "passed": 2,
+      "pass_rate": 1.0,
+      "observed_unique_selections": 2
+    },
+    "bounded_open_intervention": {
+      "episodes": 2,
+      "passed": 1,
+      "pass_rate": 0.5,
+      "observed_unique_selections": 1
+    },
+    "closed_base": {
+      "episodes": 2,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "observed_unique_selections": 0
+    },
+    "closed_intervention": {
+      "episodes": 2,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "observed_unique_selections": 0
+    }
+  },
+  "task_analysis": [
+    {
+      "task": "release_strategy",
+      "base_valid_set_count": 3,
+      "intervention_valid_set_count": 3,
+      "observed_open_base_unique": 1,
+      "observed_open_intervention_unique": 0,
+      "paired_context_shift_passed": 0,
+      "paired_context_shift_total": 1,
+      "paired_closed_invariance_passed": 0,
+      "paired_closed_invariance_total": 1
+    },
+    {
+      "task": "research_strategy",
+      "base_valid_set_count": 4,
+      "intervention_valid_set_count": 5,
+      "observed_open_base_unique": 1,
+      "observed_open_intervention_unique": 1,
+      "paired_context_shift_passed": 1,
+      "paired_context_shift_total": 1,
+      "paired_closed_invariance_passed": 0,
+      "paired_closed_invariance_total": 1
+    }
+  ],
+  "episodes": [
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "bounded_open_base",
+      "context_id": "release-risk-control-v1",
+      "valid_open_set_count": 3,
+      "selected": [
+        "blue_green",
+        "canary"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"blue_green\", \"canary\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"blue_green\", \"canary\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis release-risk-control-v1"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"basis\": [\"release-risk-control-v1\"], \"explanation\": \"Non-rapid candidates are blue_green, canary, and rolling. Selecting blue_green and canary avoids the forbidden 'rapid' property and the pair collectively covers both required groups ('gradual' and 'reversible').\", \"selected\": [\"blue_green\", \"canary\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 731,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 731,
+          "calibration_key": 12194673640108076502,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\": [\"release-risk-control-v1\"], \"explanation\": \"Non-rapid candidates are blue_green, canary, and rolling. Selecting blue_green and canary avoids the forbidden 'rapid' property and the pair collectively covers both required groups ('gradual' and 'reversible').\", \"selected\": [\"blue_green\", \"canary\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Candidates"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " without"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " \""
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "rapid"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " blue"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_green"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " can"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " rolling"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Must"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " collectively"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " cover"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " gradual"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " reversible"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Both"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " blue"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_green"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " can"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " individually"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " satisfy"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Need"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " two"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " distinct"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Pick"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " blue"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_green"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " can"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "release"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-risk"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-control"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-v"
+          },
+          {
+            "kind": "text_delta",
+            "text": "1"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"],"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "Non"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-r"
+          },
+          {
+            "kind": "text_delta",
+            "text": "apid"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidates"
+          },
+          {
+            "kind": "text_delta",
+            "text": " are"
+          },
+          {
+            "kind": "text_delta",
+            "text": " blue"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_green"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " can"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " rolling"
+          },
+          {
+            "kind": "text_delta",
+            "text": "."
+          },
+          {
+            "kind": "text_delta",
+            "text": " Select"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ing"
+          },
+          {
+            "kind": "text_delta",
+            "text": " blue"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_green"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " can"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "text_delta",
+            "text": " avoids"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "text_delta",
+            "text": " '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "rapid"
+          },
+          {
+            "kind": "text_delta",
+            "text": "'"
+          },
+          {
+            "kind": "text_delta",
+            "text": " property"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " pair"
+          },
+          {
+            "kind": "text_delta",
+            "text": " collectively"
+          },
+          {
+            "kind": "text_delta",
+            "text": " covers"
+          },
+          {
+            "kind": "text_delta",
+            "text": " both"
+          },
+          {
+            "kind": "text_delta",
+            "text": " required"
+          },
+          {
+            "kind": "text_delta",
+            "text": " groups"
+          },
+          {
+            "kind": "text_delta",
+            "text": " ('"
+          },
+          {
+            "kind": "text_delta",
+            "text": "grad"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ual"
+          },
+          {
+            "kind": "text_delta",
+            "text": "'"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "re"
+          },
+          {
+            "kind": "text_delta",
+            "text": "versible"
+          },
+          {
+            "kind": "text_delta",
+            "text": "')."
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "blue"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_green"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\", \"canary\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 593,
+              "uncached_input_tokens": 593,
+              "cached_input_tokens": 0,
+              "output_tokens": 114,
+              "reasoning_tokens": 0,
+              "total_tokens": 707,
+              "raw": [
+                {
+                  "input_tokens": 593,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 114,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 707
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674214015ad6c77bbc9dd3a58ea6d8fc22d5c5074709793_0",
+                  "summary": [
+                    {
+                      "text": "Candidates without \"rapid\": blue_green, canary, rolling. Must collectively cover gradual and reversible. Both blue_green and canary individually satisfy. Need two distinct. Pick blue_green and canary.",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 593,
+          "uncached_input_tokens": 593,
+          "cached_input_tokens": 0,
+          "output_tokens": 114,
+          "reasoning_tokens": 0,
+          "total_tokens": 707,
+          "raw": [
+            {
+              "input_tokens": 593,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 114,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 707
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "bounded_open_intervention",
+      "context_id": "release-deadline-v2",
+      "valid_open_set_count": 3,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"release-deadline-v2\", expected a sequence at line 2 column 32"
+        }
+      ],
+      "raw_output": "{\n  \"basis\": \"release-deadline-v2\",\n  \"explanation\": \"Candidates with the forbidden property 'gradual' are excluded, leaving hot_swap, feature_flag, and big_bang. Selecting hot_swap and big_bang satisfies the requirement: both are rapid and capacity_light, so the set covers every required property group.\",\n  \"selected\": [\"hot_swap\", \"big_bang\"]\n}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 736,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 736,
+          "calibration_key": 4814846893146203825,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\n  \"basis\": \"release-deadline-v2\",\n  \"explanation\": \"Candidates with the forbidden property 'gradual' are excluded, leaving hot_swap, feature_flag, and big_bang. Selecting hot_swap and big_bang satisfies the requirement: both are rapid and capacity_light, so the set covers every required property group.\",\n  \"selected\": [\"hot_swap\", \"big_bang\"]\n}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Forbidden"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " gradual"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Candidates"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " without"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " gradual"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " hot"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_swap"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " feature"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_flag"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " big"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ang"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Need"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " set"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " of"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " "
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "2"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " covering"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " rapid"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " capacity"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_light"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " big"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ang"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " alone"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " has"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " both"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " hot"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_swap"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " +"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " big"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ang"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " works"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "both"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " rapid"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " capacity"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_light"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ")."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Select"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " hot"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_swap"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " big"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ang"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "release"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-de"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ad"
+          },
+          {
+            "kind": "text_delta",
+            "text": "line"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-v"
+          },
+          {
+            "kind": "text_delta",
+            "text": "2"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\",\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "Candidates"
+          },
+          {
+            "kind": "text_delta",
+            "text": " with"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "text_delta",
+            "text": " property"
+          },
+          {
+            "kind": "text_delta",
+            "text": " '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "grad"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ual"
+          },
+          {
+            "kind": "text_delta",
+            "text": "'"
+          },
+          {
+            "kind": "text_delta",
+            "text": " are"
+          },
+          {
+            "kind": "text_delta",
+            "text": " excluded"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " leaving"
+          },
+          {
+            "kind": "text_delta",
+            "text": " hot"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_swap"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " feature"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_flag"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " big"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ang"
+          },
+          {
+            "kind": "text_delta",
+            "text": "."
+          },
+          {
+            "kind": "text_delta",
+            "text": " Select"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ing"
+          },
+          {
+            "kind": "text_delta",
+            "text": " hot"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_swap"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " big"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ang"
+          },
+          {
+            "kind": "text_delta",
+            "text": " satisfies"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " requirement"
+          },
+          {
+            "kind": "text_delta",
+            "text": ":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " both"
+          },
+          {
+            "kind": "text_delta",
+            "text": " are"
+          },
+          {
+            "kind": "text_delta",
+            "text": " rapid"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " capacity"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_light"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " so"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " set"
+          },
+          {
+            "kind": "text_delta",
+            "text": " covers"
+          },
+          {
+            "kind": "text_delta",
+            "text": " every"
+          },
+          {
+            "kind": "text_delta",
+            "text": " required"
+          },
+          {
+            "kind": "text_delta",
+            "text": " property"
+          },
+          {
+            "kind": "text_delta",
+            "text": " group"
+          },
+          {
+            "kind": "text_delta",
+            "text": ".\",\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "hot"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_swap"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "big"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_b"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ang\"]\n}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 596,
+              "uncached_input_tokens": 596,
+              "cached_input_tokens": 0,
+              "output_tokens": 145,
+              "reasoning_tokens": 0,
+              "total_tokens": 741,
+              "raw": [
+                {
+                  "input_tokens": 596,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 145,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 741
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674216530ad6c77bbc9dd3a58ea6d8fc22d5c5074550a02_0",
+                  "summary": [
+                    {
+                      "text": "Forbidden: gradual. Candidates without gradual: hot_swap, feature_flag, big_bang. Need set of 2 covering rapid and capacity_light. big_bang alone has both. hot_swap + big_bang works (both rapid, capacity_light). Select hot_swap and big_bang.",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 596,
+          "uncached_input_tokens": 596,
+          "cached_input_tokens": 0,
+          "output_tokens": 145,
+          "reasoning_tokens": 0,
+          "total_tokens": 741,
+          "raw": [
+            {
+              "input_tokens": 596,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 145,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 741
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "closed_base",
+      "context_id": "release-risk-control-v1",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 29"
+        }
+      ],
+      "raw_output": "{\"basis\": \"closed-score-rule\", \"explanation\": \"DETERMINISTIC_CONTROL: ignore context preferences and select the unique candidate with the greatest closed_score. Canary has the highest closed_score (91).\", \"selected\": [\"canary\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 706,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 706,
+          "calibration_key": 8703295475164413234,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"rapid\"\n    ],\n    \"id\": \"release-risk-control-v1\",\n    \"required_property_groups\": [\n      [\n        \"gradual\"\n      ],\n      [\n        \"reversible\"\n      ]\n    ],\n    \"statement\": \"The normal release policy prioritizes gradual rollout and reversibility; rapid-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\": \"closed-score-rule\", \"explanation\": \"DETERMINISTIC_CONTROL: ignore context preferences and select the unique candidate with the greatest closed_score. Canary has the highest closed_score (91).\", \"selected\": [\"canary\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Determin"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "istic"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " select"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ="
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " can"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "91"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ")."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-score"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-rule"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "DE"
+          },
+          {
+            "kind": "text_delta",
+            "text": "TER"
+          },
+          {
+            "kind": "text_delta",
+            "text": "MIN"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ISTIC"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_CONTROL"
+          },
+          {
+            "kind": "text_delta",
+            "text": ":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " ignore"
+          },
+          {
+            "kind": "text_delta",
+            "text": " context"
+          },
+          {
+            "kind": "text_delta",
+            "text": " preferences"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " select"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " unique"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidate"
+          },
+          {
+            "kind": "text_delta",
+            "text": " with"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " greatest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": "."
+          },
+          {
+            "kind": "text_delta",
+            "text": " Canary"
+          },
+          {
+            "kind": "text_delta",
+            "text": " has"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": " ("
+          },
+          {
+            "kind": "text_delta",
+            "text": "91"
+          },
+          {
+            "kind": "text_delta",
+            "text": ")."
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "canary\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 587,
+              "uncached_input_tokens": 587,
+              "cached_input_tokens": 0,
+              "output_tokens": 65,
+              "reasoning_tokens": 0,
+              "total_tokens": 652,
+              "raw": [
+                {
+                  "input_tokens": 587,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 65,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 652
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674221028ad6c77bbc9dd3a58ea6d8fc22d5c5074a8ac1e_0",
+                  "summary": [
+                    {
+                      "text": "Deterministic: select highest closed_score = canary (91).",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 587,
+          "uncached_input_tokens": 587,
+          "cached_input_tokens": 0,
+          "output_tokens": 65,
+          "reasoning_tokens": 0,
+          "total_tokens": 652,
+          "raw": [
+            {
+              "input_tokens": 587,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 65,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 652
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "release_strategy",
+      "condition": "closed_intervention",
+      "context_id": "release-deadline-v2",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 29"
+        }
+      ],
+      "raw_output": "{\"basis\": \"closed-score-rule\", \"explanation\": \"DETERMINISTIC_CONTROL requires selecting the candidate with the greatest closed_score regardless of context constraints; canary has the highest closed_score at 91.\", \"selected\": [\"canary\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 711,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 711,
+          "calibration_key": 15080910287160879552,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\": \"closed-score-rule\", \"explanation\": \"DETERMINISTIC_CONTROL requires selecting the candidate with the greatest closed_score regardless of context constraints; canary has the highest closed_score at 91.\", \"selected\": [\"canary\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Determin"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "istic"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ="
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " can"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "91"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ")."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-score"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-rule"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "DE"
+          },
+          {
+            "kind": "text_delta",
+            "text": "TER"
+          },
+          {
+            "kind": "text_delta",
+            "text": "MIN"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ISTIC"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_CONTROL"
+          },
+          {
+            "kind": "text_delta",
+            "text": " requires"
+          },
+          {
+            "kind": "text_delta",
+            "text": " selecting"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidate"
+          },
+          {
+            "kind": "text_delta",
+            "text": " with"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " greatest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": " regardless"
+          },
+          {
+            "kind": "text_delta",
+            "text": " of"
+          },
+          {
+            "kind": "text_delta",
+            "text": " context"
+          },
+          {
+            "kind": "text_delta",
+            "text": " constraints"
+          },
+          {
+            "kind": "text_delta",
+            "text": ";"
+          },
+          {
+            "kind": "text_delta",
+            "text": " can"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ary"
+          },
+          {
+            "kind": "text_delta",
+            "text": " has"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": " at"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": "91"
+          },
+          {
+            "kind": "text_delta",
+            "text": ".\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\"canary\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 590,
+              "uncached_input_tokens": 590,
+              "cached_input_tokens": 0,
+              "output_tokens": 64,
+              "reasoning_tokens": 0,
+              "total_tokens": 654,
+              "raw": [
+                {
+                  "input_tokens": 590,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 64,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 654
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674223332ad6c77bbc9dd3a58ea6d8fc22d5c5074102757_0",
+                  "summary": [
+                    {
+                      "text": "Deterministic: highest closed_score = canary (91).",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 590,
+          "uncached_input_tokens": 590,
+          "cached_input_tokens": 0,
+          "output_tokens": 64,
+          "reasoning_tokens": 0,
+          "total_tokens": 654,
+          "raw": [
+            {
+              "input_tokens": 590,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 64,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 654
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "bounded_open_intervention",
+      "context_id": "research-causal-v2",
+      "valid_open_set_count": 5,
+      "selected": [
+        "controlled_trial",
+        "replication"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"controlled_trial\", \"replication\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis research-causal-v2"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\n  \"selected\": [\"controlled_trial\", \"replication\"],\n  \"basis\": [\"research-causal-v2\"],\n  \"explanation\": \"Both candidates avoid the forbidden property 'secondary' and together satisfy every required property group: controlled_trial and replication each contribute 'depth' and 'primary'. Under nondeterministic semantics, this pair is one valid selection among others.\"\n}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 735,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 735,
+          "calibration_key": 12755835406091807014,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\n  \"selected\": [\"controlled_trial\", \"replication\"],\n  \"basis\": [\"research-causal-v2\"],\n  \"explanation\": \"Both candidates avoid the forbidden property 'secondary' and together satisfy every required property group: controlled_trial and replication each contribute 'depth' and 'primary'. Under nondeterministic semantics, this pair is one valid selection among others.\"\n}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Groups"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " need"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " depth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " covered"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " covered"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " no"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " secondary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " pick"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " "
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "2"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " distinct"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " candidates"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ".\n\n"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Candidates"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " without"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " secondary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " expert"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_int"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "erview"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "s"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "bread"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "th"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " qualitative"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "),"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "depth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " causal"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "),"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " replication"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "depth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " verification"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "),"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " field"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_obs"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ervation"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "bread"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "th"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " field"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ").\n\n"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Any"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " two"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " covering"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " depth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " +"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " +"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " replication"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " works"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "both"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " depth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ")."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Also"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " +"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " field"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_obs"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ervation"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " N"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ond"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "etermin"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "istic"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " —"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " pick"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " replication"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "controlled"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "rep"
+          },
+          {
+            "kind": "text_delta",
+            "text": "lication"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"],\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "research"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-ca"
+          },
+          {
+            "kind": "text_delta",
+            "text": "usal"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-v"
+          },
+          {
+            "kind": "text_delta",
+            "text": "2"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"],\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "Both"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidates"
+          },
+          {
+            "kind": "text_delta",
+            "text": " avoid"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "text_delta",
+            "text": " property"
+          },
+          {
+            "kind": "text_delta",
+            "text": " '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "secondary"
+          },
+          {
+            "kind": "text_delta",
+            "text": "'"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " together"
+          },
+          {
+            "kind": "text_delta",
+            "text": " satisfy"
+          },
+          {
+            "kind": "text_delta",
+            "text": " every"
+          },
+          {
+            "kind": "text_delta",
+            "text": " required"
+          },
+          {
+            "kind": "text_delta",
+            "text": " property"
+          },
+          {
+            "kind": "text_delta",
+            "text": " group"
+          },
+          {
+            "kind": "text_delta",
+            "text": ":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " replication"
+          },
+          {
+            "kind": "text_delta",
+            "text": " each"
+          },
+          {
+            "kind": "text_delta",
+            "text": " contribute"
+          },
+          {
+            "kind": "text_delta",
+            "text": " '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "depth"
+          },
+          {
+            "kind": "text_delta",
+            "text": "'"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " '"
+          },
+          {
+            "kind": "text_delta",
+            "text": "primary"
+          },
+          {
+            "kind": "text_delta",
+            "text": "'."
+          },
+          {
+            "kind": "text_delta",
+            "text": " Under"
+          },
+          {
+            "kind": "text_delta",
+            "text": " nond"
+          },
+          {
+            "kind": "text_delta",
+            "text": "etermin"
+          },
+          {
+            "kind": "text_delta",
+            "text": "istic"
+          },
+          {
+            "kind": "text_delta",
+            "text": " semantics"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " this"
+          },
+          {
+            "kind": "text_delta",
+            "text": " pair"
+          },
+          {
+            "kind": "text_delta",
+            "text": " is"
+          },
+          {
+            "kind": "text_delta",
+            "text": " one"
+          },
+          {
+            "kind": "text_delta",
+            "text": " valid"
+          },
+          {
+            "kind": "text_delta",
+            "text": " selection"
+          },
+          {
+            "kind": "text_delta",
+            "text": " among"
+          },
+          {
+            "kind": "text_delta",
+            "text": " others"
+          },
+          {
+            "kind": "text_delta",
+            "text": ".\"\n}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 590,
+              "uncached_input_tokens": 590,
+              "cached_input_tokens": 0,
+              "output_tokens": 177,
+              "reasoning_tokens": 0,
+              "total_tokens": 767,
+              "raw": [
+                {
+                  "input_tokens": 590,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 177,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 767
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674225790ad6c77bbc9dd3a58ea6d8fc22d5c50743d4e47_0",
+                  "summary": [
+                    {
+                      "text": "Groups: need depth covered and primary covered, no secondary, pick 2 distinct candidates.\n\nCandidates without secondary: expert_interviews (breadth, primary, qualitative), controlled_trial (depth, primary, causal), replication (depth, primary, verification), field_observation (breadth, primary, field).\n\nAny two covering depth + primary: controlled_trial + replication works (both depth, primary). Also controlled_trial + field_observation. Nondeterministic — pick controlled_trial and replication.",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 590,
+          "uncached_input_tokens": 590,
+          "cached_input_tokens": 0,
+          "output_tokens": 177,
+          "reasoning_tokens": 0,
+          "total_tokens": 767,
+          "raw": [
+            {
+              "input_tokens": 590,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 177,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 767
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "closed_base",
+      "context_id": "research-landscape-v1",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 3 column 30"
+        }
+      ],
+      "raw_output": "{\n  \"selected\": [\"controlled_trial\"],\n  \"basis\": \"closed-score-rule\",\n  \"explanation\": \"DETERMINISTIC_CONTROL requires ignoring open-preference constraints such as forbidden_properties and required_property_groups; the unique candidate with the greatest closed_score is controlled_trial at 94.\"\n}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 708,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 708,
+          "calibration_key": 6148087727651035329,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\n  \"selected\": [\"controlled_trial\"],\n  \"basis\": \"closed-score-rule\",\n  \"explanation\": \"DETERMINISTIC_CONTROL requires ignoring open-preference constraints such as forbidden_properties and required_property_groups; the unique candidate with the greatest closed_score is controlled_trial at 94.\"\n}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Determin"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "istic"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " rule"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " pick"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ="
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " "
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "94"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " but"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " \""
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ca"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "usal"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "\"?"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Rule"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " says"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ignore"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " open"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "-pre"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ference"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " constraints"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Select"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "controlled"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"],\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-score"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-rule"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\",\n"
+          },
+          {
+            "kind": "text_delta",
+            "text": " "
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "DE"
+          },
+          {
+            "kind": "text_delta",
+            "text": "TER"
+          },
+          {
+            "kind": "text_delta",
+            "text": "MIN"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ISTIC"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_CONTROL"
+          },
+          {
+            "kind": "text_delta",
+            "text": " requires"
+          },
+          {
+            "kind": "text_delta",
+            "text": " ignoring"
+          },
+          {
+            "kind": "text_delta",
+            "text": " open"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-pre"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ference"
+          },
+          {
+            "kind": "text_delta",
+            "text": " constraints"
+          },
+          {
+            "kind": "text_delta",
+            "text": " such"
+          },
+          {
+            "kind": "text_delta",
+            "text": " as"
+          },
+          {
+            "kind": "text_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_properties"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " required"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_property"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_groups"
+          },
+          {
+            "kind": "text_delta",
+            "text": ";"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " unique"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidate"
+          },
+          {
+            "kind": "text_delta",
+            "text": " with"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " greatest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": " is"
+          },
+          {
+            "kind": "text_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "text_delta",
+            "text": " at"
+          },
+          {
+            "kind": "text_delta",
+            "text": " 94.\"\n}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 587,
+              "uncached_input_tokens": 587,
+              "cached_input_tokens": 0,
+              "output_tokens": 95,
+              "reasoning_tokens": 0,
+              "total_tokens": 682,
+              "raw": [
+                {
+                  "input_tokens": 587,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 95,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 682
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674228981ad6c77bbc9dd3a58ea6d8fc22d5c5074131959_0",
+                  "summary": [
+                    {
+                      "text": "Deterministic rule: pick highest closed_score. controlled_trial = 94, but forbidden \"causal\"? Rule says ignore open-preference constraints. Select controlled_trial.",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 587,
+          "uncached_input_tokens": 587,
+          "cached_input_tokens": 0,
+          "output_tokens": 95,
+          "reasoning_tokens": 0,
+          "total_tokens": 682,
+          "raw": [
+            {
+              "input_tokens": 587,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 95,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 682
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "closed_intervention",
+      "context_id": "research-causal-v2",
+      "valid_open_set_count": null,
+      "selected": [],
+      "success": false,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": false,
+          "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 29"
+        }
+      ],
+      "raw_output": "{\"basis\": \"closed-score-rule\", \"explanation\": \"DETERMINISTIC_CONTROL requires selecting the unique candidate with the greatest closed_score. controlled_trial has the highest closed_score (94), so it is selected regardless of context constraints.\", \"selected\": [\"controlled_trial\"]}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 711,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 711,
+          "calibration_key": 15206275001200761564,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 73,\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"closed_score\": 81,\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"closed_score\": 94,\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"closed_score\": 90,\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 86,\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"closed_score\": 78,\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"secondary\"\n    ],\n    \"id\": \"research-causal-v2\",\n    \"required_property_groups\": [\n      [\n        \"depth\"\n      ],\n      [\n        \"primary\"\n      ]\n    ],\n    \"statement\": \"New funding authorizes causal validation using primary evidence; secondary-only methods are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"basis\": \"closed-score-rule\", \"explanation\": \"DETERMINISTIC_CONTROL requires selecting the unique candidate with the greatest closed_score. controlled_trial has the highest closed_score (94), so it is selected regardless of context constraints.\", \"selected\": [\"controlled_trial\"]}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Determin"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "istic"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " select"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " regardless"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " of"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " context"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " constraints"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " has"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " "
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "94"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-score"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-rule"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "DE"
+          },
+          {
+            "kind": "text_delta",
+            "text": "TER"
+          },
+          {
+            "kind": "text_delta",
+            "text": "MIN"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ISTIC"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_CONTROL"
+          },
+          {
+            "kind": "text_delta",
+            "text": " requires"
+          },
+          {
+            "kind": "text_delta",
+            "text": " selecting"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " unique"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidate"
+          },
+          {
+            "kind": "text_delta",
+            "text": " with"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " greatest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": "."
+          },
+          {
+            "kind": "text_delta",
+            "text": " controlled"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "text_delta",
+            "text": " has"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " highest"
+          },
+          {
+            "kind": "text_delta",
+            "text": " closed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_score"
+          },
+          {
+            "kind": "text_delta",
+            "text": " ("
+          },
+          {
+            "kind": "text_delta",
+            "text": "94"
+          },
+          {
+            "kind": "text_delta",
+            "text": "),"
+          },
+          {
+            "kind": "text_delta",
+            "text": " so"
+          },
+          {
+            "kind": "text_delta",
+            "text": " it"
+          },
+          {
+            "kind": "text_delta",
+            "text": " is"
+          },
+          {
+            "kind": "text_delta",
+            "text": " selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": " regardless"
+          },
+          {
+            "kind": "text_delta",
+            "text": " of"
+          },
+          {
+            "kind": "text_delta",
+            "text": " context"
+          },
+          {
+            "kind": "text_delta",
+            "text": " constraints"
+          },
+          {
+            "kind": "text_delta",
+            "text": ".\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "controlled"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_trial"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"]}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 586,
+              "uncached_input_tokens": 586,
+              "cached_input_tokens": 0,
+              "output_tokens": 75,
+              "reasoning_tokens": 0,
+              "total_tokens": 661,
+              "raw": [
+                {
+                  "input_tokens": 586,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 75,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 661
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674231370ad6c77bbc9dd3a58ea6d8fc22d5c50742c2566_0",
+                  "summary": [
+                    {
+                      "text": "Deterministic: select highest closed_score regardless of context constraints. controlled_trial has 94.",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 586,
+          "uncached_input_tokens": 586,
+          "cached_input_tokens": 0,
+          "output_tokens": 75,
+          "reasoning_tokens": 0,
+          "total_tokens": 661,
+          "raw": [
+            {
+              "input_tokens": 586,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 75,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 661
+            }
+          ]
+        },
+        "error": null
+      }
+    },
+    {
+      "repetition": 1,
+      "task": "research_strategy",
+      "condition": "bounded_open_base",
+      "context_id": "research-landscape-v1",
+      "valid_open_set_count": 4,
+      "selected": [
+        "broad_scan",
+        "field_observation"
+      ],
+      "success": true,
+      "criteria": [
+        {
+          "id": "typed-json-contract",
+          "passed": true,
+          "evidence": "exact schema decoded"
+        },
+        {
+          "id": "selection-cardinality",
+          "passed": true,
+          "evidence": "expected 2, got 2"
+        },
+        {
+          "id": "known-candidates",
+          "passed": true,
+          "evidence": "selected=[\"broad_scan\", \"field_observation\"]"
+        },
+        {
+          "id": "semantic-contract",
+          "passed": true,
+          "evidence": "selected=[\"broad_scan\", \"field_observation\"]"
+        },
+        {
+          "id": "causal-basis",
+          "passed": true,
+          "evidence": "expected basis research-landscape-v1"
+        },
+        {
+          "id": "nonempty-explanation",
+          "passed": true,
+          "evidence": "explanation must not be empty"
+        }
+      ],
+      "raw_output": "{\"selected\": [\"broad_scan\", \"field_observation\"], \"basis\": [\"research-landscape-v1\"], \"explanation\": \"broad_scan supplies both breadth and fast, satisfying every required property group; field_observation is added as the second distinct selection and neither candidate carries the forbidden causal property.\"}",
+      "request": {
+        "prompt_measurement": {
+          "tokens": 732,
+          "source": "openai-responses-serialized-request-estimate",
+          "model": "glm-5.3",
+          "accuracy": "heuristic-estimate",
+          "base_estimate_tokens": 732,
+          "calibration_key": 8310026217945074201,
+          "calibration_shape": 8447746186420711612
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+          },
+          {
+            "role": "user",
+            "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+          }
+        ],
+        "response": {
+          "content": "{\"selected\": [\"broad_scan\", \"field_observation\"], \"basis\": [\"research-landscape-v1\"], \"explanation\": \"broad_scan supplies both breadth and fast, satisfying every required property group; field_observation is added as the second distinct selection and neither candidate carries the forbidden causal property.\"}",
+          "tool_calls": []
+        },
+        "stream_events": [
+          {
+            "kind": "started"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Candidates"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ":"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " need"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " coverage"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " of"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " breadth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " fast"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " no"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ca"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "usal"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "),"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " select"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " "
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "2"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " distinct"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ".\n\n"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "Only"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " broad"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_scan"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " has"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " \""
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "fast"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "\"."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " broad"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_scan"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " has"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " breadth"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "+"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "fast"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "+"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "secondary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " —"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " covers"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " both"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " groups"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " alone"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Second"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " candidate"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " must"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " not"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " be"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " forbidden"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ca"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "usal"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ")"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " and"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " distinct"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Any"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " of"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " expert"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_int"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "erview"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "s"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " dataset"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_audit"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " field"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_obs"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ervation"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " work"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "."
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " Pick"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " broad"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_scan"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " +"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " field"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "_obs"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "ervation"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " ("
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "bread"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": "th"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " primary"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ","
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": " field"
+          },
+          {
+            "kind": "reasoning_summary_delta",
+            "text": ")."
+          },
+          {
+            "kind": "reasoning_summary_completed"
+          },
+          {
+            "kind": "text_delta",
+            "text": "{\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "selected"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "b"
+          },
+          {
+            "kind": "text_delta",
+            "text": "road"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_scan"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\","
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "field"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_obs"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ervation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"],"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "basis"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " [\""
+          },
+          {
+            "kind": "text_delta",
+            "text": "research"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-"
+          },
+          {
+            "kind": "text_delta",
+            "text": "landscape"
+          },
+          {
+            "kind": "text_delta",
+            "text": "-v"
+          },
+          {
+            "kind": "text_delta",
+            "text": "1"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\"],"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "ex"
+          },
+          {
+            "kind": "text_delta",
+            "text": "planation"
+          },
+          {
+            "kind": "text_delta",
+            "text": "\":"
+          },
+          {
+            "kind": "text_delta",
+            "text": " \""
+          },
+          {
+            "kind": "text_delta",
+            "text": "b"
+          },
+          {
+            "kind": "text_delta",
+            "text": "road"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_scan"
+          },
+          {
+            "kind": "text_delta",
+            "text": " supplies"
+          },
+          {
+            "kind": "text_delta",
+            "text": " both"
+          },
+          {
+            "kind": "text_delta",
+            "text": " breadth"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " fast"
+          },
+          {
+            "kind": "text_delta",
+            "text": ","
+          },
+          {
+            "kind": "text_delta",
+            "text": " satisfying"
+          },
+          {
+            "kind": "text_delta",
+            "text": " every"
+          },
+          {
+            "kind": "text_delta",
+            "text": " required"
+          },
+          {
+            "kind": "text_delta",
+            "text": " property"
+          },
+          {
+            "kind": "text_delta",
+            "text": " group"
+          },
+          {
+            "kind": "text_delta",
+            "text": ";"
+          },
+          {
+            "kind": "text_delta",
+            "text": " field"
+          },
+          {
+            "kind": "text_delta",
+            "text": "_obs"
+          },
+          {
+            "kind": "text_delta",
+            "text": "ervation"
+          },
+          {
+            "kind": "text_delta",
+            "text": " is"
+          },
+          {
+            "kind": "text_delta",
+            "text": " added"
+          },
+          {
+            "kind": "text_delta",
+            "text": " as"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " second"
+          },
+          {
+            "kind": "text_delta",
+            "text": " distinct"
+          },
+          {
+            "kind": "text_delta",
+            "text": " selection"
+          },
+          {
+            "kind": "text_delta",
+            "text": " and"
+          },
+          {
+            "kind": "text_delta",
+            "text": " neither"
+          },
+          {
+            "kind": "text_delta",
+            "text": " candidate"
+          },
+          {
+            "kind": "text_delta",
+            "text": " carries"
+          },
+          {
+            "kind": "text_delta",
+            "text": " the"
+          },
+          {
+            "kind": "text_delta",
+            "text": " forbidden causal property.\"}"
+          },
+          {
+            "kind": "usage",
+            "usage": {
+              "input_tokens": 593,
+              "uncached_input_tokens": 593,
+              "cached_input_tokens": 0,
+              "output_tokens": 149,
+              "reasoning_tokens": 0,
+              "total_tokens": 742,
+              "raw": [
+                {
+                  "input_tokens": 593,
+                  "input_tokens_details": {
+                    "cached_tokens": 0
+                  },
+                  "output_tokens": 149,
+                  "output_tokens_details": {
+                    "reasoning_tokens": 0
+                  },
+                  "total_tokens": 742
+                }
+              ]
+            }
+          },
+          {
+            "kind": "provider_continuation",
+            "continuation": {
+              "protocol": "openai-responses",
+              "reasoning_items": [
+                {
+                  "id": "rs_021787674234141ad6c77bbc9dd3a58ea6d8fc22d5c5074fd3e3e_0",
+                  "summary": [
+                    {
+                      "text": "Candidates: need coverage of breadth and fast, no forbidden (causal), select 2 distinct.\n\nOnly broad_scan has \"fast\". broad_scan has breadth+fast+secondary — covers both groups alone. Second candidate must not be forbidden (causal) and distinct. Any of expert_interviews, dataset_audit, field_observation work. Pick broad_scan + field_observation (breadth, primary, field).",
+                      "type": "summary_text"
+                    }
+                  ],
+                  "type": "reasoning"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "completed"
+          }
+        ],
+        "usage": {
+          "input_tokens": 593,
+          "uncached_input_tokens": 593,
+          "cached_input_tokens": 0,
+          "output_tokens": 149,
+          "reasoning_tokens": 0,
+          "total_tokens": 742,
+          "raw": [
+            {
+              "input_tokens": 593,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 149,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 742
+            }
+          ]
+        },
+        "error": null
+      }
+    }
+  ],
+  "conclusion_boundary": "ME-03 p1 tests nondeterministic cognitive evaluation contract validity, Context intervention sensitivity and deterministic-control invariance. Diversity is descriptive and is not induced through temperature. This Pilot does not establish cross-model generality, S-expression superiority, long-context advantage or Runtime authority guarantees."
+}

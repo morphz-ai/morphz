@@ -1,0 +1,22 @@
+{
+  "active_message_counts_after_reset": [
+    1,
+    1
+  ],
+  "checkpoint_sha256": "99306d6b445ead63e902f9940dd366ecb719d2a98c95a5538ff1a764cd13ab4d",
+  "completed_episode_count": 2,
+  "domain": "travel",
+  "embedding_dimension": 768,
+  "embedding_model": "nomic-embed-text:latest",
+  "episodic_context_reset": true,
+  "fallback": false,
+  "model": "gpt-5.6-sol",
+  "passed": true,
+  "physical_resume_performed": true,
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "reasoning_effort": "max",
+  "reportable_score": false,
+  "resume_started_from_episode": 2,
+  "snapshot_sha256": "881a76141b2df543d7b7adc4bdf1ce581ed44139d001adc95a9886ff9569bd3f",
+  "training_receipt_sha256": "28307c45c8927e353ebcd690f33c7680d1e49d5c2f48066d14ccbaf95505a530"
+}

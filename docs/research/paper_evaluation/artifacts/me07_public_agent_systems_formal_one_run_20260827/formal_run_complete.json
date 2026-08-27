@@ -1,0 +1,26 @@
+{
+  "by_arm": {
+    "letta": {
+      "scored": 143,
+      "succeeded": 144,
+      "terminal": 150
+    },
+    "mem0": {
+      "scored": 146,
+      "succeeded": 146,
+      "terminal": 150
+    },
+    "morphz": {
+      "scored": 149,
+      "succeeded": 149,
+      "terminal": 150
+    }
+  },
+  "complete": true,
+  "expected_jobs": 450,
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "remaining_jobs": 0,
+  "scored_jobs": 438,
+  "successful_runner_jobs": 439,
+  "terminal_jobs": 450
+}

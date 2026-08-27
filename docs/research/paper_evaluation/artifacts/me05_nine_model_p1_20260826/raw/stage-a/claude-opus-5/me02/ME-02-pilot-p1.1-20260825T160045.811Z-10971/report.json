@@ -1,0 +1,175 @@
+{
+  "id": "ME-02-pilot-p1.1-20260825T160045.811Z-10971",
+  "created_at": "2026-08-25T16:00:48.742678+00:00",
+  "model": "claude-opus-5",
+  "provider": "custom",
+  "protocol": "anthropic-messages",
+  "immutable_binding": {
+    "requested_alias": "claude-opus-5",
+    "route_id": "claude-opus-5",
+    "route_revision": "sha256:a365836a2902197e02a3f2dff333ead6b66a266802e61ce195b776fac15acd1b",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "claude-opus-5",
+    "protocol": "anthropic-messages",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-a/claude-opus-5/me02/ME-02-pilot-p1.1-20260825T160045.811Z-10971",
+  "summaries": {
+    "json_ast": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "markdown_program": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "sexpr_ast": {
+      "episodes": 1,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": 1.0,
+      "mean_tool_calls": 0.0
+    }
+  },
+  "episodes": [
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "nested_fallback",
+      "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+      "success": false,
+      "semantic_success": false,
+      "score": 1,
+      "max_score": 5,
+      "attempts": 1,
+      "prompt_chars": 346,
+      "tool_trace": [],
+      "final_answer": "",
+      "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal",
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": false,
+          "evidence": "missing=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": false,
+          "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": false,
+          "evidence": "violations=[\"probe_endpoint:primary->probe_endpoint:secondary:None->None\", \"probe_endpoint:secondary->probe_endpoint:tertiary:None->None\", \"probe_endpoint:tertiary->verify_endpoint:tertiary:EP-T-5541:None->None\"]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": false,
+          "evidence": "missing=[\"ENDPOINT-VERIFIED-7752\"]; final=\"\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1281,
+            "source": "anthropic-messages-serialized-request-estimate",
+            "model": "claude-opus-5",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1281,
+            "calibration_key": 7243184567710512247,
+            "calibration_shape": 16819325337791764233
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": null,
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2667,
+                "uncached_input_tokens": 2,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 2665,
+                "raw": [
+                  {
+                    "cache_creation": {
+                      "ephemeral_1h_input_tokens": 2665,
+                      "ephemeral_5m_input_tokens": 0
+                    },
+                    "cache_creation_input_tokens": 2665,
+                    "cache_read_input_tokens": 0,
+                    "inference_geo": "not_available",
+                    "input_tokens": 2,
+                    "output_tokens": 0,
+                    "service_tier": "standard"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "failed",
+              "message": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2667,
+            "uncached_input_tokens": 2,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 2665,
+            "raw": [
+              {
+                "cache_creation": {
+                  "ephemeral_1h_input_tokens": 2665,
+                  "ephemeral_5m_input_tokens": 0
+                },
+                "cache_creation_input_tokens": 2665,
+                "cache_read_input_tokens": 0,
+                "inference_geo": "not_available",
+                "input_tokens": 2,
+                "output_tokens": 0,
+                "service_tier": "standard"
+              }
+            ]
+          },
+          "error": "anthropic-messages Provider explicitly refused the request at its safety boundary: message_delta.stop_reason=refusal"
+        }
+      ]
+    }
+  ],
+  "conclusion_boundary": "ME-02 p1 changes only the serialization of one canonical recursive program. A Pilot result can diagnose feasibility, ceiling/floor effects and format bias; it is not a confirmatory claim that S-expression is superior, nor evidence about Context transactions, long-term memory, concurrency or public benchmark performance."
+}

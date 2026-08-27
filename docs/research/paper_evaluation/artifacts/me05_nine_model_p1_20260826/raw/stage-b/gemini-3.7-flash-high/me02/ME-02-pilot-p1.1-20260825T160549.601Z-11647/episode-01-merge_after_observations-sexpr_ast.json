@@ -1,0 +1,753 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "merge_after_observations",
+  "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 335,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "alpha"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-A-1937"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "beta"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-B-7391"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "merge_records",
+      "arguments": {
+        "alpha": "REC-A-1937",
+        "beta": "REC-B-7391"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "MERGED-AB-4472"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_merge",
+      "arguments": {
+        "receipt": "MERGED-AB-4472"
+      },
+      "output": {
+        "delivery_token": "MERGE-VERIFIED-5208",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "MERGE-VERIFIED-5208",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"MERGE-VERIFIED-5208\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1395,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gemini-3.7-flash-high",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1395,
+        "calibration_key": 1679949217680837092,
+        "calibration_shape": 1373889871651087238
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_1787674036397832000_471",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"alpha\"}"
+          },
+          {
+            "id": "call_1787674036398928000_472",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"beta\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_1787674036397832000_471",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\": \"alpha\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "call_1787674036398928000_472",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{\"name\": \"beta\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1281,
+            "uncached_input_tokens": 1281,
+            "cached_input_tokens": 0,
+            "output_tokens": 32,
+            "reasoning_tokens": 444,
+            "total_tokens": 1757,
+            "raw": [
+              {
+                "input_tokens": 1281,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 32,
+                "output_tokens_details": {
+                  "reasoning_tokens": 444
+                },
+                "total_tokens": 1757
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "cpa-gemini-responses-carrier-v1:next:function:RXYwUEN2b1BBUkZOTWcvU1VyM3dxMTVBME4zd2h4V040NWlZM01UQlF4WG5TMFpzd2lsZjRoRG8xcG8ySUFsVVViZCtqb09VY2l6MVlZVzJZWUxZbll1Z05ZdngxaE5hSXcvZ3ozajQ0bnk3Nm5IbWV4bG5maVptdXExOTFvbm1SZFowMGpJeGxqWDlJL1d4ZlF2TVZzdXNHenlZS1RVM25ydkVYVjl5MDVoQ1FLbXIwc290VUFiQy82b0Q3VUNSRkYxVE1hdXU5WVJXRmdiSUgwVStDVTU3bnA2QUhyOStvNXkrUEtOY3BrSDhVZGovUURIZTZ5a29xUHRIOEJ4ZC9aNTVlamFndG9EMnVxenJIaXhXdmtDVzg0b1B5Q2N2YWZqaENzMm93Qm1yZzk1Q0pSalJiazBFTmFaZnR1dnIxMzBvbk5uWkxpTk9oV0pkYk1OY0xVcXJzUDdFNmhVc0JkTGQwdzMwZ3FDNWlSb0h2dW1qdzFPaE1ZNjh0MWtLYzhjR2JrYi84RWNTUE16K3JTTmRQcHhVc2tiaE4vUml5QjRkZ2dPSmhHSy9HaXhPbG14alkxTC9SMTJ6dE5yTm8xQ1ZLMGV5V1JmZ2ZNM2hLK3pJRXk2V1JzQlhtSkpWRUM5VTZmdUN0bGUva2xvNE9ZTXFvajdaRGVKWHlBUFI5QTlwWTNPUlNYcWI3SWxxdzBubTFHaFl3d2s2NUFTays2MGZVaXBJanZQZjZZOXFyNVgvWHZJYitOYnRyejBJdHFES1pPcnFSSmZWYkNVQjRDSThvaG9KUkg2bmpwNFVZbitxM2doUmo4NkhqVkNzTjZWMm1NTmdiTFU0dkZKVFdtT2dFRG5xVlNxaTY2WkZEbEdXS0U4VE5lMUtFVW00M0ZMZGFNVC8vVnBOd1B1THdGVjVMZkVPMUEvMmIyczIrVUdVUytYV2Zac0NnbUJDRzNveksvT2NOWGt2cWFULzQzaTdLY3N3RFFMbmdrU04rQStJckYyZVNNY0NHOTk4cHF2Vml1a2dPdmNyVTBqK3phTlV2YnJnSWQwVHNMWDN6ZXFrUVI4eEVQUit1VnlVUG1RQkZrcDZUWWpuREd4U1FOQzlzd000SEhtV1pMekNHNVNVNVlUSUhpY2tBNFN6SlpQVjI5Vm9xcXg1YVBvR2pRTWpGY0Y3Z1RWUU4rMG92ekJQUnRnbldmdW5tMWsyWkh1Qkk2MEpTRFFEc3Z4ZEZRUG9OVThycmRpN0h2NGUvZXFHUktqRjdYTm5ZMHJaalhleFQzcWhDOCtBUHVieGkxOGZXMUttTWtHbHhVTFRLcW9JVDRyQTZlZnJ3SWRoTDRPdkRJWmp3WXdnODhYVXFIbDY0Z3RSaTRXNGFYMmFWUm1HalZiMGpnOWxhOGxLenA2b3BmNEhpbTFXcVl0eFJPRXN3S0ovQ3lQV1BmNGwybnVwSDNXa0kyeWZDWitJbTlYb2EyeFFzaGJPdy94OHVYb1RGS1EwSWlNU3JFbVUrNXpWVGlPQlora0l1MGNwWVRtbDUrWFNvTVp1RWdJVkg3RVNORXBMRjVZUVRuckFSOExzUWJVM2hERkdDZWhoQnl2NXJWZ29XTHNZUE9BTjUxanhFeVBCdTVidVVYY2d0dmk2QTh1NGU1TFNXOGZsQUVXRmZYTEUxU3pSYzQ0Z3BOdTlUZkxyOUE0S2ZJZW1mbUVZRGtNYWxlTEttaFNHdkpHN1g1N25DbkZjNGQ3cU4zN09nSmwyNnpEWXVUZlIxejJRcWpsditQVGFPOE5TY2lQWVFtVTgxUnlkWVBydXBQYTVKRld6NG5EZklLeGFVZ2xVZ1dHYVZnSU8zSVVEZHI1M3gvZDI1bkVTS1d4U0pWSE1Gdndtc0FyL2tnTjVyWVU3ZDVNVHl5YjdWcTM2R3JKWlZHNktGNXB6Rzdvc1JnUnE3NGVKWUF0MlRjaWVJNzF4cytnUVh6b1dReTRUbHZ0blhFeGZJZm1WYXB4b3RnVk1NdlYwRHY1cDNJYVFFbSt1RjRUU3F2YXlPdWF1bjhwWVAzM3MvZ1pHckEzay9TcGhFS3FyWHJ2ZWxyaUNsUU1WN2hNRmd4bXh6dlJ0TW16U3VLZHFRRUdlTjl3cmVpdkhlVkJkcTgvZUNpd0Rqclc5Z2llUlBZWkg1djVxcDBtZ1kxdGRBeUZETFlRYnFVTkdDZk9FTUxaeCtWU2ZoWEZNZ0U4T1NJelZzcG56Mmg0b3FDaHdwQ0h6bEFZeTdBY1dwUkN0a25Ed1l1WFVWb09uWDRvV0wvZjhEbkRDaTFHVmRLSHhhT1Fkb3hUWGV5N0U5bEhtSStzUFNKT0VZcUNGSG5OSXpueEFyMDNVUjh5b3V1d0JReHBoZERqRFdFZDlPYlc3L3AzaDgrMERsb2Z6Ukk4NG5tU2hmUCtsVjJoRk8zM1R1TmdzL0xnSGJHNFcyN0dEVC9jam8zS2JQNXRtOWI3QkVpOFgwWHlqQVE2Rml0VFI2dHhqSGw5R2U4RUdsRTdwT1pVMVNuYXd1aDFGSXdzYXBMQ2o2cHR5M2FlUkJ3SEZPbHZQVmptZm13VDFDVSt6SDloMVVwRGVmZDltN2YzRlNQUnRRc3RnZndkYUM5dWRRZVRKK1JnN3RBajJPOGNneng5WTdxKzdZbjRvQWgrNDlyWEt6VS80dXQ3NHFJU0JPcFF6Z0J5L2ZPQjM0eVhLcjYxUmpRSlR4cUZyQXdMNEhYY2pZdXhkVWNaSWw2MU5STGRoMUs0eE42cm1ZUkcrYW8zaHNycURQdFppUUdtYS9nMzVtT1pqZXlwTTBLUFhLbjBZVjFIaG5NQWJnZm8vZElNNU1UZGU3WmZXSHlDYlloS0htMmxVTkxOWE5ESElHZkp2cnBmYnJ4MHRVeHhPdHkvWW5EVlB1N1VPVzRsV1NXUTh0SjRZd1YvL3pmL1lRRDMva1VReW0weEM4RWFHWksxdGhrV0F3THVsWlFSNWJOeVlpWFVYblZFTVNPc1lFWlV6c3N3cm1ncC9OWUN1VVpkRUl6RmN2b2dYeGpnTndrRGxNOXNXa0hPR3BDVTdVQXV1eHZqT0ovMFZYUGtWMjI1dGFtY3ZIZW1lTi8wb0pRcll4eFNGR2EzZjBNTDdYNUsvZ25sT0VXdmpNNmt4OVptQ1FRZUdsTVlmRThwWmVHSktOb1JxaDE4QjJmOWZGK0pRVk5HeW1sTWdmVnVoMXcycnV5STRiK0xHWHp0VXZOazdMVzE1T1ZmaWloZ1Z6bzEvY2dUMGRBeVBhdnhnNEl3TmpmYkR5M0E5RUgvRkwrck5RNHFIS1dZV0tpZjRhUWFIVlVIVGNESjlJSnMydUc4bUh5WG1DcXpyZEYycVh4OE4yQTFpOHpRcFBjbmdIUkt4K2NHYjdWS1h1eDlBQVBnSFdtaXZxdEZrOUY4Y2tSdEdOdmtMQlNVUzc2ejdkZDJqUU9nSVl4SkFXdmNJOXNHNHRYVGZzM3FLaURQd2VIbEVYMTA2cUNhQVZZQy9tbXJoZ2ZPcVgrKzF0aVo4bmtIS0FiUmN1cXcyelZsdmduMk9vbGVRbVV6ZEEwMVJOMkxWWjNXN0hGTCtxaFZKNlpabWNDVGRxeVJGUGFlekRnUT0",
+                "id": "rs_resp_s72NaqrJJr-s-8YP_MnyqQM_detached_before_0",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1281,
+        "uncached_input_tokens": 1281,
+        "cached_input_tokens": 0,
+        "output_tokens": 32,
+        "reasoning_tokens": 444,
+        "total_tokens": 1757,
+        "raw": [
+          {
+            "input_tokens": 1281,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 32,
+            "output_tokens_details": {
+              "reasoning_tokens": 444
+            },
+            "total_tokens": 1757
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 2469,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gemini-3.7-flash-high",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2469,
+        "calibration_key": 9595254901200416269,
+        "calibration_shape": 1373889871651087238
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"cpa-gemini-responses-carrier-v1:next:function:RXYwUEN2b1BBUkZOTWcvU1VyM3dxMTVBME4zd2h4V040NWlZM01UQlF4WG5TMFpzd2lsZjRoRG8xcG8ySUFsVVViZCtqb09VY2l6MVlZVzJZWUxZbll1Z05ZdngxaE5hSXcvZ3ozajQ0bnk3Nm5IbWV4bG5maVptdXExOTFvbm1SZFowMGpJeGxqWDlJL1d4ZlF2TVZzdXNHenlZS1RVM25ydkVYVjl5MDVoQ1FLbXIwc290VUFiQy82b0Q3VUNSRkYxVE1hdXU5WVJXRmdiSUgwVStDVTU3bnA2QUhyOStvNXkrUEtOY3BrSDhVZGovUURIZTZ5a29xUHRIOEJ4ZC9aNTVlamFndG9EMnVxenJIaXhXdmtDVzg0b1B5Q2N2YWZqaENzMm93Qm1yZzk1Q0pSalJiazBFTmFaZnR1dnIxMzBvbk5uWkxpTk9oV0pkYk1OY0xVcXJzUDdFNmhVc0JkTGQwdzMwZ3FDNWlSb0h2dW1qdzFPaE1ZNjh0MWtLYzhjR2JrYi84RWNTUE16K3JTTmRQcHhVc2tiaE4vUml5QjRkZ2dPSmhHSy9HaXhPbG14alkxTC9SMTJ6dE5yTm8xQ1ZLMGV5V1JmZ2ZNM2hLK3pJRXk2V1JzQlhtSkpWRUM5VTZmdUN0bGUva2xvNE9ZTXFvajdaRGVKWHlBUFI5QTlwWTNPUlNYcWI3SWxxdzBubTFHaFl3d2s2NUFTays2MGZVaXBJanZQZjZZOXFyNVgvWHZJYitOYnRyejBJdHFES1pPcnFSSmZWYkNVQjRDSThvaG9KUkg2bmpwNFVZbitxM2doUmo4NkhqVkNzTjZWMm1NTmdiTFU0dkZKVFdtT2dFRG5xVlNxaTY2WkZEbEdXS0U4VE5lMUtFVW00M0ZMZGFNVC8vVnBOd1B1THdGVjVMZkVPMUEvMmIyczIrVUdVUytYV2Zac0NnbUJDRzNveksvT2NOWGt2cWFULzQzaTdLY3N3RFFMbmdrU04rQStJckYyZVNNY0NHOTk4cHF2Vml1a2dPdmNyVTBqK3phTlV2YnJnSWQwVHNMWDN6ZXFrUVI4eEVQUit1VnlVUG1RQkZrcDZUWWpuREd4U1FOQzlzd000SEhtV1pMekNHNVNVNVlUSUhpY2tBNFN6SlpQVjI5Vm9xcXg1YVBvR2pRTWpGY0Y3Z1RWUU4rMG92ekJQUnRnbldmdW5tMWsyWkh1Qkk2MEpTRFFEc3Z4ZEZRUG9OVThycmRpN0h2NGUvZXFHUktqRjdYTm5ZMHJaalhleFQzcWhDOCtBUHVieGkxOGZXMUttTWtHbHhVTFRLcW9JVDRyQTZlZnJ3SWRoTDRPdkRJWmp3WXdnODhYVXFIbDY0Z3RSaTRXNGFYMmFWUm1HalZiMGpnOWxhOGxLenA2b3BmNEhpbTFXcVl0eFJPRXN3S0ovQ3lQV1BmNGwybnVwSDNXa0kyeWZDWitJbTlYb2EyeFFzaGJPdy94OHVYb1RGS1EwSWlNU3JFbVUrNXpWVGlPQlora0l1MGNwWVRtbDUrWFNvTVp1RWdJVkg3RVNORXBMRjVZUVRuckFSOExzUWJVM2hERkdDZWhoQnl2NXJWZ29XTHNZUE9BTjUxanhFeVBCdTVidVVYY2d0dmk2QTh1NGU1TFNXOGZsQUVXRmZYTEUxU3pSYzQ0Z3BOdTlUZkxyOUE0S2ZJZW1mbUVZRGtNYWxlTEttaFNHdkpHN1g1N25DbkZjNGQ3cU4zN09nSmwyNnpEWXVUZlIxejJRcWpsditQVGFPOE5TY2lQWVFtVTgxUnlkWVBydXBQYTVKRld6NG5EZklLeGFVZ2xVZ1dHYVZnSU8zSVVEZHI1M3gvZDI1bkVTS1d4U0pWSE1Gdndtc0FyL2tnTjVyWVU3ZDVNVHl5YjdWcTM2R3JKWlZHNktGNXB6Rzdvc1JnUnE3NGVKWUF0MlRjaWVJNzF4cytnUVh6b1dReTRUbHZ0blhFeGZJZm1WYXB4b3RnVk1NdlYwRHY1cDNJYVFFbSt1RjRUU3F2YXlPdWF1bjhwWVAzM3MvZ1pHckEzay9TcGhFS3FyWHJ2ZWxyaUNsUU1WN2hNRmd4bXh6dlJ0TW16U3VLZHFRRUdlTjl3cmVpdkhlVkJkcTgvZUNpd0Rqclc5Z2llUlBZWkg1djVxcDBtZ1kxdGRBeUZETFlRYnFVTkdDZk9FTUxaeCtWU2ZoWEZNZ0U4T1NJelZzcG56Mmg0b3FDaHdwQ0h6bEFZeTdBY1dwUkN0a25Ed1l1WFVWb09uWDRvV0wvZjhEbkRDaTFHVmRLSHhhT1Fkb3hUWGV5N0U5bEhtSStzUFNKT0VZcUNGSG5OSXpueEFyMDNVUjh5b3V1d0JReHBoZERqRFdFZDlPYlc3L3AzaDgrMERsb2Z6Ukk4NG5tU2hmUCtsVjJoRk8zM1R1TmdzL0xnSGJHNFcyN0dEVC9jam8zS2JQNXRtOWI3QkVpOFgwWHlqQVE2Rml0VFI2dHhqSGw5R2U4RUdsRTdwT1pVMVNuYXd1aDFGSXdzYXBMQ2o2cHR5M2FlUkJ3SEZPbHZQVmptZm13VDFDVSt6SDloMVVwRGVmZDltN2YzRlNQUnRRc3RnZndkYUM5dWRRZVRKK1JnN3RBajJPOGNneng5WTdxKzdZbjRvQWgrNDlyWEt6VS80dXQ3NHFJU0JPcFF6Z0J5L2ZPQjM0eVhLcjYxUmpRSlR4cUZyQXdMNEhYY2pZdXhkVWNaSWw2MU5STGRoMUs0eE42cm1ZUkcrYW8zaHNycURQdFppUUdtYS9nMzVtT1pqZXlwTTBLUFhLbjBZVjFIaG5NQWJnZm8vZElNNU1UZGU3WmZXSHlDYlloS0htMmxVTkxOWE5ESElHZkp2cnBmYnJ4MHRVeHhPdHkvWW5EVlB1N1VPVzRsV1NXUTh0SjRZd1YvL3pmL1lRRDMva1VReW0weEM4RWFHWksxdGhrV0F3THVsWlFSNWJOeVlpWFVYblZFTVNPc1lFWlV6c3N3cm1ncC9OWUN1VVpkRUl6RmN2b2dYeGpnTndrRGxNOXNXa0hPR3BDVTdVQXV1eHZqT0ovMFZYUGtWMjI1dGFtY3ZIZW1lTi8wb0pRcll4eFNGR2EzZjBNTDdYNUsvZ25sT0VXdmpNNmt4OVptQ1FRZUdsTVlmRThwWmVHSktOb1JxaDE4QjJmOWZGK0pRVk5HeW1sTWdmVnVoMXcycnV5STRiK0xHWHp0VXZOazdMVzE1T1ZmaWloZ1Z6bzEvY2dUMGRBeVBhdnhnNEl3TmpmYkR5M0E5RUgvRkwrck5RNHFIS1dZV0tpZjRhUWFIVlVIVGNESjlJSnMydUc4bUh5WG1DcXpyZEYycVh4OE4yQTFpOHpRcFBjbmdIUkt4K2NHYjdWS1h1eDlBQVBnSFdtaXZxdEZrOUY4Y2tSdEdOdmtMQlNVUzc2ejdkZDJqUU9nSVl4SkFXdmNJOXNHNHRYVGZzM3FLaURQd2VIbEVYMTA2cUNhQVZZQy9tbXJoZ2ZPcVgrKzF0aVo4bmtIS0FiUmN1cXcyelZsdmduMk9vbGVRbVV6ZEEwMVJOMkxWWjNXN0hGTCtxaFZKNlpabWNDVGRxeVJGUGFlekRnUT0\",\"id\":\"rs_resp_s72NaqrJJr-s-8YP_MnyqQM_detached_before_0\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1787674036397832000_471",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_1787674036398928000_472",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_1787674036397832000_471"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_1787674036398928000_472"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_1787674040884668000_473",
+            "type": "function",
+            "func_name": "merge_records",
+            "arguments": "{\"beta\": \"REC-B-7391\",\"alpha\": \"REC-A-1937\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_1787674040884668000_473",
+          "name": "merge_records"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"beta\": \"REC-B-7391\",\"alpha\": \"REC-A-1937\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1809,
+            "uncached_input_tokens": 1809,
+            "cached_input_tokens": 0,
+            "output_tokens": 36,
+            "reasoning_tokens": 156,
+            "total_tokens": 2001,
+            "raw": [
+              {
+                "input_tokens": 1809,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 36,
+                "output_tokens_details": {
+                  "reasoning_tokens": 156
+                },
+                "total_tokens": 2001
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "cpa-gemini-responses-carrier-v1:next:function:RXJvRUNyY0VBUkZOTWc4SXRyUWVYaWRBMnVGNmNYWGZDcjVMblBSTGtDRWZ2WGdNc1JIcnRHWWdYYnhwWlUrT1gzMUtNUnpaaEMvd3BjN2kvenRpK0JCZ0lpVlpwQTZIMHFXZmRlb2srSzZLOFd0MVV1K2xFUUw2L1MwMGVUSTlVNXpPVHlGNUVhbmp3bzFOQkdnRFdiZThEZ0U5WDZjNmJtVGZ6TXppdFo1WnR4Wk12OFM2WjRwUWI4NmxsNVQxSTlhOVFjZUZBNm9CbzRGaXVBVHRWUFY5ZTdOdjd1TkdXcnZOb1BoYTAvai9CSWtBK3djMllnYTd2SXlKTFBZTG9ZWEo2SFVzUWpRcjcyTzlFcmVtTVg5RFNTN2hMbW1WVUFoR3lPZ1kxWWxMM2Q2YzUrMHVGZGFjK0NpYm1Bc1VoanV2cHRQbGF5azBZVS93c0JWTFlrdmNDNWYyV1lBTm9TMWVMejVqVHlESGJ3dmpwSFFmbVBQcDFKK2FsRHpBR1ZnRHVNTTZORHJDaWF0bGtMV1UyQm1kKzVJcGY4TmVzWXE5c2t1L3JBMGhXTkx0RmIwRzRTRmRvS3lYTUdJUGdiQzBTV3Bid1JmeXVDQ1ZmNDdhR2JUM1FjNUVUaDB3ditDUE1UWEhKYUVIWEVvaWJLOHBPcVNwYitEMWs4dlRMaERVYUJ4UHVKSlFSck4xVVVhakxUSDhRdkt6aU1kdkhGSzdWam5TSU5OcUtCdktlY1RLQ0VEN2g2UXJCVmZQMzA1WU4xYnVWVmM1NFZJRW5RS3hMTjlKSnFuWlF6R3Z1UVlkeEpucDArblI1aERlKzNENDVIbSthZ0dqK21UZFpjaTdCZFdJM0M3OFZsY1RVRUxYL0twMlhnMDZpMG9OK3cwUlFFVlFmSVJraEptaFZka3Q0ZmNRc3luWWE2VmlyUWgwMENNOCtpUkxRbWtEUDY0Y3RURTNIVUVnOHlDTnFxVWFrVTlsSjRkS1lhNU0vQVJBNUJ1RXpDYWM",
+                "id": "rs_resp_tr2NatGGHp25sOIPr6n1gQw_detached_before_0",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1809,
+        "uncached_input_tokens": 1809,
+        "cached_input_tokens": 0,
+        "output_tokens": 36,
+        "reasoning_tokens": 156,
+        "total_tokens": 2001,
+        "raw": [
+          {
+            "input_tokens": 1809,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 36,
+            "output_tokens_details": {
+              "reasoning_tokens": 156
+            },
+            "total_tokens": 2001
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 2835,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gemini-3.7-flash-high",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2835,
+        "calibration_key": 15053245478043107563,
+        "calibration_shape": 1373889871651087238
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"cpa-gemini-responses-carrier-v1:next:function:RXYwUEN2b1BBUkZOTWcvU1VyM3dxMTVBME4zd2h4V040NWlZM01UQlF4WG5TMFpzd2lsZjRoRG8xcG8ySUFsVVViZCtqb09VY2l6MVlZVzJZWUxZbll1Z05ZdngxaE5hSXcvZ3ozajQ0bnk3Nm5IbWV4bG5maVptdXExOTFvbm1SZFowMGpJeGxqWDlJL1d4ZlF2TVZzdXNHenlZS1RVM25ydkVYVjl5MDVoQ1FLbXIwc290VUFiQy82b0Q3VUNSRkYxVE1hdXU5WVJXRmdiSUgwVStDVTU3bnA2QUhyOStvNXkrUEtOY3BrSDhVZGovUURIZTZ5a29xUHRIOEJ4ZC9aNTVlamFndG9EMnVxenJIaXhXdmtDVzg0b1B5Q2N2YWZqaENzMm93Qm1yZzk1Q0pSalJiazBFTmFaZnR1dnIxMzBvbk5uWkxpTk9oV0pkYk1OY0xVcXJzUDdFNmhVc0JkTGQwdzMwZ3FDNWlSb0h2dW1qdzFPaE1ZNjh0MWtLYzhjR2JrYi84RWNTUE16K3JTTmRQcHhVc2tiaE4vUml5QjRkZ2dPSmhHSy9HaXhPbG14alkxTC9SMTJ6dE5yTm8xQ1ZLMGV5V1JmZ2ZNM2hLK3pJRXk2V1JzQlhtSkpWRUM5VTZmdUN0bGUva2xvNE9ZTXFvajdaRGVKWHlBUFI5QTlwWTNPUlNYcWI3SWxxdzBubTFHaFl3d2s2NUFTays2MGZVaXBJanZQZjZZOXFyNVgvWHZJYitOYnRyejBJdHFES1pPcnFSSmZWYkNVQjRDSThvaG9KUkg2bmpwNFVZbitxM2doUmo4NkhqVkNzTjZWMm1NTmdiTFU0dkZKVFdtT2dFRG5xVlNxaTY2WkZEbEdXS0U4VE5lMUtFVW00M0ZMZGFNVC8vVnBOd1B1THdGVjVMZkVPMUEvMmIyczIrVUdVUytYV2Zac0NnbUJDRzNveksvT2NOWGt2cWFULzQzaTdLY3N3RFFMbmdrU04rQStJckYyZVNNY0NHOTk4cHF2Vml1a2dPdmNyVTBqK3phTlV2YnJnSWQwVHNMWDN6ZXFrUVI4eEVQUit1VnlVUG1RQkZrcDZUWWpuREd4U1FOQzlzd000SEhtV1pMekNHNVNVNVlUSUhpY2tBNFN6SlpQVjI5Vm9xcXg1YVBvR2pRTWpGY0Y3Z1RWUU4rMG92ekJQUnRnbldmdW5tMWsyWkh1Qkk2MEpTRFFEc3Z4ZEZRUG9OVThycmRpN0h2NGUvZXFHUktqRjdYTm5ZMHJaalhleFQzcWhDOCtBUHVieGkxOGZXMUttTWtHbHhVTFRLcW9JVDRyQTZlZnJ3SWRoTDRPdkRJWmp3WXdnODhYVXFIbDY0Z3RSaTRXNGFYMmFWUm1HalZiMGpnOWxhOGxLenA2b3BmNEhpbTFXcVl0eFJPRXN3S0ovQ3lQV1BmNGwybnVwSDNXa0kyeWZDWitJbTlYb2EyeFFzaGJPdy94OHVYb1RGS1EwSWlNU3JFbVUrNXpWVGlPQlora0l1MGNwWVRtbDUrWFNvTVp1RWdJVkg3RVNORXBMRjVZUVRuckFSOExzUWJVM2hERkdDZWhoQnl2NXJWZ29XTHNZUE9BTjUxanhFeVBCdTVidVVYY2d0dmk2QTh1NGU1TFNXOGZsQUVXRmZYTEUxU3pSYzQ0Z3BOdTlUZkxyOUE0S2ZJZW1mbUVZRGtNYWxlTEttaFNHdkpHN1g1N25DbkZjNGQ3cU4zN09nSmwyNnpEWXVUZlIxejJRcWpsditQVGFPOE5TY2lQWVFtVTgxUnlkWVBydXBQYTVKRld6NG5EZklLeGFVZ2xVZ1dHYVZnSU8zSVVEZHI1M3gvZDI1bkVTS1d4U0pWSE1Gdndtc0FyL2tnTjVyWVU3ZDVNVHl5YjdWcTM2R3JKWlZHNktGNXB6Rzdvc1JnUnE3NGVKWUF0MlRjaWVJNzF4cytnUVh6b1dReTRUbHZ0blhFeGZJZm1WYXB4b3RnVk1NdlYwRHY1cDNJYVFFbSt1RjRUU3F2YXlPdWF1bjhwWVAzM3MvZ1pHckEzay9TcGhFS3FyWHJ2ZWxyaUNsUU1WN2hNRmd4bXh6dlJ0TW16U3VLZHFRRUdlTjl3cmVpdkhlVkJkcTgvZUNpd0Rqclc5Z2llUlBZWkg1djVxcDBtZ1kxdGRBeUZETFlRYnFVTkdDZk9FTUxaeCtWU2ZoWEZNZ0U4T1NJelZzcG56Mmg0b3FDaHdwQ0h6bEFZeTdBY1dwUkN0a25Ed1l1WFVWb09uWDRvV0wvZjhEbkRDaTFHVmRLSHhhT1Fkb3hUWGV5N0U5bEhtSStzUFNKT0VZcUNGSG5OSXpueEFyMDNVUjh5b3V1d0JReHBoZERqRFdFZDlPYlc3L3AzaDgrMERsb2Z6Ukk4NG5tU2hmUCtsVjJoRk8zM1R1TmdzL0xnSGJHNFcyN0dEVC9jam8zS2JQNXRtOWI3QkVpOFgwWHlqQVE2Rml0VFI2dHhqSGw5R2U4RUdsRTdwT1pVMVNuYXd1aDFGSXdzYXBMQ2o2cHR5M2FlUkJ3SEZPbHZQVmptZm13VDFDVSt6SDloMVVwRGVmZDltN2YzRlNQUnRRc3RnZndkYUM5dWRRZVRKK1JnN3RBajJPOGNneng5WTdxKzdZbjRvQWgrNDlyWEt6VS80dXQ3NHFJU0JPcFF6Z0J5L2ZPQjM0eVhLcjYxUmpRSlR4cUZyQXdMNEhYY2pZdXhkVWNaSWw2MU5STGRoMUs0eE42cm1ZUkcrYW8zaHNycURQdFppUUdtYS9nMzVtT1pqZXlwTTBLUFhLbjBZVjFIaG5NQWJnZm8vZElNNU1UZGU3WmZXSHlDYlloS0htMmxVTkxOWE5ESElHZkp2cnBmYnJ4MHRVeHhPdHkvWW5EVlB1N1VPVzRsV1NXUTh0SjRZd1YvL3pmL1lRRDMva1VReW0weEM4RWFHWksxdGhrV0F3THVsWlFSNWJOeVlpWFVYblZFTVNPc1lFWlV6c3N3cm1ncC9OWUN1VVpkRUl6RmN2b2dYeGpnTndrRGxNOXNXa0hPR3BDVTdVQXV1eHZqT0ovMFZYUGtWMjI1dGFtY3ZIZW1lTi8wb0pRcll4eFNGR2EzZjBNTDdYNUsvZ25sT0VXdmpNNmt4OVptQ1FRZUdsTVlmRThwWmVHSktOb1JxaDE4QjJmOWZGK0pRVk5HeW1sTWdmVnVoMXcycnV5STRiK0xHWHp0VXZOazdMVzE1T1ZmaWloZ1Z6bzEvY2dUMGRBeVBhdnhnNEl3TmpmYkR5M0E5RUgvRkwrck5RNHFIS1dZV0tpZjRhUWFIVlVIVGNESjlJSnMydUc4bUh5WG1DcXpyZEYycVh4OE4yQTFpOHpRcFBjbmdIUkt4K2NHYjdWS1h1eDlBQVBnSFdtaXZxdEZrOUY4Y2tSdEdOdmtMQlNVUzc2ejdkZDJqUU9nSVl4SkFXdmNJOXNHNHRYVGZzM3FLaURQd2VIbEVYMTA2cUNhQVZZQy9tbXJoZ2ZPcVgrKzF0aVo4bmtIS0FiUmN1cXcyelZsdmduMk9vbGVRbVV6ZEEwMVJOMkxWWjNXN0hGTCtxaFZKNlpabWNDVGRxeVJGUGFlekRnUT0\",\"id\":\"rs_resp_s72NaqrJJr-s-8YP_MnyqQM_detached_before_0\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1787674036397832000_471",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_1787674036398928000_472",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_1787674036397832000_471"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_1787674036398928000_472"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"cpa-gemini-responses-carrier-v1:next:function:RXJvRUNyY0VBUkZOTWc4SXRyUWVYaWRBMnVGNmNYWGZDcjVMblBSTGtDRWZ2WGdNc1JIcnRHWWdYYnhwWlUrT1gzMUtNUnpaaEMvd3BjN2kvenRpK0JCZ0lpVlpwQTZIMHFXZmRlb2srSzZLOFd0MVV1K2xFUUw2L1MwMGVUSTlVNXpPVHlGNUVhbmp3bzFOQkdnRFdiZThEZ0U5WDZjNmJtVGZ6TXppdFo1WnR4Wk12OFM2WjRwUWI4NmxsNVQxSTlhOVFjZUZBNm9CbzRGaXVBVHRWUFY5ZTdOdjd1TkdXcnZOb1BoYTAvai9CSWtBK3djMllnYTd2SXlKTFBZTG9ZWEo2SFVzUWpRcjcyTzlFcmVtTVg5RFNTN2hMbW1WVUFoR3lPZ1kxWWxMM2Q2YzUrMHVGZGFjK0NpYm1Bc1VoanV2cHRQbGF5azBZVS93c0JWTFlrdmNDNWYyV1lBTm9TMWVMejVqVHlESGJ3dmpwSFFmbVBQcDFKK2FsRHpBR1ZnRHVNTTZORHJDaWF0bGtMV1UyQm1kKzVJcGY4TmVzWXE5c2t1L3JBMGhXTkx0RmIwRzRTRmRvS3lYTUdJUGdiQzBTV3Bid1JmeXVDQ1ZmNDdhR2JUM1FjNUVUaDB3ditDUE1UWEhKYUVIWEVvaWJLOHBPcVNwYitEMWs4dlRMaERVYUJ4UHVKSlFSck4xVVVhakxUSDhRdkt6aU1kdkhGSzdWam5TSU5OcUtCdktlY1RLQ0VEN2g2UXJCVmZQMzA1WU4xYnVWVmM1NFZJRW5RS3hMTjlKSnFuWlF6R3Z1UVlkeEpucDArblI1aERlKzNENDVIbSthZ0dqK21UZFpjaTdCZFdJM0M3OFZsY1RVRUxYL0twMlhnMDZpMG9OK3cwUlFFVlFmSVJraEptaFZka3Q0ZmNRc3luWWE2VmlyUWgwMENNOCtpUkxRbWtEUDY0Y3RURTNIVUVnOHlDTnFxVWFrVTlsSjRkS1lhNU0vQVJBNUJ1RXpDYWM\",\"id\":\"rs_resp_tr2NatGGHp25sOIPr6n1gQw_detached_before_0\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1787674040884668000_473",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"beta\": \"REC-B-7391\",\"alpha\": \"REC-A-1937\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_1787674040884668000_473"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_1787674045201671000_474",
+            "type": "function",
+            "func_name": "verify_merge",
+            "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_1787674045201671000_474",
+          "name": "verify_merge"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"receipt\": \"MERGED-AB-4472\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2029,
+            "uncached_input_tokens": 2029,
+            "cached_input_tokens": 0,
+            "output_tokens": 24,
+            "reasoning_tokens": 98,
+            "total_tokens": 2151,
+            "raw": [
+              {
+                "input_tokens": 2029,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 24,
+                "output_tokens_details": {
+                  "reasoning_tokens": 98
+                },
+                "total_tokens": 2151
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "cpa-gemini-responses-carrier-v1:next:function:RXEwRENxb0RBUkZOTWc4OXkxdFAzcS9MT3J2NS9BQ082cnBaUy9PMkc2S2swYXBZZ0xDYnpBM3ptZ3N6UGRST1ZIWnZYTkJkcWVIUG83bUpjSmJYaDNaK21TdHFtbThiOHpMd1d2dFo2V3lSc1lnbDJMNFhvcm16aVZpQWthNVFQZVQrdUxIUmhjdHhIc3R1M3VjbjNQRnRzdTJRcm9vbmxOaVkwbUpnMTJRdVVRYVpXWjVNbkpYeHVSNC8yNWE1TStkdXVUNXQrMFo4WWUwakovRlFMZ2Zpc0FraldqNDMvdTBXYSsrQXBYQlhtTG9DNlB6Vjl3TzdDcTUrczFKV1IvV0dsdHl2Y2YxakE2bFc3bFUyQm9GRGgrbnNMZmN4SUw3UDhlK1cvR3Z4NEpydVZEQ1h2RmF3aGVseGhYNGxid0s4QXNtRER4ZTE3WkFjRmdrQTVwVnZmUG9LUjdid09UOVZjTStMN1NEYkQ3aU9kUlpoS0gwdG43NWpkRjFhL2kwTklXTEt6azhhWm1OUm11dFdHdmptbmkvNEV5T3VsSCtGMFBXd0E2dE43eUt3THlHNDkzanZVNWNyQjdhLzlSOFlRKzFmUC9rRjFSbisvS2dQZ0hocUZjWW9oenlGbzRVQnYveXVvWEtTeW4rYUFGMCsrcU8vYStTUHltT0JpQnVUU21BMHRlRXI3MDR5UkVIYnE4djA0aEVUWjd1MkpXTWl2alFTRmQ4eVAzZVc0TUl0TTB0ZUtsZmFsV29P",
+                "id": "rs_resp_vr2NaveyBdOa-8YP7Ka3gQw_detached_before_0",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2029,
+        "uncached_input_tokens": 2029,
+        "cached_input_tokens": 0,
+        "output_tokens": 24,
+        "reasoning_tokens": 98,
+        "total_tokens": 2151,
+        "raw": [
+          {
+            "input_tokens": 2029,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 24,
+            "output_tokens_details": {
+              "reasoning_tokens": 98
+            },
+            "total_tokens": 2151
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 3137,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gemini-3.7-flash-high",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 3137,
+        "calibration_key": 11640067908458395217,
+        "calibration_shape": 1373889871651087238
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"cpa-gemini-responses-carrier-v1:next:function:RXYwUEN2b1BBUkZOTWcvU1VyM3dxMTVBME4zd2h4V040NWlZM01UQlF4WG5TMFpzd2lsZjRoRG8xcG8ySUFsVVViZCtqb09VY2l6MVlZVzJZWUxZbll1Z05ZdngxaE5hSXcvZ3ozajQ0bnk3Nm5IbWV4bG5maVptdXExOTFvbm1SZFowMGpJeGxqWDlJL1d4ZlF2TVZzdXNHenlZS1RVM25ydkVYVjl5MDVoQ1FLbXIwc290VUFiQy82b0Q3VUNSRkYxVE1hdXU5WVJXRmdiSUgwVStDVTU3bnA2QUhyOStvNXkrUEtOY3BrSDhVZGovUURIZTZ5a29xUHRIOEJ4ZC9aNTVlamFndG9EMnVxenJIaXhXdmtDVzg0b1B5Q2N2YWZqaENzMm93Qm1yZzk1Q0pSalJiazBFTmFaZnR1dnIxMzBvbk5uWkxpTk9oV0pkYk1OY0xVcXJzUDdFNmhVc0JkTGQwdzMwZ3FDNWlSb0h2dW1qdzFPaE1ZNjh0MWtLYzhjR2JrYi84RWNTUE16K3JTTmRQcHhVc2tiaE4vUml5QjRkZ2dPSmhHSy9HaXhPbG14alkxTC9SMTJ6dE5yTm8xQ1ZLMGV5V1JmZ2ZNM2hLK3pJRXk2V1JzQlhtSkpWRUM5VTZmdUN0bGUva2xvNE9ZTXFvajdaRGVKWHlBUFI5QTlwWTNPUlNYcWI3SWxxdzBubTFHaFl3d2s2NUFTays2MGZVaXBJanZQZjZZOXFyNVgvWHZJYitOYnRyejBJdHFES1pPcnFSSmZWYkNVQjRDSThvaG9KUkg2bmpwNFVZbitxM2doUmo4NkhqVkNzTjZWMm1NTmdiTFU0dkZKVFdtT2dFRG5xVlNxaTY2WkZEbEdXS0U4VE5lMUtFVW00M0ZMZGFNVC8vVnBOd1B1THdGVjVMZkVPMUEvMmIyczIrVUdVUytYV2Zac0NnbUJDRzNveksvT2NOWGt2cWFULzQzaTdLY3N3RFFMbmdrU04rQStJckYyZVNNY0NHOTk4cHF2Vml1a2dPdmNyVTBqK3phTlV2YnJnSWQwVHNMWDN6ZXFrUVI4eEVQUit1VnlVUG1RQkZrcDZUWWpuREd4U1FOQzlzd000SEhtV1pMekNHNVNVNVlUSUhpY2tBNFN6SlpQVjI5Vm9xcXg1YVBvR2pRTWpGY0Y3Z1RWUU4rMG92ekJQUnRnbldmdW5tMWsyWkh1Qkk2MEpTRFFEc3Z4ZEZRUG9OVThycmRpN0h2NGUvZXFHUktqRjdYTm5ZMHJaalhleFQzcWhDOCtBUHVieGkxOGZXMUttTWtHbHhVTFRLcW9JVDRyQTZlZnJ3SWRoTDRPdkRJWmp3WXdnODhYVXFIbDY0Z3RSaTRXNGFYMmFWUm1HalZiMGpnOWxhOGxLenA2b3BmNEhpbTFXcVl0eFJPRXN3S0ovQ3lQV1BmNGwybnVwSDNXa0kyeWZDWitJbTlYb2EyeFFzaGJPdy94OHVYb1RGS1EwSWlNU3JFbVUrNXpWVGlPQlora0l1MGNwWVRtbDUrWFNvTVp1RWdJVkg3RVNORXBMRjVZUVRuckFSOExzUWJVM2hERkdDZWhoQnl2NXJWZ29XTHNZUE9BTjUxanhFeVBCdTVidVVYY2d0dmk2QTh1NGU1TFNXOGZsQUVXRmZYTEUxU3pSYzQ0Z3BOdTlUZkxyOUE0S2ZJZW1mbUVZRGtNYWxlTEttaFNHdkpHN1g1N25DbkZjNGQ3cU4zN09nSmwyNnpEWXVUZlIxejJRcWpsditQVGFPOE5TY2lQWVFtVTgxUnlkWVBydXBQYTVKRld6NG5EZklLeGFVZ2xVZ1dHYVZnSU8zSVVEZHI1M3gvZDI1bkVTS1d4U0pWSE1Gdndtc0FyL2tnTjVyWVU3ZDVNVHl5YjdWcTM2R3JKWlZHNktGNXB6Rzdvc1JnUnE3NGVKWUF0MlRjaWVJNzF4cytnUVh6b1dReTRUbHZ0blhFeGZJZm1WYXB4b3RnVk1NdlYwRHY1cDNJYVFFbSt1RjRUU3F2YXlPdWF1bjhwWVAzM3MvZ1pHckEzay9TcGhFS3FyWHJ2ZWxyaUNsUU1WN2hNRmd4bXh6dlJ0TW16U3VLZHFRRUdlTjl3cmVpdkhlVkJkcTgvZUNpd0Rqclc5Z2llUlBZWkg1djVxcDBtZ1kxdGRBeUZETFlRYnFVTkdDZk9FTUxaeCtWU2ZoWEZNZ0U4T1NJelZzcG56Mmg0b3FDaHdwQ0h6bEFZeTdBY1dwUkN0a25Ed1l1WFVWb09uWDRvV0wvZjhEbkRDaTFHVmRLSHhhT1Fkb3hUWGV5N0U5bEhtSStzUFNKT0VZcUNGSG5OSXpueEFyMDNVUjh5b3V1d0JReHBoZERqRFdFZDlPYlc3L3AzaDgrMERsb2Z6Ukk4NG5tU2hmUCtsVjJoRk8zM1R1TmdzL0xnSGJHNFcyN0dEVC9jam8zS2JQNXRtOWI3QkVpOFgwWHlqQVE2Rml0VFI2dHhqSGw5R2U4RUdsRTdwT1pVMVNuYXd1aDFGSXdzYXBMQ2o2cHR5M2FlUkJ3SEZPbHZQVmptZm13VDFDVSt6SDloMVVwRGVmZDltN2YzRlNQUnRRc3RnZndkYUM5dWRRZVRKK1JnN3RBajJPOGNneng5WTdxKzdZbjRvQWgrNDlyWEt6VS80dXQ3NHFJU0JPcFF6Z0J5L2ZPQjM0eVhLcjYxUmpRSlR4cUZyQXdMNEhYY2pZdXhkVWNaSWw2MU5STGRoMUs0eE42cm1ZUkcrYW8zaHNycURQdFppUUdtYS9nMzVtT1pqZXlwTTBLUFhLbjBZVjFIaG5NQWJnZm8vZElNNU1UZGU3WmZXSHlDYlloS0htMmxVTkxOWE5ESElHZkp2cnBmYnJ4MHRVeHhPdHkvWW5EVlB1N1VPVzRsV1NXUTh0SjRZd1YvL3pmL1lRRDMva1VReW0weEM4RWFHWksxdGhrV0F3THVsWlFSNWJOeVlpWFVYblZFTVNPc1lFWlV6c3N3cm1ncC9OWUN1VVpkRUl6RmN2b2dYeGpnTndrRGxNOXNXa0hPR3BDVTdVQXV1eHZqT0ovMFZYUGtWMjI1dGFtY3ZIZW1lTi8wb0pRcll4eFNGR2EzZjBNTDdYNUsvZ25sT0VXdmpNNmt4OVptQ1FRZUdsTVlmRThwWmVHSktOb1JxaDE4QjJmOWZGK0pRVk5HeW1sTWdmVnVoMXcycnV5STRiK0xHWHp0VXZOazdMVzE1T1ZmaWloZ1Z6bzEvY2dUMGRBeVBhdnhnNEl3TmpmYkR5M0E5RUgvRkwrck5RNHFIS1dZV0tpZjRhUWFIVlVIVGNESjlJSnMydUc4bUh5WG1DcXpyZEYycVh4OE4yQTFpOHpRcFBjbmdIUkt4K2NHYjdWS1h1eDlBQVBnSFdtaXZxdEZrOUY4Y2tSdEdOdmtMQlNVUzc2ejdkZDJqUU9nSVl4SkFXdmNJOXNHNHRYVGZzM3FLaURQd2VIbEVYMTA2cUNhQVZZQy9tbXJoZ2ZPcVgrKzF0aVo4bmtIS0FiUmN1cXcyelZsdmduMk9vbGVRbVV6ZEEwMVJOMkxWWjNXN0hGTCtxaFZKNlpabWNDVGRxeVJGUGFlekRnUT0\",\"id\":\"rs_resp_s72NaqrJJr-s-8YP_MnyqQM_detached_before_0\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1787674036397832000_471",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "call_1787674036398928000_472",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_1787674036397832000_471"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "call_1787674036398928000_472"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"cpa-gemini-responses-carrier-v1:next:function:RXJvRUNyY0VBUkZOTWc4SXRyUWVYaWRBMnVGNmNYWGZDcjVMblBSTGtDRWZ2WGdNc1JIcnRHWWdYYnhwWlUrT1gzMUtNUnpaaEMvd3BjN2kvenRpK0JCZ0lpVlpwQTZIMHFXZmRlb2srSzZLOFd0MVV1K2xFUUw2L1MwMGVUSTlVNXpPVHlGNUVhbmp3bzFOQkdnRFdiZThEZ0U5WDZjNmJtVGZ6TXppdFo1WnR4Wk12OFM2WjRwUWI4NmxsNVQxSTlhOVFjZUZBNm9CbzRGaXVBVHRWUFY5ZTdOdjd1TkdXcnZOb1BoYTAvai9CSWtBK3djMllnYTd2SXlKTFBZTG9ZWEo2SFVzUWpRcjcyTzlFcmVtTVg5RFNTN2hMbW1WVUFoR3lPZ1kxWWxMM2Q2YzUrMHVGZGFjK0NpYm1Bc1VoanV2cHRQbGF5azBZVS93c0JWTFlrdmNDNWYyV1lBTm9TMWVMejVqVHlESGJ3dmpwSFFmbVBQcDFKK2FsRHpBR1ZnRHVNTTZORHJDaWF0bGtMV1UyQm1kKzVJcGY4TmVzWXE5c2t1L3JBMGhXTkx0RmIwRzRTRmRvS3lYTUdJUGdiQzBTV3Bid1JmeXVDQ1ZmNDdhR2JUM1FjNUVUaDB3ditDUE1UWEhKYUVIWEVvaWJLOHBPcVNwYitEMWs4dlRMaERVYUJ4UHVKSlFSck4xVVVhakxUSDhRdkt6aU1kdkhGSzdWam5TSU5OcUtCdktlY1RLQ0VEN2g2UXJCVmZQMzA1WU4xYnVWVmM1NFZJRW5RS3hMTjlKSnFuWlF6R3Z1UVlkeEpucDArblI1aERlKzNENDVIbSthZ0dqK21UZFpjaTdCZFdJM0M3OFZsY1RVRUxYL0twMlhnMDZpMG9OK3cwUlFFVlFmSVJraEptaFZka3Q0ZmNRc3luWWE2VmlyUWgwMENNOCtpUkxRbWtEUDY0Y3RURTNIVUVnOHlDTnFxVWFrVTlsSjRkS1lhNU0vQVJBNUJ1RXpDYWM\",\"id\":\"rs_resp_tr2NatGGHp25sOIPr6n1gQw_detached_before_0\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1787674040884668000_473",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"beta\": \"REC-B-7391\",\"alpha\": \"REC-A-1937\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "call_1787674040884668000_473"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"cpa-gemini-responses-carrier-v1:next:function:RXEwRENxb0RBUkZOTWc4OXkxdFAzcS9MT3J2NS9BQ082cnBaUy9PMkc2S2swYXBZZ0xDYnpBM3ptZ3N6UGRST1ZIWnZYTkJkcWVIUG83bUpjSmJYaDNaK21TdHFtbThiOHpMd1d2dFo2V3lSc1lnbDJMNFhvcm16aVZpQWthNVFQZVQrdUxIUmhjdHhIc3R1M3VjbjNQRnRzdTJRcm9vbmxOaVkwbUpnMTJRdVVRYVpXWjVNbkpYeHVSNC8yNWE1TStkdXVUNXQrMFo4WWUwakovRlFMZ2Zpc0FraldqNDMvdTBXYSsrQXBYQlhtTG9DNlB6Vjl3TzdDcTUrczFKV1IvV0dsdHl2Y2YxakE2bFc3bFUyQm9GRGgrbnNMZmN4SUw3UDhlK1cvR3Z4NEpydVZEQ1h2RmF3aGVseGhYNGxid0s4QXNtRER4ZTE3WkFjRmdrQTVwVnZmUG9LUjdid09UOVZjTStMN1NEYkQ3aU9kUlpoS0gwdG43NWpkRjFhL2kwTklXTEt6azhhWm1OUm11dFdHdmptbmkvNEV5T3VsSCtGMFBXd0E2dE43eUt3THlHNDkzanZVNWNyQjdhLzlSOFlRKzFmUC9rRjFSbisvS2dQZ0hocUZjWW9oenlGbzRVQnYveXVvWEtTeW4rYUFGMCsrcU8vYStTUHltT0JpQnVUU21BMHRlRXI3MDR5UkVIYnE4djA0aEVUWjd1MkpXTWl2alFTRmQ4eVAzZVc0TUl0TTB0ZUtsZmFsV29P\",\"id\":\"rs_resp_vr2NaveyBdOa-8YP7Ka3gQw_detached_before_0\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_1787674045201671000_474",
+              "type": "function",
+              "function": {
+                "name": "verify_merge",
+                "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"MERGE-VERIFIED-5208\",\"ok\":true}",
+          "name": "verify_merge",
+          "tool_call_id": "call_1787674045201671000_474"
+        }
+      ],
+      "response": {
+        "content": "MERGE-VERIFIED-5208",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "MERGE-VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED-5208"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2182,
+            "uncached_input_tokens": 2182,
+            "cached_input_tokens": 0,
+            "output_tokens": 10,
+            "reasoning_tokens": 125,
+            "total_tokens": 2317,
+            "raw": [
+              {
+                "input_tokens": 2182,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 10,
+                "output_tokens_details": {
+                  "reasoning_tokens": 125
+                },
+                "total_tokens": 2317
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "cpa-gemini-responses-carrier-v1:previous:text:RXJzRUNyZ0VBUkZOTWcrZkRIQWZCQkF1N3NGODA1K3ExamdZdWxIU0UxZG82SkhQTlRpOURVUXQyVm1xVnhNY2o3aHVIbVlmVENNVFV5WTdkTHc4RWtIRi9GSzBXaEdBRjYrTGtjNHV6TWlnbnZhK1IrNTUxa0xZMTczUFFHeXB0TllkYVdRUmJKNmp4RE4wdCtBZWRXc2FkbmFBZnVCWGFGLzNOT21XUElBOTlid2ZMcHJSclFCSytCZUpzUkN3MEFpMGdJN0l6RGQ4V3NYc1VYcTZFMkR3aFB0ZmJ3ZEdRdC82M1NLaURSQ2xPNjZBK3gxb3h6NWhuR0t3REp1M3VqNjBPSE01ajZtdVllRE1IYnlwVmZ4cWZWYStzTWk3QThBV3BMSVEvVGpBYVZUbXZOMlRtNHdOSDFjeERLSHZVaWxVVmxyR20xaWtVaTd1WW1iU0hwNlh4ZmRFMjA1MGpjcWFSY1dJbjBDd2JFV3dLYy9Ic2RZdU9oVXlFZUhSQjJCYks1QXNIVTNrbXdjTGd2L2FQdWNvZEJ6eUg3MTAxRGc2NzVVRHczSzRiZGg5eGVEYWNhSkhIZm5POTVtOVlxazY2WmxoVHBIaFhGU1Z6WkdoWWZncDBJTS9WcUFrRTA5enV2cFB6SGlBVFFXMWJZc3ZnaHF2VkhnUTJsVHRtUFZIUkZOd3FqSWF5Z0tPYWhCazdqdmpPV3l4UmtyY21OU3JRL2xva1BXczRaVGxUQXRQbGs1ZUlRMFJMeXEyOCtIVlQ5bG5wKzBBanNsdm5wRDJHT3c1YTI4ZDJsWXkwazc1S0JrTnFKSXRzcWsrUHZwSENsanZzMEtSKzN4YzhpblllQjhxKys4amx2eDA0WFVNQVpGaUtkWEh5Q0dWZEhFb0JOWEZJQklqV0xpc0Z3TXQ1WDY2UkpXcS9NbG9kdXM0Y0lVcnhxN2hCQXRLM1BFUGpzNEdtOUthME50ckREanZGK1NKZFNzME5DZnpBaGttNW9MeDFqUW55UT09",
+                "id": "rs_resp_v72Naqn8C528jrEPv7Dw4Ac_detached_after_1",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2182,
+        "uncached_input_tokens": 2182,
+        "cached_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_tokens": 125,
+        "total_tokens": 2317,
+        "raw": [
+          {
+            "input_tokens": 2182,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 10,
+            "output_tokens_details": {
+              "reasoning_tokens": 125
+            },
+            "total_tokens": 2317
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

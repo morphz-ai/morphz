@@ -1,0 +1,918 @@
+{
+  "repetition": 1,
+  "arm": "json_ast",
+  "task": "nested_fallback",
+  "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 5,
+  "prompt_chars": 1559,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "primary"
+      },
+      "output": {
+        "error": "PRIMARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "secondary"
+      },
+      "output": {
+        "error": "SECONDARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "tertiary"
+      },
+      "output": {
+        "name": "tertiary",
+        "ok": true,
+        "token": "EP-T-5541"
+      }
+    },
+    {
+      "attempt": 4,
+      "name": "verify_endpoint",
+      "arguments": {
+        "name": "tertiary",
+        "token": "EP-T-5541"
+      },
+      "output": {
+        "delivery_token": "ENDPOINT-VERIFIED-7752",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "ENDPOINT-VERIFIED-7752",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"ENDPOINT-VERIFIED-7752\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1756,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1756,
+        "calibration_key": 4136646827644171676,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "{\n  \"op\": \"seq\",\n  \"steps\": [\n    {\n      \"op\": \"bind\",\n      \"name\": \"selected\",\n      \"expression\": {\n        \"op\": \"fallback\",\n        \"primary\": {\n          \"op\": \"call\",\n          \"tool\": \"probe_endpoint\",\n          \"arguments\": {\n            \"name\": {\n              \"kind\": \"literal\",\n              \"value\": \"primary\"\n            }\n          }\n        },\n        \"backup\": {\n          \"op\": \"fallback\",\n          \"primary\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"secondary\"\n              }\n            }\n          },\n          \"backup\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"tertiary\"\n              }\n            }\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"bind\",\n      \"name\": \"verified\",\n      \"expression\": {\n        \"op\": \"call\",\n        \"tool\": \"verify_endpoint\",\n        \"arguments\": {\n          \"name\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"name\"\n          },\n          \"token\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"token\"\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"reply\",\n      \"values\": [\n        {\n          \"kind\": \"reference\",\n          \"binding\": \"verified\",\n          \"field\": \"delivery_token\"\n        }\n      ]\n    }\n  ]\n}"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_sxfvA4LExb6IzNhjx6USQt3v",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\":\"primary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_sxfvA4LExb6IzNhjx6USQt3v",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"primary\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1293,
+            "uncached_input_tokens": 1293,
+            "cached_input_tokens": 0,
+            "output_tokens": 51,
+            "reasoning_tokens": 30,
+            "total_tokens": 1344,
+            "raw": [
+              {
+                "input_tokens": 1293,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 51,
+                "output_tokens_details": {
+                  "reasoning_tokens": 30
+                },
+                "total_tokens": 1344
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXdS_kFlXNXbFZHTiHEQV6Kw3VTzpIIvXJBIMFp-vD0FM-7TY3l4nqDhCfypS6O-GwPY8K7M1Z73DyHI2NbfVelH8p0sr8bYlb6RoKW2G7y350Fq1gdnQr7P2OKUPqXOYXDPs_dcw9xEOGORNKG4t4Vb-UDTqTWjccJlYbICLyUjAuut5AbY3HyRdtQuVAbTFz1f7Nw17q7etDaKPLyKu_rdVxBYr17Mwh12kMpbaAkRUPXMvizX94TtHOMg3oZdun5DMJt6DaPYSrwVmEjz8JmfQE8S1zy-SkAwPAbKLZZOZR8gMkCXBod_Yw31H3AYxtI5DH56stb5DG_3AvpLdLAE7lGmcGOT5nD6b1Ut0LUWtl2NfzSSKPN9svLojVVh_Dohm-atzDDcn699sUNG-d-FoQry-hAiVqhrAfxbg0hDbn8ThNc6dNUL36fiWf3PZ7REnb__pRdntjierVvUXY_kVRQKR0WECCgTF5CClzDyeRxQ78tAiv3BnmMgysM5lGrD2zXYDoX-LXd19Rt6wO_s-s1weMeOnR78a_OlzYFJEEavxByC6hxhPw7PbNQNwU3xpHa1Dx-8YjdhFB4d8nsEKfWZGwmFtgAjaL6fOE17k-ooy9KfiNcj9Jtj3ZxzETXnMIIbwj1i3DCJ3ZH50MHVkwZIorrBOAiQzi5heZV1kTABV2B6ve-xlFSfODwqn_Wk5viuDZIbabIui4ja87xFPFq2Zoh2R0yCBYCgxar6U0BQQOGh2BuajDJ3pNiXJkeIe15MvBlikVw-pu2eeFNBp4VlaAEHzff0N9B9vswdYZd_CIjin_xBVKMAh9IFAnx9E50CshKk0fkF_inhfDbiHjLU99gspGI8MsrUEWM_mHPq_YbvllD4QTDi49B7htFFzttU_L2uSdxoizOYCCMjqT2SQH1LhtELqz81lXgU8hY0AFgS5EIiXxJXRCrehnna2D05SFOGeTYt4cTgY_vy9RiYBd-69CC5mGHNXRsxrLIxLEgZzLb61tYqyqPxlcngH36h080voECsmpeVbZSTsIThmdAJQpQutQsfaHvs1ziNSKf3KqM0yYtArhklwb5N2N8Z_jLU3ZFRHdqK2HH9KQ3vtiIn4yO1IXTWTlCOwD6SINRV31L05bC2c3dvHTpl-IO8285VeMtYfaMlKXzoUczCsfjtaVw3sz2WlO5BYn0Z73fJYB3j3L5bKUaWW_gK6EIT6pyrQ-0k-Z2sOIrY8JyZtjN5-sWReV4AKG43Dq75FpF5jCwhWheAeUN3CXjHfvJZ-1svM_HrErblWcf-BTombE0R8tF9NkkZY5vDyKaP8LUtHpvmDmdL7CuIJrrVRp8qbvLGswhcRdksKPXRy3PKN8M5QrvhRM4WnGPxtCcNB2pt3yWL34KSfPMhq-glYVB7WfIic93qCJU5_eVdgFGBj1Q6QyZOU5ndPlsvJxLztBgHMTF2bzZrrPMp8LTm",
+                "id": "rs_022a35abdcf45ce3016a8d775287a087d085b4d6d1b657c8c7",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1293,
+        "uncached_input_tokens": 1293,
+        "cached_input_tokens": 0,
+        "output_tokens": 51,
+        "reasoning_tokens": 30,
+        "total_tokens": 1344,
+        "raw": [
+          {
+            "input_tokens": 1293,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 51,
+            "output_tokens_details": {
+              "reasoning_tokens": 30
+            },
+            "total_tokens": 1344
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 2225,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2225,
+        "calibration_key": 2642172410208086831,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "{\n  \"op\": \"seq\",\n  \"steps\": [\n    {\n      \"op\": \"bind\",\n      \"name\": \"selected\",\n      \"expression\": {\n        \"op\": \"fallback\",\n        \"primary\": {\n          \"op\": \"call\",\n          \"tool\": \"probe_endpoint\",\n          \"arguments\": {\n            \"name\": {\n              \"kind\": \"literal\",\n              \"value\": \"primary\"\n            }\n          }\n        },\n        \"backup\": {\n          \"op\": \"fallback\",\n          \"primary\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"secondary\"\n              }\n            }\n          },\n          \"backup\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"tertiary\"\n              }\n            }\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"bind\",\n      \"name\": \"verified\",\n      \"expression\": {\n        \"op\": \"call\",\n        \"tool\": \"verify_endpoint\",\n        \"arguments\": {\n          \"name\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"name\"\n          },\n          \"token\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"token\"\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"reply\",\n      \"values\": [\n        {\n          \"kind\": \"reference\",\n          \"binding\": \"verified\",\n          \"field\": \"delivery_token\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdS_kFlXNXbFZHTiHEQV6Kw3VTzpIIvXJBIMFp-vD0FM-7TY3l4nqDhCfypS6O-GwPY8K7M1Z73DyHI2NbfVelH8p0sr8bYlb6RoKW2G7y350Fq1gdnQr7P2OKUPqXOYXDPs_dcw9xEOGORNKG4t4Vb-UDTqTWjccJlYbICLyUjAuut5AbY3HyRdtQuVAbTFz1f7Nw17q7etDaKPLyKu_rdVxBYr17Mwh12kMpbaAkRUPXMvizX94TtHOMg3oZdun5DMJt6DaPYSrwVmEjz8JmfQE8S1zy-SkAwPAbKLZZOZR8gMkCXBod_Yw31H3AYxtI5DH56stb5DG_3AvpLdLAE7lGmcGOT5nD6b1Ut0LUWtl2NfzSSKPN9svLojVVh_Dohm-atzDDcn699sUNG-d-FoQry-hAiVqhrAfxbg0hDbn8ThNc6dNUL36fiWf3PZ7REnb__pRdntjierVvUXY_kVRQKR0WECCgTF5CClzDyeRxQ78tAiv3BnmMgysM5lGrD2zXYDoX-LXd19Rt6wO_s-s1weMeOnR78a_OlzYFJEEavxByC6hxhPw7PbNQNwU3xpHa1Dx-8YjdhFB4d8nsEKfWZGwmFtgAjaL6fOE17k-ooy9KfiNcj9Jtj3ZxzETXnMIIbwj1i3DCJ3ZH50MHVkwZIorrBOAiQzi5heZV1kTABV2B6ve-xlFSfODwqn_Wk5viuDZIbabIui4ja87xFPFq2Zoh2R0yCBYCgxar6U0BQQOGh2BuajDJ3pNiXJkeIe15MvBlikVw-pu2eeFNBp4VlaAEHzff0N9B9vswdYZd_CIjin_xBVKMAh9IFAnx9E50CshKk0fkF_inhfDbiHjLU99gspGI8MsrUEWM_mHPq_YbvllD4QTDi49B7htFFzttU_L2uSdxoizOYCCMjqT2SQH1LhtELqz81lXgU8hY0AFgS5EIiXxJXRCrehnna2D05SFOGeTYt4cTgY_vy9RiYBd-69CC5mGHNXRsxrLIxLEgZzLb61tYqyqPxlcngH36h080voECsmpeVbZSTsIThmdAJQpQutQsfaHvs1ziNSKf3KqM0yYtArhklwb5N2N8Z_jLU3ZFRHdqK2HH9KQ3vtiIn4yO1IXTWTlCOwD6SINRV31L05bC2c3dvHTpl-IO8285VeMtYfaMlKXzoUczCsfjtaVw3sz2WlO5BYn0Z73fJYB3j3L5bKUaWW_gK6EIT6pyrQ-0k-Z2sOIrY8JyZtjN5-sWReV4AKG43Dq75FpF5jCwhWheAeUN3CXjHfvJZ-1svM_HrErblWcf-BTombE0R8tF9NkkZY5vDyKaP8LUtHpvmDmdL7CuIJrrVRp8qbvLGswhcRdksKPXRy3PKN8M5QrvhRM4WnGPxtCcNB2pt3yWL34KSfPMhq-glYVB7WfIic93qCJU5_eVdgFGBj1Q6QyZOU5ndPlsvJxLztBgHMTF2bzZrrPMp8LTm\",\"id\":\"rs_022a35abdcf45ce3016a8d775287a087d085b4d6d1b657c8c7\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_sxfvA4LExb6IzNhjx6USQt3v",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_sxfvA4LExb6IzNhjx6USQt3v"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_El8C4DqhTh01Rdf3II7lOrPx",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\":\"secondary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_El8C4DqhTh01Rdf3II7lOrPx",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"secondary\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1367,
+            "uncached_input_tokens": 1367,
+            "cached_input_tokens": 0,
+            "output_tokens": 33,
+            "reasoning_tokens": 12,
+            "total_tokens": 1400,
+            "raw": [
+              {
+                "input_tokens": 1367,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 33,
+                "output_tokens_details": {
+                  "reasoning_tokens": 12
+                },
+                "total_tokens": 1400
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXdVhgwTK76EziumVMvAd2AkCdxIQRjlUjJddsBAwQj_yMSYe4lcdcdP5n73aOZN8j1PMrU38_UuA8IZL3n8hbYp4JMQJBP6sCW8vxLBJmVEKdawQOk6l5-s34Bv3T-9bLR4JARxvND7dpB4M1t5HLlOzTCc8TbwtDabWFI3v67LyC9ONmfnTCxxxZ_grSuUTDE9dD-9DbJK-I2wSu0uuGqLpdsKGX7Mh8EG8NkMrQLWlN4gog4oQPsIe9EHdjEimgMMGAYhd_4cTHX7stnLrpPnikpVriintoBHcFZ2rsDSvLvCowdXyTg2_rF5_P7vSlmjwldviSiOn9lfZvPeE300k25PKJChrGBdJnvHbDOpEFmXGAEsOqdy8UoXRtZjga0ojELQsuib9wStjIPTuz9zUhs4dKXj73if0i1QMfKi6cfzM_VaHwduI9vIMHxf2Q9kp-vntizm1NjUa3x6ebxggaBdlskwHTsaxZzZL3d_QyEae7Dbw7iM5wKF6giV3yAEVLWB7eO71sPnvNu3UTFzqmNazY7f8krUKaTIGnVLXRKoack8ajPt_dK4SKemPPdh9drrt_UZeVqs5Lh1fcw2jMe7AA817gHF9YHNJZjIDc4AgJqZtLzJ2mUVzjm1o207PzPAd3UwOU4L41zJSB-1CW_Cj-EW3S_zJwEefjdDbmjJkL07-ihUFo3S_pGLM6ATJfC4yeo-vqPRCZL8x8QtQnJv4Ju-O3hIsFTI43JHSui7FaFYHdNNPEV1mCqGZMeV2Yqx8YsPZlghoNQiReoeHpCCSMGmTWs2rLPVCT-SXGSmaRsqQMvlg8LfWnnCV6kqJH586eG6XNHdWLQGHEPgRdyLR8y-v2Gupo22r7k9-yw0KTUrKNQifsSV_gaMOdwb-voNlNF18rg8vzi2vuVWgBW9kZihQERDwaVVjE-muvjV37I5KDeXWsd48_H88_27mjlu7d0hmKboBHtp5crZppdTYDZng73eKCOs0S0FPetWdsaDCoA-VyjX1RMtH9UdJC_2HUiyKy3IbZz42AxOpTf9dov3D-lluDj89DLYxZhcan32B34YBEyTpBrraZPg7_-8A33nlSHH7f2dYLoBylHkNhzAoVi0npt5Q3UQjZOxFHe2jFGVJfCYyZQ3ngs_KgGuX5pJF7tIyx2K_-KGLBYV599dXPL4RZd7ATe1dVwaoMBEey6z-hgn3hyJThHElZUTuet1m0c-HGa_DPbMbkOsJnsmr6vWEWeq17AF-TysUb5idc1yZZ4qkWHoctlFR6vxNhU1LO-vr5MYpHLFT0MwNVP8cDqnYVQifPjPjvw0IMu2bOZ--bTVhOujG9gcwCjLxiAod2Fntmy02yDRoA==",
+                "id": "rs_022a35abdcf45ce3016a8d7755910887d0aaae651ec3996523",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1367,
+        "uncached_input_tokens": 1367,
+        "cached_input_tokens": 0,
+        "output_tokens": 33,
+        "reasoning_tokens": 12,
+        "total_tokens": 1400,
+        "raw": [
+          {
+            "input_tokens": 1367,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 33,
+            "output_tokens_details": {
+              "reasoning_tokens": 12
+            },
+            "total_tokens": 1400
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 2669,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2669,
+        "calibration_key": 13884017606591860004,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "{\n  \"op\": \"seq\",\n  \"steps\": [\n    {\n      \"op\": \"bind\",\n      \"name\": \"selected\",\n      \"expression\": {\n        \"op\": \"fallback\",\n        \"primary\": {\n          \"op\": \"call\",\n          \"tool\": \"probe_endpoint\",\n          \"arguments\": {\n            \"name\": {\n              \"kind\": \"literal\",\n              \"value\": \"primary\"\n            }\n          }\n        },\n        \"backup\": {\n          \"op\": \"fallback\",\n          \"primary\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"secondary\"\n              }\n            }\n          },\n          \"backup\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"tertiary\"\n              }\n            }\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"bind\",\n      \"name\": \"verified\",\n      \"expression\": {\n        \"op\": \"call\",\n        \"tool\": \"verify_endpoint\",\n        \"arguments\": {\n          \"name\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"name\"\n          },\n          \"token\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"token\"\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"reply\",\n      \"values\": [\n        {\n          \"kind\": \"reference\",\n          \"binding\": \"verified\",\n          \"field\": \"delivery_token\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdS_kFlXNXbFZHTiHEQV6Kw3VTzpIIvXJBIMFp-vD0FM-7TY3l4nqDhCfypS6O-GwPY8K7M1Z73DyHI2NbfVelH8p0sr8bYlb6RoKW2G7y350Fq1gdnQr7P2OKUPqXOYXDPs_dcw9xEOGORNKG4t4Vb-UDTqTWjccJlYbICLyUjAuut5AbY3HyRdtQuVAbTFz1f7Nw17q7etDaKPLyKu_rdVxBYr17Mwh12kMpbaAkRUPXMvizX94TtHOMg3oZdun5DMJt6DaPYSrwVmEjz8JmfQE8S1zy-SkAwPAbKLZZOZR8gMkCXBod_Yw31H3AYxtI5DH56stb5DG_3AvpLdLAE7lGmcGOT5nD6b1Ut0LUWtl2NfzSSKPN9svLojVVh_Dohm-atzDDcn699sUNG-d-FoQry-hAiVqhrAfxbg0hDbn8ThNc6dNUL36fiWf3PZ7REnb__pRdntjierVvUXY_kVRQKR0WECCgTF5CClzDyeRxQ78tAiv3BnmMgysM5lGrD2zXYDoX-LXd19Rt6wO_s-s1weMeOnR78a_OlzYFJEEavxByC6hxhPw7PbNQNwU3xpHa1Dx-8YjdhFB4d8nsEKfWZGwmFtgAjaL6fOE17k-ooy9KfiNcj9Jtj3ZxzETXnMIIbwj1i3DCJ3ZH50MHVkwZIorrBOAiQzi5heZV1kTABV2B6ve-xlFSfODwqn_Wk5viuDZIbabIui4ja87xFPFq2Zoh2R0yCBYCgxar6U0BQQOGh2BuajDJ3pNiXJkeIe15MvBlikVw-pu2eeFNBp4VlaAEHzff0N9B9vswdYZd_CIjin_xBVKMAh9IFAnx9E50CshKk0fkF_inhfDbiHjLU99gspGI8MsrUEWM_mHPq_YbvllD4QTDi49B7htFFzttU_L2uSdxoizOYCCMjqT2SQH1LhtELqz81lXgU8hY0AFgS5EIiXxJXRCrehnna2D05SFOGeTYt4cTgY_vy9RiYBd-69CC5mGHNXRsxrLIxLEgZzLb61tYqyqPxlcngH36h080voECsmpeVbZSTsIThmdAJQpQutQsfaHvs1ziNSKf3KqM0yYtArhklwb5N2N8Z_jLU3ZFRHdqK2HH9KQ3vtiIn4yO1IXTWTlCOwD6SINRV31L05bC2c3dvHTpl-IO8285VeMtYfaMlKXzoUczCsfjtaVw3sz2WlO5BYn0Z73fJYB3j3L5bKUaWW_gK6EIT6pyrQ-0k-Z2sOIrY8JyZtjN5-sWReV4AKG43Dq75FpF5jCwhWheAeUN3CXjHfvJZ-1svM_HrErblWcf-BTombE0R8tF9NkkZY5vDyKaP8LUtHpvmDmdL7CuIJrrVRp8qbvLGswhcRdksKPXRy3PKN8M5QrvhRM4WnGPxtCcNB2pt3yWL34KSfPMhq-glYVB7WfIic93qCJU5_eVdgFGBj1Q6QyZOU5ndPlsvJxLztBgHMTF2bzZrrPMp8LTm\",\"id\":\"rs_022a35abdcf45ce3016a8d775287a087d085b4d6d1b657c8c7\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_sxfvA4LExb6IzNhjx6USQt3v",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_sxfvA4LExb6IzNhjx6USQt3v"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdVhgwTK76EziumVMvAd2AkCdxIQRjlUjJddsBAwQj_yMSYe4lcdcdP5n73aOZN8j1PMrU38_UuA8IZL3n8hbYp4JMQJBP6sCW8vxLBJmVEKdawQOk6l5-s34Bv3T-9bLR4JARxvND7dpB4M1t5HLlOzTCc8TbwtDabWFI3v67LyC9ONmfnTCxxxZ_grSuUTDE9dD-9DbJK-I2wSu0uuGqLpdsKGX7Mh8EG8NkMrQLWlN4gog4oQPsIe9EHdjEimgMMGAYhd_4cTHX7stnLrpPnikpVriintoBHcFZ2rsDSvLvCowdXyTg2_rF5_P7vSlmjwldviSiOn9lfZvPeE300k25PKJChrGBdJnvHbDOpEFmXGAEsOqdy8UoXRtZjga0ojELQsuib9wStjIPTuz9zUhs4dKXj73if0i1QMfKi6cfzM_VaHwduI9vIMHxf2Q9kp-vntizm1NjUa3x6ebxggaBdlskwHTsaxZzZL3d_QyEae7Dbw7iM5wKF6giV3yAEVLWB7eO71sPnvNu3UTFzqmNazY7f8krUKaTIGnVLXRKoack8ajPt_dK4SKemPPdh9drrt_UZeVqs5Lh1fcw2jMe7AA817gHF9YHNJZjIDc4AgJqZtLzJ2mUVzjm1o207PzPAd3UwOU4L41zJSB-1CW_Cj-EW3S_zJwEefjdDbmjJkL07-ihUFo3S_pGLM6ATJfC4yeo-vqPRCZL8x8QtQnJv4Ju-O3hIsFTI43JHSui7FaFYHdNNPEV1mCqGZMeV2Yqx8YsPZlghoNQiReoeHpCCSMGmTWs2rLPVCT-SXGSmaRsqQMvlg8LfWnnCV6kqJH586eG6XNHdWLQGHEPgRdyLR8y-v2Gupo22r7k9-yw0KTUrKNQifsSV_gaMOdwb-voNlNF18rg8vzi2vuVWgBW9kZihQERDwaVVjE-muvjV37I5KDeXWsd48_H88_27mjlu7d0hmKboBHtp5crZppdTYDZng73eKCOs0S0FPetWdsaDCoA-VyjX1RMtH9UdJC_2HUiyKy3IbZz42AxOpTf9dov3D-lluDj89DLYxZhcan32B34YBEyTpBrraZPg7_-8A33nlSHH7f2dYLoBylHkNhzAoVi0npt5Q3UQjZOxFHe2jFGVJfCYyZQ3ngs_KgGuX5pJF7tIyx2K_-KGLBYV599dXPL4RZd7ATe1dVwaoMBEey6z-hgn3hyJThHElZUTuet1m0c-HGa_DPbMbkOsJnsmr6vWEWeq17AF-TysUb5idc1yZZ4qkWHoctlFR6vxNhU1LO-vr5MYpHLFT0MwNVP8cDqnYVQifPjPjvw0IMu2bOZ--bTVhOujG9gcwCjLxiAod2Fntmy02yDRoA==\",\"id\":\"rs_022a35abdcf45ce3016a8d7755910887d0aaae651ec3996523\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_El8C4DqhTh01Rdf3II7lOrPx",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_El8C4DqhTh01Rdf3II7lOrPx"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_0RMSbFAOGWafl77U9ed2Skco",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\":\"tertiary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_0RMSbFAOGWafl77U9ed2Skco",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"tertiary\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1424,
+            "uncached_input_tokens": 1424,
+            "cached_input_tokens": 0,
+            "output_tokens": 32,
+            "reasoning_tokens": 9,
+            "total_tokens": 1456,
+            "raw": [
+              {
+                "input_tokens": 1424,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 32,
+                "output_tokens_details": {
+                  "reasoning_tokens": 9
+                },
+                "total_tokens": 1456
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXdbtvbGG-M9tuAT6KEwCgV8-DwqcgptIMxByCtq-90Rekd6qETlPtOzfq67hilscQqa53_RKoc7jBdKX2InK93MQvwgo8pz_2C1CHegwr_Y6Ma0_uDcNRIpbGdkMTBrny9oNGQCkfUxhRR4vx5tm_sNl-Uyv379uQvbjudZKGEvvkEh5FyMN73dl_L_3a9xGomGlYLLkgus5X1623_S75HTjp22tr5x9s8Rehnzw82BOIKHzcvUD41XhsPzvdyYkGjYODa5moPm9RI_c0ydzNPcjCylZSBrit0K61AS2tBkzUJQcHhxPbcikmnzsbchhnF8f0kaqU8dWG3lpT5kI5cZ24lAhX3CoHsdZIbx5q1pVoohSw4xpIZBZCVOIJtXli0faeRy3UpakfICbARZbKx9O2oIDTCRdFlyFH1sS0PQYCqsQqdzq_Rfi9zBr9F9Bnk9q_hnR8ZwSH_dG0OdBjHt7IR-TngGIpCqkRSEMeaisz9102Y5lv_SPChPjQdz9D2BVzbZ8rMKYa4ZUB8YmzBH5yfYBgeYmTnixw0_TwMIwPF_emSKeRQh41NAH_x7eaUxe_DCOK9BXm2H4pNyvTLhkROMFqy2Fmw3DAVsX3CqVNSHHUZNmxUU2dkFidb65HdvxHEBNGX74ptOgFQOGrV9ia4_cOJXS0rWgyyejYMT8VUs_xbCV33wvv0_eNQ_NtOhvF9QdoETr4IOWCxoEDEZL3vM3ADP7ICZ7uN9Mn3oEXSG3mPucpGvYDHf6W6XJWv5kGrOCerZIFsW29gkK2f4a6AFAfOayU7Tyk86ZfVgNoBfNl9BpWckpRf_Xj5wS6RW641VOV1hDFKB5F43SrnKSHSlW76hhtWXWMaz2QMrsuN4Z6vYhsnfhW9tuk3o1MzEThQdhdNpHrNZH19OHiSL9T5whxlTI_uiLhoohC-ajzjdFK46TmnjlnOpc2mks0YgPr3i5VmGNoMcahRPJAZp2JsJXn0MetINQ7vWc3wYcZ4bmIImLDiUp8yIatrlWd3s5_ACl6nGMnGNnz3sdJ2epwji6W9sG1EowuPhTyEOyskNLbb2D8d0Rtg2ylv-HV-ldiefDpQKyqzfVJBgTSl_XGZsLGCH9sHN718mNT2POicrkmUPuIHh_UATYTiIRWPN5pysVVzE3U3vWL42wobX6dqeIK2Wd5El3BEtDSDCqXc_vvrKIGdM9W5aP5e1cScC9j2ob-cQkCStBWza85-UP7q1_9qTHkzhu0VxHg_kAVrA-5uNztrt73GLDifDCuOfnfTPe8HNHg_ftLOIifDEYzlilsCD8S8wsqlsxb8V4FM=",
+                "id": "rs_022a35abdcf45ce3016a8d775ba40487d096a25599ab0a9d12",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1424,
+        "uncached_input_tokens": 1424,
+        "cached_input_tokens": 0,
+        "output_tokens": 32,
+        "reasoning_tokens": 9,
+        "total_tokens": 1456,
+        "raw": [
+          {
+            "input_tokens": 1424,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 32,
+            "output_tokens_details": {
+              "reasoning_tokens": 9
+            },
+            "total_tokens": 1456
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 3104,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 3104,
+        "calibration_key": 6775054371028476119,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "{\n  \"op\": \"seq\",\n  \"steps\": [\n    {\n      \"op\": \"bind\",\n      \"name\": \"selected\",\n      \"expression\": {\n        \"op\": \"fallback\",\n        \"primary\": {\n          \"op\": \"call\",\n          \"tool\": \"probe_endpoint\",\n          \"arguments\": {\n            \"name\": {\n              \"kind\": \"literal\",\n              \"value\": \"primary\"\n            }\n          }\n        },\n        \"backup\": {\n          \"op\": \"fallback\",\n          \"primary\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"secondary\"\n              }\n            }\n          },\n          \"backup\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"tertiary\"\n              }\n            }\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"bind\",\n      \"name\": \"verified\",\n      \"expression\": {\n        \"op\": \"call\",\n        \"tool\": \"verify_endpoint\",\n        \"arguments\": {\n          \"name\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"name\"\n          },\n          \"token\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"token\"\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"reply\",\n      \"values\": [\n        {\n          \"kind\": \"reference\",\n          \"binding\": \"verified\",\n          \"field\": \"delivery_token\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdS_kFlXNXbFZHTiHEQV6Kw3VTzpIIvXJBIMFp-vD0FM-7TY3l4nqDhCfypS6O-GwPY8K7M1Z73DyHI2NbfVelH8p0sr8bYlb6RoKW2G7y350Fq1gdnQr7P2OKUPqXOYXDPs_dcw9xEOGORNKG4t4Vb-UDTqTWjccJlYbICLyUjAuut5AbY3HyRdtQuVAbTFz1f7Nw17q7etDaKPLyKu_rdVxBYr17Mwh12kMpbaAkRUPXMvizX94TtHOMg3oZdun5DMJt6DaPYSrwVmEjz8JmfQE8S1zy-SkAwPAbKLZZOZR8gMkCXBod_Yw31H3AYxtI5DH56stb5DG_3AvpLdLAE7lGmcGOT5nD6b1Ut0LUWtl2NfzSSKPN9svLojVVh_Dohm-atzDDcn699sUNG-d-FoQry-hAiVqhrAfxbg0hDbn8ThNc6dNUL36fiWf3PZ7REnb__pRdntjierVvUXY_kVRQKR0WECCgTF5CClzDyeRxQ78tAiv3BnmMgysM5lGrD2zXYDoX-LXd19Rt6wO_s-s1weMeOnR78a_OlzYFJEEavxByC6hxhPw7PbNQNwU3xpHa1Dx-8YjdhFB4d8nsEKfWZGwmFtgAjaL6fOE17k-ooy9KfiNcj9Jtj3ZxzETXnMIIbwj1i3DCJ3ZH50MHVkwZIorrBOAiQzi5heZV1kTABV2B6ve-xlFSfODwqn_Wk5viuDZIbabIui4ja87xFPFq2Zoh2R0yCBYCgxar6U0BQQOGh2BuajDJ3pNiXJkeIe15MvBlikVw-pu2eeFNBp4VlaAEHzff0N9B9vswdYZd_CIjin_xBVKMAh9IFAnx9E50CshKk0fkF_inhfDbiHjLU99gspGI8MsrUEWM_mHPq_YbvllD4QTDi49B7htFFzttU_L2uSdxoizOYCCMjqT2SQH1LhtELqz81lXgU8hY0AFgS5EIiXxJXRCrehnna2D05SFOGeTYt4cTgY_vy9RiYBd-69CC5mGHNXRsxrLIxLEgZzLb61tYqyqPxlcngH36h080voECsmpeVbZSTsIThmdAJQpQutQsfaHvs1ziNSKf3KqM0yYtArhklwb5N2N8Z_jLU3ZFRHdqK2HH9KQ3vtiIn4yO1IXTWTlCOwD6SINRV31L05bC2c3dvHTpl-IO8285VeMtYfaMlKXzoUczCsfjtaVw3sz2WlO5BYn0Z73fJYB3j3L5bKUaWW_gK6EIT6pyrQ-0k-Z2sOIrY8JyZtjN5-sWReV4AKG43Dq75FpF5jCwhWheAeUN3CXjHfvJZ-1svM_HrErblWcf-BTombE0R8tF9NkkZY5vDyKaP8LUtHpvmDmdL7CuIJrrVRp8qbvLGswhcRdksKPXRy3PKN8M5QrvhRM4WnGPxtCcNB2pt3yWL34KSfPMhq-glYVB7WfIic93qCJU5_eVdgFGBj1Q6QyZOU5ndPlsvJxLztBgHMTF2bzZrrPMp8LTm\",\"id\":\"rs_022a35abdcf45ce3016a8d775287a087d085b4d6d1b657c8c7\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_sxfvA4LExb6IzNhjx6USQt3v",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_sxfvA4LExb6IzNhjx6USQt3v"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdVhgwTK76EziumVMvAd2AkCdxIQRjlUjJddsBAwQj_yMSYe4lcdcdP5n73aOZN8j1PMrU38_UuA8IZL3n8hbYp4JMQJBP6sCW8vxLBJmVEKdawQOk6l5-s34Bv3T-9bLR4JARxvND7dpB4M1t5HLlOzTCc8TbwtDabWFI3v67LyC9ONmfnTCxxxZ_grSuUTDE9dD-9DbJK-I2wSu0uuGqLpdsKGX7Mh8EG8NkMrQLWlN4gog4oQPsIe9EHdjEimgMMGAYhd_4cTHX7stnLrpPnikpVriintoBHcFZ2rsDSvLvCowdXyTg2_rF5_P7vSlmjwldviSiOn9lfZvPeE300k25PKJChrGBdJnvHbDOpEFmXGAEsOqdy8UoXRtZjga0ojELQsuib9wStjIPTuz9zUhs4dKXj73if0i1QMfKi6cfzM_VaHwduI9vIMHxf2Q9kp-vntizm1NjUa3x6ebxggaBdlskwHTsaxZzZL3d_QyEae7Dbw7iM5wKF6giV3yAEVLWB7eO71sPnvNu3UTFzqmNazY7f8krUKaTIGnVLXRKoack8ajPt_dK4SKemPPdh9drrt_UZeVqs5Lh1fcw2jMe7AA817gHF9YHNJZjIDc4AgJqZtLzJ2mUVzjm1o207PzPAd3UwOU4L41zJSB-1CW_Cj-EW3S_zJwEefjdDbmjJkL07-ihUFo3S_pGLM6ATJfC4yeo-vqPRCZL8x8QtQnJv4Ju-O3hIsFTI43JHSui7FaFYHdNNPEV1mCqGZMeV2Yqx8YsPZlghoNQiReoeHpCCSMGmTWs2rLPVCT-SXGSmaRsqQMvlg8LfWnnCV6kqJH586eG6XNHdWLQGHEPgRdyLR8y-v2Gupo22r7k9-yw0KTUrKNQifsSV_gaMOdwb-voNlNF18rg8vzi2vuVWgBW9kZihQERDwaVVjE-muvjV37I5KDeXWsd48_H88_27mjlu7d0hmKboBHtp5crZppdTYDZng73eKCOs0S0FPetWdsaDCoA-VyjX1RMtH9UdJC_2HUiyKy3IbZz42AxOpTf9dov3D-lluDj89DLYxZhcan32B34YBEyTpBrraZPg7_-8A33nlSHH7f2dYLoBylHkNhzAoVi0npt5Q3UQjZOxFHe2jFGVJfCYyZQ3ngs_KgGuX5pJF7tIyx2K_-KGLBYV599dXPL4RZd7ATe1dVwaoMBEey6z-hgn3hyJThHElZUTuet1m0c-HGa_DPbMbkOsJnsmr6vWEWeq17AF-TysUb5idc1yZZ4qkWHoctlFR6vxNhU1LO-vr5MYpHLFT0MwNVP8cDqnYVQifPjPjvw0IMu2bOZ--bTVhOujG9gcwCjLxiAod2Fntmy02yDRoA==\",\"id\":\"rs_022a35abdcf45ce3016a8d7755910887d0aaae651ec3996523\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_El8C4DqhTh01Rdf3II7lOrPx",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_El8C4DqhTh01Rdf3II7lOrPx"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdbtvbGG-M9tuAT6KEwCgV8-DwqcgptIMxByCtq-90Rekd6qETlPtOzfq67hilscQqa53_RKoc7jBdKX2InK93MQvwgo8pz_2C1CHegwr_Y6Ma0_uDcNRIpbGdkMTBrny9oNGQCkfUxhRR4vx5tm_sNl-Uyv379uQvbjudZKGEvvkEh5FyMN73dl_L_3a9xGomGlYLLkgus5X1623_S75HTjp22tr5x9s8Rehnzw82BOIKHzcvUD41XhsPzvdyYkGjYODa5moPm9RI_c0ydzNPcjCylZSBrit0K61AS2tBkzUJQcHhxPbcikmnzsbchhnF8f0kaqU8dWG3lpT5kI5cZ24lAhX3CoHsdZIbx5q1pVoohSw4xpIZBZCVOIJtXli0faeRy3UpakfICbARZbKx9O2oIDTCRdFlyFH1sS0PQYCqsQqdzq_Rfi9zBr9F9Bnk9q_hnR8ZwSH_dG0OdBjHt7IR-TngGIpCqkRSEMeaisz9102Y5lv_SPChPjQdz9D2BVzbZ8rMKYa4ZUB8YmzBH5yfYBgeYmTnixw0_TwMIwPF_emSKeRQh41NAH_x7eaUxe_DCOK9BXm2H4pNyvTLhkROMFqy2Fmw3DAVsX3CqVNSHHUZNmxUU2dkFidb65HdvxHEBNGX74ptOgFQOGrV9ia4_cOJXS0rWgyyejYMT8VUs_xbCV33wvv0_eNQ_NtOhvF9QdoETr4IOWCxoEDEZL3vM3ADP7ICZ7uN9Mn3oEXSG3mPucpGvYDHf6W6XJWv5kGrOCerZIFsW29gkK2f4a6AFAfOayU7Tyk86ZfVgNoBfNl9BpWckpRf_Xj5wS6RW641VOV1hDFKB5F43SrnKSHSlW76hhtWXWMaz2QMrsuN4Z6vYhsnfhW9tuk3o1MzEThQdhdNpHrNZH19OHiSL9T5whxlTI_uiLhoohC-ajzjdFK46TmnjlnOpc2mks0YgPr3i5VmGNoMcahRPJAZp2JsJXn0MetINQ7vWc3wYcZ4bmIImLDiUp8yIatrlWd3s5_ACl6nGMnGNnz3sdJ2epwji6W9sG1EowuPhTyEOyskNLbb2D8d0Rtg2ylv-HV-ldiefDpQKyqzfVJBgTSl_XGZsLGCH9sHN718mNT2POicrkmUPuIHh_UATYTiIRWPN5pysVVzE3U3vWL42wobX6dqeIK2Wd5El3BEtDSDCqXc_vvrKIGdM9W5aP5e1cScC9j2ob-cQkCStBWza85-UP7q1_9qTHkzhu0VxHg_kAVrA-5uNztrt73GLDifDCuOfnfTPe8HNHg_ftLOIifDEYzlilsCD8S8wsqlsxb8V4FM=\",\"id\":\"rs_022a35abdcf45ce3016a8d775ba40487d096a25599ab0a9d12\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_0RMSbFAOGWafl77U9ed2Skco",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_0RMSbFAOGWafl77U9ed2Skco"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_NTgBEhbC2LeYsehLWDxOBVr7",
+            "type": "function",
+            "func_name": "verify_endpoint",
+            "arguments": "{\"name\":\"tertiary\",\"token\":\"EP-T-5541\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call_NTgBEhbC2LeYsehLWDxOBVr7",
+          "name": "verify_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"tertiary\",\"token\":\"EP-T-5541\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1487,
+            "uncached_input_tokens": 1487,
+            "cached_input_tokens": 0,
+            "output_tokens": 49,
+            "reasoning_tokens": 19,
+            "total_tokens": 1536,
+            "raw": [
+              {
+                "input_tokens": 1487,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 49,
+                "output_tokens_details": {
+                  "reasoning_tokens": 19
+                },
+                "total_tokens": 1536
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXdfSvxmq42iQc2iLDsMP_uC9yklamEKpdAOCaGrp4qJNIhmf-TD8ArZsIbhcmFZAA-DFF5SZfWMU9iJbPhv7lQwjXZhti5siToeh-Do3F5I1L_RtapG0B2Hwcwp4Fz0xqFK4XpqxpbKAYGH7QTZ4LsrQ7R3Q8pHntASTThA75YCGyFnbWZBdJf3sBOmyuVcRYg70lpry2oymiuEQ8b-oPmgtdKAEyZm6rHB71Re_4w3SomzV87LbbPMtpKN5bykl386rpcVWyI_n_gaGlVyce97fJPMC0MaNgmZSdd-waa87QZ763abohrZ_3vrJappfSkJOklvaOGVuLk-P_h47kGnb0y8KChUThJy0eVXrGaJghyTL1_D7LLRKIBBfxzq9RGE7l6o4-iBLJTCOZ1_NKa086rOEtNCUGrhTlugRooOuqKsYO75DjcNpHIPUcmmNBQrJirwssUDmqSZv4i_F6ZHwImycZvmNMq6Ho6Yu46zKLp-_79-QBj0dywKGx-BlWHMacpWHXu66aUbr07tNzYaI8f8CWrd7MbBNdIkCmD8AElllgPq9hBGNInacCgeYMY_Vo1AfZL64MZVz2U001yWrHYT8F8rSXbBbRkP0Ubr121HfLwj5xItg1cvEojIzVOAbNhQcbSfU4UH2rYddxSn9VyFvpnpRXDklExjPNMx-U6wXN7fke2uTKyVkA8Nrkl0Kxomwy13cdBfYSjyRvIzlxG-BmY9xtpBSX5X8J-qBSVEcZua6VVj4ZyS0k0fSPvZZDRYce2vS8cepAFWmEOpGvIvFc36l4gC_gMBDEnCfmLA1Zvyb7g9IUA1200KnsJA_I4iJQGSn9yw2Nn4v89xABYpl2vIxLxj_fzrZM8F15Wd1EQYHNNbvXx32cfAFLNj_yu1R7dvmL614Tnq4m7eyh9-mKQqCfAwINFM2zmNiRQG5QO-fpYCoDS6TzqC710UHjsG8LKmGd8AVyIQIDjIXWg6WBm4uyTdk4_zQIBszhw3ZO_fYko6XZslhypEOdUW0YysP6sXGEcPaLQ27_u7WuFGhin6NhCCXe2pTobt3libZNsLXp-YYuDKP64INLwxjjiqxFfYb_RbJwVj1P67zRdshCih6pyY-lR1L1nYpkB7HZR5Hz3LZtMTDg4Wqp_-VZZ34gsDoCAgfdg0JJ0dvbPDOqlWBcffK-I87DX0IsNyrA1L1K-zD5b1tYpcx6cCpwSdnXhXPldKFxmJVHqSD38UiGOxBNtFeMG_fhXAYbtsFPG10aC-r_iS2w372uw91luzZmUG8Uk6jnuhxoZh_UX7WzwMhvigfgX23SFkJCK7Olb3T6QIP15KI6PJwMUoBpdG2DwSlXefEtrpOf7l9SRCjCnHjTSri6y8NcD38kYdq-n3jedLq9RUXr9Ctl3Y",
+                "id": "rs_022a35abdcf45ce3016a8d775ffdd487d090f2665579ba5111",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1487,
+        "uncached_input_tokens": 1487,
+        "cached_input_tokens": 0,
+        "output_tokens": 49,
+        "reasoning_tokens": 19,
+        "total_tokens": 1536,
+        "raw": [
+          {
+            "input_tokens": 1487,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 49,
+            "output_tokens_details": {
+              "reasoning_tokens": 19
+            },
+            "total_tokens": 1536
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 5,
+      "prompt_measurement": {
+        "tokens": 3567,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 3567,
+        "calibration_key": 2208831500205105714,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "{\n  \"op\": \"seq\",\n  \"steps\": [\n    {\n      \"op\": \"bind\",\n      \"name\": \"selected\",\n      \"expression\": {\n        \"op\": \"fallback\",\n        \"primary\": {\n          \"op\": \"call\",\n          \"tool\": \"probe_endpoint\",\n          \"arguments\": {\n            \"name\": {\n              \"kind\": \"literal\",\n              \"value\": \"primary\"\n            }\n          }\n        },\n        \"backup\": {\n          \"op\": \"fallback\",\n          \"primary\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"secondary\"\n              }\n            }\n          },\n          \"backup\": {\n            \"op\": \"call\",\n            \"tool\": \"probe_endpoint\",\n            \"arguments\": {\n              \"name\": {\n                \"kind\": \"literal\",\n                \"value\": \"tertiary\"\n              }\n            }\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"bind\",\n      \"name\": \"verified\",\n      \"expression\": {\n        \"op\": \"call\",\n        \"tool\": \"verify_endpoint\",\n        \"arguments\": {\n          \"name\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"name\"\n          },\n          \"token\": {\n            \"kind\": \"reference\",\n            \"binding\": \"selected\",\n            \"field\": \"token\"\n          }\n        }\n      }\n    },\n    {\n      \"op\": \"reply\",\n      \"values\": [\n        {\n          \"kind\": \"reference\",\n          \"binding\": \"verified\",\n          \"field\": \"delivery_token\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdS_kFlXNXbFZHTiHEQV6Kw3VTzpIIvXJBIMFp-vD0FM-7TY3l4nqDhCfypS6O-GwPY8K7M1Z73DyHI2NbfVelH8p0sr8bYlb6RoKW2G7y350Fq1gdnQr7P2OKUPqXOYXDPs_dcw9xEOGORNKG4t4Vb-UDTqTWjccJlYbICLyUjAuut5AbY3HyRdtQuVAbTFz1f7Nw17q7etDaKPLyKu_rdVxBYr17Mwh12kMpbaAkRUPXMvizX94TtHOMg3oZdun5DMJt6DaPYSrwVmEjz8JmfQE8S1zy-SkAwPAbKLZZOZR8gMkCXBod_Yw31H3AYxtI5DH56stb5DG_3AvpLdLAE7lGmcGOT5nD6b1Ut0LUWtl2NfzSSKPN9svLojVVh_Dohm-atzDDcn699sUNG-d-FoQry-hAiVqhrAfxbg0hDbn8ThNc6dNUL36fiWf3PZ7REnb__pRdntjierVvUXY_kVRQKR0WECCgTF5CClzDyeRxQ78tAiv3BnmMgysM5lGrD2zXYDoX-LXd19Rt6wO_s-s1weMeOnR78a_OlzYFJEEavxByC6hxhPw7PbNQNwU3xpHa1Dx-8YjdhFB4d8nsEKfWZGwmFtgAjaL6fOE17k-ooy9KfiNcj9Jtj3ZxzETXnMIIbwj1i3DCJ3ZH50MHVkwZIorrBOAiQzi5heZV1kTABV2B6ve-xlFSfODwqn_Wk5viuDZIbabIui4ja87xFPFq2Zoh2R0yCBYCgxar6U0BQQOGh2BuajDJ3pNiXJkeIe15MvBlikVw-pu2eeFNBp4VlaAEHzff0N9B9vswdYZd_CIjin_xBVKMAh9IFAnx9E50CshKk0fkF_inhfDbiHjLU99gspGI8MsrUEWM_mHPq_YbvllD4QTDi49B7htFFzttU_L2uSdxoizOYCCMjqT2SQH1LhtELqz81lXgU8hY0AFgS5EIiXxJXRCrehnna2D05SFOGeTYt4cTgY_vy9RiYBd-69CC5mGHNXRsxrLIxLEgZzLb61tYqyqPxlcngH36h080voECsmpeVbZSTsIThmdAJQpQutQsfaHvs1ziNSKf3KqM0yYtArhklwb5N2N8Z_jLU3ZFRHdqK2HH9KQ3vtiIn4yO1IXTWTlCOwD6SINRV31L05bC2c3dvHTpl-IO8285VeMtYfaMlKXzoUczCsfjtaVw3sz2WlO5BYn0Z73fJYB3j3L5bKUaWW_gK6EIT6pyrQ-0k-Z2sOIrY8JyZtjN5-sWReV4AKG43Dq75FpF5jCwhWheAeUN3CXjHfvJZ-1svM_HrErblWcf-BTombE0R8tF9NkkZY5vDyKaP8LUtHpvmDmdL7CuIJrrVRp8qbvLGswhcRdksKPXRy3PKN8M5QrvhRM4WnGPxtCcNB2pt3yWL34KSfPMhq-glYVB7WfIic93qCJU5_eVdgFGBj1Q6QyZOU5ndPlsvJxLztBgHMTF2bzZrrPMp8LTm\",\"id\":\"rs_022a35abdcf45ce3016a8d775287a087d085b4d6d1b657c8c7\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_sxfvA4LExb6IzNhjx6USQt3v",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_sxfvA4LExb6IzNhjx6USQt3v"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdVhgwTK76EziumVMvAd2AkCdxIQRjlUjJddsBAwQj_yMSYe4lcdcdP5n73aOZN8j1PMrU38_UuA8IZL3n8hbYp4JMQJBP6sCW8vxLBJmVEKdawQOk6l5-s34Bv3T-9bLR4JARxvND7dpB4M1t5HLlOzTCc8TbwtDabWFI3v67LyC9ONmfnTCxxxZ_grSuUTDE9dD-9DbJK-I2wSu0uuGqLpdsKGX7Mh8EG8NkMrQLWlN4gog4oQPsIe9EHdjEimgMMGAYhd_4cTHX7stnLrpPnikpVriintoBHcFZ2rsDSvLvCowdXyTg2_rF5_P7vSlmjwldviSiOn9lfZvPeE300k25PKJChrGBdJnvHbDOpEFmXGAEsOqdy8UoXRtZjga0ojELQsuib9wStjIPTuz9zUhs4dKXj73if0i1QMfKi6cfzM_VaHwduI9vIMHxf2Q9kp-vntizm1NjUa3x6ebxggaBdlskwHTsaxZzZL3d_QyEae7Dbw7iM5wKF6giV3yAEVLWB7eO71sPnvNu3UTFzqmNazY7f8krUKaTIGnVLXRKoack8ajPt_dK4SKemPPdh9drrt_UZeVqs5Lh1fcw2jMe7AA817gHF9YHNJZjIDc4AgJqZtLzJ2mUVzjm1o207PzPAd3UwOU4L41zJSB-1CW_Cj-EW3S_zJwEefjdDbmjJkL07-ihUFo3S_pGLM6ATJfC4yeo-vqPRCZL8x8QtQnJv4Ju-O3hIsFTI43JHSui7FaFYHdNNPEV1mCqGZMeV2Yqx8YsPZlghoNQiReoeHpCCSMGmTWs2rLPVCT-SXGSmaRsqQMvlg8LfWnnCV6kqJH586eG6XNHdWLQGHEPgRdyLR8y-v2Gupo22r7k9-yw0KTUrKNQifsSV_gaMOdwb-voNlNF18rg8vzi2vuVWgBW9kZihQERDwaVVjE-muvjV37I5KDeXWsd48_H88_27mjlu7d0hmKboBHtp5crZppdTYDZng73eKCOs0S0FPetWdsaDCoA-VyjX1RMtH9UdJC_2HUiyKy3IbZz42AxOpTf9dov3D-lluDj89DLYxZhcan32B34YBEyTpBrraZPg7_-8A33nlSHH7f2dYLoBylHkNhzAoVi0npt5Q3UQjZOxFHe2jFGVJfCYyZQ3ngs_KgGuX5pJF7tIyx2K_-KGLBYV599dXPL4RZd7ATe1dVwaoMBEey6z-hgn3hyJThHElZUTuet1m0c-HGa_DPbMbkOsJnsmr6vWEWeq17AF-TysUb5idc1yZZ4qkWHoctlFR6vxNhU1LO-vr5MYpHLFT0MwNVP8cDqnYVQifPjPjvw0IMu2bOZ--bTVhOujG9gcwCjLxiAod2Fntmy02yDRoA==\",\"id\":\"rs_022a35abdcf45ce3016a8d7755910887d0aaae651ec3996523\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_El8C4DqhTh01Rdf3II7lOrPx",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_El8C4DqhTh01Rdf3II7lOrPx"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdbtvbGG-M9tuAT6KEwCgV8-DwqcgptIMxByCtq-90Rekd6qETlPtOzfq67hilscQqa53_RKoc7jBdKX2InK93MQvwgo8pz_2C1CHegwr_Y6Ma0_uDcNRIpbGdkMTBrny9oNGQCkfUxhRR4vx5tm_sNl-Uyv379uQvbjudZKGEvvkEh5FyMN73dl_L_3a9xGomGlYLLkgus5X1623_S75HTjp22tr5x9s8Rehnzw82BOIKHzcvUD41XhsPzvdyYkGjYODa5moPm9RI_c0ydzNPcjCylZSBrit0K61AS2tBkzUJQcHhxPbcikmnzsbchhnF8f0kaqU8dWG3lpT5kI5cZ24lAhX3CoHsdZIbx5q1pVoohSw4xpIZBZCVOIJtXli0faeRy3UpakfICbARZbKx9O2oIDTCRdFlyFH1sS0PQYCqsQqdzq_Rfi9zBr9F9Bnk9q_hnR8ZwSH_dG0OdBjHt7IR-TngGIpCqkRSEMeaisz9102Y5lv_SPChPjQdz9D2BVzbZ8rMKYa4ZUB8YmzBH5yfYBgeYmTnixw0_TwMIwPF_emSKeRQh41NAH_x7eaUxe_DCOK9BXm2H4pNyvTLhkROMFqy2Fmw3DAVsX3CqVNSHHUZNmxUU2dkFidb65HdvxHEBNGX74ptOgFQOGrV9ia4_cOJXS0rWgyyejYMT8VUs_xbCV33wvv0_eNQ_NtOhvF9QdoETr4IOWCxoEDEZL3vM3ADP7ICZ7uN9Mn3oEXSG3mPucpGvYDHf6W6XJWv5kGrOCerZIFsW29gkK2f4a6AFAfOayU7Tyk86ZfVgNoBfNl9BpWckpRf_Xj5wS6RW641VOV1hDFKB5F43SrnKSHSlW76hhtWXWMaz2QMrsuN4Z6vYhsnfhW9tuk3o1MzEThQdhdNpHrNZH19OHiSL9T5whxlTI_uiLhoohC-ajzjdFK46TmnjlnOpc2mks0YgPr3i5VmGNoMcahRPJAZp2JsJXn0MetINQ7vWc3wYcZ4bmIImLDiUp8yIatrlWd3s5_ACl6nGMnGNnz3sdJ2epwji6W9sG1EowuPhTyEOyskNLbb2D8d0Rtg2ylv-HV-ldiefDpQKyqzfVJBgTSl_XGZsLGCH9sHN718mNT2POicrkmUPuIHh_UATYTiIRWPN5pysVVzE3U3vWL42wobX6dqeIK2Wd5El3BEtDSDCqXc_vvrKIGdM9W5aP5e1cScC9j2ob-cQkCStBWza85-UP7q1_9qTHkzhu0VxHg_kAVrA-5uNztrt73GLDifDCuOfnfTPe8HNHg_ftLOIifDEYzlilsCD8S8wsqlsxb8V4FM=\",\"id\":\"rs_022a35abdcf45ce3016a8d775ba40487d096a25599ab0a9d12\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_0RMSbFAOGWafl77U9ed2Skco",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call_0RMSbFAOGWafl77U9ed2Skco"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"content\":[],\"encrypted_content\":\"gAAAAABqjXdfSvxmq42iQc2iLDsMP_uC9yklamEKpdAOCaGrp4qJNIhmf-TD8ArZsIbhcmFZAA-DFF5SZfWMU9iJbPhv7lQwjXZhti5siToeh-Do3F5I1L_RtapG0B2Hwcwp4Fz0xqFK4XpqxpbKAYGH7QTZ4LsrQ7R3Q8pHntASTThA75YCGyFnbWZBdJf3sBOmyuVcRYg70lpry2oymiuEQ8b-oPmgtdKAEyZm6rHB71Re_4w3SomzV87LbbPMtpKN5bykl386rpcVWyI_n_gaGlVyce97fJPMC0MaNgmZSdd-waa87QZ763abohrZ_3vrJappfSkJOklvaOGVuLk-P_h47kGnb0y8KChUThJy0eVXrGaJghyTL1_D7LLRKIBBfxzq9RGE7l6o4-iBLJTCOZ1_NKa086rOEtNCUGrhTlugRooOuqKsYO75DjcNpHIPUcmmNBQrJirwssUDmqSZv4i_F6ZHwImycZvmNMq6Ho6Yu46zKLp-_79-QBj0dywKGx-BlWHMacpWHXu66aUbr07tNzYaI8f8CWrd7MbBNdIkCmD8AElllgPq9hBGNInacCgeYMY_Vo1AfZL64MZVz2U001yWrHYT8F8rSXbBbRkP0Ubr121HfLwj5xItg1cvEojIzVOAbNhQcbSfU4UH2rYddxSn9VyFvpnpRXDklExjPNMx-U6wXN7fke2uTKyVkA8Nrkl0Kxomwy13cdBfYSjyRvIzlxG-BmY9xtpBSX5X8J-qBSVEcZua6VVj4ZyS0k0fSPvZZDRYce2vS8cepAFWmEOpGvIvFc36l4gC_gMBDEnCfmLA1Zvyb7g9IUA1200KnsJA_I4iJQGSn9yw2Nn4v89xABYpl2vIxLxj_fzrZM8F15Wd1EQYHNNbvXx32cfAFLNj_yu1R7dvmL614Tnq4m7eyh9-mKQqCfAwINFM2zmNiRQG5QO-fpYCoDS6TzqC710UHjsG8LKmGd8AVyIQIDjIXWg6WBm4uyTdk4_zQIBszhw3ZO_fYko6XZslhypEOdUW0YysP6sXGEcPaLQ27_u7WuFGhin6NhCCXe2pTobt3libZNsLXp-YYuDKP64INLwxjjiqxFfYb_RbJwVj1P67zRdshCih6pyY-lR1L1nYpkB7HZR5Hz3LZtMTDg4Wqp_-VZZ34gsDoCAgfdg0JJ0dvbPDOqlWBcffK-I87DX0IsNyrA1L1K-zD5b1tYpcx6cCpwSdnXhXPldKFxmJVHqSD38UiGOxBNtFeMG_fhXAYbtsFPG10aC-r_iS2w372uw91luzZmUG8Uk6jnuhxoZh_UX7WzwMhvigfgX23SFkJCK7Olb3T6QIP15KI6PJwMUoBpdG2DwSlXefEtrpOf7l9SRCjCnHjTSri6y8NcD38kYdq-n3jedLq9RUXr9Ctl3Y\",\"id\":\"rs_022a35abdcf45ce3016a8d775ffdd487d090f2665579ba5111\",\"summary\":[],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_NTgBEhbC2LeYsehLWDxOBVr7",
+              "type": "function",
+              "function": {
+                "name": "verify_endpoint",
+                "arguments": "{\"name\":\"tertiary\",\"token\":\"EP-T-5541\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}",
+          "name": "verify_endpoint",
+          "tool_call_id": "call_NTgBEhbC2LeYsehLWDxOBVr7"
+        }
+      ],
+      "response": {
+        "content": "ENDPOINT-VERIFIED-7752",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ENDPOINT-VERIFIED-7752"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1564,
+            "uncached_input_tokens": 1564,
+            "cached_input_tokens": 0,
+            "output_tokens": 31,
+            "reasoning_tokens": 17,
+            "total_tokens": 1595,
+            "raw": [
+              {
+                "input_tokens": 1564,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 31,
+                "output_tokens_details": {
+                  "reasoning_tokens": 17
+                },
+                "total_tokens": 1595
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "content": [],
+                "encrypted_content": "gAAAAABqjXdjEKu_h6rkLh2u7EW-1ZpG5PcnfVRe2ebJk0QIseGUh3APzErCsMV-_oxv_2QvUNKc6GQQ12Y9LitfZB4wCbh9G7gxhVF6QOoiM643QzCSZvPQjehyeCUE9QVhrwaoz3XuyBQIPKLJrD8NBYUcOSeM3YYG5ufNjfuSBtXy9ZzDqFExH3vqTHNbmyw_4haeACPj1FEzceNSeItzktzcybfzlFCe5p-ONAdN8Ss3K-cSNfxdQ6zXORQqxFyw5c0c4vbvUWXN60LthNaZ6XNlrSqwADuEX11yCIk9JeCkkAxQSWLQ2Nxmt2FsZxcNSQzUawoWcQD0S8fH_csi0z5DxD28hYJ4kGfe2ra7dWJB7cC94mbqRT1rJ53MvRlE_KV_tB_YCmKj8E5qw-jBWnm1lb6OVzgnH26GJDpXhl9Uz2ELipJGndhsijMDcDsZQxjrfdM4FVk_-nwDWSfa_msf0-_Y5kCu7EDqgaczB_W7PxUdunfqH5D_3pL2RQ87W3jJrTp_-wOFLGPeLpyjX4IrrO1JAbi2VsSqpy2sEwHwlLZ5HZUD5njkCo8BbTR6UARulss1xnS4ICZXcSAM7OyeODbwMvq633ixv3Ah89ZF6FLfAvNMwUEwtpJEQckuoT6oNyN4MnSs5E-AIseCUQ0Vbjo19e0d7RFvc9yf9OgTJxnkllggoNNxc1G7DzUGur7Y5Ez3w8cuKANi5uFaPSxFrSXb2m0TpTc1SIQ08V7ndI5YDJfHZ7nr5DqhBg0QVE0GoyWXTcpHNeAjxuS5g2DNBGew06qQZCl-2nXQ14aemLoGme07L13IqptjJbZnQ9y3H7Ce8GmJh_feVJZjTbApbJxgypHi8I-kcRr5USZq_ARE_LpJSSnfEm5qAt7NH_0ubZBY4I4alB-x-r_iGKvHO0VQM1bMYQ_Ahn1GT7nrpBpj-Cx0Wzvcf4J3j-Sz4dFgk51LD2hvbZ3Ipw6mnGgJmYDektXJpIizisEwRazmPLQuLgHsmfn7kTEzC6yClepkHL-gVd_2tLuNuhoQrUQAG7x3vZIrdt9CN29hp89jJqBT2r3NH2_T6mOgM3meWv6bxtROPfshPJ2yWj6ap7wWrWWYJopieIpEhAFmgW9N_-WuexVrXYEI1-nAyJ73rPtPEkqXoM0gp84ykqhuaaWX-1AJheNLlBML1alccBtFM_3hCNJbNTPk4j0oNWJSQse8iAOd7Hch6zED6lAc_YaTl4hYoKkBtyu6O7qUWocRmqxn3Ycf-5NXHrdyNxdkJPY0NvaW7HBkTNyVh8RjT8Jpk0GTk3v-8KuKqUmZN1J5FofJSMIob94v7GpnxjIXyNFam48NrLI3gwjW6XFRxniqWmsNhAPdxHIaTAXsMNQrJ0ftkbE=",
+                "id": "rs_022a35abdcf45ce3016a8d7763aba087d0b525563b5e5d1ad6",
+                "summary": [],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1564,
+        "uncached_input_tokens": 1564,
+        "cached_input_tokens": 0,
+        "output_tokens": 31,
+        "reasoning_tokens": 17,
+        "total_tokens": 1595,
+        "raw": [
+          {
+            "input_tokens": 1564,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 31,
+            "output_tokens_details": {
+              "reasoning_tokens": 17
+            },
+            "total_tokens": 1595
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

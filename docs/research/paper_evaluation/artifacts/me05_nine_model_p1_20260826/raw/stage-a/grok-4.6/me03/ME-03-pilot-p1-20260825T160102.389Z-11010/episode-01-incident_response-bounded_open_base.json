@@ -1,0 +1,449 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_base",
+  "context_id": "incident-continuity-v1",
+  "valid_open_set_count": 6,
+  "selected": [
+    "rate_limit",
+    "rotate_tokens"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\", \"rotate_tokens\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\", \"rotate_tokens\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis incident-continuity-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"incident-continuity-v1\"],\"explanation\":\"Two internal actions without external comms that jointly supply containment and low disruption.\",\"selected\":[\"rotate_tokens\",\"rate_limit\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 766,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 766,
+      "calibration_key": 6852370790412600226,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"id\": \"incident-continuity-v1\",\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"statement\": \"Maintain service continuity while containing the incident; external communication is not yet authorized.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"incident-continuity-v1\"],\"explanation\":\"Two internal actions without external comms that jointly supply containment and low disruption.\",\"selected\":[\"rotate_tokens\",\"rate_limit\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " act"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " as"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " model"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "owned"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluator"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " typed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cognitive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " boundary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Markdown"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "incident"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "continuity"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "1"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Two"
+      },
+      {
+        "kind": "text_delta",
+        "text": " internal"
+      },
+      {
+        "kind": "text_delta",
+        "text": " actions"
+      },
+      {
+        "kind": "text_delta",
+        "text": " without"
+      },
+      {
+        "kind": "text_delta",
+        "text": " external"
+      },
+      {
+        "kind": "text_delta",
+        "text": " comm"
+      },
+      {
+        "kind": "text_delta",
+        "text": "s"
+      },
+      {
+        "kind": "text_delta",
+        "text": " that"
+      },
+      {
+        "kind": "text_delta",
+        "text": " jointly"
+      },
+      {
+        "kind": "text_delta",
+        "text": " supply"
+      },
+      {
+        "kind": "text_delta",
+        "text": " containment"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " low"
+      },
+      {
+        "kind": "text_delta",
+        "text": " disruption"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "rotate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "tokens"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 866,
+          "uncached_input_tokens": 738,
+          "cached_input_tokens": 128,
+          "output_tokens": 1015,
+          "reasoning_tokens": 973,
+          "total_tokens": 1881,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 866,
+                "output_tokens": 1015
+              },
+              "cost_in_usd_ticks": 12971000,
+              "input_tokens": 866,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 1015,
+              "output_tokens_details": {
+                "reasoning_tokens": 973
+              },
+              "total_tokens": 1881
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_43866be4-324a-9f32-a816-e7a1a21220df",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user wants me to act as a model-owned evaluator at a typed cognitive boundary. I need to return exactly one JSON object and no Markdown.\n",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 866,
+      "uncached_input_tokens": 738,
+      "cached_input_tokens": 128,
+      "output_tokens": 1015,
+      "reasoning_tokens": 973,
+      "total_tokens": 1881,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 866,
+            "output_tokens": 1015
+          },
+          "cost_in_usd_ticks": 12971000,
+          "input_tokens": 866,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 1015,
+          "output_tokens_details": {
+            "reasoning_tokens": 973
+          },
+          "total_tokens": 1881
+        }
+      ]
+    },
+    "error": null
+  }
+}

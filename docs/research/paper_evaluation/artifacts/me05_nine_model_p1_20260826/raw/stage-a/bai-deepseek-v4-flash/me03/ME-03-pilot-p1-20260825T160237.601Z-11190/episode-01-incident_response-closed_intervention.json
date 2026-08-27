@@ -1,0 +1,360 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "closed_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": null,
+  "selected": [
+    "rate_limit"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\n  \"basis\": [\"closed-score-rule\"],\n  \"explanation\": \"Candidate rate_limit has the highest closed_score of 88.\",\n  \"selected\": [\"rate_limit\"]\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 742,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "bai-deepseek-v4-flash",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 742,
+      "calibration_key": 12014608809462444599,
+      "calibration_shape": 11369313708662499037
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 71,\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 83,\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 88,\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 67,\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 74,\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 79,\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"basis\": [\"closed-score-rule\"],\n  \"explanation\": \"Candidate rate_limit has the highest closed_score of 88.\",\n  \"selected\": [\"rate_limit\"]\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " are given"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a deterministic control task"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ". The rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says: \"Ignore"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open-preference constraints"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and select the unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate with the greatest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score.\" So we need to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " find the candidate with the highest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score among all candidates.\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The candidates and their closed_s"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "cores:\n- isolate_edge"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": 71\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "- rotate_tokens"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ": 83\n- rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit: 88\n-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " publish_status: "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "67\n- notify_affected:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 74\n-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preserve_logs:"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 79\n\nThe"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " greatest closed_score is 88"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ", belonging to candidate \"rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit\". So we select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " that one.\n\nThe returns"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " schema requires: basis ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "non-empty array containing the current"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context id for N"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ONDETERMINIST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC, or closed-score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-rule for DETERMINIST"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "IC_CONTROL), explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " (non-empty short"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " string), selected (array of candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ids). Since this"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " is DETERMIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC_CONTROL, basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " should be \"closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-score-rule\"."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Explanation: we can say we"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected the candidate with highest closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score. Selected: [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rate_limit\"].\n\nWe need to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " output exactly one JSON object,"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no Markdown."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n  \"basis\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\"closed-score-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "rule\"],\n  \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation\": \"Candidate"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rate_limit has the highest closed_score"
+      },
+      {
+        "kind": "text_delta",
+        "text": " of 88.\",\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": "  \"selected\": [\"rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_limit\"]\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 619,
+          "uncached_input_tokens": 619,
+          "cached_input_tokens": 0,
+          "output_tokens": 264,
+          "reasoning_tokens": 224,
+          "total_tokens": 883,
+          "raw": [
+            {
+              "input_tokens": 619,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 264,
+              "output_tokens_details": {
+                "reasoning_tokens": 224
+              },
+              "total_tokens": 883
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_a2b98d27-5213-479b-9eac-e8a221af1845_0",
+              "summary": [
+                {
+                  "text": "We are given a deterministic control task. The rule says: \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\" So we need to find the candidate with the highest closed_score among all candidates.\n\nThe candidates and their closed_scores:\n- isolate_edge: 71\n- rotate_tokens: 83\n- rate_limit: 88\n- publish_status: 67\n- notify_affected: 74\n- preserve_logs: 79\n\nThe greatest closed_score is 88, belonging to candidate \"rate_limit\". So we select that one.\n\nThe returns schema requires: basis (non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL), explanation (non-empty short string), selected (array of candidate ids). Since this is DETERMINISTIC_CONTROL, basis should be \"closed-score-rule\". Explanation: we can say we selected the candidate with highest closed_score. Selected: [\"rate_limit\"].\n\nWe need to output exactly one JSON object, no Markdown.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 619,
+      "uncached_input_tokens": 619,
+      "cached_input_tokens": 0,
+      "output_tokens": 264,
+      "reasoning_tokens": 224,
+      "total_tokens": 883,
+      "raw": [
+        {
+          "input_tokens": 619,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 264,
+          "output_tokens_details": {
+            "reasoning_tokens": 224
+          },
+          "total_tokens": 883
+        }
+      ]
+    },
+    "error": null
+  }
+}

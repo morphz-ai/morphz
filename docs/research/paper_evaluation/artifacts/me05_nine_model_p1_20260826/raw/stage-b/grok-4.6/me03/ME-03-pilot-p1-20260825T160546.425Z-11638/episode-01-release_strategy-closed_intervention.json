@@ -1,0 +1,349 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "closed_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Deterministic closed-score rule selects the unique highest closed_score candidate.\",\"selected\":[\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 711,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 711,
+      "calibration_key": 17422039866771540164,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Deterministic closed-score rule selects the unique highest closed_score candidate.\",\"selected\":[\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " this"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Let"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " understand"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " it"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " carefully"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The selected candidate is canary."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " 91 is the highest closed score, and the deterministic rule explicitly tells us to ignore the context constraints (forbidden_properties and required_property_groups) and pick the single best-scoring option."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Determin"
+      },
+      {
+        "kind": "text_delta",
+        "text": "istic"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": " selects"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "text_delta",
+        "text": " highest"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "can"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ary"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 844,
+          "uncached_input_tokens": 716,
+          "cached_input_tokens": 128,
+          "output_tokens": 796,
+          "reasoning_tokens": 761,
+          "total_tokens": 1640,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 844,
+                "output_tokens": 796
+              },
+              "cost_in_usd_ticks": 10662400,
+              "input_tokens": 844,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 796,
+              "output_tokens_details": {
+                "reasoning_tokens": 761
+              },
+              "total_tokens": 1640
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_934e04f5-35c7-9a09-9910-98c087fd3369",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user wants me to evaluate this infer-request. Let me understand it carefully.\nThe selected candidate is canary. 91 is the highest closed score, and the deterministic rule explicitly tells us to ignore the context constraints (forbidden_properties and required_property_groups) and pick the single best-scoring option.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 844,
+      "uncached_input_tokens": 716,
+      "cached_input_tokens": 128,
+      "output_tokens": 796,
+      "reasoning_tokens": 761,
+      "total_tokens": 1640,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 844,
+            "output_tokens": 796
+          },
+          "cost_in_usd_ticks": 10662400,
+          "input_tokens": 844,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 796,
+          "output_tokens_details": {
+            "reasoning_tokens": 761
+          },
+          "total_tokens": 1640
+        }
+      ]
+    },
+    "error": null
+  }
+}

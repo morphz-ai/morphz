@@ -5,6 +5,13 @@
 > 日期：2026-08-11
 > 原则：先证明核心机制，再证明外部任务适用性；先做预实验（Pilot），再做确认性运行。
 
+> 2026-08-26 实施解释更新：旧 LongMemEval 方案因未经授权模型运行而取消，不提供任何效果
+> 证据。ME-07 随后重选 STATE-Bench Agent Learning；2026-08-26 的 v2 又将冷门 A-MEM
+> 替换为完整开源 Agent Runtime Letta，当前正式对照为生产 Morphz、Letta 与 Mem0-backed
+> reference agent；no-memory 不作为正式实验臂。Letta adapter、真实产物和 GPT-5.6 Sol
+> 更新版评测器尚未通过 Gate。ME-06 承担真实
+> Morphz 长程状态证据，ME-08 Terminal-Bench 承担公开完整 Agent 外部验证。
+
 本文所称“预实验（Pilot）”，是正式实验前的小规模试跑，用于检查任务难度、评分器、方差、成本和样本量设计。预实验期间允许修改协议，因此其样本与冻结协议后的确认性实验隔离，不用于论文的最终显著性结论。
 
 本文所称“消融实验（ablation study）”，是从完整系统中有控制地移除或替换一个机制，同时尽量保持其他条件不变，以判断该机制是否真正贡献了观察到的效果。后文标题同时保留这一论文常用术语和直白中文说明。
@@ -30,14 +37,14 @@
 
 ## 1. 论文要证明的中心命题
 
-Morphz 是一台 **S-Expression Cognitive Machine（S 表达式认知机）**：它将结构化、可寻址、可版本化的 Context 作为可执行认知状态和递归程序—数据表示；大语言模型作为可替换的非确定性语义处理器执行开放认知求值；确定性 Runtime 作为事务内核，对候选结果实施结构、权限、因果和版本校验，并提交权威状态或现实副作用。Agent 是认知机加载身份、Context 与能力后的实例。求值结果能够通过局部绑定、认知帧或关系直接重新进入后续求值。
+Morphz 是一台 **S-Expression Cognitive Machine（S 表达式认知机）**：它将结构化、可寻址、可版本化的 Context 作为可执行认知状态和递归程序—数据表示；大语言模型作为可替换的非确定性认知求值器执行认知符号求值；确定性 Runtime 作为事务内核，对候选结果实施结构、权限、因果和版本校验，并提交权威状态或现实副作用。Agent 是认知机加载身份、Context 与能力后的实例。求值结果能够通过局部绑定、认知帧或关系直接重新进入后续求值。
 
 实验不能只证明“Morphz 能完成任务”，而要分离并验证下列因果环节：
 
 1. 递归结构化表达能被模型构造和求值；
 2. 真实 Observation 能成为后续数据流、控制流和认知状态；
 3. 稳定对象标识、版本和直接引用比重新解释消息历史更可靠；
-4. 开放语义求值允许多个契约有效结果，并受 Context 变化约束；
+4. 非确定性认知求值允许多个契约有效结果，并受 Context 变化约束；
 5. 确定性 Runtime 能在候选认知和现实副作用之间保持权威边界；
 6. 上述机制能够导出跨 Session、长时间运行、并发和恢复能力。
 
@@ -47,9 +54,9 @@ Morphz 是一台 **S-Expression Cognitive Machine（S 表达式认知机）**：
 | --- | --- | --- |
 | RQ1 | 模型能否可靠读取、构造并求值递归认知项？ | ME-02 |
 | RQ2 | 结构化结果直接回流是否提高跨轮、跨 Session 状态驱动行动的正确性？ | ME-01 |
-| RQ3 | 开放语义符号是否表现为受 Context 约束的非唯一认知求值，而非任意文本生成？ | ME-03 |
+| RQ3 | 认知符号的非确定性求值是否受 Context 和结果合同约束，而非任意文本生成？ | ME-03 |
 | RQ4 | Runtime 是否能校验、提交、恢复并隔离非确定性求值产生的候选状态和副作用？ | ME-04 |
-| RQ5 | 核心机制是否跨模型、跨任务族成立？ | ME-05、ME-07 |
+| RQ5 | 核心机制是否跨模型、跨任务族成立？ | ME-05 |
 | RQ6 | 结构化 Context 是否支持持久主体的长期维护、迁移、并发和恢复？ | ME-06 |
 
 ## 3. 实验组合
@@ -116,7 +123,8 @@ ME-01 的基础能力 Pilot 不制造 Context 长度压力，也不把简单窗�
 
 ### ME-03：非确定性认知求值特征
 
-设计存在多个合法结构化结果的 bounded-open symbol，并设置 closed operator 对照：
+设计存在多个合法结构化结果的认知符号，并设置确定性算子对照；历史 fixture 中的
+`bounded_open_*` 仅保留为可复现 ID，不作为论文术语：
 
 - 在 Context 不变时重复求值，测量契约有效率和合法多样性；
 - 增加、删除或修订认知帧，检验结果分布是否发生可解释变化；
@@ -166,27 +174,36 @@ Token 和延迟作为机制与成本诊断，不预设 Morphz 必须在每项上
 
 主要指标：最终隐藏行动/状态正确率。次要指标：陈旧状态率、污染率、Frame 增长、Context 压力、恢复正确率和累计成本。
 
-### ME-07：公开 Benchmark 外部验证
+### ME-07：STATE-Bench Agent Learning 外部经验学习验证
 
-首选 Mem2ActBench，原因是它要求跨 Session 记忆进入后续工具选择和参数落地，与 Morphz 核心机制比被动问答更一致。
+LongMemEval-V2 Small 旧方案及未经授权替代模型运行继续作为已取消历史保留，不提供任何
+效果证据。替代方案选择 STATE-Bench Agent Learning Track，因为它直接检验历史轨迹形成的
+可复用认知是否改善 held-out 企业工具任务，而不是只测长期材料问答。
 
-执行纪律：
+正式实验不使用“无记忆 vs 有记忆”作为主对照，因为它只能证明记忆有用，不能区分 Morphz
+的独特价值。三个 arms 分别为生产 Morphz、完整开源 Agent Runtime Letta 和 Mem0-backed
+frozen reference agent；三者都从相同的三个领域各 100 条 train trajectory 形成学习产物。
+Morphz 与 Letta 各自运行完整 Agent 工具循环，Mem0 通过冻结 reference Agent 进入 held-out
+任务。三臂固定同一 `gpt-5.6-sol`/max 基础模型、同一领域工具、任务、外部评分器与预算；
+内部 Prompt、状态表示与调度属于被测系统，不强行统一。方法自身的写入、索引、检索、模型
+调用和成本作为被测系统组成完整记录。
 
-- 先做一个不进入正式统计的接入样本；
-- 固定同一模型、工具环境和预算比较 Morphz 与基线；
-- 保留官方评分器结果，并增加 Morphz 的 Context/Event History 因果分析；
-- 报告适配改动，不能把改变任务语义后的结果称为官方同榜成绩；
-- 将公开 Benchmark 作为外部有效性证据，不替代 ME-01 的核心消融。
+正式协议为三个领域各 50 个 held-out tasks、每题 5 runs，即每臂 750、合计 2,250 trials。
+user simulator/judge 使用冻结的 `gpt-5.6-sol`/max 更新版 evaluator。任务、评分维度、
+确定性 scorer 与 judge Prompt 保持上游一致，但该结果不再与历史 GPT-5.4 官方榜直接可比，
+必须称为 STATE-Bench-derived updated-evaluator result。Letta adapter、快照隔离、精确模型
+绑定和人工抽样复核 Gate 通过前，不启动正式运行。
 
-### ME-08：扩展公开验证（可选）
+协议与候选比较见
+[`me_07_state_bench_protocol_v2.md`](./me_07_state_bench_protocol_v2.md)。
 
-根据时间和接入成本，从以下选择一项：
+### ME-08：Terminal-Bench 2.1 完整 Agent 外部系统验证
 
-- MemoryArena：行动—反馈—记忆—后续行动链；
-- MemoryAgentBench：优先 conflict resolution 和 test-time learning；
-- LongMemEval-V2：长期状态、工作流和冲突的大规模补充。
-
-Harbor/Terminal-Bench 与 π-Bench 保留为通用 Agent 能力和系统案例，不作为认知求值核心主张的唯一证据。
+使用同一 GPT-5.6 Sol/max 路由、同一 Linux 主机和冻结工具环境，对 Morphz 与 official Codex
+执行 89 个 paired tasks；每题每 arm 一次、arm 内并发 1、零重试。官方 verifier raw reward
+是主指标，本地诊断不得覆盖官方得分。报告完整准确率、逐题胜负、配对检验与区间、失败分类、
+Token、耗时和资源负载。该实验检验完整 Agent 系统的外部效度，不把 Coding 得分差异直接
+归因为 Structured Context 或非确定性认知求值。
 
 ## 4. 分阶段推进
 
@@ -237,7 +254,7 @@ Harbor/Terminal-Bench 与 π-Bench 保留为通用 Agent 能力和系统案例�
 
 ### Phase 4：公开 Benchmark 与论文收口
 
-范围：ME-07，时间允许时执行 ME-08。
+范围：ME-07、ME-08。ME-07 先完成 adapter 与锁定评测访问 Gate；ME-08 可独立闭合。
 
 退出条件：
 
@@ -269,9 +286,11 @@ Harbor/Terminal-Bench 与 π-Bench 保留为通用 Agent 能力和系统案例�
 - ME-04 权威边界和恢复；
 - ME-05 至少三个模型家族的核心子集。
 
-公开发布时强烈建议再完成 ME-07；它不是预印本成立的逻辑前提，但能够显著降低“任务为 Morphz 量身设计”的质疑。如果接入尚未完成，论文必须明确标为后续工作，不能暗示已有外部验证。
+公开发布前完成 ME-08 的 89 题同环境 paired 对照，以降低“任务为 Morphz 量身设计”的质疑。
+ME-07 新方案完成前，论文必须明确尚无 STATE-Bench 效果结果；旧 LongMemEval-V2 中止运行
+不得暗示为证据。只有完整协议结果通过审计后，才允许加入公开经验学习 Benchmark 数字。
 
-更完整的会议投稿包再加入 ME-06 全量长期实验、四模型矩阵和第二个公开 Benchmark。
+更完整的会议投稿包可再加入第二个公开长期记忆 Benchmark；它不属于当前预印本完成条件。
 
 ## 7. 已有证据的处理
 

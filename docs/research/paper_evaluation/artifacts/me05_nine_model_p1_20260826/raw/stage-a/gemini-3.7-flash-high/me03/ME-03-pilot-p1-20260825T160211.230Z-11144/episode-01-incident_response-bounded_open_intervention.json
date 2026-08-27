@@ -1,0 +1,146 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": 5,
+  "selected": [
+    "preserve_logs",
+    "publish_status"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"preserve_logs\", \"publish_status\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis incident-accountability-v2"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected publish_status and preserve_logs to cover transparency and evidence requirements without including any forbidden disruptive properties.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 768,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gemini-3.7-flash-high",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 768,
+      "calibration_key": 666644417457520712,
+      "calibration_shape": 6417341132265401514
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected publish_status and preserve_logs to cover transparency and evidence requirements without including any forbidden disruptive properties.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"incident-accountability-v2\"],\"explanation\":\"Selected publish_status and preserve_logs to"
+      },
+      {
+        "kind": "text_delta",
+        "text": " cover transparency and evidence requirements without including any forbidden disruptive properties.\",\"selected\":[\"publish_status\",\"preserve_logs\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 709,
+          "uncached_input_tokens": 709,
+          "cached_input_tokens": 0,
+          "output_tokens": 45,
+          "reasoning_tokens": 660,
+          "total_tokens": 1414,
+          "raw": [
+            {
+              "input_tokens": 709,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 45,
+              "output_tokens_details": {
+                "reasoning_tokens": 660
+              },
+              "total_tokens": 1414
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "cpa-gemini-responses-carrier-v1:previous:text:RXBrWENwWVhBUkZOTWc4U3V5M1dVK0pvK2M1WTZaQmV3Wnl3ek5NU1Y5d0FuT1ZsQnJyeUhwU3hyNDVMaHdrNEV6SHYxMU40VVNGbXdCSzdzOHFuWVRDS29hNmU1REZLWnRyN2I3S1h0Y1N4Z1dvYlpEQjRSWW43VzNuWlJkTUZYRXJXd0NEYXJXRjF0cWs5Tldxcng0UG5oM0xjOE9xd0xhSFRBRHdsVG5jUVNCYW51cStNbWp5VkFldk1GeHBtTHdyMUh3aDQvZEFibGIzVnZUS1pqdDYwRzVHNHJaNmhLa05vRTVGK29DbFZvakZXSHBsQ1JHSTNCY0pqZHpiT3IzWHBaTkttK3p6T05PLzh6aWRRZERqeUhwUlFkc3RLUmZyTzR2MTl5bG4xQmlKZ1RCckc3YzRXMDVaS3p1QlpBZ3duNml2b2VpbDJpY2drTXFhTCtrS3B3KzMvaWFvQVV5YURGbm91TXpUZWN2MS91RFZrUEVZNTlWQXVCY1MrbHp2dk9BUUtCc0xya0tGNURIQ1pmUmlTUVVnREFWQjl2anQyMW9HNlNuY1N5bXRSbm5DdUlWd1RubE5LK2RXWWxTdFJTWXJSeVFqUkFYRUl3WnlydlJrSXFrRVRqNDY1ZWJSbDlxYWFKWnE3WEV5UTVES25SaU1rbGhHT2piUFltTnZNLy8wMEx1SWZtRVJpLzFMOUJUbitYWVpTeWlIS1lPWUp2ODI4R3VsbS9xYUpveGpHYlJGK3gxaWUzSURJZFFTNVZwRVcxT1M3TllyWkhSOTRZTnJYSTlSb1UwdmsyaHdHMmc2N0cyZUw0MnNTYy9VYzMvSkxaVmZTMFVVckdQTmc3NVBpQU4vdEt6d0Y1NUtIRHlrT25wMCs2Mk1sK24ra2ZlVVRJLzhzMlljM3VLZnZadnhJdGF4RkR0Z09FSmdSYVh0M2VqSmZyR0xrRFduY1ZWY3lIdlk4Z2VLUmU5dVNFMmRGUmp5SzRaVk9WRnNIUDFVZ29MZzdGVmJWbWZBdyszM0xVbTVNcWU5ekp0b0lwdVRuV3V3T2dIVWk1dFBpWnI4ekI4LzMzZkcwQ01FaHkxc2hGWFE1aTVYZmtsVUo4dXNpQ0dPUVp6MTFYallRd3Z0Q3UrNGZzNGpva0V6c0Y0eXYxNzFFdzN0UFBFeFJtR0xZTzRHeE9ibER5UlI0WTJtL1JHSGZoUGgxdlM3Z3AwU1FBdlNHR25vMDh4dndqSkF5ZlQ1dktrM3FDQ3ZKc2RIdFJ3SWt0R0g4WFJUSUkrY251Mnd6OEdydm9yQnlCM05ZclZLN1hGTE1Nc3JidFZZSDdKakRxTXVTV05kMUpBZGo4QlJydXFhaDdwYnFLNUtLZERJeWdlbjhaV3dRYVh0RTE5S1ppckdGd0hTcy9LaCtIZHZ3VDVyd0FPbnpLTzJYVDBhNmtQVHF2VHhjUFZWakFUOUZuTDFYM1pML21wQnA4eDB5N3ZkZkdLN0VIa2RVUXZjYmVlam5uRUFUS1ZISFNmanlHaUZuREp6QnBraFN1eDN2R1VIQXpORTY1Z3JDc09saXVCM0NDSHRYeDBlVEFEVGgwcTlaWEloVDVsWXdUS2hydjBBOFMxQkJ6ZGZCY0FTd0xOcTJJdTdUeUJMQzdBRjMwdkJENmJvdmxSY1JwTWtWbXNKakNwUk42TGoyL2JwMDF1SXBRb2RCRnZOMkZwN2UwWFFMK3h3cmRFTnlNN3lqdWpCd1dzSXVZSnBJNFh6NHMzZER5ZEtQWmZ5N3FUZGZIWlIwMmFVR1Q1eHl6YkhCaUFVbHRXT2JDdExBc2JmN0tNNkl1Sjl3NnZaVFJ5ZFdxTmRnZ2pqZnFaa29tQ0tSUS81RVdobU9HWGh2U1REdnRGeWZsdjBQQlVVZkJxWFptc2hTSk1mWGNPYXFHdjBKRkxmVlBZSWkzYXRjNFBUUXBESTB0ZmpHNHoyR0V6aWIya2xucFBVTWNBcmdvdlJ3engyRHJHbW9wb1REQXJPMGxkUzNQcnhUK3JiSkt4RlZSdWc2RkFiN3l2OW1UazdnKzY2OUN2emFTNnRWYkRoWSs1M1U5RlFOTjczRFpOdmE1UmZVQzZxakd0RUxqZ1hCM25NOFY3MDZGUWo2L2p1bmxwY0dKeWJjSzlYeVd1WmwrcGFESjRwZzd0K0k5dWNNbHo1VVNsQVJ5cEQzMFAyVWU3ZlB0YWhiQ2I1Q242SUc5VW82bWIvSEt4K0xMVHE1QUthMG1ZR1RDMCtpZGdMcU9Sd2VKSzVHbDBVbGFkM2cycU1sbTNiVElWdThtS3hUQVhIRjZ2cS9oNjRSWW5PNVovRS9aQ3EzVWVkM2sxVmV0SjZPM0tlRXBCSGlmQnEvTjFkSXROcWtZenBFWXVXU3R5MFdFbmlXYWhBbm96NFVMRnhVVG85Q01PZzdLYXNtayt0RnVQSGJERzdsYlk5SWU2cFkxTmYyRm1mSThlVTZ5TXBRTHlPbVk1bFhFLzNxaDdlU2ZRb09vOUFFV2t0UGdacE5NWVVRN2N6dlhEd1JkRUpkbENrM25SRzVRa3I4NjF6UTNjTlg3LzFxOGFrVWlhREFjZVdCNTZTclhHMlpQeXZMTWlkdFBJV3crV2VsUEVqRVZKd1NHMk44TUdCZCsyR2JFN2VNVFVsckVSQklVbGNaNFh4d0tBUHMrODFwSjlqcTdLV0V2dWFPRFZScU90ZW1SVXg0blVycTlodFBTaWhTVy9mNm9udUxJZ1hEdy95VVZLYmlIVkFBUjNST0RrR0FFNk9HeXQrZW9iOFVxRGd6M3FTdkthQWdaSjdycHg2WEtjNFFIZTNpeithcFJsYTZUMVFKL2U5RnBnaE9ROGI4OFdwWS8yMVh0Vkh0STQ0VnhJVFI1NitsbGp2SHRYSjh6eExkend1VjFnU3Rjd0EzTHB4TXlPTGQrSjkzWXVUbExPc1JxUXU4YzFZMTU3aUJxd0VNNGdGVit1YzRYNjR2SVhxOVdaRm1TMDAwdFhOV1pQTm0vbDF0VVBYMWVvbHhzdnAxMTRxOVprcnVIUmU1MTVnbHQ0SWZ2ZWlKNWFXbjVlMzFyTEw5YzlXOGFUYXA5LzRWWnF6TjFUTS9neWFlRXV5UGpQaExNRXRHYXNjeW1SaWxGeStzN3M4ek9uL1BCb25NU2FrbXEzWUNoeU5FNzMwS2FuSXluS05Ya3dPRFFXTmhxb2pFSCt5SUV2T0VyN2NldllTWHdUK1NYbXRWMGhsYk9FZzVxRXlYcE5lRldGRzdlWE5lWTB3U3puSmJ5QTd3WWRKMFRtQVFPMjhEZXhPODMwU1VpLzFRYUFTMGx4NzJ1SDhteXhmd3A0bDVtVGtJQ0VvU1pGQnJiUHNGQ3h4dElrdmlvZ3YwR2hvdlYzQ2tuL2U0a2NUWXB6MFFVRzdaZ2FhOEl3ZUp1U00vbkdORjFGclpBbGVSUVN2YVMxak5lTUtyWWRIVE5lcS94ZUdrU1NnSGxSN1dKUzFYUVZYUENxMUpyUndSajJlT2x3SWhzVzZhTkdVR29tUnNCa1h0R2I4bWJzbXE5WUdUUVZhdy83YXkvVUV1QzF0VXVRTjhHOEZQZGg0cm8rdWR2cXFUSFRrV2xoSEZEdjV0djNYWENHOXlLTXovOVlSRER2aGRZMjl6djgyNUxqT3lBSWtFL3AwYkRZbUFMalVpSjgvTllOZjVTSkZDc29xOEtjU0NUbEpkWEFxSkdSTEljREdFMnJYZUtFMWtSRXNBTUsvV05xTHQvbkxGM2plS1BEYW82aVlFNi9SL0pxeFdZUHUyY2ptTDI0Rm9obG1pMllZSTcxTXR3TnR6NXhVRjBYREtTMU95T0tEZjBBK2hBdWdGcGNidU9RM2t6WjZ2MWFUSzlTS3JubWwvOEZCMllMZFJ4eHczK28xaWtWQ2plVEFsUW0xbGQyZ2U4L25iWlkyY3hkMTE1aFNYa2VUbnFUbW9rbmQvYWlrNHhjd0cwc0pqVkllUEFWL3RTWEVPSVNKYXJYQnZ4cEc4VVJIYWtkOHpHbDlNajdyWm9FN3lHSXBtRmhwaWUrN1dCZ2hqNUNaWDdtNjB4L3ovckttVUlUTU5UemFkU29IMTZXRjJqbi9YbU1Qem80eUtWTlhxaWxIQk5uc2tRKzNWZEtVcklkZWlIZWFiMFpUT2RUWVZ5ZUZ1Zml3cGlHV256TUlxeGlGYnVwWmlhclpXQksya3BvSHgvakJKOUdlbjg3VVd5cEFsSURlZ3RLSGZNOExPN0hPRHVwZDJMVlJpOGQrbGFSUzJLVnJpdERUem9PeXZtWXRDRDNQYUR4Z0FUQnBPdTluVURObExlelVnTU5ST0tLY1I2Ykk4MzRScFNlb2FSRlhla2Jna0pTWjhJRk93WGRPckhhMGJJRUhTbDQydktla2JCTUs2R3lEMXJSdXA4WXVBS09IbFVrWnhrdVVsWmd2RnpReDBkVE9ab3JGTWpRVEkvVVFWcFg5MEtXTStGa2xYbEg1eHZxMUJGL3VQUnJTRnJnSXJHU2VTSUZCSlNJU2E1cWJ1SzdFMHdLSHdRdFN1WmNzbUJYQ0tObG14RFhQRXVGV3IzVDZzU1pOYlZiWUM2VGNqQ09FWGV0MGV6OEI3UmJHRHZEVkMwZytHYk5hOU84dTMwbUhaOVkycUY3K3RkeCtwL09xZ0E4c2xjTXNpTEtaZ0R4TjF0VHlEbWxWbm1laTQ1MGtRUkM0WE50MFlVT1pWU1h0dVVsb0Q2Tms4dlZaMk1QalZlVFJjTXhRblFna2lOcUhLVGNOK3pOTnRod0o1YkpRbjY5dUV1OVQwNGtjZVZNbXZUMVEwOFdINFpXODh4NTBrK3JoUzVZdnhYb1JodllLZzFyWTBBL3NDRWw0aGt5eDFueDlaSHlVaElvb1d4WmQvSTFHR0djOXVPU0trVDJIT1QrUnFtSndzZlBKWUxZYVc1aENVYzhWSWRPVU5kT1dwa0tvTHp2dUpSWDJDVU9DODVSWjFxUlZYb2hWaWwwVjZlcm9sQXRoYzgrcGVMQ3d0dkw4L2hXb3Ercnp5bjMxMVhMY2xwdkRkdDBWS3p2c0l2a0pOdGVFem1UVjg3d3pXc1NETFlsQTd0ZC9hWkJxNEg5alc5MUh1OE8vb0ZNWEJnUTVhdzhiYVhkRHBzYThlaUtqQjcrdjF6RkgxdEFTMmllM0RERzNHalVaSG5iZFZ0cWxFcEM5Sm5UVzUzNnpjdGNmNzdhcnRKNlZOVjJZPQ",
+              "id": "rs_resp_k7yNatDvLZPAsOIPv_D8oAg_detached_after_1",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 709,
+      "uncached_input_tokens": 709,
+      "cached_input_tokens": 0,
+      "output_tokens": 45,
+      "reasoning_tokens": 660,
+      "total_tokens": 1414,
+      "raw": [
+        {
+          "input_tokens": 709,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 45,
+          "output_tokens_details": {
+            "reasoning_tokens": 660
+          },
+          "total_tokens": 1414
+        }
+      ]
+    },
+    "error": null
+  }
+}

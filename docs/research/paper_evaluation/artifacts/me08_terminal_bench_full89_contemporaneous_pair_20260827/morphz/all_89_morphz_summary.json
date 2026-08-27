@@ -1,0 +1,406 @@
+{
+  "protocol": "me08-terminal-bench-finalfix-all89-morphz-v3",
+  "completed_at": "2026-08-26T22:57:22.938455+00:00",
+  "official_verifier_raw_reward_is_primary": true,
+  "old_concurrency_1_results_are_not_spliced": true,
+  "task_count": 89,
+  "attempts_per_task": 1,
+  "concurrency_per_arm": 8,
+  "maximum_simultaneous_trials": 8,
+  "run_arms": [
+    "morphz-native"
+  ],
+  "codex_rerun_performed": false,
+  "external_codex_pair_required": true,
+  "return_codes": {
+    "morphz-native": 3
+  },
+  "arms": {
+    "morphz-native": {
+      "passed": 72,
+      "score": 0.8089887640449438,
+      "wilson_95_ci": [
+        0.715227317828824,
+        0.8771804351150649
+      ],
+      "local_integrity_gate_passed": true
+    }
+  },
+  "host_resources": {
+    "sample_count": 191,
+    "cpu_count": 16,
+    "memory_total_kib": 64508056,
+    "memory_used_kib": {
+      "mean": 4978945.528795811,
+      "p95": 6467368.0,
+      "max": 7884412
+    },
+    "load_1m": {
+      "mean": 2.255792907395288,
+      "p95": 6.327392578125,
+      "max": 11.4169921875
+    },
+    "docker_running_containers": {
+      "mean": 9.287958115183246,
+      "max": 10
+    }
+  },
+  "per_task": [
+    {
+      "task": "caffe-cifar-10",
+      "morphz": 1
+    },
+    {
+      "task": "circuit-fibsqrt",
+      "morphz": 1
+    },
+    {
+      "task": "dna-assembly",
+      "morphz": 0
+    },
+    {
+      "task": "kv-store-grpc",
+      "morphz": 1
+    },
+    {
+      "task": "llm-inference-batching-scheduler",
+      "morphz": 1
+    },
+    {
+      "task": "log-summary-date-ranges",
+      "morphz": 1
+    },
+    {
+      "task": "merge-diff-arc-agi-task",
+      "morphz": 1
+    },
+    {
+      "task": "model-extraction-relu-logits",
+      "morphz": 1
+    },
+    {
+      "task": "mteb-leaderboard",
+      "morphz": 0
+    },
+    {
+      "task": "openssl-selfsigned-cert",
+      "morphz": 1
+    },
+    {
+      "task": "path-tracing",
+      "morphz": 1
+    },
+    {
+      "task": "pypi-server",
+      "morphz": 1
+    },
+    {
+      "task": "pytorch-model-recovery",
+      "morphz": 0
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "morphz": 1
+    },
+    {
+      "task": "regex-chess",
+      "morphz": 1
+    },
+    {
+      "task": "regex-log",
+      "morphz": 1
+    },
+    {
+      "task": "schemelike-metacircular-eval",
+      "morphz": 1
+    },
+    {
+      "task": "torch-pipeline-parallelism",
+      "morphz": 0
+    },
+    {
+      "task": "torch-tensor-parallelism",
+      "morphz": 1
+    },
+    {
+      "task": "write-compressor",
+      "morphz": 1
+    },
+    {
+      "task": "adaptive-rejection-sampler",
+      "morphz": 1
+    },
+    {
+      "task": "build-cython-ext",
+      "morphz": 1
+    },
+    {
+      "task": "build-pov-ray",
+      "morphz": 0
+    },
+    {
+      "task": "cobol-modernization",
+      "morphz": 1
+    },
+    {
+      "task": "compile-compcert",
+      "morphz": 1
+    },
+    {
+      "task": "configure-git-webserver",
+      "morphz": 0
+    },
+    {
+      "task": "dna-insert",
+      "morphz": 0
+    },
+    {
+      "task": "extract-elf",
+      "morphz": 1
+    },
+    {
+      "task": "filter-js-from-html",
+      "morphz": 0
+    },
+    {
+      "task": "fix-ocaml-gc",
+      "morphz": 1
+    },
+    {
+      "task": "gcode-to-text",
+      "morphz": 1
+    },
+    {
+      "task": "gpt2-codegolf",
+      "morphz": 1
+    },
+    {
+      "task": "make-doom-for-mips",
+      "morphz": 0
+    },
+    {
+      "task": "mcmc-sampling-stan",
+      "morphz": 1
+    },
+    {
+      "task": "mteb-retrieve",
+      "morphz": 1
+    },
+    {
+      "task": "nginx-request-logging",
+      "morphz": 1
+    },
+    {
+      "task": "raman-fitting",
+      "morphz": 1
+    },
+    {
+      "task": "sam-cell-seg",
+      "morphz": 1
+    },
+    {
+      "task": "train-fasttext",
+      "morphz": 0
+    },
+    {
+      "task": "vulnerable-secret",
+      "morphz": 0
+    },
+    {
+      "task": "bn-fit-modify",
+      "morphz": 1
+    },
+    {
+      "task": "break-filter-js-from-html",
+      "morphz": 0
+    },
+    {
+      "task": "build-pmars",
+      "morphz": 1
+    },
+    {
+      "task": "cancel-async-tasks",
+      "morphz": 0
+    },
+    {
+      "task": "chess-best-move",
+      "morphz": 0
+    },
+    {
+      "task": "code-from-image",
+      "morphz": 1
+    },
+    {
+      "task": "constraints-scheduling",
+      "morphz": 1
+    },
+    {
+      "task": "count-dataset-tokens",
+      "morphz": 1
+    },
+    {
+      "task": "crack-7z-hash",
+      "morphz": 1
+    },
+    {
+      "task": "custom-memory-heap-crash",
+      "morphz": 1
+    },
+    {
+      "task": "db-wal-recovery",
+      "morphz": 1
+    },
+    {
+      "task": "distribution-search",
+      "morphz": 1
+    },
+    {
+      "task": "extract-moves-from-video",
+      "morphz": 0
+    },
+    {
+      "task": "feal-differential-cryptanalysis",
+      "morphz": 0
+    },
+    {
+      "task": "feal-linear-cryptanalysis",
+      "morphz": 1
+    },
+    {
+      "task": "financial-document-processor",
+      "morphz": 1
+    },
+    {
+      "task": "fix-code-vulnerability",
+      "morphz": 1
+    },
+    {
+      "task": "fix-git",
+      "morphz": 1
+    },
+    {
+      "task": "git-leak-recovery",
+      "morphz": 1
+    },
+    {
+      "task": "git-multibranch",
+      "morphz": 1
+    },
+    {
+      "task": "headless-terminal",
+      "morphz": 1
+    },
+    {
+      "task": "hf-model-inference",
+      "morphz": 1
+    },
+    {
+      "task": "install-windows-3.11",
+      "morphz": 1
+    },
+    {
+      "task": "large-scale-text-editing",
+      "morphz": 1
+    },
+    {
+      "task": "largest-eigenval",
+      "morphz": 1
+    },
+    {
+      "task": "mailman",
+      "morphz": 1
+    },
+    {
+      "task": "make-mips-interpreter",
+      "morphz": 1
+    },
+    {
+      "task": "modernize-scientific-stack",
+      "morphz": 1
+    },
+    {
+      "task": "multi-source-data-merger",
+      "morphz": 1
+    },
+    {
+      "task": "overfull-hbox",
+      "morphz": 1
+    },
+    {
+      "task": "password-recovery",
+      "morphz": 1
+    },
+    {
+      "task": "path-tracing-reverse",
+      "morphz": 1
+    },
+    {
+      "task": "polyglot-c-py",
+      "morphz": 1
+    },
+    {
+      "task": "polyglot-rust-c",
+      "morphz": 1
+    },
+    {
+      "task": "portfolio-optimization",
+      "morphz": 1
+    },
+    {
+      "task": "protein-assembly",
+      "morphz": 1
+    },
+    {
+      "task": "prove-plus-comm",
+      "morphz": 1
+    },
+    {
+      "task": "pytorch-model-cli",
+      "morphz": 1
+    },
+    {
+      "task": "qemu-startup",
+      "morphz": 1
+    },
+    {
+      "task": "query-optimize",
+      "morphz": 1
+    },
+    {
+      "task": "reshard-c4-data",
+      "morphz": 1
+    },
+    {
+      "task": "rstan-to-pystan",
+      "morphz": 1
+    },
+    {
+      "task": "sanitize-git-repo",
+      "morphz": 1
+    },
+    {
+      "task": "sparql-university",
+      "morphz": 1
+    },
+    {
+      "task": "sqlite-db-truncate",
+      "morphz": 1
+    },
+    {
+      "task": "sqlite-with-gcov",
+      "morphz": 1
+    },
+    {
+      "task": "tune-mjcf",
+      "morphz": 1
+    },
+    {
+      "task": "video-processing",
+      "morphz": 0
+    },
+    {
+      "task": "winning-avg-corewars",
+      "morphz": 1
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "protocol_id": "ME-07-STATE-Bench-strong-memory-v1",
+  "status": "frozen-artifact-gate / locked-eval-access-gated",
+  "formal_arms": [
+    "morphz",
+    "amem",
+    "mem0"
+  ],
+  "forbidden_formal_arms": [
+    "no_memory",
+    "messages_only"
+  ],
+  "upstreams": {
+    "state_bench": {
+      "repository": "https://github.com/microsoft/STATE-Bench",
+      "commit": "5644b1838d96bc4483da29642d058ecaa6f80f7f",
+      "version": "0.8.1",
+      "license": "MIT"
+    },
+    "memgym_amem_implementation": {
+      "repository": "https://github.com/WujiangXu/MemGym",
+      "commit": "50b404e6ae4e1fcd453d3e07963eb3e6312cbded",
+      "implementation_path": "src/memgym/memory/external/amem",
+      "license": "MIT",
+      "disclosure": "A-MEM-compatible MemGym implementation, not the agiresearch package"
+    },
+    "amem_reference": {
+      "repository": "https://github.com/agiresearch/A-mem",
+      "commit": "ceffb860f0712bbae97b184d440df62bc910ca8d",
+      "version": "0.0.1",
+      "license": "MIT"
+    },
+    "mem0": {
+      "repository": "https://github.com/mem0ai/mem0",
+      "tag": "v2.0.19",
+      "commit": "dc82354e143c2581d505d581a00286d6ef8c3605",
+      "version": "2.0.19",
+      "license": "Apache-2.0"
+    },
+    "embedding_model": {
+      "repository": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "dimensions": 384
+    }
+  },
+  "agent_model": {
+    "route": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider": "cliproxyapi",
+    "api": "responses",
+    "fallback": false
+  },
+  "locked_evaluation_model": {
+    "model": "gpt-5.4",
+    "provider": "azure_openai",
+    "roles": [
+      "user_simulator",
+      "task_requirements_judge",
+      "ux_judge"
+    ],
+    "substitution_allowed": false
+  },
+  "dataset": {
+    "domains": [
+      "travel",
+      "customer_support",
+      "shopping_assistant"
+    ],
+    "train_trajectories_per_domain": 100,
+    "heldout_tasks_per_domain": 50,
+    "allowed_learning_root_suffix": "datasets/train_task_trajectories",
+    "heldout_oracle_access": false
+  },
+  "formal_run": {
+    "num_runs": 5,
+    "retrieve_learnings_top_k": 3,
+    "retrieval_mutates_memory": false,
+    "trials_per_arm": 750,
+    "total_trials": 2250
+  },
+  "statistics": {
+    "primary_metric": "official_pass_at_1",
+    "paired_contrasts": [
+      "morphz_minus_amem",
+      "morphz_minus_mem0"
+    ],
+    "cluster_unit": "heldout_task",
+    "multiple_comparison_correction": "holm"
+  }
+}

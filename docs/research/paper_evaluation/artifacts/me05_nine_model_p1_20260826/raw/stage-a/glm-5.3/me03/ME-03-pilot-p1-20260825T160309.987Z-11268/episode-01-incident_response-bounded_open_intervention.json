@@ -1,0 +1,537 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": 5,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"incident-accountability-v2\", expected a sequence at line 3 column 39"
+    }
+  ],
+  "raw_output": "{\n  \"selected\": [\"notify_affected\", \"preserve_logs\"],\n  \"basis\": \"incident-accountability-v2\",\n  \"explanation\": \"Both candidates avoid the forbidden property 'disruptive'. Together they cover the required groups: notify_affected provides transparency and evidence, while preserve_logs reinforces evidence preservation with low disruption.\"\n}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 765,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "glm-5.3",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 765,
+      "calibration_key": 16315620376375415723,
+      "calibration_shape": 8447746186420711612
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\n  \"selected\": [\"notify_affected\", \"preserve_logs\"],\n  \"basis\": \"incident-accountability-v2\",\n  \"explanation\": \"Both candidates avoid the forbidden property 'disruptive'. Together they cover the required groups: notify_affected provides transparency and evidence, while preserve_logs reinforces evidence preservation with low disruption.\"\n}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "2"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " disruptive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " transparency"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " notify"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "affected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " both"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " transparency"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ";"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " plus"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " another"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-dis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rupt"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " E"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".g"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " notify"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "affected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " +"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preserve"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_logs"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "notify"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "affected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\","
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "preserve"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_logs"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "incident"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-account"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ability"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "2"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\n"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "text_delta",
+        "text": "planation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " \""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Both"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "text_delta",
+        "text": " avoid"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "text_delta",
+        "text": " property"
+      },
+      {
+        "kind": "text_delta",
+        "text": " '"
+      },
+      {
+        "kind": "text_delta",
+        "text": "dis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "rupt"
+      },
+      {
+        "kind": "text_delta",
+        "text": "ive"
+      },
+      {
+        "kind": "text_delta",
+        "text": "'."
+      },
+      {
+        "kind": "text_delta",
+        "text": " Together"
+      },
+      {
+        "kind": "text_delta",
+        "text": " they"
+      },
+      {
+        "kind": "text_delta",
+        "text": " cover"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " required"
+      },
+      {
+        "kind": "text_delta",
+        "text": " groups"
+      },
+      {
+        "kind": "text_delta",
+        "text": ":"
+      },
+      {
+        "kind": "text_delta",
+        "text": " notify"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "affected"
+      },
+      {
+        "kind": "text_delta",
+        "text": " provides"
+      },
+      {
+        "kind": "text_delta",
+        "text": " transparency"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " while"
+      },
+      {
+        "kind": "text_delta",
+        "text": " preserve"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_logs"
+      },
+      {
+        "kind": "text_delta",
+        "text": " reinforces"
+      },
+      {
+        "kind": "text_delta",
+        "text": " evidence"
+      },
+      {
+        "kind": "text_delta",
+        "text": " preservation"
+      },
+      {
+        "kind": "text_delta",
+        "text": " with"
+      },
+      {
+        "kind": "text_delta",
+        "text": " low disruption.\"\n}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 614,
+          "uncached_input_tokens": 614,
+          "cached_input_tokens": 0,
+          "output_tokens": 110,
+          "reasoning_tokens": 0,
+          "total_tokens": 724,
+          "raw": [
+            {
+              "input_tokens": 614,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 110,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 724
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_0217876737936070451d664a5d5fd238884dd8fb7ca7e609ddc03_0",
+              "summary": [
+                {
+                  "text": "Need 2 candidates, no disruptive, cover transparency and evidence. notify_affected covers both transparency and evidence; plus another non-disruptive candidate. E.g. notify_affected + preserve_logs.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 614,
+      "uncached_input_tokens": 614,
+      "cached_input_tokens": 0,
+      "output_tokens": 110,
+      "reasoning_tokens": 0,
+      "total_tokens": 724,
+      "raw": [
+        {
+          "input_tokens": 614,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 110,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 724
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,1498 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "nested_fallback",
+  "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 5,
+  "prompt_chars": 346,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "primary"
+      },
+      "output": {
+        "error": "PRIMARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "secondary"
+      },
+      "output": {
+        "error": "SECONDARY_UNAVAILABLE",
+        "ok": false
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "probe_endpoint",
+      "arguments": {
+        "name": "tertiary"
+      },
+      "output": {
+        "name": "tertiary",
+        "ok": true,
+        "token": "EP-T-5541"
+      }
+    },
+    {
+      "attempt": 4,
+      "name": "verify_endpoint",
+      "arguments": {
+        "name": "tertiary",
+        "token": "EP-T-5541"
+      },
+      "output": {
+        "delivery_token": "ENDPOINT-VERIFIED-7752",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "ENDPOINT-VERIFIED-7752",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"ENDPOINT-VERIFIED-7752\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1394,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "grok-4.6",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1394,
+        "calibration_key": 1237201429054064331,
+        "calibration_shape": 9630971716609863206
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\":\"primary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " user"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " wants"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " evaluate"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " a"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " recursive"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " operational"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " through"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " real"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " function"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " follow"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " exactly"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"primary\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1525,
+            "uncached_input_tokens": 1525,
+            "cached_input_tokens": 0,
+            "output_tokens": 233,
+            "reasoning_tokens": 221,
+            "total_tokens": 1758,
+            "raw": [
+              {
+                "context_details": {
+                  "input_tokens": 1525,
+                  "output_tokens": 233
+                },
+                "cost_in_usd_ticks": 7561600,
+                "input_tokens": 1525,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "num_server_side_tools_used": 0,
+                "num_sources_used": 0,
+                "output_tokens": 233,
+                "output_tokens_details": {
+                  "reasoning_tokens": 221
+                },
+                "total_tokens": 1758
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "mxU14GOyTWFriGkpT4zDurFQlEFB4jn5/45ufNxOlRIljtuHeLP09Z49UQXJCveBlD6BPHbtSLcKyrBXVFebqCFqY7rkyZrbyWwCFGOD+TEtgCorYhUGU/ViO7b1FQPZcE2HiK3wX+n/QD8fVe7HvUTuttOPhjiXUaEZffRimy/5/pw8fq1qwJmONYgqfc2wP5vs5mSAhpL87nnlwNAn6TVYUWSngHDmSzG4BCXYTnzLQGwgyKG6Of/1dZcyj4Z84MBdmIgLr3Jn24M/HKj7iIuy+H6N55hPoNYX9YBPHJKNlTsySmEBajoegD3wK0jtsgfb7fOHmEQFUn/GWMIyjJAuZDfnd0dVTKyA2gg8fzLNZRKotYt9bCi6qQ869KE9W5FOP5tYwzJm7R4uzyXXP1b3kSw/iHBzqN3NuNOpeZCBkYgZkOaY0kL2l/6lbL7sCw7xFY5UxeJ07qD4ze/RHcjtPdJwKsNOSyYOF+Vhf6A85J5aY/nR6saZMuuYZKBjze0FReAZ6ZPEbFGJ7s/N4Hgne0NF+W/88tP56vmlzKFDkZ6M3V4uJNjSl5/5WYyYGImR+NDd3HuEU56EK8MP+Ufdyqwga4wlTuqSe64sbxYWcyzHy80q+MFhmTC6X6ObUcImZWbykb9EusriTYRTWhKvp3O5OwCBFpDoe1fbKEd6gqq5YVF5wI43lZRKNCWhf/5Cq+YVrBvIKDhUu3NDZqPgLwb06ifIyF2/zd9zar7okWNAWS3KQsi0IBSaTWcLcIXaCMVwB9hO0aoPu/vuQZrpnMdeeO4JmkBrqvvBjCG1dpsjjDpqYDn9ro8rPLC+CtjBQqFhKxF/p7mB3JlOe2sIWiYoM9X7cBxKaJ/U9NvnIq8lJSBp2YjYXozgRUNs9sKgIkwaSIw9P9ck4XIjZ8d8bAP0Tpor//DDrjghcvdJKoW8HSjXsSprSra6o8nd+QDCY2DNms3a6FgvYAgzFrQ1JuvXr09kdq3fByPyXG5rMzUSkHfzOfWyjjxFiL1iCoapFi8GyxDQI5k31MRTbwMRxT5KquYHRVvLe50J737Y5zQIwu4uZU67Sh+848IHItK/XLRBvcW+AwGhmNeSd5R8CR+Eqvt0PRmD24+xtt6FLTWZFsAPcGy8IM1h5uS0hy+JOVyRv5vIdWXty9ywQ4s60QCrQIpz+RF+x5ufKjksn4xPYf37AMf8S096SzB3WXA2nnA4JZWwpJVJdyEWMXtuUqLNLxKBK0qfWHgYjjemkeUED6ZQkCJZFjWY3nTebhrVk5N9io0V0kED14uD4CXkWKMMq9m4wqhBcRqTulTiwWEnxQ8",
+                "id": "rs_42b562d6-b86d-96bc-85ff-cb1927416d88",
+                "status": "completed",
+                "summary": [
+                  {
+                    "text": "The user wants me to evaluate a recursive operational program through real function calls. I need to follow the program exactly.\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1525,
+        "uncached_input_tokens": 1525,
+        "cached_input_tokens": 0,
+        "output_tokens": 233,
+        "reasoning_tokens": 221,
+        "total_tokens": 1758,
+        "raw": [
+          {
+            "context_details": {
+              "input_tokens": 1525,
+              "output_tokens": 233
+            },
+            "cost_in_usd_ticks": 7561600,
+            "input_tokens": 1525,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "num_server_side_tools_used": 0,
+            "num_sources_used": 0,
+            "output_tokens": 233,
+            "output_tokens_details": {
+              "reasoning_tokens": 221
+            },
+            "total_tokens": 1758
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 1872,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "grok-4.6",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1872,
+        "calibration_key": 2129692010557710886,
+        "calibration_shape": 9630971716609863206
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"mxU14GOyTWFriGkpT4zDurFQlEFB4jn5/45ufNxOlRIljtuHeLP09Z49UQXJCveBlD6BPHbtSLcKyrBXVFebqCFqY7rkyZrbyWwCFGOD+TEtgCorYhUGU/ViO7b1FQPZcE2HiK3wX+n/QD8fVe7HvUTuttOPhjiXUaEZffRimy/5/pw8fq1qwJmONYgqfc2wP5vs5mSAhpL87nnlwNAn6TVYUWSngHDmSzG4BCXYTnzLQGwgyKG6Of/1dZcyj4Z84MBdmIgLr3Jn24M/HKj7iIuy+H6N55hPoNYX9YBPHJKNlTsySmEBajoegD3wK0jtsgfb7fOHmEQFUn/GWMIyjJAuZDfnd0dVTKyA2gg8fzLNZRKotYt9bCi6qQ869KE9W5FOP5tYwzJm7R4uzyXXP1b3kSw/iHBzqN3NuNOpeZCBkYgZkOaY0kL2l/6lbL7sCw7xFY5UxeJ07qD4ze/RHcjtPdJwKsNOSyYOF+Vhf6A85J5aY/nR6saZMuuYZKBjze0FReAZ6ZPEbFGJ7s/N4Hgne0NF+W/88tP56vmlzKFDkZ6M3V4uJNjSl5/5WYyYGImR+NDd3HuEU56EK8MP+Ufdyqwga4wlTuqSe64sbxYWcyzHy80q+MFhmTC6X6ObUcImZWbykb9EusriTYRTWhKvp3O5OwCBFpDoe1fbKEd6gqq5YVF5wI43lZRKNCWhf/5Cq+YVrBvIKDhUu3NDZqPgLwb06ifIyF2/zd9zar7okWNAWS3KQsi0IBSaTWcLcIXaCMVwB9hO0aoPu/vuQZrpnMdeeO4JmkBrqvvBjCG1dpsjjDpqYDn9ro8rPLC+CtjBQqFhKxF/p7mB3JlOe2sIWiYoM9X7cBxKaJ/U9NvnIq8lJSBp2YjYXozgRUNs9sKgIkwaSIw9P9ck4XIjZ8d8bAP0Tpor//DDrjghcvdJKoW8HSjXsSprSra6o8nd+QDCY2DNms3a6FgvYAgzFrQ1JuvXr09kdq3fByPyXG5rMzUSkHfzOfWyjjxFiL1iCoapFi8GyxDQI5k31MRTbwMRxT5KquYHRVvLe50J737Y5zQIwu4uZU67Sh+848IHItK/XLRBvcW+AwGhmNeSd5R8CR+Eqvt0PRmD24+xtt6FLTWZFsAPcGy8IM1h5uS0hy+JOVyRv5vIdWXty9ywQ4s60QCrQIpz+RF+x5ufKjksn4xPYf37AMf8S096SzB3WXA2nnA4JZWwpJVJdyEWMXtuUqLNLxKBK0qfWHgYjjemkeUED6ZQkCJZFjWY3nTebhrVk5N9io0V0kED14uD4CXkWKMMq9m4wqhBcRqTulTiwWEnxQ8\",\"id\":\"rs_42b562d6-b86d-96bc-85ff-cb1927416d88\",\"status\":\"completed\",\"summary\":[{\"text\":\"The user wants me to evaluate a recursive operational program through real function calls. I need to follow the program exactly.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\":\"secondary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "The"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " primary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " failed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " {\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "error"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "PRIMARY"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "UN"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "AVAILABLE"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\",\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "false"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "}."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " That's"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " an"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " explicit"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " failure"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ","
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " so"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " FALL"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "BACK"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " should"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " evaluate"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " backup"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ".\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"secondary\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1778,
+            "uncached_input_tokens": 1650,
+            "cached_input_tokens": 128,
+            "output_tokens": 88,
+            "reasoning_tokens": 76,
+            "total_tokens": 1866,
+            "raw": [
+              {
+                "context_details": {
+                  "input_tokens": 1778,
+                  "output_tokens": 88
+                },
+                "cost_in_usd_ticks": 6616400,
+                "input_tokens": 1778,
+                "input_tokens_details": {
+                  "cached_tokens": 128
+                },
+                "num_server_side_tools_used": 0,
+                "num_sources_used": 0,
+                "output_tokens": 88,
+                "output_tokens_details": {
+                  "reasoning_tokens": 76
+                },
+                "total_tokens": 1866
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "Coj1heG4PcOaX5T/BpGjSktlZ/7SL+0xnAn71pCT4mborBYsiCt8ASWuqDEBWx51W/GnaJF2rapYnRxYPvuVa+WcNI7uCliryS4oGfEDRVT6iHsc2Wbiw2xz6zSMoXHL5l1uAu85uZMV3L0eHBYeeB7o935gCZkBQ5CobGlXe3YZYVAbNK6o3OIkqVXTPizrNN5PQUEnHhTfOQ4SzRsrjpJ+7kgrR0vrt+HOxzlQcDBjy2OHd7GSeXP/lNGm5/mefJ3HxpBRs80ddfHS6gzJ8A0OB2lSMPYKjQPeBnCBgQuoAChYTDR20x0diNKHO+Uez9iy+7Oxm6M+LIQv1908bq0JwOIQkvLy7Uq3PFJxhc+3dIYeBga8nR35nghRbadXXyXlwu3bAfWFi/jKi36nOCQyxfMxql2B5j5/kLbOM0KmqSB4RpCPcG/bMGiYrgSRbDJFtusHvhodDABdYHzHaE5e2IedcehxLkrb3bmGAZQ3",
+                "id": "rs_911b7387-8580-9880-89b5-cab3c3fd1f44",
+                "status": "completed",
+                "summary": [
+                  {
+                    "text": "The primary probe failed with {\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}. That's an explicit failure, so FALLBACK should evaluate the backup.\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1778,
+        "uncached_input_tokens": 1650,
+        "cached_input_tokens": 128,
+        "output_tokens": 88,
+        "reasoning_tokens": 76,
+        "total_tokens": 1866,
+        "raw": [
+          {
+            "context_details": {
+              "input_tokens": 1778,
+              "output_tokens": 88
+            },
+            "cost_in_usd_ticks": 6616400,
+            "input_tokens": 1778,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "num_server_side_tools_used": 0,
+            "num_sources_used": 0,
+            "output_tokens": 88,
+            "output_tokens_details": {
+              "reasoning_tokens": 76
+            },
+            "total_tokens": 1866
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 2145,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "grok-4.6",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2145,
+        "calibration_key": 2712109961746975244,
+        "calibration_shape": 9630971716609863206
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"mxU14GOyTWFriGkpT4zDurFQlEFB4jn5/45ufNxOlRIljtuHeLP09Z49UQXJCveBlD6BPHbtSLcKyrBXVFebqCFqY7rkyZrbyWwCFGOD+TEtgCorYhUGU/ViO7b1FQPZcE2HiK3wX+n/QD8fVe7HvUTuttOPhjiXUaEZffRimy/5/pw8fq1qwJmONYgqfc2wP5vs5mSAhpL87nnlwNAn6TVYUWSngHDmSzG4BCXYTnzLQGwgyKG6Of/1dZcyj4Z84MBdmIgLr3Jn24M/HKj7iIuy+H6N55hPoNYX9YBPHJKNlTsySmEBajoegD3wK0jtsgfb7fOHmEQFUn/GWMIyjJAuZDfnd0dVTKyA2gg8fzLNZRKotYt9bCi6qQ869KE9W5FOP5tYwzJm7R4uzyXXP1b3kSw/iHBzqN3NuNOpeZCBkYgZkOaY0kL2l/6lbL7sCw7xFY5UxeJ07qD4ze/RHcjtPdJwKsNOSyYOF+Vhf6A85J5aY/nR6saZMuuYZKBjze0FReAZ6ZPEbFGJ7s/N4Hgne0NF+W/88tP56vmlzKFDkZ6M3V4uJNjSl5/5WYyYGImR+NDd3HuEU56EK8MP+Ufdyqwga4wlTuqSe64sbxYWcyzHy80q+MFhmTC6X6ObUcImZWbykb9EusriTYRTWhKvp3O5OwCBFpDoe1fbKEd6gqq5YVF5wI43lZRKNCWhf/5Cq+YVrBvIKDhUu3NDZqPgLwb06ifIyF2/zd9zar7okWNAWS3KQsi0IBSaTWcLcIXaCMVwB9hO0aoPu/vuQZrpnMdeeO4JmkBrqvvBjCG1dpsjjDpqYDn9ro8rPLC+CtjBQqFhKxF/p7mB3JlOe2sIWiYoM9X7cBxKaJ/U9NvnIq8lJSBp2YjYXozgRUNs9sKgIkwaSIw9P9ck4XIjZ8d8bAP0Tpor//DDrjghcvdJKoW8HSjXsSprSra6o8nd+QDCY2DNms3a6FgvYAgzFrQ1JuvXr09kdq3fByPyXG5rMzUSkHfzOfWyjjxFiL1iCoapFi8GyxDQI5k31MRTbwMRxT5KquYHRVvLe50J737Y5zQIwu4uZU67Sh+848IHItK/XLRBvcW+AwGhmNeSd5R8CR+Eqvt0PRmD24+xtt6FLTWZFsAPcGy8IM1h5uS0hy+JOVyRv5vIdWXty9ywQ4s60QCrQIpz+RF+x5ufKjksn4xPYf37AMf8S096SzB3WXA2nnA4JZWwpJVJdyEWMXtuUqLNLxKBK0qfWHgYjjemkeUED6ZQkCJZFjWY3nTebhrVk5N9io0V0kED14uD4CXkWKMMq9m4wqhBcRqTulTiwWEnxQ8\",\"id\":\"rs_42b562d6-b86d-96bc-85ff-cb1927416d88\",\"status\":\"completed\",\"summary\":[{\"text\":\"The user wants me to evaluate a recursive operational program through real function calls. I need to follow the program exactly.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"Coj1heG4PcOaX5T/BpGjSktlZ/7SL+0xnAn71pCT4mborBYsiCt8ASWuqDEBWx51W/GnaJF2rapYnRxYPvuVa+WcNI7uCliryS4oGfEDRVT6iHsc2Wbiw2xz6zSMoXHL5l1uAu85uZMV3L0eHBYeeB7o935gCZkBQ5CobGlXe3YZYVAbNK6o3OIkqVXTPizrNN5PQUEnHhTfOQ4SzRsrjpJ+7kgrR0vrt+HOxzlQcDBjy2OHd7GSeXP/lNGm5/mefJ3HxpBRs80ddfHS6gzJ8A0OB2lSMPYKjQPeBnCBgQuoAChYTDR20x0diNKHO+Uez9iy+7Oxm6M+LIQv1908bq0JwOIQkvLy7Uq3PFJxhc+3dIYeBga8nR35nghRbadXXyXlwu3bAfWFi/jKi36nOCQyxfMxql2B5j5/kLbOM0KmqSB4RpCPcG/bMGiYrgSRbDJFtusHvhodDABdYHzHaE5e2IedcehxLkrb3bmGAZQ3\",\"id\":\"rs_911b7387-8580-9880-89b5-cab3c3fd1f44\",\"status\":\"completed\",\"summary\":[{\"text\":\"The primary probe failed with {\\\"error\\\":\\\"PRIMARY_UNAVAILABLE\\\",\\\"ok\\\":false}. That's an explicit failure, so FALLBACK should evaluate the backup.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call-b623cb54-5a86-49ae-80a5-7c9da287a01a-2",
+            "type": "function",
+            "func_name": "probe_endpoint",
+            "arguments": "{\"name\":\"tertiary\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Secondary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " also"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " failed"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Now"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " I"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " need"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " to"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " call"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " tertiary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " probe"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call-b623cb54-5a86-49ae-80a5-7c9da287a01a-2",
+          "name": "probe_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"tertiary\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1887,
+            "uncached_input_tokens": 1887,
+            "cached_input_tokens": 0,
+            "output_tokens": 27,
+            "reasoning_tokens": 13,
+            "total_tokens": 1914,
+            "raw": [
+              {
+                "context_details": {
+                  "input_tokens": 1887,
+                  "output_tokens": 27
+                },
+                "cost_in_usd_ticks": 6691200,
+                "input_tokens": 1887,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "num_server_side_tools_used": 0,
+                "num_sources_used": 0,
+                "output_tokens": 27,
+                "output_tokens_details": {
+                  "reasoning_tokens": 13
+                },
+                "total_tokens": 1914
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "6uTGmJFSGuCHPmaDX4arhW8Pbs6VTQIaxQIkbutN3gWILKT9OJMXf7ncmWnYHKntl6nWcFC1XCppKO6MXFuRhqLVt5PaeFVFw/3uI0NBNZDWJ613pxWdZ4w",
+                "id": "rs_c6247175-67c8-905f-8a2c-6195d4d6bdf2",
+                "status": "completed",
+                "summary": [
+                  {
+                    "text": "Secondary also failed. Now I need to call the tertiary probe.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1887,
+        "uncached_input_tokens": 1887,
+        "cached_input_tokens": 0,
+        "output_tokens": 27,
+        "reasoning_tokens": 13,
+        "total_tokens": 1914,
+        "raw": [
+          {
+            "context_details": {
+              "input_tokens": 1887,
+              "output_tokens": 27
+            },
+            "cost_in_usd_ticks": 6691200,
+            "input_tokens": 1887,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "num_server_side_tools_used": 0,
+            "num_sources_used": 0,
+            "output_tokens": 27,
+            "output_tokens_details": {
+              "reasoning_tokens": 13
+            },
+            "total_tokens": 1914
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2305,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "grok-4.6",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2305,
+        "calibration_key": 6038062313117782606,
+        "calibration_shape": 9630971716609863206
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"mxU14GOyTWFriGkpT4zDurFQlEFB4jn5/45ufNxOlRIljtuHeLP09Z49UQXJCveBlD6BPHbtSLcKyrBXVFebqCFqY7rkyZrbyWwCFGOD+TEtgCorYhUGU/ViO7b1FQPZcE2HiK3wX+n/QD8fVe7HvUTuttOPhjiXUaEZffRimy/5/pw8fq1qwJmONYgqfc2wP5vs5mSAhpL87nnlwNAn6TVYUWSngHDmSzG4BCXYTnzLQGwgyKG6Of/1dZcyj4Z84MBdmIgLr3Jn24M/HKj7iIuy+H6N55hPoNYX9YBPHJKNlTsySmEBajoegD3wK0jtsgfb7fOHmEQFUn/GWMIyjJAuZDfnd0dVTKyA2gg8fzLNZRKotYt9bCi6qQ869KE9W5FOP5tYwzJm7R4uzyXXP1b3kSw/iHBzqN3NuNOpeZCBkYgZkOaY0kL2l/6lbL7sCw7xFY5UxeJ07qD4ze/RHcjtPdJwKsNOSyYOF+Vhf6A85J5aY/nR6saZMuuYZKBjze0FReAZ6ZPEbFGJ7s/N4Hgne0NF+W/88tP56vmlzKFDkZ6M3V4uJNjSl5/5WYyYGImR+NDd3HuEU56EK8MP+Ufdyqwga4wlTuqSe64sbxYWcyzHy80q+MFhmTC6X6ObUcImZWbykb9EusriTYRTWhKvp3O5OwCBFpDoe1fbKEd6gqq5YVF5wI43lZRKNCWhf/5Cq+YVrBvIKDhUu3NDZqPgLwb06ifIyF2/zd9zar7okWNAWS3KQsi0IBSaTWcLcIXaCMVwB9hO0aoPu/vuQZrpnMdeeO4JmkBrqvvBjCG1dpsjjDpqYDn9ro8rPLC+CtjBQqFhKxF/p7mB3JlOe2sIWiYoM9X7cBxKaJ/U9NvnIq8lJSBp2YjYXozgRUNs9sKgIkwaSIw9P9ck4XIjZ8d8bAP0Tpor//DDrjghcvdJKoW8HSjXsSprSra6o8nd+QDCY2DNms3a6FgvYAgzFrQ1JuvXr09kdq3fByPyXG5rMzUSkHfzOfWyjjxFiL1iCoapFi8GyxDQI5k31MRTbwMRxT5KquYHRVvLe50J737Y5zQIwu4uZU67Sh+848IHItK/XLRBvcW+AwGhmNeSd5R8CR+Eqvt0PRmD24+xtt6FLTWZFsAPcGy8IM1h5uS0hy+JOVyRv5vIdWXty9ywQ4s60QCrQIpz+RF+x5ufKjksn4xPYf37AMf8S096SzB3WXA2nnA4JZWwpJVJdyEWMXtuUqLNLxKBK0qfWHgYjjemkeUED6ZQkCJZFjWY3nTebhrVk5N9io0V0kED14uD4CXkWKMMq9m4wqhBcRqTulTiwWEnxQ8\",\"id\":\"rs_42b562d6-b86d-96bc-85ff-cb1927416d88\",\"status\":\"completed\",\"summary\":[{\"text\":\"The user wants me to evaluate a recursive operational program through real function calls. I need to follow the program exactly.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"Coj1heG4PcOaX5T/BpGjSktlZ/7SL+0xnAn71pCT4mborBYsiCt8ASWuqDEBWx51W/GnaJF2rapYnRxYPvuVa+WcNI7uCliryS4oGfEDRVT6iHsc2Wbiw2xz6zSMoXHL5l1uAu85uZMV3L0eHBYeeB7o935gCZkBQ5CobGlXe3YZYVAbNK6o3OIkqVXTPizrNN5PQUEnHhTfOQ4SzRsrjpJ+7kgrR0vrt+HOxzlQcDBjy2OHd7GSeXP/lNGm5/mefJ3HxpBRs80ddfHS6gzJ8A0OB2lSMPYKjQPeBnCBgQuoAChYTDR20x0diNKHO+Uez9iy+7Oxm6M+LIQv1908bq0JwOIQkvLy7Uq3PFJxhc+3dIYeBga8nR35nghRbadXXyXlwu3bAfWFi/jKi36nOCQyxfMxql2B5j5/kLbOM0KmqSB4RpCPcG/bMGiYrgSRbDJFtusHvhodDABdYHzHaE5e2IedcehxLkrb3bmGAZQ3\",\"id\":\"rs_911b7387-8580-9880-89b5-cab3c3fd1f44\",\"status\":\"completed\",\"summary\":[{\"text\":\"The primary probe failed with {\\\"error\\\":\\\"PRIMARY_UNAVAILABLE\\\",\\\"ok\\\":false}. That's an explicit failure, so FALLBACK should evaluate the backup.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"6uTGmJFSGuCHPmaDX4arhW8Pbs6VTQIaxQIkbutN3gWILKT9OJMXf7ncmWnYHKntl6nWcFC1XCppKO6MXFuRhqLVt5PaeFVFw/3uI0NBNZDWJ613pxWdZ4w\",\"id\":\"rs_c6247175-67c8-905f-8a2c-6195d4d6bdf2\",\"status\":\"completed\",\"summary\":[{\"text\":\"Secondary also failed. Now I need to call the tertiary probe.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-b623cb54-5a86-49ae-80a5-7c9da287a01a-2",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-b623cb54-5a86-49ae-80a5-7c9da287a01a-2"
+        }
+      ],
+      "response": {
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call-09c3e271-7c34-4214-b8e5-1fc42bc6dac7-3",
+            "type": "function",
+            "func_name": "verify_endpoint",
+            "arguments": "{\"name\":\"tertiary\",\"token\":\"EP-T-5541\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "T"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ertiary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " succeeded"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " {\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "name"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ter"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ti"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ary"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\",\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ",\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "EP"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "T"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "554"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "1"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\"}"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "call-09c3e271-7c34-4214-b8e5-1fc42bc6dac7-3",
+          "name": "verify_endpoint"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{\"name\":\"tertiary\",\"token\":\"EP-T-5541\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1943,
+            "uncached_input_tokens": 1815,
+            "cached_input_tokens": 128,
+            "output_tokens": 129,
+            "reasoning_tokens": 104,
+            "total_tokens": 2072,
+            "raw": [
+              {
+                "context_details": {
+                  "input_tokens": 1943,
+                  "output_tokens": 129
+                },
+                "cost_in_usd_ticks": 7595600,
+                "input_tokens": 1943,
+                "input_tokens_details": {
+                  "cached_tokens": 128
+                },
+                "num_server_side_tools_used": 0,
+                "num_sources_used": 0,
+                "output_tokens": 129,
+                "output_tokens_details": {
+                  "reasoning_tokens": 104
+                },
+                "total_tokens": 2072
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "bzQr0IWeF4slFl3GmndAbLcqI+cnrBLcd6BUy3smeB6MvpKZpwxpwInRRJaT0YPHpmezl1SNvX9Sh1BlolvqDOfkgEGwcFGmd2Ic99Md8PDKEc6DfJPzmKy4gaCmVlLALKur/dCNNfUMOMoA+gb8kaAYxOTDBs47Odqgq2HnUxq44IiDnAgQJyP0ODtYdesP7rwdXx9PCoyCqshHxiNHryv6pFkh7d76LVP1sArhZjBN1QpFYnknDxq4D5cttuqw/mAuJ1sWqqX0ZkqO5/Q+kWSYPmb6PZXwCUkSmgW3OgebAwXt7It/5MOBKmlgNVzBodYEmk0hYmZnWMWNnjXebjhMwI9VAEh7lc8Y7W5qY8Y4N678B5xAYE3rFJ8KisLfg6QxNPRx9nIXvgIXcz+E6UQLMokKAwc2YMH2dI910/JB3rBhKjNndIAKYofzNoOQC+yKFzZscSOMcYp5sbm79IbrLeZKl1LkYR8",
+                "id": "rs_88265935-3102-9559-b985-c94c1c9b363a",
+                "status": "completed",
+                "summary": [
+                  {
+                    "text": "Tertiary succeeded: {\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1943,
+        "uncached_input_tokens": 1815,
+        "cached_input_tokens": 128,
+        "output_tokens": 129,
+        "reasoning_tokens": 104,
+        "total_tokens": 2072,
+        "raw": [
+          {
+            "context_details": {
+              "input_tokens": 1943,
+              "output_tokens": 129
+            },
+            "cost_in_usd_ticks": 7595600,
+            "input_tokens": 1943,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "num_server_side_tools_used": 0,
+            "num_sources_used": 0,
+            "output_tokens": 129,
+            "output_tokens_details": {
+              "reasoning_tokens": 104
+            },
+            "total_tokens": 2072
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 5,
+      "prompt_measurement": {
+        "tokens": 2567,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "grok-4.6",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2567,
+        "calibration_key": 7885047247680768673,
+        "calibration_shape": 9630971716609863206
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"mxU14GOyTWFriGkpT4zDurFQlEFB4jn5/45ufNxOlRIljtuHeLP09Z49UQXJCveBlD6BPHbtSLcKyrBXVFebqCFqY7rkyZrbyWwCFGOD+TEtgCorYhUGU/ViO7b1FQPZcE2HiK3wX+n/QD8fVe7HvUTuttOPhjiXUaEZffRimy/5/pw8fq1qwJmONYgqfc2wP5vs5mSAhpL87nnlwNAn6TVYUWSngHDmSzG4BCXYTnzLQGwgyKG6Of/1dZcyj4Z84MBdmIgLr3Jn24M/HKj7iIuy+H6N55hPoNYX9YBPHJKNlTsySmEBajoegD3wK0jtsgfb7fOHmEQFUn/GWMIyjJAuZDfnd0dVTKyA2gg8fzLNZRKotYt9bCi6qQ869KE9W5FOP5tYwzJm7R4uzyXXP1b3kSw/iHBzqN3NuNOpeZCBkYgZkOaY0kL2l/6lbL7sCw7xFY5UxeJ07qD4ze/RHcjtPdJwKsNOSyYOF+Vhf6A85J5aY/nR6saZMuuYZKBjze0FReAZ6ZPEbFGJ7s/N4Hgne0NF+W/88tP56vmlzKFDkZ6M3V4uJNjSl5/5WYyYGImR+NDd3HuEU56EK8MP+Ufdyqwga4wlTuqSe64sbxYWcyzHy80q+MFhmTC6X6ObUcImZWbykb9EusriTYRTWhKvp3O5OwCBFpDoe1fbKEd6gqq5YVF5wI43lZRKNCWhf/5Cq+YVrBvIKDhUu3NDZqPgLwb06ifIyF2/zd9zar7okWNAWS3KQsi0IBSaTWcLcIXaCMVwB9hO0aoPu/vuQZrpnMdeeO4JmkBrqvvBjCG1dpsjjDpqYDn9ro8rPLC+CtjBQqFhKxF/p7mB3JlOe2sIWiYoM9X7cBxKaJ/U9NvnIq8lJSBp2YjYXozgRUNs9sKgIkwaSIw9P9ck4XIjZ8d8bAP0Tpor//DDrjghcvdJKoW8HSjXsSprSra6o8nd+QDCY2DNms3a6FgvYAgzFrQ1JuvXr09kdq3fByPyXG5rMzUSkHfzOfWyjjxFiL1iCoapFi8GyxDQI5k31MRTbwMRxT5KquYHRVvLe50J737Y5zQIwu4uZU67Sh+848IHItK/XLRBvcW+AwGhmNeSd5R8CR+Eqvt0PRmD24+xtt6FLTWZFsAPcGy8IM1h5uS0hy+JOVyRv5vIdWXty9ywQ4s60QCrQIpz+RF+x5ufKjksn4xPYf37AMf8S096SzB3WXA2nnA4JZWwpJVJdyEWMXtuUqLNLxKBK0qfWHgYjjemkeUED6ZQkCJZFjWY3nTebhrVk5N9io0V0kED14uD4CXkWKMMq9m4wqhBcRqTulTiwWEnxQ8\",\"id\":\"rs_42b562d6-b86d-96bc-85ff-cb1927416d88\",\"status\":\"completed\",\"summary\":[{\"text\":\"The user wants me to evaluate a recursive operational program through real function calls. I need to follow the program exactly.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"primary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-9477345d-f7e2-476b-ba6c-f52327ce9cd8-0"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"Coj1heG4PcOaX5T/BpGjSktlZ/7SL+0xnAn71pCT4mborBYsiCt8ASWuqDEBWx51W/GnaJF2rapYnRxYPvuVa+WcNI7uCliryS4oGfEDRVT6iHsc2Wbiw2xz6zSMoXHL5l1uAu85uZMV3L0eHBYeeB7o935gCZkBQ5CobGlXe3YZYVAbNK6o3OIkqVXTPizrNN5PQUEnHhTfOQ4SzRsrjpJ+7kgrR0vrt+HOxzlQcDBjy2OHd7GSeXP/lNGm5/mefJ3HxpBRs80ddfHS6gzJ8A0OB2lSMPYKjQPeBnCBgQuoAChYTDR20x0diNKHO+Uez9iy+7Oxm6M+LIQv1908bq0JwOIQkvLy7Uq3PFJxhc+3dIYeBga8nR35nghRbadXXyXlwu3bAfWFi/jKi36nOCQyxfMxql2B5j5/kLbOM0KmqSB4RpCPcG/bMGiYrgSRbDJFtusHvhodDABdYHzHaE5e2IedcehxLkrb3bmGAZQ3\",\"id\":\"rs_911b7387-8580-9880-89b5-cab3c3fd1f44\",\"status\":\"completed\",\"summary\":[{\"text\":\"The primary probe failed with {\\\"error\\\":\\\"PRIMARY_UNAVAILABLE\\\",\\\"ok\\\":false}. That's an explicit failure, so FALLBACK should evaluate the backup.\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"secondary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-aa131b17-f087-4496-ab48-b9cd338d8eb0-1"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"6uTGmJFSGuCHPmaDX4arhW8Pbs6VTQIaxQIkbutN3gWILKT9OJMXf7ncmWnYHKntl6nWcFC1XCppKO6MXFuRhqLVt5PaeFVFw/3uI0NBNZDWJ613pxWdZ4w\",\"id\":\"rs_c6247175-67c8-905f-8a2c-6195d4d6bdf2\",\"status\":\"completed\",\"summary\":[{\"text\":\"Secondary also failed. Now I need to call the tertiary probe.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-b623cb54-5a86-49ae-80a5-7c9da287a01a-2",
+              "type": "function",
+              "function": {
+                "name": "probe_endpoint",
+                "arguments": "{\"name\":\"tertiary\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+          "name": "probe_endpoint",
+          "tool_call_id": "call-b623cb54-5a86-49ae-80a5-7c9da287a01a-2"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"bzQr0IWeF4slFl3GmndAbLcqI+cnrBLcd6BUy3smeB6MvpKZpwxpwInRRJaT0YPHpmezl1SNvX9Sh1BlolvqDOfkgEGwcFGmd2Ic99Md8PDKEc6DfJPzmKy4gaCmVlLALKur/dCNNfUMOMoA+gb8kaAYxOTDBs47Odqgq2HnUxq44IiDnAgQJyP0ODtYdesP7rwdXx9PCoyCqshHxiNHryv6pFkh7d76LVP1sArhZjBN1QpFYnknDxq4D5cttuqw/mAuJ1sWqqX0ZkqO5/Q+kWSYPmb6PZXwCUkSmgW3OgebAwXt7It/5MOBKmlgNVzBodYEmk0hYmZnWMWNnjXebjhMwI9VAEh7lc8Y7W5qY8Y4N678B5xAYE3rFJ8KisLfg6QxNPRx9nIXvgIXcz+E6UQLMokKAwc2YMH2dI910/JB3rBhKjNndIAKYofzNoOQC+yKFzZscSOMcYp5sbm79IbrLeZKl1LkYR8\",\"id\":\"rs_88265935-3102-9559-b985-c94c1c9b363a\",\"status\":\"completed\",\"summary\":[{\"text\":\"Tertiary succeeded: {\\\"name\\\":\\\"tertiary\\\",\\\"ok\\\":true,\\\"token\\\":\\\"EP-T-5541\\\"}\\n\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call-09c3e271-7c34-4214-b8e5-1fc42bc6dac7-3",
+              "type": "function",
+              "function": {
+                "name": "verify_endpoint",
+                "arguments": "{\"name\":\"tertiary\",\"token\":\"EP-T-5541\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}",
+          "name": "verify_endpoint",
+          "tool_call_id": "call-09c3e271-7c34-4214-b8e5-1fc42bc6dac7-3"
+        }
+      ],
+      "response": {
+        "content": "ENDPOINT-VERIFIED-7752",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Verified"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": ":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " {\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "delivery"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "token"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ENDPOINT"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "VER"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "-"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "775"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "2"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\",\""
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "ok"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "\":"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "true"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "}\n"
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "ENDPOINT"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "775"
+        },
+        {
+          "kind": "text_delta",
+          "text": "2"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 2095,
+            "uncached_input_tokens": 175,
+            "cached_input_tokens": 1920,
+            "output_tokens": 63,
+            "reasoning_tokens": 56,
+            "total_tokens": 2158,
+            "raw": [
+              {
+                "context_details": {
+                  "input_tokens": 2095,
+                  "output_tokens": 63
+                },
+                "cost_in_usd_ticks": 2869600,
+                "input_tokens": 2095,
+                "input_tokens_details": {
+                  "cached_tokens": 1920
+                },
+                "num_server_side_tools_used": 0,
+                "num_sources_used": 0,
+                "output_tokens": 63,
+                "output_tokens_details": {
+                  "reasoning_tokens": 56
+                },
+                "total_tokens": 2158
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "aKy/gCZ5XcG3S+ZwrghntD8AqNISV4BgXr7Ugv+Ie/Jsk9BKPfWVHT3ATODx3LEP3hDTtN30v33BdhWULTlxzjorR+gw7ki+3BYpPmkt7UKrtqhoFMxhaUjHSQHOq6CmQRVmuv/lMPkIIbsK/qFDFn9uJHzQDV/zk9VVYU4W0myKnG9KWpALVBWTmstg69MpEmAZwhcxCQMRjGDRr3GoJDto2wg4Knh3sC+/+jBYmjF/2Q+RbA1/5ZyK+lPVdEVE5wKcZ5R3mW9qyyYpSxDy0Zo0PKk8LKEKV7ng4PYCewl5kcaDycb33QZneA",
+                "id": "rs_6be65322-1b18-9af6-88d8-9d4eaebfa1e6",
+                "status": "completed",
+                "summary": [
+                  {
+                    "text": "Verified: {\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}\n",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 2095,
+        "uncached_input_tokens": 175,
+        "cached_input_tokens": 1920,
+        "output_tokens": 63,
+        "reasoning_tokens": 56,
+        "total_tokens": 2158,
+        "raw": [
+          {
+            "context_details": {
+              "input_tokens": 2095,
+              "output_tokens": 63
+            },
+            "cost_in_usd_ticks": 2869600,
+            "input_tokens": 2095,
+            "input_tokens_details": {
+              "cached_tokens": 1920
+            },
+            "num_server_side_tools_used": 0,
+            "num_sources_used": 0,
+            "output_tokens": 63,
+            "output_tokens_details": {
+              "reasoning_tokens": 56
+            },
+            "total_tokens": 2158
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

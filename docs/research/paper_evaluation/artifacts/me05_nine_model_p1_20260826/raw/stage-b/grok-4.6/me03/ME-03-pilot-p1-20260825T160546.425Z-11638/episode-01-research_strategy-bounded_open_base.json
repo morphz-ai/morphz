@@ -1,0 +1,465 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "bounded_open_base",
+  "context_id": "research-landscape-v1",
+  "valid_open_set_count": 4,
+  "selected": [
+    "broad_scan",
+    "expert_interviews"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis research-landscape-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"broad_scan covers breadth and fast; pair it with any other non-causal method.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 732,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 732,
+      "calibration_key": 10551226052779761356,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"broad_scan covers breadth and fast; pair it with any other non-causal method.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " wants"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " act"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " as"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " model"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "owned"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluator"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " typed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cognitive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " boundary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Markdown"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "research"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "landscape"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "v"
+      },
+      {
+        "kind": "text_delta",
+        "text": "1"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "broad"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "scan"
+      },
+      {
+        "kind": "text_delta",
+        "text": " covers"
+      },
+      {
+        "kind": "text_delta",
+        "text": " breadth"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " fast"
+      },
+      {
+        "kind": "text_delta",
+        "text": ";"
+      },
+      {
+        "kind": "text_delta",
+        "text": " pair"
+      },
+      {
+        "kind": "text_delta",
+        "text": " it"
+      },
+      {
+        "kind": "text_delta",
+        "text": " with"
+      },
+      {
+        "kind": "text_delta",
+        "text": " any"
+      },
+      {
+        "kind": "text_delta",
+        "text": " other"
+      },
+      {
+        "kind": "text_delta",
+        "text": " non"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "causal"
+      },
+      {
+        "kind": "text_delta",
+        "text": " method"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "broad"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "scan"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "expert"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "inter"
+      },
+      {
+        "kind": "text_delta",
+        "text": "views"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 833,
+          "uncached_input_tokens": 705,
+          "cached_input_tokens": 128,
+          "output_tokens": 823,
+          "reasoning_tokens": 777,
+          "total_tokens": 1656,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 833,
+                "output_tokens": 823
+              },
+              "cost_in_usd_ticks": 10900400,
+              "input_tokens": 833,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 823,
+              "output_tokens_details": {
+                "reasoning_tokens": 777
+              },
+              "total_tokens": 1656
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "NYh2yMV559tzuRqztH7Vj4gtBfAtt0icvCsgdozpyCKEJRkvSMS7v8DOrtSsdBCQf7rX4Aikqersd68O640Ftvn8SPHIGxwL2YiM5mE9lT5MrZsK0S1WJaAImPfX0gt01ZhF7p4/+HN68c6xgecFLbn7l98bIHJf99KsPpHgKP35RXzJwxBdfOWslFxp+Stea6YTUkg2A66VYBQU2LOknxaxQHdaxwrW5Y23pBgmSwVbmQzKLklPrKeNAe1cfO5R73KqqVCv3X3l6LCBqW30YW6XOHgm+BBue+OGr0QvVFpNQTyGwk5hqNX7+f6jcrZSTzybYzGq3m1KVwaMHJZOjUEQx3I/HaHKL/Buzafl74OXsLlOV9wsQhQXXP+JnaPfUtbTN4puHN/IxnKFbIAIXaSEqvKUpB3hZYnJutt9t3WVCvNHHEJZsHlB899c+kInVbDgcQvlrheyYzCbr6XzNrPTvBE60+dIS/dXYOkir4znlJgFud8X/BhCSqzTdWltchM/RhnSsjCH3GZ1y6o8by1c1imd4/K2GTd6sxC+24jNgZeufVL4MpN6H3GuJFDJz4sQygMN8vnl+dPtL7er0xJrdZYVUP1wXYXQpz2Wrw9Dmw1TYCjDAowq5JK1or2G+qL3KCsLdT/2TTbwdaJg8MbzPf6Z33xmA8VaDSdK7Z6VME2e38jQCD9TjteEMylhnW/4F7daRWow0qsSbLEYfwRIzPQOp5NtLAIqm6TDvdr2jH+AbmrXGSydpmseHFXCongIZlszP67sxc/6tonM+5v5lcaWTEDJuFGogrrd9fMtlbXgfaPZjYs214PYJKAY2dyAxAOOA+UEl5AiKUZITdps5D8Fy9Uuk1vpX1L6cFLz8ZKTmK+jGQA6SnYZgBEkNttwyhXiVTlN8LbMI3gd5omslVWB5EMG4TW4YogZKRX6xcuLNtfiy/m48GEFK06TmrysIM55ZFihc0V8J+/6xNA2TQInk7Is0wCkXEiyBh+Iv8jb+dAdyrVe6evPs38vvYYFbxKcvzCEYZUbEoo2KgDv3Zbht37TeNYtljbV/huZDQjmwtkrKLamAu+hGgU965eAU67UVfRMz5oEt18iIon3M7gviRshLnTKQ8VmyQtjyvJV/c6Nx0DJ39RPqeOUp8BMqcO9oy8pKUoOdQf5eRGqGFjtYtPtzCd514hKcl0QFP+VZT1h07BqUV68elwHcGM2u9ciczSzlJluPaG+NsjAgzBR4OCrM9J21jg1xO+XGD5Nz15KXrDoS3XsybsHqqQiqGEIm6lMqyrSv2+MSN69bsBYZG4wVK/eZSYUxRseGFQFG9j6YuKnxBYWHoT62WbxJg7pMPeJgJY8ayYdhNArYWF+Zbdt7bf6UMxCcfumUWKLHedemEwoVuk0kb7Ts10vsiIlqHHBXkUOUTnBWm37nftIxGFiiWcM0lqQyZ3G5hgj1k+iLY1G1AddPQ7DreMYwT3YyW3qOk7d/iHjT5jxuKk1OVjTAu2h7Ot8vPkympiCx7kZqCtXBFX0yyK1l2WyoTGKkNCz/k+9EpnD4RRxmMOmupQJQQyFwCYU+sP1SH8vVCe1dAMTO3OgQVHPAYnqufLj5YeH4GOvbbpzrMdNoqYWdcwRPpUg3Qwk8kgTArbqqFY6/zwQip3z8Z/bfDaK2nJ+Cd+kKDVXZw0N7lGLDz4NhXdkv5z/iwFYou8XtCUAQ8ZtPTPxApUb0/i0PsdfknFoGUtbB5bHFg6V58Lo7N6JG3CJ168HUNc7V37FDiJP40+zS1kTjiNEtgodPIwXBAshqKzDpRExYAqPa1zFatx+GW07vETw2D7P3zKCA5Sj4zm7OCeaz/hGJf+qh4INl4MI40i+BlK9rHLJ9yniJavL7VFfYg3aYz3FZFawbu/JgS6HrpQ4dRZnElg8UDv5AE8KtF8DrQyaDhnRGncihi69bGxPSyhZoEXGXUiNaTrZwQKgwkhqCZ+2bfK1r5P9aIGjwAsGBiWf0RPGP2reY9hCCrUKO7P5KIEheLg12omSCUyZIgZIydiMmZsdTLI71AAIEPvIhGIT0atCFpNIO2Ljnf8pDqLHyijBjYA7q4iq0evJaEjiLdt5PZJLaPwe7GiOIB0ziN6B8A5COVLV4bK2HnXm8qq+EB8Q0J4OgWk/x5hrU3LoxVRHjpnwkjaLIhaouDwtn14FWQeSdpR7ZvS7xv4kKkXjAogsTb0PEqfujsVTKWT8pvgbZrFIaJ37jIzc4in1zXs0Hn+zFMwe44VtFccNWWRjIVTsQeM4xANpilW+U5Lx0VyG/qO9Nfy6rb8V5cGKbTaNOTKyAJS9LmcfLyk7YKp66/k/FhS0tDEfZopR+w4pRc3O0cVGb9S58vDR9NX7QN4eeNn1unUR4utW/tTxIn/5lyZUK0g/StxReCBZK2natUZPUZyajOUHMkfZPrBCmAiZDr7/rWtntPJ/PFJzPnQWIzFPxj6nyK/B4bStVBWNRRW2GQ6C6R81skcS9lJPmIvGCo4mHA886FvPTFerzBAFhkuKlD5QZPdyjjmXoyALdLK0FucpLQCxPDTqaWsNJ7Iqgz/F5Yi6eh5g7SLYx+59P0D28dYdQGvCM3IDfF19M07rkcyLxUXEqIu2BFCZTyQEBiZ7FAfPMKzPjlkbmgzFlcYTujHveRPK/n83KscyIKXZhpwcHgNwNrU5unsOb3dBmMQRxfPq76w6e4G7hVIR9rNtOr1DViesKkadnP7mkL9Q4l79yd3CeqptkMc1tVgwFuyuNjax+85RS7WyjHy2mncFQOPoI0QxvMNNcRVf+kFjsFQ93Ewk8ADqDM1FLHYXeZDYNsS/2/XJleMMfyC2Yx83+980tp6xpJiv9LNucAOKyXhsQIcawSYPqrfgPRqxogJXycer03FYq8kdsgSXuZbZBjVRiyYJsSpT2+unh6Iiwl45IXP4hvPH1BkcxlGsgBGbE6w7DgUNb2JkV7L46vROZihHyNa8m70Uy1O9XDQT+oUfcp0DrxYSF8uy2xwJb5GDUKoH6pCKXvNu6AA42hJtAaLwuc5nvxDwZZzLqKFnfzyuFgV9wlnSBgY4UWWU575FCJ0cvpf3Wf5RQapnyIvjBnjNW6rHoFnvHNpPi2q0SWZCoDtQ5OLtQ10hBnQBRTimd2S3LgS7jNLNVrUuiWWJVnDsa5WNcYW9zg+hlFM8dpLX7/TXObWUooLYJLLb8lziuX9O9bfhL9w4rwt/x8uw8DZy9WoKNDumx1ej4YK3PQ4nZKzO/aTSckt8NxHTeryYGCplbBETBWaIZpHYCosTSlWepBnXFCxFcUqR2uw9yAjzXDChjI3ipLxDVg5Vukf0Cz4CQnHiLEwekpVqO8Z66+MSLHQwW8Rz2hWM4FYOWd6j+Pt/YYzN1kBprU071usTcWt5PCTmtfEsiN15h9cWeyD3a5YS9jzagSVeVtkm6HPcs6VjwlGGijiHFOsBfnG+bc32DW5Gx84nxNd9aYNLrV8C021q0aYcKXM1uGn3nmggzhf17JdgbtmTQMI28N9Fh9SiAyzBwNE1rMN6U20iAqVhRFT8474mnGY2qver81sKCNSOaRD1b+E8mRCW7cy182c1pvYAEk/vsAE3MDTa5e7ktYCL4Y6BHoywx+iMaoukyapVKFQHCUFgeZDWwfTsgjG6UYBcr1VsuwVDWcJ3C5dnC1ZSJt6yEHevP4GU3jSeJMN2EySUT0HY7DvG0B1DbmW6yJ5x51v80bUyvn9qoPVbJvcYAIWRo+0qQbThyuI41FZ6RFgYm3nWZVh+wHvvj7nN5t6i1wALF5Bp2mFOlQF/tbsxeL+IQb6HNYR6X/NpXrGPV7389aqYyIahCARmWnAq8aco/PYDoDYbwXR18xU8/Bono0VcKHcO4FGLff/iUnZicNqpIqsFGmkyE6edSWbOpfNcUCgZ5IGxQtrgM9OfIU/7s+YVJ850BDKFP+tN3t8C7sV/c2WTj35joLy7S462E/8IDKIgegbScRB5DVYdynhOp2w+aBwcH9MpZLrJv05NkMXOQePs5TGjWv4S6/HhMN5p682tdUmq9D7WV0ZcqZhlxnX1DL4+XAzogjW6BmvRxoDvAu7rP9Z29t/78KYhtQLrxwQB8fNYAEwGxJjnd16viWGzkPfz3+zItlCOGdDDRs8FlTBRPUok9+sb40vx2E6th7o5Y716MVSxIxE2IbfNvMs4pH5i3guPHbH6NOYbMzGeDRRR2QOjY8L6tRD2sa5DqeMkeTLvZaEJhl5oJF+KIMqQ/kbKkU6HgtgVSiubNk2yOPC1jbnZ1zAOfVvcnNc4OMacVudgG3y01WLDL/ESi/X7pYT5umsHdj6SvgpE7WEYdDSoy++XBOm5B1VzBWaxKkkXVTvXG/n5z5Ro7ZxbFdulnWAmlinB2NWZ8TXVJruxzoZaR7u5U3f/z+pTF94ohfm1yeO7Yqdf55EfXU+IzruwNslo7rOTyiKzeCB8sKQ6rwF2JKl3TAplIoKzTA",
+              "id": "rs_224dfb7a-dd99-9597-8c30-4d1677fde605",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user wants me to act as a model-owned evaluator at a typed cognitive boundary. I need to return exactly one JSON object and no Markdown.\n",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 833,
+      "uncached_input_tokens": 705,
+      "cached_input_tokens": 128,
+      "output_tokens": 823,
+      "reasoning_tokens": 777,
+      "total_tokens": 1656,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 833,
+            "output_tokens": 823
+          },
+          "cost_in_usd_ticks": 10900400,
+          "input_tokens": 833,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 823,
+          "output_tokens_details": {
+            "reasoning_tokens": 777
+          },
+          "total_tokens": 1656
+        }
+      ]
+    },
+    "error": null
+  }
+}

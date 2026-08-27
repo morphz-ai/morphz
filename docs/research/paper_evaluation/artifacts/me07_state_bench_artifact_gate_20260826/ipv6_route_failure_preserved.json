@@ -1,0 +1,42 @@
+{
+  "gate": "ME-07-A-MEM-Mem0-native-artifact-real-smoke-v1",
+  "trajectory_id": "1-cancel_economy_domestic",
+  "trajectory_sha256": "4d79d0ff440afbfa8d4b71d6ef15c4d24b4907efb332bcc30ea06f4b21eb3b86",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "same_canonical_training_input": true,
+  "amem": {
+    "gate_passed": false,
+    "payloads": [
+      "amem_state.json",
+      "model_calls.json"
+    ],
+    "method": {
+      "implementation": "memgym-amem-compatible",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "max",
+      "embedding_model_path_sha256": "bd786fed0e633bc8b406e565e1e49f98421fb891238e906eb4e890ae5c3bd1f9",
+      "enable_evolution": true,
+      "retrieve_k": 5
+    },
+    "build_receipts": [
+      {
+        "trajectory_id": "1-cancel_economy_domestic",
+        "note_id": "f14b673b-c8b2-418e-bd4a-75c91e3d46cc",
+        "status": "stored",
+        "wall_time_seconds": 9.144462
+      }
+    ],
+    "model_call_count": 0,
+    "exact_response_model": false,
+    "retrieved_count": 1,
+    "retrieved_preview_sha256": [
+      "438801074d5a99e140c371bb4a6d30a4afa33923ce53d0b5ae165d6c42dab515"
+    ],
+    "state_sha256": "4fbe09d1e53d1a54b6da2345e7af0b86ad32b9703853552a0a2fa1344573275f",
+    "reloaded_from_frozen_state": true
+  },
+  "gate_passed": false,
+  "error_type": "InternalServerError",
+  "error": "Error code: 502"
+}

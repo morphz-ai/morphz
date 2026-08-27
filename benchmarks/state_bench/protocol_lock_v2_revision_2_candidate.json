@@ -1,0 +1,168 @@
+{
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "lock_revision": 2,
+  "status": "candidate / three-arm-scored-smoke-passed / formal-training-clean-restart / evaluator-human-validation-pending",
+  "supersedes": "protocol_lock_v2_candidate.json",
+  "formal_arms": [
+    "morphz",
+    "letta",
+    "mem0"
+  ],
+  "forbidden_formal_arms": [
+    "amem",
+    "no_memory",
+    "messages_only"
+  ],
+  "upstreams": {
+    "state_bench": {
+      "repository": "https://github.com/microsoft/STATE-Bench",
+      "commit": "5644b1838d96bc4483da29642d058ecaa6f80f7f",
+      "version": "0.8.1",
+      "license": "MIT"
+    },
+    "letta": {
+      "repository": "https://github.com/letta-ai/letta",
+      "tag": "0.16.8",
+      "commit": "1131535716e8a31c9a437f8695e25ac98f203a24",
+      "version": "0.16.8",
+      "license": "Apache-2.0",
+      "scope": "complete_agent_runtime"
+    },
+    "mem0": {
+      "repository": "https://github.com/mem0ai/mem0",
+      "tag": "v2.0.19",
+      "commit": "dc82354e143c2581d505d581a00286d6ef8c3605",
+      "version": "2.0.19",
+      "license": "Apache-2.0",
+      "scope": "memory_layer_with_frozen_reference_agent"
+    },
+    "morphz": {
+      "runtime_baseline_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
+      "runtime_adapter_commit": "2e502056f52fc355e29f01df69d3b434607c257e",
+      "durable_reply_fix_commit": "2e502056f52fc355e29f01df69d3b434607c257e",
+      "public_system_adapter_commit": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
+      "training_runner_commits": {
+        "morphz": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa",
+        "letta": "c6d80048d99b2a38c49944398be2a49adc08283b",
+        "mem0": "ac75c05bf30725d7e3791ed7fce9ca36b16fbafa"
+      },
+      "formal_runner_commit": "291bd5901f65b116f30259e10b2c049cb5081bbe",
+      "training_binary_sha256": "0666fd3c0e49b2365d923d9589229ed6e37d6d47bbabc6bfcf0e0a45d53fa31a",
+      "scope": "complete_agent_runtime",
+      "replacement_requires_new_lock": true
+    }
+  },
+  "embedding": {
+    "applies_to": [
+      "letta",
+      "mem0"
+    ],
+    "provider": "ollama-local",
+    "model": "nomic-embed-text:latest",
+    "dimension": 768,
+    "morphz_uses_external_embedding": false
+  },
+  "reasoning_model": {
+    "route": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider": "cliproxyapi",
+    "api": "responses",
+    "fallback": false
+  },
+  "updated_evaluation_model": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "provider": "cliproxyapi",
+    "api": "responses",
+    "roles": [
+      "user_simulator",
+      "task_requirements_judge",
+      "ux_judge"
+    ],
+    "arm_identity_blinded": true,
+    "official_leaderboard_comparable": false,
+    "human_validation_required": true
+  },
+  "dataset": {
+    "domains": [
+      "travel",
+      "customer_support",
+      "shopping_assistant"
+    ],
+    "train_trajectories_per_domain": 100,
+    "heldout_tasks_per_domain": 50,
+    "heldout_oracle_access": false
+  },
+  "formal_run": {
+    "num_runs": 5,
+    "trials_per_arm": 750,
+    "total_trials": 2250,
+    "queue_seed": 20260826,
+    "paired_cell_workers": 3,
+    "within_arm_concurrency": 1,
+    "max_attempts": 1,
+    "terminal_failures_are_not_retried": true,
+    "resume_runs_only_missing_nonterminal_jobs": true,
+    "orphaned_trajectory_without_atomic_receipt_is_preserved_and_scored_zero": true,
+    "heldout_snapshot_isolation": true,
+    "training_and_memory_costs_counted": true
+  },
+  "gates": {
+    "canonical_training_episode": {
+      "domain": "travel",
+      "task_id": "1-cancel_economy_domestic",
+      "source_sha256": "9701a10c432a136bd45a5dbb1d209e9f8cdbb106f6eb47fe4cf53266ed5a4845",
+      "morphz_passed": true,
+      "letta_passed": true,
+      "mem0_passed": true
+    },
+    "persistence_reload": {
+      "morphz_passed": true,
+      "letta_passed": true,
+      "mem0_passed": true
+    },
+    "scored_smoke": {
+      "domain": "travel",
+      "task_id": "4-strategy_cancel_rebook_cheaper_user_baits_change_state",
+      "task_file_sha256": "9c659637859783bde8eb4fdb083269e971273ff5b435196ec56649238d3b93eb",
+      "first_run_preserved_failure": "CLIProxyAPI json_object transport format guard missing",
+      "clean_rerun_passed": true,
+      "reportable_score": false,
+      "user_simulator_calls": 8,
+      "judge_calls": 6
+    },
+    "letta_episodic_training_recovery": {
+      "first_attempt_preserved_failure": "provider invalid_prompt after 34 acknowledged episodes",
+      "failed_attempt_reportable": false,
+      "public_reset_messages_after_each_episode": true,
+      "active_messages_after_reset": 1,
+      "atomic_checkpoint_resume_gate_passed": true,
+      "clean_formal_restart_required": true
+    },
+    "morphz_durable_reply_recovery": {
+      "first_attempt_preserved_failure": "episode 23 reply persisted but asynchronous business subscription did not observe it before timeout",
+      "failed_attempt_reportable": false,
+      "failed_snapshot_sha256": "1acfd38a52dfeb427406e10fb07d322a1db7bd5c7f039abf252a1a2a70144ed1",
+      "failed_stderr_sha256": "47995a2a56a0e0dca9878ade22c308d318c07def0966d5a2eabb7aba0919375a",
+      "durable_reply_wait_is_fenced_by_session_and_root_turn": true,
+      "runtime_lib_tests_passed": 1002,
+      "runtime_lib_tests_ignored": 6,
+      "eval_tests_passed": 90,
+      "clean_formal_restart_required": true
+    },
+    "evaluator_human_validation": {
+      "required_blinded_samples": 30,
+      "status": "pending"
+    }
+  },
+  "statistics": {
+    "primary_metric": "updated_protocol_pass_at_1",
+    "paired_contrasts": [
+      "morphz_minus_letta",
+      "morphz_minus_mem0"
+    ],
+    "cluster_unit": "heldout_task",
+    "multiple_comparison_correction": "holm"
+  }
+}

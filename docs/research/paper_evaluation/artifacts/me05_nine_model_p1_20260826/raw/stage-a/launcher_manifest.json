@@ -1,0 +1,22 @@
+{
+  "config": "/Users/shafreeck/Codes/Morphz-paper-evals/docs/research/paper_evaluation/config/me05_nine_model_cliproxyapi.toml",
+  "config_sha256": "409261192fcfccb4eaf38b1a904ff246f4ff8dfe32c04d66e1d445faf4583dba",
+  "credential": "MORPHZ_PROVIDER_API_KEY resolved by Morphz host environment; value intentionally not recorded",
+  "integrity_passed": false,
+  "max_concurrency": 3,
+  "models": [
+    "gpt-5.6-sol",
+    "claude-opus-5",
+    "grok-4.6",
+    "gemini-3.7-flash-high",
+    "deepseek-v4-pro",
+    "bai-deepseek-v4-flash",
+    "k3-256k",
+    "glm-5.3",
+    "qwen3.8-max-preview"
+  ],
+  "repository": "/Users/shafreeck/Codes/Morphz-paper-evals",
+  "results": [],
+  "schema": "morphz-me05-launcher-v1",
+  "stage": "stage-a"
+}

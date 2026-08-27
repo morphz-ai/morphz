@@ -1,0 +1,17 @@
+{
+  "arm": "letta",
+  "completed_acknowledged_episodes": 34,
+  "domain": "travel",
+  "eligible_as_training_snapshot": false,
+  "failed_episode_index": 35,
+  "failed_source_sha256": "b7f1304ddedec5a3d24db2b7c0b1cb36be3335ce653cf89623dd9301c90e4c78",
+  "failed_task_id": "144-strategy_personal_domestic_cancel_rebook_same_airline",
+  "failure_class": "provider_invalid_prompt_policy_rejection",
+  "http_status": 400,
+  "last_recorded_context_token_estimate": 226673,
+  "preserved_local_snapshot_sha256": "c35aba3fe4396b5d5458107e6f08dc64698ed61fa0c303eef21afed3d4205ffc",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "reportable_score": false,
+  "retries_performed": 0,
+  "snapshot_contains_partial_failed_episode_state": true
+}

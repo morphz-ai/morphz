@@ -1,0 +1,377 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "closed_base",
+  "context_id": "incident-continuity-v1",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Ignored context filters and selected the unique highest closed_score candidate.\",\"selected\":[\"rate_limit\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 738,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "grok-4.6",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 738,
+      "calibration_key": 6920089719872551062,
+      "calibration_shape": 16595663074945827862
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 71,\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 83,\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 88,\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 67,\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 74,\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 79,\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"id\": \"incident-continuity-v1\",\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"statement\": \"Maintain service continuity while containing the incident; external communication is not yet authorized.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Ignored context filters and selected the unique highest closed_score candidate.\",\"selected\":[\"rate_limit\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " given"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " me"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " specific"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " task"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " act"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " as"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " model"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "owned"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluator"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " typed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " cognitive"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " boundary"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "I select \"rate_limit\" as the action that best maintains service continuity while containing the incident, given its highest closed score of 88 and alignment with the required properties for containment and low disruption."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \n\nThe basis for this choice is \"closed-score-rule\", and the selected candidate is [\"rate_limit\"]."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "explanation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Ignored"
+      },
+      {
+        "kind": "text_delta",
+        "text": " context"
+      },
+      {
+        "kind": "text_delta",
+        "text": " filters"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "text_delta",
+        "text": " highest"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "score"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_"
+      },
+      {
+        "kind": "text_delta",
+        "text": "limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 859,
+          "uncached_input_tokens": 731,
+          "cached_input_tokens": 128,
+          "output_tokens": 985,
+          "reasoning_tokens": 951,
+          "total_tokens": 1844,
+          "raw": [
+            {
+              "context_details": {
+                "input_tokens": 859,
+                "output_tokens": 985
+              },
+              "cost_in_usd_ticks": 12641200,
+              "input_tokens": 859,
+              "input_tokens_details": {
+                "cached_tokens": 128
+              },
+              "num_server_side_tools_used": 0,
+              "num_sources_used": 0,
+              "output_tokens": 985,
+              "output_tokens_details": {
+                "reasoning_tokens": 951
+              },
+              "total_tokens": 1844
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_8662ffac-139d-9668-a35c-c7c070516270",
+              "status": "completed",
+              "summary": [
+                {
+                  "text": "The user has given me a specific task. I need to act as a model-owned evaluator at a typed cognitive boundary.\nI select \"rate_limit\" as the action that best maintains service continuity while containing the incident, given its highest closed score of 88 and alignment with the required properties for containment and low disruption. \n\nThe basis for this choice is \"closed-score-rule\", and the selected candidate is [\"rate_limit\"].",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 859,
+      "uncached_input_tokens": 731,
+      "cached_input_tokens": 128,
+      "output_tokens": 985,
+      "reasoning_tokens": 951,
+      "total_tokens": 1844,
+      "raw": [
+        {
+          "context_details": {
+            "input_tokens": 859,
+            "output_tokens": 985
+          },
+          "cost_in_usd_ticks": 12641200,
+          "input_tokens": 859,
+          "input_tokens_details": {
+            "cached_tokens": 128
+          },
+          "num_server_side_tools_used": 0,
+          "num_sources_used": 0,
+          "output_tokens": 985,
+          "output_tokens_details": {
+            "reasoning_tokens": 951
+          },
+          "total_tokens": 1844
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "repetition": 1,
+  "arm": "json_ast",
+  "task": "guard_no_action",
+  "semantic_digest": "f5fad44683bb689ef5499af630d33c14f11e218bd47b2a4adf43d8a1c6bbf20d",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 1,
+  "prompt_chars": 459,
+  "tool_trace": [],
+  "final_answer": "NO-ACTION-REQUIRED",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[]; actual=[]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"NO-ACTION-REQUIRED\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1445,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "gpt-5.6-sol",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1445,
+        "calibration_key": 3089650033375752927,
+        "calibration_shape": 1144430068923564245
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "{\n  \"op\": \"if\",\n  \"left\": {\n    \"kind\": \"literal\",\n    \"value\": \"archival\"\n  },\n  \"equals\": {\n    \"kind\": \"literal\",\n    \"value\": \"live\"\n  },\n  \"when_true\": {\n    \"op\": \"call\",\n    \"tool\": \"forbidden_effect\",\n    \"arguments\": {\n      \"mode\": {\n        \"kind\": \"literal\",\n        \"value\": \"live\"\n      }\n    }\n  },\n  \"when_false\": {\n    \"op\": \"reply\",\n    \"values\": [\n      {\n        \"kind\": \"literal\",\n        \"value\": \"NO-ACTION-REQUIRED\"\n      }\n    ]\n  }\n}"
+        }
+      ],
+      "response": {
+        "content": "NO-ACTION-REQUIRED",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "NO-ACTION-REQUIRED"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1081,
+            "uncached_input_tokens": 1081,
+            "cached_input_tokens": 0,
+            "output_tokens": 10,
+            "reasoning_tokens": 0,
+            "total_tokens": 1091,
+            "raw": [
+              {
+                "input_tokens": 1081,
+                "input_tokens_details": {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0
+                },
+                "output_tokens": 10,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1091
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1081,
+        "uncached_input_tokens": 1081,
+        "cached_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_tokens": 0,
+        "total_tokens": 1091,
+        "raw": [
+          {
+            "input_tokens": 1081,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 10,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1091
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

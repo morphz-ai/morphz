@@ -1,0 +1,280 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/postfix-runs/me08-postfix-targeted-v1/targeted-run-3/jobs/2026-08-26__14-02-56",
+  "run_identity": {
+    "infrastructure_git_commit": "34a3fcaaca76326be1ef3bb5142c4af306b52c40",
+    "infrastructure_git_tags": [],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "me08-postfix-runtime-v1",
+    "runtime_git_commit": "ad60e300f115fe84e03a8cd3ab70940deb06ae68",
+    "runtime_binary_sha256": "af41ba739096f1970a5439d97d21e7ea237937278a7b2c689d990990b00ab0a6",
+    "runtime_watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness_mode": "none",
+    "harness_profile": null,
+    "harness": null,
+    "attempts": 1,
+    "concurrency": 1,
+    "max_retries": 0,
+    "task_filters": [
+      "bn-fit-modify",
+      "break-filter-js-from-html",
+      "build-pov-ray",
+      "cancel-async-tasks",
+      "configure-git-webserver",
+      "dna-insert",
+      "extract-elf",
+      "extract-moves-from-video",
+      "financial-document-processor",
+      "gcode-to-text",
+      "install-windows-3.11",
+      "make-doom-for-mips",
+      "mteb-leaderboard",
+      "overfull-hbox",
+      "protein-assembly",
+      "prove-plus-comm",
+      "pytorch-model-recovery",
+      "qemu-alpine-ssh",
+      "qemu-startup",
+      "raman-fitting",
+      "train-fasttext",
+      "tune-mjcf",
+      "video-processing",
+      "vulnerable-secret"
+    ]
+  },
+  "trial_count": 24,
+  "expected_trial_count": 24,
+  "trial_count_matches": true,
+  "missing_expected_tasks": {},
+  "unexpected_tasks": [],
+  "audit_complete": true,
+  "disqualified_trials": 0,
+  "integrity_gate_passed": true,
+  "raw_mean_reward": 0.625,
+  "strict_mean_reward": 0.625,
+  "trials": [
+    {
+      "trial": "bn-fit-modify__9GoDWZV",
+      "task_name": "terminal-bench/bn-fit-modify",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "break-filter-js-from-html__crTxXHV",
+      "task_name": "terminal-bench/break-filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-pov-ray__NKUFrPh",
+      "task_name": "terminal-bench/build-pov-ray",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "cancel-async-tasks__w7WGwFN",
+      "task_name": "terminal-bench/cancel-async-tasks",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "configure-git-webserver__Kq7hwEi",
+      "task_name": "terminal-bench/configure-git-webserver",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "dna-insert__jMJndvt",
+      "task_name": "terminal-bench/dna-insert",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-elf__7A9qgBg",
+      "task_name": "terminal-bench/extract-elf",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-moves-from-video__WJKR5Nx",
+      "task_name": "terminal-bench/extract-moves-from-video",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "financial-document-processor__UaHMLDr",
+      "task_name": "terminal-bench/financial-document-processor",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gcode-to-text__ZPyfman",
+      "task_name": "terminal-bench/gcode-to-text",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "install-windows-3.11__Pq4Hj6x",
+      "task_name": "terminal-bench/install-windows-3.11",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "make-doom-for-mips__TGmBKJJ",
+      "task_name": "terminal-bench/make-doom-for-mips",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mteb-leaderboard__az4wPwa",
+      "task_name": "terminal-bench/mteb-leaderboard",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "overfull-hbox__UVEnzVn",
+      "task_name": "terminal-bench/overfull-hbox",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "protein-assembly__KgbawkB",
+      "task_name": "terminal-bench/protein-assembly",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "prove-plus-comm__Vd2SatD",
+      "task_name": "terminal-bench/prove-plus-comm",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pytorch-model-recovery__gTv7J5H",
+      "task_name": "terminal-bench/pytorch-model-recovery",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "qemu-alpine-ssh__JqRXcTq",
+      "task_name": "terminal-bench/qemu-alpine-ssh",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "qemu-startup__AkYudYJ",
+      "task_name": "terminal-bench/qemu-startup",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "raman-fitting__PoTu9j9",
+      "task_name": "terminal-bench/raman-fitting",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "train-fasttext__Mqnc2Lx",
+      "task_name": "terminal-bench/train-fasttext",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "tune-mjcf__EFpBUFj",
+      "task_name": "terminal-bench/tune-mjcf",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "video-processing__83tZqJo",
+      "task_name": "terminal-bench/video-processing",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "vulnerable-secret__J4wnWeg",
+      "task_name": "terminal-bench/vulnerable-secret",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "gate": "ME-07-A-MEM-Mem0-native-artifact-real-smoke-v1",
+  "trajectory_id": "1-cancel_economy_domestic",
+  "trajectory_sha256": "4d79d0ff440afbfa8d4b71d6ef15c4d24b4907efb332bcc30ea06f4b21eb3b86",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "same_canonical_training_input": true,
+  "amem": {
+    "gate_passed": true,
+    "payloads": [
+      "amem_state.json",
+      "model_calls.json"
+    ],
+    "method": {
+      "implementation": "memgym-amem-compatible",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "max",
+      "embedding_model_path_sha256": "bd786fed0e633bc8b406e565e1e49f98421fb891238e906eb4e890ae5c3bd1f9",
+      "enable_evolution": true,
+      "retrieve_k": 5
+    },
+    "build_receipts": [
+      {
+        "trajectory_id": "1-cancel_economy_domestic",
+        "note_id": "d2e204c0-024e-4f8a-b9d8-b0f776d7ff55",
+        "status": "stored",
+        "wall_time_seconds": 8.334914
+      }
+    ],
+    "model_call_count": 1,
+    "exact_response_model": true,
+    "retrieved_count": 1,
+    "retrieved_preview_sha256": [
+      "3fec50b793def89ba34240dc62caa902f720925282fa2170dbc91bc94b257d16"
+    ],
+    "state_sha256": "d4409094c6bca89654ffe54ea3ca687b3285ee9d90cbb4068d9bdbda754e3ee4",
+    "reloaded_from_frozen_state": true
+  },
+  "mem0": {
+    "gate_passed": true,
+    "payload_count": 6,
+    "method": {
+      "implementation": "mem0-oss-procedural-memory",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "max",
+      "embedding_model_path_sha256": "bd786fed0e633bc8b406e565e1e49f98421fb891238e906eb4e890ae5c3bd1f9",
+      "scope": "agent_id",
+      "agent_id": "state-bench-travel"
+    },
+    "build_receipts": [
+      {
+        "trajectory_id": "1-cancel_economy_domestic",
+        "memory_ids": [
+          "ed61be52-4a2f-420c-9f63-0878a572ba7d"
+        ],
+        "status": "stored",
+        "wall_time_seconds": 107.237589
+      }
+    ],
+    "model_call_count": 1,
+    "exact_response_model": true,
+    "retrieved_count": 1,
+    "retrieved_preview_sha256": [
+      "ea809dc2af98f9d765e55df2f03e190477ce8423f047a5965347066b9246e988"
+    ],
+    "config_sha256": "e7b526a1fca8734df5c9d2041b7891cae8072700a22a6bade0b361ccaf3d4f11",
+    "reloaded_from_frozen_store": true,
+    "retrieval_scope": "agent_id"
+  },
+  "gate_passed": true
+}

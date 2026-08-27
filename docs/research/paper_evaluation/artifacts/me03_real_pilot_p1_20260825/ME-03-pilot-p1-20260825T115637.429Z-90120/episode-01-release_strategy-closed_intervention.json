@@ -1,0 +1,144 @@
+{
+  "repetition": 1,
+  "task": "release_strategy",
+  "condition": "closed_intervention",
+  "context_id": "release-deadline-v2",
+  "valid_open_set_count": null,
+  "selected": [
+    "canary"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"canary\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"canary\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 694,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 694,
+      "calibration_key": 8395135110503059538,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor BOUNDED_OPEN, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor CLOSED, apply the declared deterministic rule exactly. Context preferences that are relevant only to the open judgment do not override the closed rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 82,\n      \"id\": \"blue_green\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"capacity_heavy\"\n      ]\n    },\n    {\n      \"closed_score\": 91,\n      \"id\": \"canary\",\n      \"properties\": [\n        \"gradual\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 76,\n      \"id\": \"rolling\",\n      \"properties\": [\n        \"gradual\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 85,\n      \"id\": \"hot_swap\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"capacity_light\"\n      ]\n    },\n    {\n      \"closed_score\": 89,\n      \"id\": \"feature_flag\",\n      \"properties\": [\n        \"rapid\",\n        \"reversible\",\n        \"observability\"\n      ]\n    },\n    {\n      \"closed_score\": 58,\n      \"id\": \"big_bang\",\n      \"properties\": [\n        \"rapid\",\n        \"capacity_light\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"gradual\"\n    ],\n    \"id\": \"release-deadline-v2\",\n    \"required_property_groups\": [\n      [\n        \"rapid\"\n      ],\n      [\n        \"capacity_light\"\n      ]\n    ],\n    \"statement\": \"A newly approved emergency deadline requires rapid delivery with a capacity-light path; gradual-only mechanisms are excluded.\"\n  },\n  \"kind\": \"CLOSED\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for BOUNDED_OPEN, or closed-score-rule for CLOSED\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate release mechanism or mechanisms required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Canary has the greatest closed_score (91).\",\"selected\":[\"canary\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 869,
+          "uncached_input_tokens": 869,
+          "cached_input_tokens": 0,
+          "output_tokens": 102,
+          "reasoning_tokens": 68,
+          "total_tokens": 971,
+          "raw": [
+            {
+              "input_tokens": 869,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 102,
+              "output_tokens_details": {
+                "reasoning_tokens": 68
+              },
+              "total_tokens": 971
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjYMrCL_inrFgoEwK-bsN--sxE-lwIrAfuHWsgiKKeim04PRoNxZc7wJPrMzho7U3xkzMPqEzqtnJmxpyDIMLFalyyizLrVozlyye6FeU_0PI7HZfDWo4EjTnCANEwbEnrlkDgrjtu27-3dtFOA2MZLLGyIhoxKb7DwZ1nif-IG4USslpbXttJ43n85_-T8s0Qnfl2FJ8sEPyp-X0zYPgmFxz1UenqyWn9WdSwbf9esz-VxdQDvZLsK8S4IWHqV1YNJnnbl-hu1mgvnZUrfNqMYun6sOhq9tsYBT7VuilrTGWZfQSGdV98H_4DVEbzP32R7ZEXVG7frV8DPXXSzkPMewtUQ-nTS37rhap6WENxswq3Mx7C52P1YcKrcxz5uHTitQ76BybxbERbBE4D3joo70rNVp6883oi-PIc4S2ydM8w9A763KW9AFawU7B9IQS56oGC1O0Ok5cSipKydXOEzFirN0HBRDZ4vGTyM8nSUQjhqnyzVk5cLedYRZ3PzpZxNFGhuoeEd5yHpqzOAwj_nLc798WoiIzKUx3uAY8QvSUG3n0TFNGBRDgkrnDnrzrkvti__vwmLLTq_L0uxHxI-CxO9xUd3H3nklgfxG02JxSET5Z3uRX6VlVefqThboGkrIjct9su4IE_TZLzFx0HsapQwEStfxRlzdq2Osd8wTvNJpPlDcXxDxCT7u2kviGMDOvj0MC6zAAyFBeZeZwtmyiNG75rIvzphv6ru1Alp1CVyLWif7xh7sUHKzwT0VoeJGG-mBCL-CQDYI6AlLho9Q8Ig_wJ370uWyWCriVpagAWK3fnVSXrCkI2QU9YWiWin_rkkecA8aore8J94F7NxjK8nu7jQKxJupXRJGLkgANUYo2rW-CRMmBSaBjQS5E6KCYFX0rxvZRx7oF7fqTUmr0ar0bMVJDLxlSaeTs97ucDzUMCYNxFs2uDgieMdVaX0sCRW8nIMwbHj50byS9RO4LeHKanakdP3y93PnS0ZsnyaeydppMNMlYT_3Qap5ruJtYh8V_848s8__UlwimaV_oCxoQbubuIa8d6PtjZJzvEN-mLdyfE2ukxLIEC5oDBHrfcrdjtQI4SYC_98XJnim4II3PBw4AstKpuUstIsgvCpUq3WqMX0RrFPsrjv4VpLpFZSgwWtPPTvs-xdHOko3d6vwZIbD5LH5Cff06WhRXKURUKZ2maYThrgdJBQimNCriqGfM5CrhWIHYddAWP_KMGNGr_LK4hlxA7611VghC9gPJKzjs63ieYEIRIruYVB9pFfCnWBw1FX3FbrTa_8E_LhOvSZhwxzOm6FbwfziOPKhxKAvfLpvEY0aVtxQZBNRiOzyGkldIMBTEd_YjFsLsDb3jW8mVnX6lVRI0XLRxIWRwzDaZps_0ZxQp80EhmF0r3VmixNfrb0Kv6_-hr2C2RamTOvlbMZHvzOtIDEGwwfoKxpVv-QdnnnviBNuj0-o3nCo-vzJTjZg1osW60RTPWOfhnuPMZqFu8HxguwfnHPXNqI5oublBptsMCcxfM2rvTREBV6Q6SxubQ7YP2mbAfDfZiYiR5bbVqoLt7E7Yu9CqZjOdY1h1JFsZMEqNKfS1HdzX3tbOw5gbKjfIaxO6NqdSJjN7tuz-113kuBHsizvLAxawvRrLLJKXgL0b5qEH7EzD9OSCLbEzLwyAa7JnFIe1F05fzN_0_9z2Q--KMnpXAWq89ao3ZReo7UcVUwm8FzLHkr5vRKiUv0UxQPG-iKk9nk0QkGzXozbCNi6001k=",
+              "id": "rs_03c3c11059d5605b016a8d832be2b887d096563b859081992f",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 869,
+      "uncached_input_tokens": 869,
+      "cached_input_tokens": 0,
+      "output_tokens": 102,
+      "reasoning_tokens": 68,
+      "total_tokens": 971,
+      "raw": [
+        {
+          "input_tokens": 869,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 102,
+          "output_tokens_details": {
+            "reasoning_tokens": 68
+          },
+          "total_tokens": 971
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "bounded_open_base",
+  "context_id": "incident-continuity-v1",
+  "valid_open_set_count": 6,
+  "selected": [
+    "rate_limit",
+    "rotate_tokens"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\", \"rotate_tokens\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\", \"rotate_tokens\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis incident-continuity-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"incident-continuity-v1\"],\"explanation\":\"Selected two internal, low-disruption containment actions with no forbidden external property.\",\"selected\":[\"rotate_tokens\",\"rate_limit\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 766,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 766,
+      "calibration_key": 14742601608389592514,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"id\": \"incident-continuity-v1\",\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"statement\": \"Maintain service continuity while containing the incident; external communication is not yet authorized.\"\n  },\n  \"kind\": \"NONDETERMINISTIC\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"incident-continuity-v1\"],\"explanation\":\"Selected two internal, low-disruption containment actions with no forbidden external property.\",\"selected\":[\"rotate_tokens\",\"rate_limit\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"incident-continuity-v1\"],\"explanation\":\"Selected two internal, low-disruption containment actions with no forbidden external property.\",\"selected\":[\"rotate_tokens\",\"rate_limit\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 909,
+          "uncached_input_tokens": 909,
+          "cached_input_tokens": 0,
+          "output_tokens": 165,
+          "reasoning_tokens": 121,
+          "total_tokens": 1074,
+          "raw": [
+            {
+              "input_tokens": 909,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 165,
+              "output_tokens_details": {
+                "reasoning_tokens": 121
+              },
+              "total_tokens": 1074
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjbxSJDUjDBvLA_7Ofs5zydhIRvz9QlL5pOHHKNtZPUPgNTWialSUFU9szlFp50JRn2xYY-SE_-3gYRrRqssXpiy0CKhgrvyGvpwn1gZlmDUpkXUtnsKEfLjB3qvlSI1eE9n-_sxOX1gr0NHmPOk4_4aYM-1MZjRm9cz-pkdZhueAa41LTTCRqEQJh1_-wF5K-wZOjcWpDZlTXjq8SQXxYcb7YxNamTpi11JRCg5q3Tmg2jsPYCnAHeArrjbwcyaZP_7VY6W3rsiHx-eyw-maMO0bIGz7YpbxahC4jaPSzSeix0IQ9HJBOd07BA663j1Xv3JMaR1Vc25G1aT-4yeRGES5LiBkHbio3sDFynrFhFxuqLrq3KUMd_eesuqGLK-JOwzGMVi28N1OjUNdUf0Z2FJPyJi7RaM6Gn1P0v7bc-K6yW1dpqK4oNluQxgJAp09dN1JReu33XFnX-L2TXpt3HJzbNxNLLRuywly77Ifs8o0yRjRO3KTgW9d0UJVG6avSmSKUoHuVBDfyWug8gtjrXsXF2SdmB6nO5HPRk9H3K4wPKR5d-JM236yDHM_3bJnAweGy7TpjklbYxhrMe57fx66MTlTqgDUZVm60zF_rEmi5d1GBDtyxROSsUs2iF9nF82rNvbPyAhUeQESJSIv9XrzVvOoxRPukRN7QMoOxPutpCPC91dfRH2HaZ_SXN6mAewzTEpxnvi0uMB8K5cexVNoQ3iNpRpPkXxyB-S_0DP428rr67cUUXa44ie22AGj-qonV474X5LFiCbDMmKFrLx9oMR8nv7I5fvarAsjP89rSfbTxlTQcI5e9fIgBazpsR7ia0e6Jlr4jzmmJb7-aA5KuqY1VP6r0ugwpN5pmSF5vOFNY4oHkR9hrbfq7UGd23zNi3wGJ36kdf3CNsRUMTN9kUZD7LoGFqpmIcG5-jjm7wfwZzU8oJRep_GkDGZ89dhgi0DF3ZEQDiiSvsn3y9qbil33r51URFbzUO8twtFei6qeemev0zhVgJ4m_GiwYtwIg-TmrTLE5gM_HW2e3yz5gmlm0IxdZ4SDHB1gJbyw4TPYU0QS__ZE-eRYOMBTRQuPLBBjZ3O5Xs3fTCurMbyFit96uqGF1JHMCFFe1r1MeMwWwc0rc7Tst51yNlSkbKWnKYCdeCoop-o_Q9LTLnPFrqe0wqUGxuJAbNOEBBmlHURQxmSLM5Ix-ehMNxxTNeD0pVkNihvU4IblB-SGdLUpb9aJf9FdgALeLEIVcZWjcbZHOook-_zb-a62o-9U9QfvnAEPmq6_5kheEehTGXl4h4l2GnJrnzCG91kdFDSiFyxYOrC3Bsg_wSC6bXSv5uhJMIELz4knSH1FaAsOeyL-P7LzS3fIPcgXfPtACmfpaEc4GPdxr3czfoMFw5WBkaAFBD_9ffp_T-1iHFOno-81YOgePh5Mf-Lpcju3bhuKYue656HM9of5P0K_0K0NK1_2G-3-1UDUfavXGZCD3OMydqhk_qCHevV2Z9nET_noRfgBFvxFsbZWalopl2AU_kUQCas9c-Tmqo0W11zlUB45bfEUaWkANK62PavRHk4UdEVen-mcVsliL1RrFdARooKg3qtSpd0pOBjqx2qfYhqI9ytf-hUevYNT1vmvQDrw-fUrvOQA62KEA4dn9ju85kv_FCFp_Z-JegffZ4w42bxcD5PtgLy53_87lJOw71QM4dlmeGwmAqxLYPLqDiEXu3EWYCxV542WhzVjYb36zQos4wGIHrKjId1Pzzi-0sVs9AXqN0dKN1yuYISJ4iLriFwpl7CIRKNE6H1QvW06DT2mxpCCGgbSewrL4-7McYT6uIbfwqe-gIt1SikOmYj_U6yKVqhOa80YN3kvuQ2mbUqAR_Fy-GT1mqi80JOxhw5LWXdwdbDH5sbPIyllP6TfoxVlQKvGy1zR9DhBt4o2xM177Gja_zUyOioU8tAR_aU26U_ORyRvcLYmgkTH7c1JyYf-tLHWbkUzNjC9-XPLYigXuOu5HAp-zVQBG6lrgf8dQF8xHDP5G5-_-iJlmb3qOXQA2z3KNYr657I7C2OeXFPpoa8qgEuEzUsxRYxWpvnWe0-4AAGGAxZQC4OtsVL5xNqmOJVn8qVbQLnGXOdbuhw7pWM3IPyqtq1241or8Rb6xVs=",
+              "id": "rs_0775a97b7815f803016a8dbc52995c87d0a51824e4c6d93471",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 909,
+      "uncached_input_tokens": 909,
+      "cached_input_tokens": 0,
+      "output_tokens": 165,
+      "reasoning_tokens": 121,
+      "total_tokens": 1074,
+      "raw": [
+        {
+          "input_tokens": 909,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 165,
+          "output_tokens_details": {
+            "reasoning_tokens": 121
+          },
+          "total_tokens": 1074
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,1411 @@
+{
+  "id": "ME-02-pilot-p1.1-20260825T160259.326Z-11227",
+  "created_at": "2026-08-25T16:03:11.578943+00:00",
+  "model": "qwen3.8-max-preview",
+  "provider": "custom",
+  "protocol": "openai-responses",
+  "immutable_binding": {
+    "requested_alias": "qwen3.8-max-preview",
+    "route_id": "qwen3.8-max-preview",
+    "route_revision": "sha256:9a103856321609bd671666840da5107f9fbd6dd74fdf6abd52bfb89a9fb96d4f",
+    "provider_instance_id": "custom",
+    "auth_account_id": "custom-default",
+    "physical_model": "qwen3.8-max-preview",
+    "protocol": "openai-responses",
+    "provider_adapter": "protocol-compatible",
+    "provider_adapter_version": "1",
+    "endpoint": "http://mini-m4.local:8317/v1",
+    "capabilities": []
+  },
+  "reasoning_effort": "requested=max; client=max; per-request-options=max",
+  "repetitions": 1,
+  "output_dir": "/private/tmp/morphz-me05-p1-20260826/stage-a/qwen3.8-max-preview/me02/ME-02-pilot-p1.1-20260825T160259.326Z-11227",
+  "summaries": {
+    "json_ast": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "markdown_program": {
+      "episodes": 0,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "semantic_passed": 0,
+      "semantic_pass_rate": 0.0,
+      "mean_attempts": -0.0,
+      "mean_tool_calls": -0.0
+    },
+    "sexpr_ast": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0,
+      "semantic_passed": 1,
+      "semantic_pass_rate": 1.0,
+      "mean_attempts": 5.0,
+      "mean_tool_calls": 4.0
+    }
+  },
+  "episodes": [
+    {
+      "repetition": 1,
+      "arm": "sexpr_ast",
+      "task": "nested_fallback",
+      "semantic_digest": "ede5539dd7387e6249993fb8116522df38c19c41018251d090405564a0e9d6fd",
+      "success": true,
+      "semantic_success": true,
+      "score": 5,
+      "max_score": 5,
+      "attempts": 5,
+      "prompt_chars": 346,
+      "tool_trace": [
+        {
+          "attempt": 1,
+          "name": "probe_endpoint",
+          "arguments": {
+            "name": "primary"
+          },
+          "output": {
+            "error": "PRIMARY_UNAVAILABLE",
+            "ok": false
+          }
+        },
+        {
+          "attempt": 2,
+          "name": "probe_endpoint",
+          "arguments": {
+            "name": "secondary"
+          },
+          "output": {
+            "error": "SECONDARY_UNAVAILABLE",
+            "ok": false
+          }
+        },
+        {
+          "attempt": 3,
+          "name": "probe_endpoint",
+          "arguments": {
+            "name": "tertiary"
+          },
+          "output": {
+            "name": "tertiary",
+            "ok": true,
+            "token": "EP-T-5541"
+          }
+        },
+        {
+          "attempt": 4,
+          "name": "verify_endpoint",
+          "arguments": {
+            "name": "tertiary",
+            "token": "EP-T-5541"
+          },
+          "output": {
+            "delivery_token": "ENDPOINT-VERIFIED-7752",
+            "ok": true
+          }
+        }
+      ],
+      "final_answer": "ENDPOINT-VERIFIED-7752",
+      "error": null,
+      "criteria": [
+        {
+          "id": "required-tool-order",
+          "passed": true,
+          "evidence": "missing=[]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+        },
+        {
+          "id": "exact-tool-plan",
+          "passed": true,
+          "evidence": "expected=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]; actual=[\"probe_endpoint:primary\", \"probe_endpoint:secondary\", \"probe_endpoint:tertiary\", \"verify_endpoint:tertiary:EP-T-5541\"]"
+        },
+        {
+          "id": "causal-dataflow",
+          "passed": true,
+          "evidence": "violations=[]"
+        },
+        {
+          "id": "branch-discipline",
+          "passed": true,
+          "evidence": "forbidden=[]"
+        },
+        {
+          "id": "final-delivery",
+          "passed": true,
+          "evidence": "missing=[]; final=\"ENDPOINT-VERIFIED-7752\""
+        }
+      ],
+      "requests": [
+        {
+          "attempt": 1,
+          "prompt_measurement": {
+            "tokens": 1397,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "qwen3.8-max-preview",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1397,
+            "calibration_key": 6476147294795786240,
+            "calibration_shape": 7805679360077801913
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_af6113df0a7c47b9af93af3a",
+                "type": "function",
+                "func_name": "probe_endpoint",
+                "arguments": "{\"name\": \"primary\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "Let"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "'s try"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " executing"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " this program.\n\n"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "The program is as"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " follows:\n1"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ". bind selected ="
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " FALLBACK:\n"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "   - primary"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ": call probe_endpoint"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "(name"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "=\"primary\")\n"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "   - backup:"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " FALL"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "BACK(probe_endpoint"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "(name=\""
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "secondary\"), probe_endpoint"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "(name=\"terti"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "ary\"))\n2"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ". bind verified ="
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " call verify_endpoint(name"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "=selected.name,"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " token=selected.token"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ")\n3."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " reply with verified.delivery"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_token\n\nFirst"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ", I'll start"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " with probe_endpoint(name"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "=\""
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "primary\"). FALLBACK"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " only evaluates"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " the backup after the"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " primary explicitly"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " fails. So,"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " I'll call probe"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "_endpoint with \"primary"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "\" first"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_af6113df0a7c47b9af93af3a",
+              "name": "probe_endpoint"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\"name\": \"primary"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1684,
+                "uncached_input_tokens": 1684,
+                "cached_input_tokens": 0,
+                "output_tokens": 152,
+                "reasoning_tokens": 122,
+                "total_tokens": 1836,
+                "raw": [
+                  {
+                    "input_tokens": 1684,
+                    "input_tokens_details": {
+                      "cached_tokens": 0
+                    },
+                    "output_tokens": 152,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 122
+                    },
+                    "total_tokens": 1836
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_chatcmpl-3e742466-bed6-4940-842e-37c744c09c97_0",
+                    "summary": [
+                      {
+                        "text": "Let's try executing this program.\n\nThe program is as follows:\n1. bind selected = FALLBACK:\n   - primary: call probe_endpoint(name=\"primary\")\n   - backup: FALLBACK(probe_endpoint(name=\"secondary\"), probe_endpoint(name=\"tertiary\"))\n2. bind verified = call verify_endpoint(name=selected.name, token=selected.token)\n3. reply with verified.delivery_token\n\nFirst, I'll start with probe_endpoint(name=\"primary\"). FALLBACK only evaluates the backup after the primary explicitly fails. So, I'll call probe_endpoint with \"primary\" first.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1684,
+            "uncached_input_tokens": 1684,
+            "cached_input_tokens": 0,
+            "output_tokens": 152,
+            "reasoning_tokens": 122,
+            "total_tokens": 1836,
+            "raw": [
+              {
+                "input_tokens": 1684,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 152,
+                "output_tokens_details": {
+                  "reasoning_tokens": 122
+                },
+                "total_tokens": 1836
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 2,
+          "prompt_measurement": {
+            "tokens": 1631,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "qwen3.8-max-preview",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1631,
+            "calibration_key": 12006374117967656288,
+            "calibration_shape": 7805679360077801913
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3e742466-bed6-4940-842e-37c744c09c97_0\",\"summary\":[{\"text\":\"Let's try executing this program.\\n\\nThe program is as follows:\\n1. bind selected = FALLBACK:\\n   - primary: call probe_endpoint(name=\\\"primary\\\")\\n   - backup: FALLBACK(probe_endpoint(name=\\\"secondary\\\"), probe_endpoint(name=\\\"tertiary\\\"))\\n2. bind verified = call verify_endpoint(name=selected.name, token=selected.token)\\n3. reply with verified.delivery_token\\n\\nFirst, I'll start with probe_endpoint(name=\\\"primary\\\"). FALLBACK only evaluates the backup after the primary explicitly fails. So, I'll call probe_endpoint with \\\"primary\\\" first.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_af6113df0a7c47b9af93af3a",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"primary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_af6113df0a7c47b9af93af3a"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_05aa293194e048b59f2b4a89",
+                "type": "function",
+                "func_name": "probe_endpoint",
+                "arguments": "{\"name\": \"secondary\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "The"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " primary explicitly failed."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " Therefore"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ", we move on"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " to the backup"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " fallback: first,"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " probe \"secondary\","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " and if that also"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " fails, probe \""
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "tertiary"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "\"."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_05aa293194e048b59f2b4a89",
+              "name": "probe_endpoint"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\"name\": \"secondary"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1861,
+                "uncached_input_tokens": 837,
+                "cached_input_tokens": 1024,
+                "output_tokens": 63,
+                "reasoning_tokens": 33,
+                "total_tokens": 1924,
+                "raw": [
+                  {
+                    "input_tokens": 1861,
+                    "input_tokens_details": {
+                      "cached_tokens": 1024
+                    },
+                    "output_tokens": 63,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 33
+                    },
+                    "total_tokens": 1924
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_chatcmpl-96c60fb5-a372-4784-8687-73f1bd50d3c2_0",
+                    "summary": [
+                      {
+                        "text": "The primary explicitly failed. Therefore, we move on to the backup fallback: first, probe \"secondary\", and if that also fails, probe \"tertiary\".",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1861,
+            "uncached_input_tokens": 837,
+            "cached_input_tokens": 1024,
+            "output_tokens": 63,
+            "reasoning_tokens": 33,
+            "total_tokens": 1924,
+            "raw": [
+              {
+                "input_tokens": 1861,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 63,
+                "output_tokens_details": {
+                  "reasoning_tokens": 33
+                },
+                "total_tokens": 1924
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 3,
+          "prompt_measurement": {
+            "tokens": 1766,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "qwen3.8-max-preview",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1766,
+            "calibration_key": 4842528964152893900,
+            "calibration_shape": 7805679360077801913
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3e742466-bed6-4940-842e-37c744c09c97_0\",\"summary\":[{\"text\":\"Let's try executing this program.\\n\\nThe program is as follows:\\n1. bind selected = FALLBACK:\\n   - primary: call probe_endpoint(name=\\\"primary\\\")\\n   - backup: FALLBACK(probe_endpoint(name=\\\"secondary\\\"), probe_endpoint(name=\\\"tertiary\\\"))\\n2. bind verified = call verify_endpoint(name=selected.name, token=selected.token)\\n3. reply with verified.delivery_token\\n\\nFirst, I'll start with probe_endpoint(name=\\\"primary\\\"). FALLBACK only evaluates the backup after the primary explicitly fails. So, I'll call probe_endpoint with \\\"primary\\\" first.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_af6113df0a7c47b9af93af3a",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"primary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_af6113df0a7c47b9af93af3a"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-96c60fb5-a372-4784-8687-73f1bd50d3c2_0\",\"summary\":[{\"text\":\"The primary explicitly failed. Therefore, we move on to the backup fallback: first, probe \\\"secondary\\\", and if that also fails, probe \\\"tertiary\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_05aa293194e048b59f2b4a89",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"secondary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_05aa293194e048b59f2b4a89"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_f242eefb47a6491ca7aaf15b",
+                "type": "function",
+                "func_name": "probe_endpoint",
+                "arguments": "{\"name\": \"tertiary\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "Secondary"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " explicitly"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " failed. Moving"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " on to Tertiary"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_f242eefb47a6491ca7aaf15b",
+              "name": "probe_endpoint"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\"name\": \"ter"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "tiary"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 1950,
+                "uncached_input_tokens": 926,
+                "cached_input_tokens": 1024,
+                "output_tokens": 42,
+                "reasoning_tokens": 10,
+                "total_tokens": 1992,
+                "raw": [
+                  {
+                    "input_tokens": 1950,
+                    "input_tokens_details": {
+                      "cached_tokens": 1024
+                    },
+                    "output_tokens": 42,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 10
+                    },
+                    "total_tokens": 1992
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_chatcmpl-927007ba-606c-4fcb-8efd-9e624427a43f_0",
+                    "summary": [
+                      {
+                        "text": "Secondary explicitly failed. Moving on to Tertiary.",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 1950,
+            "uncached_input_tokens": 926,
+            "cached_input_tokens": 1024,
+            "output_tokens": 42,
+            "reasoning_tokens": 10,
+            "total_tokens": 1992,
+            "raw": [
+              {
+                "input_tokens": 1950,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 42,
+                "output_tokens_details": {
+                  "reasoning_tokens": 10
+                },
+                "total_tokens": 1992
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 4,
+          "prompt_measurement": {
+            "tokens": 1878,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "qwen3.8-max-preview",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 1878,
+            "calibration_key": 13450363731758830528,
+            "calibration_shape": 7805679360077801913
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3e742466-bed6-4940-842e-37c744c09c97_0\",\"summary\":[{\"text\":\"Let's try executing this program.\\n\\nThe program is as follows:\\n1. bind selected = FALLBACK:\\n   - primary: call probe_endpoint(name=\\\"primary\\\")\\n   - backup: FALLBACK(probe_endpoint(name=\\\"secondary\\\"), probe_endpoint(name=\\\"tertiary\\\"))\\n2. bind verified = call verify_endpoint(name=selected.name, token=selected.token)\\n3. reply with verified.delivery_token\\n\\nFirst, I'll start with probe_endpoint(name=\\\"primary\\\"). FALLBACK only evaluates the backup after the primary explicitly fails. So, I'll call probe_endpoint with \\\"primary\\\" first.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_af6113df0a7c47b9af93af3a",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"primary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_af6113df0a7c47b9af93af3a"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-96c60fb5-a372-4784-8687-73f1bd50d3c2_0\",\"summary\":[{\"text\":\"The primary explicitly failed. Therefore, we move on to the backup fallback: first, probe \\\"secondary\\\", and if that also fails, probe \\\"tertiary\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_05aa293194e048b59f2b4a89",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"secondary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_05aa293194e048b59f2b4a89"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-927007ba-606c-4fcb-8efd-9e624427a43f_0\",\"summary\":[{\"text\":\"Secondary explicitly failed. Moving on to Tertiary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_f242eefb47a6491ca7aaf15b",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"tertiary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_f242eefb47a6491ca7aaf15b"
+            }
+          ],
+          "response": {
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_da59d0938b704b538c688220",
+                "type": "function",
+                "func_name": "verify_endpoint",
+                "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+              }
+            ]
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "The"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " tertiary side"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " succeeded:"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " {\"name\":\"ter"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "ti"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "ary\",\"ok\":"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "true,\"token\":\""
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "EP-T-5"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "541\""
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "}. Therefore selected ="
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " this"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " object.\n\nNext"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": ", bind verified ="
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " verify_endpoint"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "(name=\"terti"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "ary\","
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " token=\"EP-T"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "-554"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "1\")."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "tool_call_started",
+              "index": 1,
+              "id": "call_da59d0938b704b538c688220",
+              "name": "verify_endpoint"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "{\"name\": \"ter"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "tiary"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": ", \"token\": "
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\"EP-T-"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "5541"
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "\""
+            },
+            {
+              "kind": "tool_arguments_delta",
+              "index": 1,
+              "delta": "}"
+            },
+            {
+              "kind": "tool_call_completed",
+              "index": 1
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2027,
+                "uncached_input_tokens": 1003,
+                "cached_input_tokens": 1024,
+                "output_tokens": 107,
+                "reasoning_tokens": 57,
+                "total_tokens": 2134,
+                "raw": [
+                  {
+                    "input_tokens": 2027,
+                    "input_tokens_details": {
+                      "cached_tokens": 1024
+                    },
+                    "output_tokens": 107,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 57
+                    },
+                    "total_tokens": 2134
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_chatcmpl-887ec9fe-5021-435f-9868-918db71053e2_0",
+                    "summary": [
+                      {
+                        "text": "The tertiary side succeeded: {\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}. Therefore selected = this object.\n\nNext, bind verified = verify_endpoint(name=\"tertiary\", token=\"EP-T-5541\").",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2027,
+            "uncached_input_tokens": 1003,
+            "cached_input_tokens": 1024,
+            "output_tokens": 107,
+            "reasoning_tokens": 57,
+            "total_tokens": 2134,
+            "raw": [
+              {
+                "input_tokens": 2027,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 107,
+                "output_tokens_details": {
+                  "reasoning_tokens": 57
+                },
+                "total_tokens": 2134
+              }
+            ]
+          },
+          "error": null
+        },
+        {
+          "attempt": 5,
+          "prompt_measurement": {
+            "tokens": 2036,
+            "source": "openai-responses-serialized-request-estimate",
+            "model": "qwen3.8-max-preview",
+            "accuracy": "heuristic-estimate",
+            "base_estimate_tokens": 2036,
+            "calibration_key": 15492669283138548306,
+            "calibration_shape": 7805679360077801913
+          },
+          "messages": [
+            {
+              "role": "system",
+              "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+            },
+            {
+              "role": "user",
+              "content": "(seq\n  (bind selected (fallback (call probe_endpoint (arg name (literal primary))) (fallback (call probe_endpoint (arg name (literal secondary))) (call probe_endpoint (arg name (literal tertiary))))))\n  (bind verified (call verify_endpoint (arg name (ref selected name)) (arg token (ref selected token))))\n  (reply (ref verified delivery_token)))"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-3e742466-bed6-4940-842e-37c744c09c97_0\",\"summary\":[{\"text\":\"Let's try executing this program.\\n\\nThe program is as follows:\\n1. bind selected = FALLBACK:\\n   - primary: call probe_endpoint(name=\\\"primary\\\")\\n   - backup: FALLBACK(probe_endpoint(name=\\\"secondary\\\"), probe_endpoint(name=\\\"tertiary\\\"))\\n2. bind verified = call verify_endpoint(name=selected.name, token=selected.token)\\n3. reply with verified.delivery_token\\n\\nFirst, I'll start with probe_endpoint(name=\\\"primary\\\"). FALLBACK only evaluates the backup after the primary explicitly fails. So, I'll call probe_endpoint with \\\"primary\\\" first.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_af6113df0a7c47b9af93af3a",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"primary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"PRIMARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_af6113df0a7c47b9af93af3a"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-96c60fb5-a372-4784-8687-73f1bd50d3c2_0\",\"summary\":[{\"text\":\"The primary explicitly failed. Therefore, we move on to the backup fallback: first, probe \\\"secondary\\\", and if that also fails, probe \\\"tertiary\\\".\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_05aa293194e048b59f2b4a89",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"secondary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"error\":\"SECONDARY_UNAVAILABLE\",\"ok\":false}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_05aa293194e048b59f2b4a89"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-927007ba-606c-4fcb-8efd-9e624427a43f_0\",\"summary\":[{\"text\":\"Secondary explicitly failed. Moving on to Tertiary.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_f242eefb47a6491ca7aaf15b",
+                  "type": "function",
+                  "function": {
+                    "name": "probe_endpoint",
+                    "arguments": "{\"name\": \"tertiary\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"name\":\"tertiary\",\"ok\":true,\"token\":\"EP-T-5541\"}",
+              "name": "probe_endpoint",
+              "tool_call_id": "call_f242eefb47a6491ca7aaf15b"
+            },
+            {
+              "role": "system",
+              "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"id\":\"rs_chatcmpl-887ec9fe-5021-435f-9868-918db71053e2_0\",\"summary\":[{\"text\":\"The tertiary side succeeded: {\\\"name\\\":\\\"tertiary\\\",\\\"ok\\\":true,\\\"token\\\":\\\"EP-T-5541\\\"}. Therefore selected = this object.\\n\\nNext, bind verified = verify_endpoint(name=\\\"tertiary\\\", token=\\\"EP-T-5541\\\").\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+              "name": "__morphz_provider_continuation__"
+            },
+            {
+              "role": "assistant",
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_da59d0938b704b538c688220",
+                  "type": "function",
+                  "function": {
+                    "name": "verify_endpoint",
+                    "arguments": "{\"name\": \"tertiary\", \"token\": \"EP-T-5541\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "content": "{\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}",
+              "name": "verify_endpoint",
+              "tool_call_id": "call_da59d0938b704b538c688220"
+            }
+          ],
+          "response": {
+            "content": "ENDPOINT-VERIFIED-7752",
+            "tool_calls": []
+          },
+          "stream_events": [
+            {
+              "kind": "started"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "verified"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " = {\"delivery_token"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "\":\"ENDPOINT-"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "VERIFIED-7"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "752\",\""
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "ok\":true}."
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "\n\nThe reply outputs"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " verified.delivery_token ="
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": " \"ENDPOINT-"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "VERIFIED-7"
+            },
+            {
+              "kind": "reasoning_summary_delta",
+              "text": "752\"."
+            },
+            {
+              "kind": "reasoning_summary_completed"
+            },
+            {
+              "kind": "text_delta",
+              "text": "END"
+            },
+            {
+              "kind": "text_delta",
+              "text": "POINT-VERIFIED"
+            },
+            {
+              "kind": "text_delta",
+              "text": "-775"
+            },
+            {
+              "kind": "text_delta",
+              "text": "2"
+            },
+            {
+              "kind": "usage",
+              "usage": {
+                "input_tokens": 2167,
+                "uncached_input_tokens": 1143,
+                "cached_input_tokens": 1024,
+                "output_tokens": 56,
+                "reasoning_tokens": 41,
+                "total_tokens": 2223,
+                "raw": [
+                  {
+                    "input_tokens": 2167,
+                    "input_tokens_details": {
+                      "cached_tokens": 1024
+                    },
+                    "output_tokens": 56,
+                    "output_tokens_details": {
+                      "reasoning_tokens": 41
+                    },
+                    "total_tokens": 2223
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "provider_continuation",
+              "continuation": {
+                "protocol": "openai-responses",
+                "reasoning_items": [
+                  {
+                    "id": "rs_chatcmpl-9d4041aa-67e8-4b2a-b518-9986ef42b8d6_0",
+                    "summary": [
+                      {
+                        "text": "verified = {\"delivery_token\":\"ENDPOINT-VERIFIED-7752\",\"ok\":true}.\n\nThe reply outputs verified.delivery_token = \"ENDPOINT-VERIFIED-7752\".",
+                        "type": "summary_text"
+                      }
+                    ],
+                    "type": "reasoning"
+                  }
+                ]
+              }
+            },
+            {
+              "kind": "completed"
+            }
+          ],
+          "usage": {
+            "input_tokens": 2167,
+            "uncached_input_tokens": 1143,
+            "cached_input_tokens": 1024,
+            "output_tokens": 56,
+            "reasoning_tokens": 41,
+            "total_tokens": 2223,
+            "raw": [
+              {
+                "input_tokens": 2167,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 56,
+                "output_tokens_details": {
+                  "reasoning_tokens": 41
+                },
+                "total_tokens": 2223
+              }
+            ]
+          },
+          "error": null
+        }
+      ]
+    }
+  ],
+  "conclusion_boundary": "ME-02 p1 changes only the serialization of one canonical recursive program. A Pilot result can diagnose feasibility, ceiling/floor effects and format bias; it is not a confirmatory claim that S-expression is superior, nor evidence about Context transactions, long-term memory, concurrency or public benchmark performance."
+}

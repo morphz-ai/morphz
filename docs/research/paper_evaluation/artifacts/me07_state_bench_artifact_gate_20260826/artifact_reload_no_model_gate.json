@@ -1,0 +1,20 @@
+{
+  "gate": "ME-07-strong-memory-artifact-reload-no-model-v1",
+  "real_model_calls": 0,
+  "morphz": {
+    "status": "builder-orchestration-unit-tested",
+    "production_snapshot_reload": "requires real context_tx smoke"
+  },
+  "amem": {
+    "stored": 100,
+    "retrieved": 3,
+    "wall_time_seconds": 1.459108
+  },
+  "mem0": {
+    "stored": 100,
+    "retrieved": 3,
+    "scope": "agent_id",
+    "wall_time_seconds": 0.705793
+  },
+  "gate_passed": true
+}

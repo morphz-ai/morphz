@@ -1,0 +1,144 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "closed_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": null,
+  "selected": [
+    "rate_limit"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 1, got 1"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"rate_limit\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis closed-score-rule"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Selected the unique candidate with the greatest closed_score (88).\",\"selected\":[\"rate_limit\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 721,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 721,
+      "calibration_key": 2743659884691361025,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor BOUNDED_OPEN, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor CLOSED, apply the declared deterministic rule exactly. Context preferences that are relevant only to the open judgment do not override the closed rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 71,\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 83,\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 88,\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 67,\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 74,\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 79,\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"CLOSED\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for BOUNDED_OPEN, or closed-score-rule for CLOSED\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Selected the unique candidate with the greatest closed_score (88).\",\"selected\":[\"rate_limit\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"closed-score-rule\"],\"explanation\":\"Selected the unique candidate with the greatest closed_score (88).\",\"selected\":[\"rate_limit\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 886,
+          "uncached_input_tokens": 886,
+          "cached_input_tokens": 0,
+          "output_tokens": 87,
+          "reasoning_tokens": 51,
+          "total_tokens": 973,
+          "raw": [
+            {
+              "input_tokens": 886,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 87,
+              "output_tokens_details": {
+                "reasoning_tokens": 51
+              },
+              "total_tokens": 973
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjYMVTRDV_zL2jW3EkPCpd38rcmp6HZ_J-2t8RHZKyM_5-Pv_uXR_l3d7ZR5lsEV-lOnSVEPgCLJ63TwSU-CRhgW1mt3YZFPf8zfDgDXruirgwDQ6ImruT6V_s6rdO3iFWV-gxQPvvfmhmwicFrbGipJBOTSoLsra3FPsWkrep26J5Z5BjgO3E2wFVQ4UzjG-KjcoypivtUy_rQdkAIfp6jDV_eK9ZGxe6sYA5XMQxIa4PQP_apwDfjeRpwjWOgIYh7LeM1EjQPu50hfiQzLffBclfXiBn23A8pQYvJqaqqehZ7ii0bu7TzYb7OxxOdelI0reGbwy1qrrBm4XEBVR3XHhuU5ME-jfXQpYOqwkXpzcMJo6f-qCr1OMLuq6I5snoN6fy5_67suvynq1qt5cuvbwny85LaW0CaCSCBrVUkZe7y5JLv-gw0VyHKaOmC7oIiU5all5G6OZJrjzrejZySK2EAEbjlgIeNA5SNAdPd7pYk1-yCzrNCYrlAfkWE4NmpeOxksc2sh9_u8LXrLECAbaFLJMq-LnT1nlaCTifAUK6-UMmtnyowaTpDaqHFuQNcB_a7ONipLt4d2mpWIwKE3Dge4VFuUQeq7O3oVs-8QsmBeMNvGgMhyjJyYvbpG_h1cp9paYbPqOCxMA27fkSmysuHM4CAMd-WyNkoOmR0mYqCvPhYuule86e_OZaIafDWTIIPW0Mr-boGTweloFGz_hJUJBUMG7I2aJXa9ZMaUC7--Zd6j18bJji5eC_sJQr0xEE7bdGcnKv0yqyOtJlw-a6wpKCuqeQr45KgQOQyTZaBBDN30GH2fh5TYdIQ30RQMMXqYs04CEyRsI2_k8tvjpFBKLYR6PYfdYyF3DoLMrKilBkPrJlNnlNFaAVvOVt2zAeOE35Ohl8tfTVZjKKbXlKekEvtKMCoKr66ipnmr8DGmZhcWKDj_uIYGFSjcquJcG9o88mMX_8FuF5-z5CItl8SjuqhzS7uEEN3KwvBSInGEEnlo8fKhKLTdPG3G6xkkd9TEDXOg2ABqDvTP5lkK5a68nM-ClFoF5CupxzJ8X2TjcesSLbrx_hkzf_2_fijynjdJB534egQKq3ABM1XlXYglPbNhOvgR1BVwDULhp4qglfOD1xhGehli5Ve00dIed0x5ET_TIzWygp6wrY_15YHNBQ3Do_MhHgqhi1F16cV8x8Ckc8Ob8xkkLCllmryYeocG4EmR3ncll7nVpzPY4bYNYukO0Uxr8EgLi7g8dgb6tQASMxSWH-hQ1KTUJ0u34r-3rOYES2ajtFQRJUMod_nI_Gqk0miSJ5eorZEvkUgbmyLyQjNadOhjTtgI_SRZD03m9wHIKXpjOlOnpWo281GPKyCbreMqLVriJ3rK-6sF8aRcTyeq1yWUM_GRwFEHi0_vetBwFpLGdPb5uQ7yDo1hrO_aQKemZ52iW8igPf0M47sEBVzX2GcoMCh6UqSR8NiepkA0Rki0-4ZlTQ8Q4-U7lFuDgsKzL2xYLUuF6v8PfIfNBh0H9hQIXEK-FtFHek9M0WBvjHUqjZleokhFKxNFWIg34tMB13k8YZOnoiB1l5DLj6YLtaDqec27jPrMSkooOc9vYRCAElM3qAKE645wsN_i_TvQR7GDKXo7IbYU=",
+              "id": "rs_0496293b6820d082016a8d831514c887d097b4f70b35893a45",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 886,
+      "uncached_input_tokens": 886,
+      "cached_input_tokens": 0,
+      "output_tokens": 87,
+      "reasoning_tokens": 51,
+      "total_tokens": 973,
+      "raw": [
+        {
+          "input_tokens": 886,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 87,
+          "output_tokens_details": {
+            "reasoning_tokens": 51
+          },
+          "total_tokens": 973
+        }
+      ]
+    },
+    "error": null
+  }
+}

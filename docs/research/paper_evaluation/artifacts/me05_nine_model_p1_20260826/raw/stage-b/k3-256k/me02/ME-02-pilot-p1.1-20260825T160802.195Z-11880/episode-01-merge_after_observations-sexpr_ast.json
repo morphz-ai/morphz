@@ -1,0 +1,1293 @@
+{
+  "repetition": 1,
+  "arm": "sexpr_ast",
+  "task": "merge_after_observations",
+  "semantic_digest": "2e38513eb1a40465678b358d4fe9304522bc0f74c8633756a2b56cbf695338da",
+  "success": true,
+  "semantic_success": true,
+  "score": 5,
+  "max_score": 5,
+  "attempts": 4,
+  "prompt_chars": 335,
+  "tool_trace": [
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "alpha"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-A-1937"
+      }
+    },
+    {
+      "attempt": 1,
+      "name": "fetch_record",
+      "arguments": {
+        "name": "beta"
+      },
+      "output": {
+        "ok": true,
+        "token": "REC-B-7391"
+      }
+    },
+    {
+      "attempt": 2,
+      "name": "merge_records",
+      "arguments": {
+        "alpha": "REC-A-1937",
+        "beta": "REC-B-7391"
+      },
+      "output": {
+        "ok": true,
+        "receipt": "MERGED-AB-4472"
+      }
+    },
+    {
+      "attempt": 3,
+      "name": "verify_merge",
+      "arguments": {
+        "receipt": "MERGED-AB-4472"
+      },
+      "output": {
+        "delivery_token": "MERGE-VERIFIED-5208",
+        "ok": true
+      }
+    }
+  ],
+  "final_answer": "All bindings resolved. Evaluating the REPLY node with the verified delivery token:\n\n**MERGE-VERIFIED-5208**",
+  "error": null,
+  "criteria": [
+    {
+      "id": "required-tool-order",
+      "passed": true,
+      "evidence": "missing=[]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "exact-tool-plan",
+      "passed": true,
+      "evidence": "expected=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]; actual=[\"fetch_record:alpha\", \"fetch_record:beta\", \"merge_records:REC-A-1937:REC-B-7391\", \"verify_merge:MERGED-AB-4472\"]"
+    },
+    {
+      "id": "causal-dataflow",
+      "passed": true,
+      "evidence": "violations=[]"
+    },
+    {
+      "id": "branch-discipline",
+      "passed": true,
+      "evidence": "forbidden=[]"
+    },
+    {
+      "id": "final-delivery",
+      "passed": true,
+      "evidence": "missing=[]; final=\"All bindings resolved. Evaluating the REPLY node with the verified delivery token:\\n\\n**MERGE-VERIFIED-5208**\""
+    }
+  ],
+  "requests": [
+    {
+      "attempt": 1,
+      "prompt_measurement": {
+        "tokens": 1392,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 1392,
+        "calibration_key": 17715523034596932549,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        }
+      ],
+      "response": {
+        "content": "Executing the program.\n\nFirst, the two sequential BIND steps call `fetch_record` for \"alpha\" and \"beta\". These are independent calls, so I make them together:",
+        "tool_calls": [
+          {
+            "id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"alpha\"}"
+          },
+          {
+            "id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl",
+            "type": "function",
+            "func_name": "fetch_record",
+            "arguments": "{\"name\": \"beta\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "Let"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " me"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " execute"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " the"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " program"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " by"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " step"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " Start"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " with"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " fetch"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " alpha"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " and"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": " beta"
+        },
+        {
+          "kind": "reasoning_summary_delta",
+          "text": "."
+        },
+        {
+          "kind": "reasoning_summary_completed"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Executing"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " program"
+        },
+        {
+          "kind": "text_delta",
+          "text": ".\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "First"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " two"
+        },
+        {
+          "kind": "text_delta",
+          "text": " sequential"
+        },
+        {
+          "kind": "text_delta",
+          "text": " BIND"
+        },
+        {
+          "kind": "text_delta",
+          "text": " steps"
+        },
+        {
+          "kind": "text_delta",
+          "text": " call"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "fetch"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_record"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " for"
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "alpha"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\""
+        },
+        {
+          "kind": "text_delta",
+          "text": " and"
+        },
+        {
+          "kind": "text_delta",
+          "text": " \""
+        },
+        {
+          "kind": "text_delta",
+          "text": "beta"
+        },
+        {
+          "kind": "text_delta",
+          "text": "\"."
+        },
+        {
+          "kind": "text_delta",
+          "text": " These"
+        },
+        {
+          "kind": "text_delta",
+          "text": " are"
+        },
+        {
+          "kind": "text_delta",
+          "text": " independent"
+        },
+        {
+          "kind": "text_delta",
+          "text": " calls"
+        },
+        {
+          "kind": "text_delta",
+          "text": ","
+        },
+        {
+          "kind": "text_delta",
+          "text": " so"
+        },
+        {
+          "kind": "text_delta",
+          "text": " I"
+        },
+        {
+          "kind": "text_delta",
+          "text": " make"
+        },
+        {
+          "kind": "text_delta",
+          "text": " them"
+        },
+        {
+          "kind": "text_delta",
+          "text": " together"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 2,
+          "id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\"name\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "alpha"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 2,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 2
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 3,
+          "id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl",
+          "name": "fetch_record"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\"name\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "beta"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 3,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 3
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1234,
+            "uncached_input_tokens": 210,
+            "cached_input_tokens": 1024,
+            "output_tokens": 131,
+            "reasoning_tokens": 20,
+            "total_tokens": 1365,
+            "raw": [
+              {
+                "input_tokens": 1234,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 131,
+                "output_tokens_details": {
+                  "reasoning_tokens": 20
+                },
+                "total_tokens": 1365
+              }
+            ]
+          }
+        },
+        {
+          "kind": "provider_continuation",
+          "continuation": {
+            "protocol": "openai-responses",
+            "reasoning_items": [
+              {
+                "encrypted_content": "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",
+                "id": "rs_msg_CMrhmQrK4Ri7EjkJm1OJBD1m_0",
+                "summary": [
+                  {
+                    "text": "Let me execute the program step by step. Start with fetch_record alpha and beta.",
+                    "type": "summary_text"
+                  }
+                ],
+                "type": "reasoning"
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1234,
+        "uncached_input_tokens": 210,
+        "cached_input_tokens": 1024,
+        "output_tokens": 131,
+        "reasoning_tokens": 20,
+        "total_tokens": 1365,
+        "raw": [
+          {
+            "input_tokens": 1234,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 131,
+            "output_tokens_details": {
+              "reasoning_tokens": 20
+            },
+            "total_tokens": 1365
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 2,
+      "prompt_measurement": {
+        "tokens": 2703,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2703,
+        "calibration_key": 4929992033576282887,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"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\",\"id\":\"rs_msg_CMrhmQrK4Ri7EjkJm1OJBD1m_0\",\"summary\":[{\"text\":\"Let me execute the program step by step. Start with fetch_record alpha and beta.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "Executing the program.\n\nFirst, the two sequential BIND steps call `fetch_record` for \"alpha\" and \"beta\". These are independent calls, so I make them together:",
+          "tool_calls": [
+            {
+              "id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl"
+        }
+      ],
+      "response": {
+        "content": "Both records fetched. Now binding `merged` via `merge_records` using the returned tokens:",
+        "tool_calls": [
+          {
+            "id": "tool_fmxTMMgkT4wIHhkjwRv9B2VT",
+            "type": "function",
+            "func_name": "merge_records",
+            "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Both"
+        },
+        {
+          "kind": "text_delta",
+          "text": " records"
+        },
+        {
+          "kind": "text_delta",
+          "text": " fetched"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " Now"
+        },
+        {
+          "kind": "text_delta",
+          "text": " binding"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "merged"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " via"
+        },
+        {
+          "kind": "text_delta",
+          "text": " `"
+        },
+        {
+          "kind": "text_delta",
+          "text": "merge"
+        },
+        {
+          "kind": "text_delta",
+          "text": "_records"
+        },
+        {
+          "kind": "text_delta",
+          "text": "`"
+        },
+        {
+          "kind": "text_delta",
+          "text": " using"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " returned"
+        },
+        {
+          "kind": "text_delta",
+          "text": " tokens"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "tool_fmxTMMgkT4wIHhkjwRv9B2VT",
+          "name": "merge_records"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"alpha\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-A"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "193"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "7"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": ", \"beta\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "REC"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-B"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "739"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "1"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1424,
+            "uncached_input_tokens": 400,
+            "cached_input_tokens": 1024,
+            "output_tokens": 91,
+            "reasoning_tokens": 0,
+            "total_tokens": 1515,
+            "raw": [
+              {
+                "input_tokens": 1424,
+                "input_tokens_details": {
+                  "cached_tokens": 1024
+                },
+                "output_tokens": 91,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1515
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1424,
+        "uncached_input_tokens": 400,
+        "cached_input_tokens": 1024,
+        "output_tokens": 91,
+        "reasoning_tokens": 0,
+        "total_tokens": 1515,
+        "raw": [
+          {
+            "input_tokens": 1424,
+            "input_tokens_details": {
+              "cached_tokens": 1024
+            },
+            "output_tokens": 91,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1515
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 3,
+      "prompt_measurement": {
+        "tokens": 2806,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2806,
+        "calibration_key": 8167873511815502032,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"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\",\"id\":\"rs_msg_CMrhmQrK4Ri7EjkJm1OJBD1m_0\",\"summary\":[{\"text\":\"Let me execute the program step by step. Start with fetch_record alpha and beta.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "Executing the program.\n\nFirst, the two sequential BIND steps call `fetch_record` for \"alpha\" and \"beta\". These are independent calls, so I make them together:",
+          "tool_calls": [
+            {
+              "id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl"
+        },
+        {
+          "role": "assistant",
+          "content": "Both records fetched. Now binding `merged` via `merge_records` using the returned tokens:",
+          "tool_calls": [
+            {
+              "id": "tool_fmxTMMgkT4wIHhkjwRv9B2VT",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "tool_fmxTMMgkT4wIHhkjwRv9B2VT"
+        }
+      ],
+      "response": {
+        "content": "Merged successfully. Now verifying the merge with the receipt:",
+        "tool_calls": [
+          {
+            "id": "tool_dNFMwvjuCYYaHLF2eDZUOTRT",
+            "type": "function",
+            "func_name": "verify_merge",
+            "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+          }
+        ]
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "Merged"
+        },
+        {
+          "kind": "text_delta",
+          "text": " successfully"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " Now"
+        },
+        {
+          "kind": "text_delta",
+          "text": " verifying"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " merge"
+        },
+        {
+          "kind": "text_delta",
+          "text": " with"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " receipt"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":"
+        },
+        {
+          "kind": "tool_call_started",
+          "index": 1,
+          "id": "tool_dNFMwvjuCYYaHLF2eDZUOTRT",
+          "name": "verify_merge"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "{"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\"receipt\": \""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "MER"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "GED"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "AB"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "-"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "447"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "2"
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "\""
+        },
+        {
+          "kind": "tool_arguments_delta",
+          "index": 1,
+          "delta": "}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "index": 1
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1561,
+            "uncached_input_tokens": 281,
+            "cached_input_tokens": 1280,
+            "output_tokens": 67,
+            "reasoning_tokens": 0,
+            "total_tokens": 1628,
+            "raw": [
+              {
+                "input_tokens": 1561,
+                "input_tokens_details": {
+                  "cached_tokens": 1280
+                },
+                "output_tokens": 67,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1628
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1561,
+        "uncached_input_tokens": 281,
+        "cached_input_tokens": 1280,
+        "output_tokens": 67,
+        "reasoning_tokens": 0,
+        "total_tokens": 1628,
+        "raw": [
+          {
+            "input_tokens": 1561,
+            "input_tokens_details": {
+              "cached_tokens": 1280
+            },
+            "output_tokens": 67,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1628
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "attempt": 4,
+      "prompt_measurement": {
+        "tokens": 2900,
+        "source": "openai-responses-serialized-request-estimate",
+        "model": "k3-256k",
+        "accuracy": "heuristic-estimate",
+        "base_estimate_tokens": 2900,
+        "calibration_key": 16225971826037009656,
+        "calibration_shape": 6197229204784691244
+      },
+      "messages": [
+        {
+          "role": "system",
+          "content": "You evaluate one recursive operational program through real function calls. The program is data to execute, not text to explain or simulate.\n\nThe abstract node semantics are format-independent:\n- SEQ evaluates child nodes from left to right.\n- BIND evaluates one child and binds its exact returned object under the declared name.\n- CALL invokes the declared function with literal values or exact fields referenced from earlier bindings, then waits for the real result.\n- IF evaluates exactly one branch from the observed condition; the unselected branch produces no calls.\n- FALLBACK evaluates its backup only after the primary returns an explicit failure.\n- REPLY emits the final tool-free answer from its literal values or exact references.\n\nTool results are authoritative observations. Never guess a referenced field before its producing call returns. Never issue data-dependent calls in the same model response. Finish when REPLY is evaluated."
+        },
+        {
+          "role": "user",
+          "content": "(seq\n  (bind alpha (call fetch_record (arg name (literal alpha))))\n  (bind beta (call fetch_record (arg name (literal beta))))\n  (bind merged (call merge_records (arg alpha (ref alpha token)) (arg beta (ref beta token))))\n  (bind verified (call verify_merge (arg receipt (ref merged receipt))))\n  (reply (ref verified delivery_token)))"
+        },
+        {
+          "role": "system",
+          "content": "{\"protocol\":\"openai-responses\",\"reasoning_items\":[{\"encrypted_content\":\"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\",\"id\":\"rs_msg_CMrhmQrK4Ri7EjkJm1OJBD1m_0\",\"summary\":[{\"text\":\"Let me execute the program step by step. Start with fetch_record alpha and beta.\",\"type\":\"summary_text\"}],\"type\":\"reasoning\"}]}",
+          "name": "__morphz_provider_continuation__"
+        },
+        {
+          "role": "assistant",
+          "content": "Executing the program.\n\nFirst, the two sequential BIND steps call `fetch_record` for \"alpha\" and \"beta\". These are independent calls, so I make them together:",
+          "tool_calls": [
+            {
+              "id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"alpha\"}"
+              }
+            },
+            {
+              "id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl",
+              "type": "function",
+              "function": {
+                "name": "fetch_record",
+                "arguments": "{\"name\": \"beta\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-A-1937\"}",
+          "name": "fetch_record",
+          "tool_call_id": "tool_80s0VgGyfW4fgZ6fy9vOhfhx"
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"token\":\"REC-B-7391\"}",
+          "name": "fetch_record",
+          "tool_call_id": "tool_bRxqYJV0CQvVmyqXJCuvuhJl"
+        },
+        {
+          "role": "assistant",
+          "content": "Both records fetched. Now binding `merged` via `merge_records` using the returned tokens:",
+          "tool_calls": [
+            {
+              "id": "tool_fmxTMMgkT4wIHhkjwRv9B2VT",
+              "type": "function",
+              "function": {
+                "name": "merge_records",
+                "arguments": "{\"alpha\": \"REC-A-1937\", \"beta\": \"REC-B-7391\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"receipt\":\"MERGED-AB-4472\"}",
+          "name": "merge_records",
+          "tool_call_id": "tool_fmxTMMgkT4wIHhkjwRv9B2VT"
+        },
+        {
+          "role": "assistant",
+          "content": "Merged successfully. Now verifying the merge with the receipt:",
+          "tool_calls": [
+            {
+              "id": "tool_dNFMwvjuCYYaHLF2eDZUOTRT",
+              "type": "function",
+              "function": {
+                "name": "verify_merge",
+                "arguments": "{\"receipt\": \"MERGED-AB-4472\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"delivery_token\":\"MERGE-VERIFIED-5208\",\"ok\":true}",
+          "name": "verify_merge",
+          "tool_call_id": "tool_dNFMwvjuCYYaHLF2eDZUOTRT"
+        }
+      ],
+      "response": {
+        "content": "All bindings resolved. Evaluating the REPLY node with the verified delivery token:\n\n**MERGE-VERIFIED-5208**",
+        "tool_calls": []
+      },
+      "stream_events": [
+        {
+          "kind": "started"
+        },
+        {
+          "kind": "text_delta",
+          "text": "All"
+        },
+        {
+          "kind": "text_delta",
+          "text": " bindings"
+        },
+        {
+          "kind": "text_delta",
+          "text": " resolved"
+        },
+        {
+          "kind": "text_delta",
+          "text": "."
+        },
+        {
+          "kind": "text_delta",
+          "text": " Eval"
+        },
+        {
+          "kind": "text_delta",
+          "text": "uating"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " RE"
+        },
+        {
+          "kind": "text_delta",
+          "text": "PLY"
+        },
+        {
+          "kind": "text_delta",
+          "text": " node"
+        },
+        {
+          "kind": "text_delta",
+          "text": " with"
+        },
+        {
+          "kind": "text_delta",
+          "text": " the"
+        },
+        {
+          "kind": "text_delta",
+          "text": " verified"
+        },
+        {
+          "kind": "text_delta",
+          "text": " delivery"
+        },
+        {
+          "kind": "text_delta",
+          "text": " token"
+        },
+        {
+          "kind": "text_delta",
+          "text": ":\n\n"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "text_delta",
+          "text": "MER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "GE"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "VER"
+        },
+        {
+          "kind": "text_delta",
+          "text": "IFIED"
+        },
+        {
+          "kind": "text_delta",
+          "text": "-"
+        },
+        {
+          "kind": "text_delta",
+          "text": "520"
+        },
+        {
+          "kind": "text_delta",
+          "text": "8"
+        },
+        {
+          "kind": "text_delta",
+          "text": "**"
+        },
+        {
+          "kind": "usage",
+          "usage": {
+            "input_tokens": 1675,
+            "uncached_input_tokens": 139,
+            "cached_input_tokens": 1536,
+            "output_tokens": 39,
+            "reasoning_tokens": 0,
+            "total_tokens": 1714,
+            "raw": [
+              {
+                "input_tokens": 1675,
+                "input_tokens_details": {
+                  "cached_tokens": 1536
+                },
+                "output_tokens": 39,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 1714
+              }
+            ]
+          }
+        },
+        {
+          "kind": "completed"
+        }
+      ],
+      "usage": {
+        "input_tokens": 1675,
+        "uncached_input_tokens": 139,
+        "cached_input_tokens": 1536,
+        "output_tokens": 39,
+        "reasoning_tokens": 0,
+        "total_tokens": 1714,
+        "raw": [
+          {
+            "input_tokens": 1675,
+            "input_tokens_details": {
+              "cached_tokens": 1536
+            },
+            "output_tokens": 39,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 1714
+          }
+        ]
+      },
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,145 @@
+{
+  "repetition": 1,
+  "task": "research_strategy",
+  "condition": "bounded_open_base",
+  "context_id": "research-landscape-v1",
+  "valid_open_set_count": 4,
+  "selected": [
+    "broad_scan",
+    "expert_interviews"
+  ],
+  "success": true,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": true,
+      "evidence": "exact schema decoded"
+    },
+    {
+      "id": "selection-cardinality",
+      "passed": true,
+      "evidence": "expected 2, got 2"
+    },
+    {
+      "id": "known-candidates",
+      "passed": true,
+      "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+    },
+    {
+      "id": "semantic-contract",
+      "passed": true,
+      "evidence": "selected=[\"broad_scan\", \"expert_interviews\"]"
+    },
+    {
+      "id": "causal-basis",
+      "passed": true,
+      "evidence": "expected basis research-landscape-v1"
+    },
+    {
+      "id": "nonempty-explanation",
+      "passed": true,
+      "evidence": "explanation must not be empty"
+    }
+  ],
+  "raw_output": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"Together they provide fast, broad landscape coverage without using a causal method.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 717,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "gpt-5.6-sol",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 717,
+      "calibration_key": 12671490927792481961,
+      "calibration_shape": 15188613938863591474
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor BOUNDED_OPEN, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor CLOSED, apply the declared deterministic rule exactly. Context preferences that are relevant only to the open judgment do not override the closed rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"id\": \"broad_scan\",\n      \"properties\": [\n        \"breadth\",\n        \"secondary\",\n        \"fast\"\n      ]\n    },\n    {\n      \"id\": \"expert_interviews\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"qualitative\"\n      ]\n    },\n    {\n      \"id\": \"controlled_trial\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"causal\"\n      ]\n    },\n    {\n      \"id\": \"replication\",\n      \"properties\": [\n        \"depth\",\n        \"primary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"dataset_audit\",\n      \"properties\": [\n        \"depth\",\n        \"secondary\",\n        \"verification\"\n      ]\n    },\n    {\n      \"id\": \"field_observation\",\n      \"properties\": [\n        \"breadth\",\n        \"primary\",\n        \"field\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"id\": \"research-landscape-v1\",\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"statement\": \"The current stage maps the landscape broadly and quickly; causal experiments are premature.\"\n  },\n  \"kind\": \"BOUNDED_OPEN\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for BOUNDED_OPEN, or closed-score-rule for CLOSED\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"forbidden_properties\": [\n      \"causal\"\n    ],\n    \"required_property_groups\": [\n      [\n        \"breadth\"\n      ],\n      [\n        \"fast\"\n      ]\n    ],\n    \"select_count\": 2,\n    \"semantics\": \"Choose any two distinct candidates such that no selected candidate has a forbidden property and the selected set collectively covers at least one property from every required_property_group.\"\n  },\n  \"task\": \"Choose the candidate research method or methods required by the declared evaluation rule.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"Together they provide fast, broad landscape coverage without using a causal method.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\"basis\":[\"research-landscape-v1\"],\"explanation\":\"Together they provide fast, broad landscape coverage without using a causal method.\",\"selected\":[\"broad_scan\",\"expert_interviews\"]}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 874,
+          "uncached_input_tokens": 874,
+          "cached_input_tokens": 0,
+          "output_tokens": 177,
+          "reasoning_tokens": 133,
+          "total_tokens": 1051,
+          "raw": [
+            {
+              "input_tokens": 874,
+              "input_tokens_details": {
+                "cache_write_tokens": 0,
+                "cached_tokens": 0
+              },
+              "output_tokens": 177,
+              "output_tokens_details": {
+                "reasoning_tokens": 133
+              },
+              "total_tokens": 1051
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "content": [],
+              "encrypted_content": "gAAAAABqjYNIPaJu0i2zXHUEsN9DrNzJ15xFW9fBpJbWEMv5xHIJqU1dcKYdDmMf2rf8Wx05ZosqVWbELLLZjuEJGIULwIYtj9DmSAenA55MtsGD36C7S4SBMNYXuIFXxBP_sejAvHrI8ZpPHaz6tcyQCIFLNzxtAxlary-atYUfw5HgMvw3ZhzIlH4RDkMfjKESzieRP0BtwCLc6WzC1SLmTBwbPXotpp2NdDP4ZvplbCdwMoYCk8RiJ63yKdOPHPpe4VEndzijt2doDYA8R-wm0-KIewWgZyv7_IhQirFGvxlVTP5Slkr7Qn3wdPZOy9Zr4Bzwcb89Lkz0vpxd3-rOZTEjDMLAFwPQB-WqKbHUQM2RJk92Gwwjh3xOYoqaaM8Mg6XiCieLOsCiFyEUpTpof-bSMwPkG64Ibjf_yB3McClqvrpAkbE83SalDfY8nwpeiF9asua8Egerv4Ew35-MViAPGsVR-TJF_NNN7XR6Gzxkz4L0FYOBIDhAmYrrSMw2tb8-tRD0sCC-WlTZ4yzZsk7-FCfcw8rz1ojAMmMb5BzLz4WG0DdJIapZ9Gjr_hh92YhMV3qoF0cAsMJrJ1iWUh8ggasUcxHA5zNXXPxyN4vEPxlJHsd8Ho-4lOZpLeDZMZ7G6K70w1_H5RqqBIdfxNt6bP6IrVPEBwZqqjPBrK8gidtaEgYhzP3TugJuyI-WEXivNkXb6ydAey59LSRw6xamb31__xd1lNWJJO3VpQ6mxstsr-C6nhdeHmcZHr6inXTcCB8INqbzzpjApfd0b6gbXxsSIfpL9mlBKtsLg-JIAtf8-JGZK0HYVhUAoLWlBnA9XgPfXd9to_StykzHJQM8OXtMN4P1tdnCyx1WLwXn9ZDbLodwKxw0I0IxFNPfaNzcd0zrqRRZ85trHkxxyOtl2ZZD9Rb2Ec6tprdFaCoW44RWSa2irVmPi2IV_EcF-cnLMBuAQULdzeLvLNbnU1sMcuIQZy3ZAB6rZSUVDinK5voi7bNt7oyHTuROSl7xb6vAuUs9T-gz4v9_bC0aIO4e_6ymhF2qhngW9AAsTnmqnmPAOLTjiBIuAh8lOjR0YzxAqIrPEZsrEtRdDTZm9itFIOJi3yKxOIBlWsBJH0ofhtSWZr2B9XQ0bKVDAR8yQsoOZA4bNYK6bG3G6xXuHYiysdRsci6d2D53F2w4w6SozemfQ4sI_oteyMSfjmmToCTsgw_dRI3SEspSp6hISSDKK6JH9Rd9y019Kk5I-D9ztqU5Do_-610Iv9QH18R80QDYZ4rR-IXGh2OXJORgKjKjySUANXF8tYO7XfwrMQ4BYAfm5VM_5wbP3pjZhiOK9cmHgNq-O0hIdDzH8uoGSYlvrBXY8E4nOgYp1WoK1R5i1stSEt4I4kziMPK1f1QodbJxaApy6f0pbIizza1aaF1tSpthH4POrk3LhAjO8MqsVPGS_FA8AMXPF_BrWj2vIAnOVElz_4qeZUMsK7yrCKS-eUXUlDzsDOQPnq014CXOEIBkMsucJ0Ke6P7hdKpmxbJNqCYIU5Zz5SKFOGocZBAhlEBBZXyyxeUch0JJDEZ6MtkL0jrD5c2ImWY-DSWIHGDM1xxYao8XkH1tU0yQvzKsQCZ1AMfDe025bPQUH9J5IwRUlY1WTzh3m8FB2KjO2d9H9cvK-cA6S60o9beNVFjB9--ZzZ3YQSRJiBpCe36tQHg1iMGEzzI_EcJyK8NVyWcSZnWu8-WLamir80Y71361kT0t7gtF4X5xJgRo4bMVKWsC8d4x8c7mwCIT889Own_nNRdajwVRo3NAyYqc8t4gPiT6STjvFoS9cN8AlGDce67f-cmuQzkwpwLiSr6NL6m-28b9t6Ycvn8KH6BWzifgdHtn7fcnn6dLJ9VxTmc5_wlOP7pnx7KFbOf1j9AqIU-QBZW-jwBD185g9FH0SqPsvaWAcB3MiFSusW-CGqJ0PFKOYguvj62IEjuCBJHGGJoZxEa6DCxpWIB5POwnkyT7j2OAYmLOmnPqiEKYyiR_pGtbdQfLoYFGtw6lrcR_9nvg11e2_0rcIO34Mz6apmiQsgl7ZHivfdVN8qAOvTaXVcR6_ELeDV1HTv6HaX9Z9HQY3-jX9CKpXJvA0jFLYFrtYLz7m_s_7AGt3CGdRbV-H1DyKnKOmmnegni8_1sM9m6RuNhE8OgNBzg3XtBQ2uMViJ5brQ==",
+              "id": "rs_067a4e7370e50207016a8d83486b4087d0ac94c6a54b488640",
+              "summary": [],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 874,
+      "uncached_input_tokens": 874,
+      "cached_input_tokens": 0,
+      "output_tokens": 177,
+      "reasoning_tokens": 133,
+      "total_tokens": 1051,
+      "raw": [
+        {
+          "input_tokens": 874,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 177,
+          "output_tokens_details": {
+            "reasoning_tokens": 133
+          },
+          "total_tokens": 1051
+        }
+      ]
+    },
+    "error": null
+  }
+}

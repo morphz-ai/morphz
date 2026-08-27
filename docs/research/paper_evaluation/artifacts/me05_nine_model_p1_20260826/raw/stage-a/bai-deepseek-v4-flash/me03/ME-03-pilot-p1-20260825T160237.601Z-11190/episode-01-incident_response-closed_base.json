@@ -1,0 +1,553 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "closed_base",
+  "context_id": "incident-continuity-v1",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 54"
+    }
+  ],
+  "raw_output": "{\"selected\":[\"rate_limit\"],\"basis\":\"closed-score-rule\",\"explanation\":\"Rate limit has the greatest closed_score of 88.\"}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 742,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "bai-deepseek-v4-flash",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 742,
+      "calibration_key": 403523747682809127,
+      "calibration_shape": 11369313708662499037
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 71,\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 83,\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 88,\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 67,\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 74,\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 79,\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"external\"\n    ],\n    \"id\": \"incident-continuity-v1\",\n    \"required_property_groups\": [\n      [\n        \"containment\"\n      ],\n      [\n        \"low_disruption\"\n      ]\n    ],\n    \"statement\": \"Maintain service continuity while containing the incident; external communication is not yet authorized.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"selected\":[\"rate_limit\"],\"basis\":\"closed-score-rule\",\"explanation\":\"Rate limit has the greatest closed_score of 88.\"}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "We"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " answer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " only"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " evaluate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " deterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " control"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " among"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " all"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ignoring"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-p"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ref"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "?"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_count"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "1"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " semantics"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ignore"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-p"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "reference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " max"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "88"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " explanation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ensure"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Mark"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "down"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":"
+      },
+      {
+        "kind": "text_delta",
+        "text": "[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"],"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-"
+      },
+      {
+        "kind": "text_delta",
+        "text": "rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "expl"
+      },
+      {
+        "kind": "text_delta",
+        "text": "anation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": " limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": " has"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "text_delta",
+        "text": " of"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": "88"
+      },
+      {
+        "kind": "text_delta",
+        "text": ".\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 700,
+          "uncached_input_tokens": 700,
+          "cached_input_tokens": 0,
+          "output_tokens": 110,
+          "reasoning_tokens": 79,
+          "total_tokens": 810,
+          "raw": [
+            {
+              "input_tokens": 700,
+              "input_tokens_details": {
+                "cached_tokens": 0
+              },
+              "output_tokens": 110,
+              "output_tokens_details": {
+                "reasoning_tokens": 79
+              },
+              "total_tokens": 810
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "id": "rs_fcdee8d7-936b-42c7-b1b6-25587dbb0556_0",
+              "summary": [
+                {
+                  "text": "We need answer JSON only. Need evaluate deterministic control. Need select unique candidate greatest closed_score among all candidates, ignoring open-pref? Rule says select_count 1, semantics ignore open-preference constraints and select unique candidate greatest closed_score. Candidates closed_score max 88 rate_limit. Need return selected [\"rate_limit\"], basis \"closed-score-rule\", explanation. Need ensure no Markdown.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 700,
+      "uncached_input_tokens": 700,
+      "cached_input_tokens": 0,
+      "output_tokens": 110,
+      "reasoning_tokens": 79,
+      "total_tokens": 810,
+      "raw": [
+        {
+          "input_tokens": 700,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 110,
+          "output_tokens_details": {
+            "reasoning_tokens": 79
+          },
+          "total_tokens": 810
+        }
+      ]
+    },
+    "error": null
+  }
+}

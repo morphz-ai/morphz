@@ -1,0 +1,1022 @@
+{
+  "repetition": 1,
+  "task": "incident_response",
+  "condition": "closed_intervention",
+  "context_id": "incident-accountability-v2",
+  "valid_open_set_count": null,
+  "selected": [],
+  "success": false,
+  "criteria": [
+    {
+      "id": "typed-json-contract",
+      "passed": false,
+      "evidence": "invalid exact JSON object: invalid type: string \"closed-score-rule\", expected a sequence at line 1 column 28"
+    }
+  ],
+  "raw_output": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Deterministic rule ignores open-preference constraints and selects the unique candidate with the greatest closed_score, which is rate_limit at 88.\",\"selected\":[\"rate_limit\"]}",
+  "request": {
+    "prompt_measurement": {
+      "tokens": 738,
+      "source": "openai-responses-serialized-request-estimate",
+      "model": "k3-256k",
+      "accuracy": "heuristic-estimate",
+      "base_estimate_tokens": 738,
+      "calibration_key": 11830468950973445736,
+      "calibration_shape": 189258929373905428
+    },
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the model-owned evaluator at a typed cognitive boundary.\n\nFor NONDETERMINISTIC, the relation deliberately permits more than one valid result. Select any result that satisfies the current Context and the declared contract. Do not search for a hidden unique optimum.\n\nFor DETERMINISTIC_CONTROL, apply the declared deterministic rule exactly. Context preferences that are relevant only to the nondeterministic judgment do not override the deterministic rule.\n\nNondeterministic means that multiple values may satisfy one semantic contract; it does not require randomness. Return exactly one JSON object and no Markdown."
+      },
+      {
+        "role": "user",
+        "content": "(infer-request\n{\n  \"candidates\": [\n    {\n      \"closed_score\": 71,\n      \"id\": \"isolate_edge\",\n      \"properties\": [\n        \"containment\",\n        \"disruptive\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 83,\n      \"id\": \"rotate_tokens\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 88,\n      \"id\": \"rate_limit\",\n      \"properties\": [\n        \"containment\",\n        \"low_disruption\",\n        \"reversible\",\n        \"internal\"\n      ]\n    },\n    {\n      \"closed_score\": 67,\n      \"id\": \"publish_status\",\n      \"properties\": [\n        \"transparency\",\n        \"low_disruption\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 74,\n      \"id\": \"notify_affected\",\n      \"properties\": [\n        \"transparency\",\n        \"evidence\",\n        \"external\"\n      ]\n    },\n    {\n      \"closed_score\": 79,\n      \"id\": \"preserve_logs\",\n      \"properties\": [\n        \"evidence\",\n        \"low_disruption\",\n        \"internal\"\n      ]\n    }\n  ],\n  \"context\": {\n    \"forbidden_properties\": [\n      \"disruptive\"\n    ],\n    \"id\": \"incident-accountability-v2\",\n    \"required_property_groups\": [\n      [\n        \"transparency\"\n      ],\n      [\n        \"evidence\"\n      ]\n    ],\n    \"statement\": \"An authoritative disclosure decision now prioritizes public accountability and preservation of evidence.\"\n  },\n  \"kind\": \"DETERMINISTIC_CONTROL\",\n  \"returns\": {\n    \"basis\": \"non-empty array containing the current context id for NONDETERMINISTIC, or closed-score-rule for DETERMINISTIC_CONTROL\",\n    \"explanation\": \"non-empty short string\",\n    \"selected\": \"array of candidate ids\"\n  },\n  \"rule\": {\n    \"select_count\": 1,\n    \"semantics\": \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n  },\n  \"task\": \"Choose the candidate action or actions required by the declared evaluation rule for the current incident.\"\n}\n)"
+      }
+    ],
+    "response": {
+      "content": "{\"basis\":\"closed-score-rule\",\"explanation\":\"Deterministic rule ignores open-preference constraints and selects the unique candidate with the greatest closed_score, which is rate_limit at 88.\",\"selected\":[\"rate_limit\"]}",
+      "tool_calls": []
+    },
+    "stream_events": [
+      {
+        "kind": "started"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " user"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " has"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " provided"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " an"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " infer"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-request"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " kind"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " D"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_CONTROL"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " I"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " need"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " apply"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " declared"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " deterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Ignore"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-p"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "reference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\"\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Looking"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " at"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidates"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " their"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_scores"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " isolate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_edge"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "71"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rotate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_tokens"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "83"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "88"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " publish"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_status"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "67"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " notify"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_a"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ffected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "74"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preserve"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_logs"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "79"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " is"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " "
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "88"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "The"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " deterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " says"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " to"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ignore"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " open"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-p"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "reference"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " constraints"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ("
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "like"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " required"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_property"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_groups"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " forbidden"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_properties"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " context"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " statement"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " preferences"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ")"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " and"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " select"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " with"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "So"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selected"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " ="
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " [\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\"]"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " should"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " be"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " \""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-score"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-rule"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "\""
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " for"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " D"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ETER"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "MIN"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ISTIC"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "_CONTROL"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "planation"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ":"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " non"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "-empty"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " short"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " string"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " explaining"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " the"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " deterministic"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " selection"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ".\n\n"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "Return"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " exactly"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " one"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " JSON"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " object"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": ","
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " no"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": " Markdown"
+      },
+      {
+        "kind": "reasoning_summary_delta",
+        "text": "."
+      },
+      {
+        "kind": "reasoning_summary_completed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "{\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "basis"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-score"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "ex"
+      },
+      {
+        "kind": "text_delta",
+        "text": "planation"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "Determ"
+      },
+      {
+        "kind": "text_delta",
+        "text": "inistic"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rule"
+      },
+      {
+        "kind": "text_delta",
+        "text": " ignores"
+      },
+      {
+        "kind": "text_delta",
+        "text": " open"
+      },
+      {
+        "kind": "text_delta",
+        "text": "-p"
+      },
+      {
+        "kind": "text_delta",
+        "text": "reference"
+      },
+      {
+        "kind": "text_delta",
+        "text": " constraints"
+      },
+      {
+        "kind": "text_delta",
+        "text": " and"
+      },
+      {
+        "kind": "text_delta",
+        "text": " selects"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " unique"
+      },
+      {
+        "kind": "text_delta",
+        "text": " candidate"
+      },
+      {
+        "kind": "text_delta",
+        "text": " with"
+      },
+      {
+        "kind": "text_delta",
+        "text": " the"
+      },
+      {
+        "kind": "text_delta",
+        "text": " greatest"
+      },
+      {
+        "kind": "text_delta",
+        "text": " closed"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_score"
+      },
+      {
+        "kind": "text_delta",
+        "text": ","
+      },
+      {
+        "kind": "text_delta",
+        "text": " which"
+      },
+      {
+        "kind": "text_delta",
+        "text": " is"
+      },
+      {
+        "kind": "text_delta",
+        "text": " rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": " at"
+      },
+      {
+        "kind": "text_delta",
+        "text": " "
+      },
+      {
+        "kind": "text_delta",
+        "text": "88"
+      },
+      {
+        "kind": "text_delta",
+        "text": "."
+      },
+      {
+        "kind": "text_delta",
+        "text": "\",\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "selected"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\":[\""
+      },
+      {
+        "kind": "text_delta",
+        "text": "rate"
+      },
+      {
+        "kind": "text_delta",
+        "text": "_limit"
+      },
+      {
+        "kind": "text_delta",
+        "text": "\"]"
+      },
+      {
+        "kind": "text_delta",
+        "text": "}"
+      },
+      {
+        "kind": "usage",
+        "usage": {
+          "input_tokens": 692,
+          "uncached_input_tokens": 436,
+          "cached_input_tokens": 256,
+          "output_tokens": 239,
+          "reasoning_tokens": 219,
+          "total_tokens": 931,
+          "raw": [
+            {
+              "input_tokens": 692,
+              "input_tokens_details": {
+                "cached_tokens": 256
+              },
+              "output_tokens": 239,
+              "output_tokens_details": {
+                "reasoning_tokens": 219
+              },
+              "total_tokens": 931
+            }
+          ]
+        }
+      },
+      {
+        "kind": "provider_continuation",
+        "continuation": {
+          "protocol": "openai-responses",
+          "reasoning_items": [
+            {
+              "encrypted_content": "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",
+              "id": "rs_msg_FrcqSt1bO6GG5J8qdI2fyujM_0",
+              "summary": [
+                {
+                  "text": "The user has provided an infer-request with kind DETERMINISTIC_CONTROL. I need to apply the declared deterministic rule exactly: \"Ignore open-preference constraints and select the unique candidate with the greatest closed_score.\"\n\nLooking at the candidates and their closed_scores:\n- isolate_edge: 71\n- rotate_tokens: 83\n- rate_limit: 88\n- publish_status: 67\n- notify_affected: 74\n- preserve_logs: 79\n\nThe greatest closed_score is 88 for rate_limit.\n\nThe deterministic rule says to ignore open-preference constraints (like required_property_groups, forbidden_properties, context statement preferences) and select the unique candidate with greatest closed_score.\n\nSo selected = [\"rate_limit\"].\n\nbasis should be \"closed-score-rule\" for DETERMINISTIC_CONTROL.\n\nexplanation: non-empty short string explaining the deterministic selection.\n\nReturn exactly one JSON object, no Markdown.",
+                  "type": "summary_text"
+                }
+              ],
+              "type": "reasoning"
+            }
+          ]
+        }
+      },
+      {
+        "kind": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 692,
+      "uncached_input_tokens": 436,
+      "cached_input_tokens": 256,
+      "output_tokens": 239,
+      "reasoning_tokens": 219,
+      "total_tokens": 931,
+      "raw": [
+        {
+          "input_tokens": 692,
+          "input_tokens_details": {
+            "cached_tokens": 256
+          },
+          "output_tokens": 239,
+          "output_tokens_details": {
+            "reasoning_tokens": 219
+          },
+          "total_tokens": 931
+        }
+      ]
+    },
+    "error": null
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "protocol": "me08-terminal-bench-postfix-all89-morphz-v2",
+  "completed_at": "2026-08-26T15:45:04.815922+00:00",
+  "return_codes": {
+    "morphz-native": 3
+  },
+  "arm_runs": {
+    "morphz-native": {
+      "started_at": "2026-08-26T12:02:25.739271+00:00",
+      "completed_at": "2026-08-26T15:45:04.815678+00:00",
+      "return_code": 3
+    }
+  },
+  "complete_official_results": true,
+  "summary": "/opt/morphz-benchmark/postfix-runs/me08-postfix-all89-morphz-v2/run-2/all_89_morphz_summary.json"
+}
