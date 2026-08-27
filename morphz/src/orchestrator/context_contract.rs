@@ -47,7 +47,7 @@ pub(crate) const REALITY_CONTRACT: &[ContractClause] = &[
     },
     ContractClause {
         key: "transaction",
-        meaning: "Context transactions are atomic and versioned; Mind version is the physical commit sequence and Frame revision is the MVCC boundary for cognitive changes. The Runtime may rebase create/derive/revise operations that do not touch the same Frame, but rejects silent overwrite when that Frame changed and leaves semantic merging to the Agent",
+        meaning: "Context transactions are atomic and versioned; Mind version is the physical commit sequence, while conflict boundaries are tracked per Frame content, lifecycle target, exact relation edge, Frame order, and checkpoint identity. The Runtime rebases a stale transaction only when all boundaries it reads or writes are unchanged; exact-boundary conflicts require the Agent to reread and merge semantically. rollback and Session-attention operations remain exact-version operations",
     },
     ContractClause {
         key: "resource-limits",
