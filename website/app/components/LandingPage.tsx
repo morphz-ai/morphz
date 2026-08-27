@@ -1,87 +1,120 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
+import { ContextEvaluationField } from "./ContextEvaluationField";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
 
 const content = {
   zh: {
-    eyebrow: "代理运行时 · 当前处于活跃开发阶段",
-    title: "让代理拥有\n可持续的认知",
-    lead: "Morphz 把上下文、调度、权限与执行变成可验证的运行时状态，让模型可以长期工作，而不必把可靠性寄托在一次提示词里。",
-    primary: "阅读文档",
-    secondary: "查看 GitHub",
-    commandLabel: "从第一次配置开始",
-    commandStatus: "就绪",
-    runtimeLabels: ["认知上下文", "持久", "执行", "可恢复"],
-    boundariesEyebrow: "运行时边界",
-    firstRunEyebrow: "首次运行",
-    documentationEyebrow: "产品文档",
-    journalEyebrow: "MORPHZ · 技术文章",
-    principlesTitle: "不是聊天外壳，而是认知与执行底座",
-    principlesLead: "模型可以变化，任务可以跨越多轮，进程也可能重启。Morphz 把必须可靠的部分留在运行时。",
-    principles: [
-      ["认知上下文持有认知", "认知上下文持有跨会话认知、认知帧与可召回事件历史；会话是沟通通道，不是记忆容器。"],
-      ["可恢复执行", "线程、激活与目标把执行生命周期显式化，使暂停、恢复、委派和失败处理可审计。"],
-      ["模型服务无关接入", "模型服务、认证账号、物理模型与模型路由彼此分离，不让运行时绑定某一家模型厂商。"],
+    edition: "MORPHZ / DEVELOPER PREVIEW / 0.1",
+    eyebrow: "让代理拥有可持续认知，而不是更长的聊天记录",
+    title: ["上下文，", "不再只是", "消息历史。"],
+    lead: "Morphz 让结构化上下文成为模型直接求值的对象。模型负责非确定性的语义处理，运行时负责事实、权限、状态与执行。",
+    idea: "理解这个想法",
+    start: "开始运行",
+    source: "检视源码",
+    boundaryIndex: "01 / 计算边界",
+    boundaryTitle: "把认知交给模型，\n把确定性留给运行\u2060时。",
+    boundaryLead: "长程代理不应把身份、权限、恢复与持久状态寄托在一次完美提示词里。",
+    modelLabel: "非确定性语义处理器",
+    modelTitle: "模型解释世界",
+    modelBody: "理解意图、形成判断、提出行动，并在结构化上下文中修订认知。",
+    runtimeLabel: "确定性事务内核",
+    runtimeTitle: "运行时守住事实",
+    runtimeBody: "验证能力、提交状态、调度执行，并让失败、恢复与因果链保持可审计。",
+    sequenceIndex: "02 / 求值序列",
+    sequenceTitle: "一条消息进入之后，发生了\u2060什么？",
+    sequenceLead: "不是把全部历史再次拼成提示词，而是选择此刻真正参与求值的结构。",
+    sequence: [
+      ["输入成为事件", "会话接收观察，但会话本身不拥有认知。"],
+      ["上下文选择结构", "认知帧、目标、召回与当前状态按语义进入求值。"],
+      ["模型进行求值", "大语言模型作为非确定性处理器解释结构并产生结果。"],
+      ["运行时提交变化", "合法变化被持久化；下一会话从新的认知状态继续。"],
     ],
-    flowTitle: "一条清晰的开始路径",
-    flow: [
-      ["01", "配置", "用控制台向导或终端向导接入一个模型服务。"],
-      ["02", "对话", "创建认知上下文与会话，完成第一次真实模型响应。"],
-      ["03", "执行", "让代理在明确的工作区、权限和执行目标内完成任务。"],
-      ["04", "持续", "通过认知帧、召回、目标与调度器推进长期工作。"],
+    phenomenaIndex: "03 / 可观察现象",
+    phenomenaTitle: "不是功能列表，\n而是可以复现的系统\u2060行为。",
+    phenomena: [
+      ["跨会话连续", "认知上下文持有认知。会话结束不等于机器失忆。", "session_a → context_01 → session_b"],
+      ["并行而不串扰", "线程和目标拥有明确生命周期，并发工作不会共享一团隐形聊天状态。", "thread_04 ∥ thread_05"],
+      ["失败之后继续", "网络、工具或进程失败留下可检查终态，工作可以恢复而不是重新猜测。", "activation: interrupted → resumed"],
     ],
-    journalTitle: "当代理离开聊天，它需要一种新的计算模型",
-    journalLead: "Morphz 的第一篇文章，从线性消息历史出发，解释为什么结构化上下文应当成为模型直接求值的对象。",
-    journalArticle: "从聊天补全到结构化上下文求值",
-    journalAction: "阅读技术文章",
-    docsTitle: "文档是产品契约",
-    docsLead: "公开文档只描述当前可以验证的行为。设计提案、研究和历史实现保留在仓库中，但不会伪装成已经交付的功能。",
+    evidenceIndex: "04 / 证据路径",
+    evidenceTitle: "先读思想，\n再检查证据。",
+    evidenceLead: "文章、论文实验、源码与公开文档承担不同职责。它们共同构成 Morphz 的技术主张。",
+    evidence: [
+      ["IDEA", "从聊天补全到结构化上下文求值", "一篇解释新计算模型的技术文章。", "blog"],
+      ["EVIDENCE", "论文实验中心", "冻结协议、失败样本、Pilot 与确认性证据边界。", "research"],
+      ["SOURCE", "运行时源码", "真实实现、测试、迁移与可审计状态机。", "source"],
+      ["SPEC", "产品文档", "只描述当前能够验证的公开行为。", "docs"],
+    ],
+    runIndex: "05 / 第一次运行",
+    runTitle: "从一台本地机器开始。",
+    runLead: "设置向导连接模型服务；Dashboard 展示上下文、会话、线程与执行状态。",
+    copyLabel: "构建 / 设置 / 运行",
+    preview: "Developer Preview",
+    previewBody: "核心机制可以复现，接口与多进程能力仍在演进。公开限制与实验状态不会被包装成生产承诺。",
+    docsTitle: "继续阅读",
     docsCards: [
-      ["快速开始", "从构建、设置向导到第一次响应。", "getting-started"],
-      ["核心概念", "理解认知上下文、会话、认知帧与执行生命周期。", "core-concepts"],
-      ["模型服务", "配置模型服务、账号、模型与路由。", "providers-and-models"],
-      ["运维排障", "诊断模型、日志、任务和存储问题。", "operations"],
+      ["快速开始", "从构建到第一次真实模型响应。", "getting-started"],
+      ["核心概念", "认知上下文、会话、认知帧与执行生命周期。", "core-concepts"],
+      ["模型服务", "模型服务、账号、物理模型与路由。", "providers-and-models"],
+      ["运维排障", "日志、任务、存储与恢复。", "operations"],
     ],
   },
   en: {
-    eyebrow: "AGENT RUNTIME · ACTIVELY DEVELOPED",
-    title: "Durable cognition\nfor agents",
-    lead: "Morphz turns context, scheduling, permissions, and execution into verifiable runtime state, so long-running work does not depend on one perfect prompt.",
-    primary: "Read the docs",
-    secondary: "View on GitHub",
-    commandLabel: "Start with guided setup",
-    commandStatus: "ready",
-    runtimeLabels: ["Context", "durable", "Execution", "recoverable"],
-    boundariesEyebrow: "RUNTIME BOUNDARIES",
-    firstRunEyebrow: "FIRST RUN",
-    documentationEyebrow: "DOCUMENTATION",
-    journalEyebrow: "MORPHZ · TECHNICAL NOTES",
-    principlesTitle: "A cognition and execution runtime, not a chat wrapper",
-    principlesLead: "Models change, work spans many turns, and processes restart. Morphz keeps the parts that must remain reliable inside the runtime.",
-    principles: [
-      ["Context-owned cognition", "A Context owns cross-session cognition, cognitive frames, and the recallable event history. A Session is a communication channel, not a memory container."],
-      ["Recoverable execution", "Threads, Activations, and Objectives make execution lifecycles explicit, auditable, pausable, and recoverable."],
-      ["Provider-independent access", "Providers, auth accounts, physical models, and model routes remain separate so the runtime is not coupled to one vendor."],
+    edition: "MORPHZ / DEVELOPER PREVIEW / 0.1",
+    eyebrow: "Durable cognition for agents—not a longer transcript",
+    title: ["Context is", "no longer", "a transcript."],
+    lead: "Morphz makes structured Context the object a model evaluates directly. The model handles nondeterministic semantics; the runtime owns facts, authority, state, and execution.",
+    idea: "Read the idea",
+    start: "Start running",
+    source: "Inspect the source",
+    boundaryIndex: "01 / COMPUTATIONAL BOUNDARY",
+    boundaryTitle: "Cognition belongs to the model.\nCertainty belongs to the runtime.",
+    boundaryLead: "A long-running agent should not entrust identity, authority, recovery, and durable state to one perfect prompt.",
+    modelLabel: "NONDETERMINISTIC SEMANTIC PROCESSOR",
+    modelTitle: "The model interprets",
+    modelBody: "It understands intent, forms judgments, proposes actions, and revises cognition inside structured Context.",
+    runtimeLabel: "DETERMINISTIC TRANSACTION KERNEL",
+    runtimeTitle: "The runtime preserves facts",
+    runtimeBody: "It validates capabilities, commits state, schedules execution, and keeps failure, recovery, and causality auditable.",
+    sequenceIndex: "02 / EVALUATION SEQUENCE",
+    sequenceTitle: "What happens after a message arrives?",
+    sequenceLead: "Morphz does not simply concatenate the entire transcript again. It selects the structures that matter to this evaluation.",
+    sequence: [
+      ["Input becomes an event", "A Session receives an observation; the Session does not own cognition."],
+      ["Context selects structure", "Frames, Objectives, Recall, and current state enter evaluation by meaning."],
+      ["The model evaluates", "The language model interprets the structure as a nondeterministic processor."],
+      ["The runtime commits", "Valid changes become durable; another Session continues from the new state."],
     ],
-    flowTitle: "A clear path to the first useful result",
-    flow: [
-      ["01", "Configure", "Connect a model service through the Dashboard or terminal wizard."],
-      ["02", "Converse", "Create a Context and Session, then receive a real model response."],
-      ["03", "Execute", "Let the agent work inside explicit workspace, permission, and target boundaries."],
-      ["04", "Continue", "Use cognitive frames, Recall, Objectives, and scheduling for durable work."],
+    phenomenaIndex: "03 / OBSERVABLE PHENOMENA",
+    phenomenaTitle: "Not a feature list.\nSystem behavior you can reproduce.",
+    phenomena: [
+      ["Continuity across Sessions", "A Context owns cognition. Ending a Session does not reset the machine.", "session_a → context_01 → session_b"],
+      ["Parallel without contamination", "Threads and Objectives have explicit lifecycles instead of sharing invisible chat state.", "thread_04 ∥ thread_05"],
+      ["Continuation after failure", "Network, tool, and process failures leave inspectable states that can be resumed.", "activation: interrupted → resumed"],
     ],
-    journalTitle: "When agents move beyond chat, they need a different computational model",
-    journalLead: "The first essay from Morphz begins with linear message history and explains why structured Context should become the object a model evaluates.",
-    journalArticle: "From Chat Completion to Structured Context Evaluation",
-    journalAction: "Read the technical note",
-    docsTitle: "Documentation is a product contract",
-    docsLead: "Public docs describe behavior that can be verified today. Proposals, research, and historical designs remain available in the repository without being presented as shipped features.",
+    evidenceIndex: "04 / EVIDENCE PATH",
+    evidenceTitle: "Read the idea.\nThen inspect the evidence.",
+    evidenceLead: "The essay, research program, source, and public documentation have different jobs. Together they support the technical claim.",
+    evidence: [
+      ["IDEA", "From Chat Completion to Structured Context Evaluation", "The technical essay introducing the computational model.", "blog"],
+      ["EVIDENCE", "Paper evaluation center", "Frozen protocols, failures, pilots, and confirmatory boundaries.", "research"],
+      ["SOURCE", "Runtime source", "The implementation, tests, migrations, and auditable state machines.", "source"],
+      ["SPEC", "Product documentation", "Only behavior that can be verified in the current implementation.", "docs"],
+    ],
+    runIndex: "05 / FIRST RUN",
+    runTitle: "Start on one local machine.",
+    runLead: "Setup connects a model service. The Dashboard exposes Context, Sessions, Threads, and execution state.",
+    copyLabel: "BUILD / SETUP / RUN",
+    preview: "Developer Preview",
+    previewBody: "The core mechanism is reproducible while interfaces and multi-process operation continue to evolve. Experimental status is not presented as a production promise.",
+    docsTitle: "Continue reading",
     docsCards: [
-      ["Getting started", "Build, run Setup, and receive the first response.", "getting-started"],
-      ["Core concepts", "Understand Contexts, Sessions, cognitive frames, and execution lifecycles.", "core-concepts"],
-      ["Model services", "Configure providers, accounts, models, and routes.", "providers-and-models"],
-      ["Operations", "Diagnose model, logging, task, and storage problems.", "operations"],
+      ["Getting started", "Build Morphz and receive the first real model response.", "getting-started"],
+      ["Core concepts", "Contexts, Sessions, cognitive frames, and execution lifecycles.", "core-concepts"],
+      ["Model services", "Providers, accounts, physical models, and routes.", "providers-and-models"],
+      ["Operations", "Logs, tasks, storage, and recovery.", "operations"],
     ],
   },
 } as const;
@@ -90,74 +123,94 @@ export function LandingPage({ locale }: { locale: Locale }) {
   const t = content[locale];
   const docs = locale === "zh" ? "/docs" : "/en/docs";
   const blog = locale === "zh" ? "/blog/from-chat-completion-to-structured-context-evaluation" : "/en/blog/from-chat-completion-to-structured-context-evaluation";
+  const research = "https://github.com/yaowenai/morphz/tree/main/docs/research/paper_evaluation";
+  const source = "https://github.com/yaowenai/morphz";
+  const evidenceHref = (kind: string) => kind === "blog" ? blog : kind === "research" ? research : kind === "source" ? source : docs;
+
   return (
     <main>
       <SiteHeader locale={locale} />
-      <section className="hero">
-        <div className="hero__glow" aria-hidden="true" />
-        <div className="hero__content">
+      <section className="hero-spec">
+        <div className="hero-spec__edition"><span>{t.edition}</span><span aria-hidden="true">S-EXPR COGNITIVE MACHINE</span></div>
+        <div className="hero-spec__copy">
           <p className="eyebrow">{t.eyebrow}</p>
-          <h1>{t.title}</h1>
-          <p className="hero__lead">{t.lead}</p>
-          <div className="hero__actions">
-            <Link className="button button--primary" href={docs}>{t.primary}</Link>
-            <a className="button button--quiet" href="https://github.com/yaowenai/morphz">{t.secondary}</a>
+          <h1>{t.title.map((line, index) => <span className={index === 2 ? "hero-spec__accent" : ""} key={line}>{line}</span>)}</h1>
+          <p className="hero-spec__lead">{t.lead}</p>
+          <div className="hero-spec__actions">
+            <Link className="text-action text-action--primary" href={blog}>{t.idea}<span aria-hidden="true">↗</span></Link>
+            <Link className="text-action" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
+            <a className="text-action" href={source}>{t.source}<span aria-hidden="true">↗</span></a>
           </div>
         </div>
-        <div className="runtime-card" aria-label={t.commandLabel}>
-          <div className="runtime-card__header">
-            <span>{t.commandLabel}</span>
-            <span className="runtime-card__status">{t.commandStatus}</span>
-          </div>
-          <pre><code><span>$</span> cargo build --release{"\n"}<span>$</span> ./target/release/morphz setup{"\n"}<span>$</span> ./target/release/morphz</code></pre>
-          <div className="runtime-card__footer">
-            <span>{t.runtimeLabels[0]}</span><strong>{t.runtimeLabels[1]}</strong><span>{t.runtimeLabels[2]}</span><strong>{t.runtimeLabels[3]}</strong>
-          </div>
+        <ContextEvaluationField locale={locale} />
+      </section>
+
+      <section className="site-section boundary-section">
+        <header className="chapter-heading">
+          <p className="chapter-heading__index">{t.boundaryIndex}</p>
+          <h2>{t.boundaryTitle}</h2>
+          <p>{t.boundaryLead}</p>
+        </header>
+        <div className="boundary-equation" aria-label="model and runtime boundary">
+          <article><span>{t.modelLabel}</span><h3>{t.modelTitle}</h3><p>{t.modelBody}</p></article>
+          <div className="boundary-equation__operator" aria-hidden="true"><span>LLM</span><i>⇄</i><span>RUNTIME</span></div>
+          <article><span>{t.runtimeLabel}</span><h3>{t.runtimeTitle}</h3><p>{t.runtimeBody}</p></article>
         </div>
       </section>
 
-      <section className="section section--principles">
-        <div className="section-heading">
-          <p className="eyebrow">{t.boundariesEyebrow}</p>
-          <h2>{t.principlesTitle}</h2>
-          <p>{t.principlesLead}</p>
-        </div>
-        <div className="principle-grid">
-          {t.principles.map(([title, description], index) => (
-            <article className="principle-card" key={title}>
-              <span>0{index + 1}</span><h3>{title}</h3><p>{description}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="section section--flow">
-        <div className="section-heading"><p className="eyebrow">{t.firstRunEyebrow}</p><h2>{t.flowTitle}</h2></div>
-        <ol className="flow-list">
-          {t.flow.map(([number, title, description]) => (
-            <li key={number}><span>{number}</span><div><h3>{title}</h3><p>{description}</p></div></li>
+      <section className="site-section sequence-section">
+        <header className="chapter-heading chapter-heading--compact">
+          <p className="chapter-heading__index">{t.sequenceIndex}</p><h2>{t.sequenceTitle}</h2><p>{t.sequenceLead}</p>
+        </header>
+        <ol className="evaluation-sequence">
+          {t.sequence.map(([title, description], index) => (
+            <li key={title}><span>0{index + 1}</span><div><h3>{title}</h3><p>{description}</p></div><i aria-hidden="true" /></li>
           ))}
         </ol>
       </section>
 
-      <section className="section section--journal">
-        <div className="section-heading">
-          <p className="eyebrow">{t.journalEyebrow}</p>
-          <h2>{t.journalTitle}</h2>
-          <p>{t.journalLead}</p>
+      <section className="site-section phenomena-section">
+        <header className="chapter-heading">
+          <p className="chapter-heading__index">{t.phenomenaIndex}</p><h2>{t.phenomenaTitle}</h2>
+        </header>
+        <div className="phenomena-list">
+          {t.phenomena.map(([title, description, trace], index) => (
+            <article key={title}><span>0{index + 1}</span><h3>{title}</h3><p>{description}</p><code>{trace}</code></article>
+          ))}
         </div>
-        <Link className="journal-feature" href={blog}>
-          <span>01</span>
-          <h3>{t.journalArticle}</h3>
-          <strong>{t.journalAction} <span aria-hidden="true">→</span></strong>
-        </Link>
       </section>
 
-      <section className="section section--docs">
-        <div className="section-heading"><p className="eyebrow">{t.documentationEyebrow}</p><h2>{t.docsTitle}</h2><p>{t.docsLead}</p></div>
-        <div className="docs-card-grid">
-          {t.docsCards.map(([title, description, slug]) => (
-            <Link className="docs-card" href={`${docs}/${slug}`} key={slug}><h3>{title}</h3><p>{description}</p><span aria-hidden="true">→</span></Link>
+      <section className="site-section evidence-section">
+        <header className="chapter-heading">
+          <p className="chapter-heading__index">{t.evidenceIndex}</p><h2>{t.evidenceTitle}</h2><p>{t.evidenceLead}</p>
+        </header>
+        <div className="evidence-index">
+          {t.evidence.map(([label, title, description, kind], index) => (
+            <a href={evidenceHref(kind)} key={label}>
+              <span className="evidence-index__number">0{index + 1}</span><span className="evidence-index__label">{label}</span>
+              <strong>{title}</strong><p>{description}</p><i aria-hidden="true">↗</i>
+            </a>
+          ))}
+        </div>
+      </section>
+
+      <section className="site-section run-section">
+        <div className="run-section__copy">
+          <p className="chapter-heading__index">{t.runIndex}</p><h2>{t.runTitle}</h2><p>{t.runLead}</p>
+          <Link className="text-action text-action--primary" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
+        </div>
+        <div className="run-sheet" aria-label={t.copyLabel}>
+          <div><span>{t.copyLabel}</span><span>macOS · Linux</span></div>
+          <pre><code><b>01</b> cargo build --release{"\n"}<b>02</b> ./target/release/morphz setup{"\n"}<b>03</b> ./target/release/morphz</code></pre>
+          <footer><span>{t.preview}</span><p>{t.previewBody}</p></footer>
+        </div>
+      </section>
+
+      <section className="site-section reading-section">
+        <h2>{t.docsTitle}</h2>
+        <div className="reading-index">
+          {t.docsCards.map(([title, description, slug], index) => (
+            <Link href={`${docs}/${slug}`} key={slug}><span>0{index + 1}</span><h3>{title}</h3><p>{description}</p><i aria-hidden="true">→</i></Link>
           ))}
         </div>
       </section>

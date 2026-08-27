@@ -21,19 +21,19 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = new URL("/og.png", origin).toString();
   return {
     metadataBase: origin,
-    title: { default: "Morphz — Agent Runtime", template: "%s · Morphz" },
-    description: "Morphz is an agent runtime for durable cognition, recoverable execution, and provider-independent model access.",
+    title: { default: "Morphz — S-Expression Cognitive Machine", template: "%s · Morphz" },
+    description: "Morphz is an S-Expression Cognitive Machine that evaluates structured Context through a nondeterministic semantic processor and a deterministic runtime kernel.",
     openGraph: {
       type: "website",
       siteName: "Morphz",
-      title: "Morphz — Agent Runtime",
-      description: "Durable cognition, recoverable execution, and provider-independent model access.",
+      title: "Morphz — S-Expression Cognitive Machine",
+      description: "From chat completion to structured Context evaluation.",
       images: [{ url: image, width: 1200, height: 630, alt: "Morphz Agent Runtime" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Morphz — Agent Runtime",
-      description: "Durable cognition, recoverable execution, and provider-independent model access.",
+      title: "Morphz — S-Expression Cognitive Machine",
+      description: "From chat completion to structured Context evaluation.",
       images: [image],
     },
   };

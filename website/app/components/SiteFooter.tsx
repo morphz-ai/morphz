@@ -6,20 +6,24 @@ export function SiteFooter({ locale }: { locale: Locale }) {
   const blog = locale === "zh" ? "/blog" : "/en/blog";
   return (
     <footer className="site-footer">
-      <div>
+      <div className="site-footer__identity">
         <span className="brand brand--footer">
-          <span className="brand__mark" aria-hidden="true" /> Morphz
+          <span className="brand__mark" aria-hidden="true"><i>(</i><b>m</b><i>)</i></span> Morphz
         </span>
         <p>
           {locale === "zh"
             ? "让模型负责认知，让运行时负责事实、权限与执行。"
             : "Let models handle cognition while the runtime owns facts, permissions, and execution."}
         </p>
+        <small>{locale === "zh" ? "由新变元创造并维护。" : "Created and maintained by Newvar."}</small>
       </div>
-      <div className="site-footer__links">
-        <Link href={blog}>{locale === "zh" ? "技术文章" : "Technical notes"}</Link>
-        <Link href={docs}>{locale === "zh" ? "文档" : "Documentation"}</Link>
-        <a href="https://github.com/yaowenai/morphz">GitHub</a>
+      <div className="site-footer__index">
+        <span>INDEX / 2026</span>
+        <div className="site-footer__links">
+          <Link href={blog}>{locale === "zh" ? "技术文章" : "Technical notes"}</Link>
+          <Link href={docs}>{locale === "zh" ? "文档" : "Documentation"}</Link>
+          <a href="https://github.com/yaowenai/morphz">GitHub</a>
+        </div>
       </div>
     </footer>
   );

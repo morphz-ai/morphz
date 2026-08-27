@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { LandingPage } from "../components/LandingPage";
 
 export const metadata: Metadata = {
-  title: "Durable cognition for agents",
+  title: "From chat completion to structured Context evaluation",
   description:
-    "Morphz is an agent runtime for durable cognition, recoverable execution, and provider-independent model access.",
+    "Morphz is an S-Expression Cognitive Machine: the model handles nondeterministic semantics while the runtime owns facts, authority, state, and execution.",
 };
 
 export default function EnglishHome() {

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { LandingPage } from "./components/LandingPage";
 
 export const metadata: Metadata = {
-  title: "让代理拥有可持续的认知",
-  description: "Morphz 是面向持久认知、可恢复执行与模型无关接入的代理运行时。",
+  title: "从聊天补全到结构化上下文求值",
+  description: "Morphz 是一台 S 表达式认知机：模型负责非确定性语义处理，运行时负责事实、权限、状态与执行。",
 };
 
 export default function Home() {
