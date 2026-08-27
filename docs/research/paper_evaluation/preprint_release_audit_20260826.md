@@ -7,7 +7,7 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
-- 双语结果仓库提交：`982e71d`（包含此前 `59c78a0`、`8dfb214`）；ME-07 正式结果、Mind Frame 迁移证据和 ME-08 当前完整 89 题同期配对均已进入候选稿
+- 双语稿件仓库提交：`3ae633d`（结果收口基线 `982e71d`，并包含此前 `59c78a0`、`8dfb214`）；ME-07 正式结果、Mind Frame 迁移证据、ME-08 当前完整 89 题同期配对和参考文献元数据修订均已进入候选稿
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 - 收口报告：`paper_finalization_report_20260827.md`
@@ -72,6 +72,7 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。当前主结果必须�
 ## 5. 已完成的静态审计
 
 - 中英文稿均定义并使用参考文献 `[1]`～`[26]`，无缺号引用；
+- PLSemanticsBench 所属论文标题以及 AIOS 的正式 venue/年份已经按原始出版页面复核；
 - 未发现 `/Users`、`/private` 或 `file://` 本机路径泄漏；
 - 论文主术语统一为“非确定性认知求值 / nondeterministic cognitive evaluation”；
 - “开放求值 / open evaluation”只用于说明为何不采用该宽泛术语；
