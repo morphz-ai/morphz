@@ -4,7 +4,8 @@
 
 - 中文稿：`morphz-ai-biz/docs/research/morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
 - 英文稿：`morphz-ai-biz/docs/research/morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
-- 稿件仓库提交：`bd8724d`（包含结果收口提交 `982e71d1b0333caf4db9ed0f2cd0a1a1ddf41dc5`）
+- 稿件仓库提交：`8cee436`（包含结果收口提交 `982e71d1b0333caf4db9ed0f2cd0a1a1ddf41dc5`）
+- 英文预印本 PDF：`morphz-ai-biz/output/pdf/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf`
 
 两稿的机制描述、ME-01～ME-08 数字、限定语、参考文献和附录证据入口已经同步。中文版与
 English version 保持相同事实和主张强度，但允许采用各自的章节编排，不作为逐段翻译稿。
@@ -47,6 +48,8 @@ English version 保持相同事实和主张强度，但允许采用各自的章�
 - 未发现旧 ME-08 主结果、`three-task gap`、`Ledger`、开放求值、本机路径或模型凭据残留；
 - 英文 `two-task gap` 与 72/89 对 74/89 一致；中文结论中的指代残句已重写；
 - ME-08 附录同时固定 Morphz 与官方 Codex 两个评测基础设施修订。
+- 中英文稿公开作者名均已确认为 `Raymond Ren`；英文 PDF 共 27 页，逐页视觉复核无裁切、
+  空白页或表格、代码块、附录与参考文献溢出。
 
 ## 4. 未进入当前论文的实验
 
@@ -54,13 +57,10 @@ ME-09 因订阅额度耗尽停止。额度截止前 43 题的共享 Context 有�
 Context 为 33/43；唯一跨 Session 显式 Frame 引用没有形成正向迁移案例。该结果只作为
 后续选择性共享设计证据，不进入当前论文。
 
-## 5. 发布前仍需作者决定
+## 5. 发布元数据
 
-研究内容与实验结果已经达到当前有边界预印本候选稿状态。公开发布前仍需作者提供或确认：
-
-- 公开姓名与作者顺序；
-- affiliation；
-- 通讯邮箱；
-- 是否列 ORCID、项目主页、代码仓库和通讯作者标识。
+研究内容与实验结果已经达到当前有边界预印本候选稿状态。作者公开姓名已经确认为
+`Raymond Ren`。当前稿不虚构或推断 affiliation、通讯邮箱、ORCID、项目主页、代码仓库与
+通讯作者标识；这些项目可在作者决定公开时再补充，不阻塞当前预印本 PDF。
 
 ME-07 的 30 条盲化人工评测器校准和 ME-08 重复采样属于后续增强，不阻塞当前有边界预印本。

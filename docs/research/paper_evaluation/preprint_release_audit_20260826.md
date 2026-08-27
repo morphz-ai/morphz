@@ -7,7 +7,8 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
-- 双语稿件仓库提交：`bd8724d`（结果收口基线 `982e71d`，并包含此前 `59c78a0`、`8dfb214`）；ME-07 正式结果、Mind Frame 迁移证据、ME-08 当前完整 89 题同期配对和完整参考文献复核均已进入候选稿
+- 双语稿件仓库提交：`8cee436`（结果收口基线 `982e71d`，并包含此前 `59c78a0`、`8dfb214`）；ME-07 正式结果、Mind Frame 迁移证据、ME-08 当前完整 89 题同期配对、完整参考文献复核和公开作者名均已进入候选稿
+- 英文 PDF：`morphz-ai-biz/output/pdf/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf`（27 页，已逐页视觉复核）
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 - 收口报告：`paper_finalization_report_20260827.md`
@@ -90,16 +91,11 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。当前主结果必须�
   `agent`、`runtime`、`session`、`observation` 在泛指概念时使用小写，在指 Morphz 正式构件时
   才使用大写。不得用无语义的全局替换追求表面计数一致。
 
-## 6. 尚需用户提供的发布元数据
+## 6. 发布元数据
 
-当前两稿尚未写入公开作者元数据。公开发布前必须由用户确认：
-
-- 作者公开姓名及顺序；
-- 公开 affiliation（如使用北京新变元科技有限公司）；
-- 通讯邮箱；
-- 是否加入 ORCID、项目主页、代码仓库或通讯作者标识。
-
-不得从专利、公司登记、Git 提交或私人文件中擅自推断并填入公开作者元数据。
+用户已确认用稳定的公开作者名 `Raymond Ren` 署名，中英文稿与英文 PDF 已同步。当前版本
+有意不列 affiliation、通讯邮箱、ORCID、项目主页、代码仓库或通讯作者标识；若后续决定
+公开，可再补充，而不从专利、公司登记、Git 提交或私人文件中擅自推断。
 
 ## 7. 最终发布检查
 
@@ -111,6 +107,7 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。当前主结果必须�
 - [x] 新结果进入主张—证据矩阵、实验登记及中英文摘要/正文/结论；
 - [x] 双语数字与限定语最终机器审计一致；
 - [x] 最终全文无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；
-- [ ] 作者元数据由用户确认；
+- [x] 作者公开姓名由用户确认为 `Raymond Ren`；其他可选元数据未擅自填写；
+- [x] 英文预印本 PDF 逐页视觉复核与文本边界检查通过；
 - [x] `git diff --check`、引用集合、Markdown 结构和限定范围提交通过；
 - [ ] 最终中英文稿由用户人工通读后再公开。
