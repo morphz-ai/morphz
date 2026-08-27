@@ -4,7 +4,7 @@
 
 - 中文稿：`morphz-ai-biz/docs/research/morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
 - 英文稿：`morphz-ai-biz/docs/research/morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
-- 稿件仓库提交：`3ae633d`（包含结果收口提交 `982e71d1b0333caf4db9ed0f2cd0a1a1ddf41dc5`）
+- 稿件仓库提交：`bd8724d`（包含结果收口提交 `982e71d1b0333caf4db9ed0f2cd0a1a1ddf41dc5`）
 
 两稿的机制描述、ME-01～ME-08 数字、限定语、参考文献和附录证据入口已经同步。中文版与
 English version 保持相同事实和主张强度，但允许采用各自的章节编排，不作为逐段翻译稿。
@@ -41,7 +41,8 @@ English version 保持相同事实和主张强度，但允许采用各自的章�
 - ME-08 归档中 89 个任务的配对统计、失败保留、运行身份和 SHA-256 校验通过；
 - 官方验证器原始奖励是唯一主分；附加本地扫描器不覆盖 Codex 74/89；
 - 中英文稿均有 26 条参考文献，编号连续且全部被引用；
-- 已按原始出版页面修正 PLSemanticsBench 所属论文标题与 AIOS 的正式发表 venue/年份；
+- 已按原始出版页面复核全部 26 条文献，并修正 PLSemanticsBench 所属论文标题、AIOS 与
+  Voyager 的正式发表信息，以及 MemGPT 的作者列表；
 - 两稿代码围栏均为 38 个，Markdown 结构闭合；
 - 未发现旧 ME-08 主结果、`three-task gap`、`Ledger`、开放求值、本机路径或模型凭据残留；
 - 英文 `two-task gap` 与 72/89 对 74/89 一致；中文结论中的指代残句已重写；
