@@ -33,16 +33,16 @@ ME-06 与原始 ME-08 仍保留其历史
 
 | ID | 实验 | RQ | 优先级 | 当前证据 | 状态 | 当前协议 | 下一门槛 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| ME-00 | 实验基础设施与校准 | 全部 | P0 | 已供 ME-01 真实 Pilot 使用 | `protocol-draft` | — | manifest 自动记录 Runtime/runner commit、dirty diff hash 与持久备份身份 |
-| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 记录天花板并关闭同类扩样；修订主张后决定是否需要 p2 |
-| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；冻结更长组合压力任务后再决定确认性样本量 |
-| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（非确定性合同 12/12；Context shift 6/6；确定性对照严格 11/12） | `pilot-complete` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 进入 ME-05 跨模型核心子集；重叠合法集合软干预列为可选 p2 |
-| ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
-| ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
-| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；完整 Morphz 的原始 token 为精简受控参照约 16.4×，但 scaffold 不同，不能解释为完整 Agent 效率排名 | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本与成本不可归因边界，不重复补跑 |
-| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation | `formal-complete / trace-audit-complete / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md) | 完成预留 30 条盲化人工评测器校准；不重跑正式分数、不把系统级效果全部归因于 Mind Frame |
-| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史严格同环境：Morphz 70/89、Codex 73/89；`ad60e` Morphz 单臂刷新 73/89；当前 `4bbc3d63` Morphz-only 并发 8 刷新 72/89（80.90%），89 个官方 reward、唯一性、身份、失败保留与完整性 Gate 全部闭合 | `historical-paired-complete / ad60e-refresh-complete / finalfix-4bbc3d6-complete` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`ad60e refresh`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md)；[`4bbc3d6 result`](./artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md) | 把当前 Morphz-only 工程结果单独写入论文；不与历史 Codex 拼接为同期 paired 结果，不按单次 72/73 波动推断修复的因果效应 |
-| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 八 Session/八 Execution Target smoke 8/8 闭合；完整 89 题已按用户授权在云端运行，沿用 ME-08 相同 `4bbc3d63` 二进制 | `smoke-complete / full-run-active / excluded-from-current-paper-results` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md) | 完整运行结束后审计 Session/Target 路由、共享 Context 事务与官方 reward，再单独判断是否进入论文补充结果 |
+| ME-00 | 实验基础设施与校准 | 全部 | P0 | ME-01～ME-08 均已使用冻结协议、运行身份、原始结果、校验和与持久证据入口 | `infrastructure-complete / incorporated` | — | 后续实验继续沿用并维护；不再作为当前论文阻断项 |
+| ME-01 | 核心机制拆解对比（结构化 Context 与结果回流消融） | RQ2 | P0 | `D` + Stage A `P`（15/15） | `pilot-complete / incorporated` | [`p1.1 candidate`](./me_01_structured_context_reentry_pilot_protocol_p1.md) | 天花板已记录，同类扩样关闭；p2 只作未来增强 |
+| ME-02 | 表示形式拆解对比（等信息表示形式消融） | RQ1 | P0 | `F + P`（p1.1 18/18；三组各 6/6） | `pilot-complete / incorporated` | [`p1.1 frozen`](./me_02_equal_information_representation_protocol_p1.md) | 不重复容易样本；更长组合压力任务列为未来增强 |
+| ME-03 | 非确定性认知求值特征 | RQ3 | P0 | `D + P`（非确定性合同 12/12；Context shift 6/6；确定性对照严格 11/12） | `pilot-complete / incorporated` | [`p1.1 frozen`](./me_03_bounded_open_context_intervention_protocol_p1.md) | 重叠合法集合软干预列为可选 p2 |
+| ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete / incorporated` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 未来 Runtime 基线变化按回归策略重跑 |
+| ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete / incorporated` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 不重复简单样本；扩展只作未来增强 |
+| ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
+| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation | `formal-complete / trace-audit-complete / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md) | 盲化人工评测器校准是可选增强项；不得把系统级效果全部归因于 Mind Frame |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题同期运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），官方 Codex 74/89（83.15%）；差 −2.25pp，95% CI [−11.24,+6.74]，精确配对 `p=0.804` | `external-complete / incorporated` | [`current full-89 pair`](./artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md) | 当前论文证据已闭合；只有研究题内采样方差时才需要重复运行 |
+| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 额度截止前 43 题有效前缀：共享 Context 25/43，ME-08 同题隔离 Context 33/43；只观察到 1 条跨 Session 显式 Frame 引用，未形成正向迁移案例 | `stopped / exploratory-only / excluded-from-current-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`stop audit`](./me_09_shared_context_interim_stop_audit_2026_08_27.md) | 不为原协议续跑；如重启，先设计任务条件投影与可复用经验层级 |
 
 ## 依赖
 
@@ -52,7 +52,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
        ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
-       └─> ME-08 ─> ME-09 (运行中；共享 Context 为显式处理变量)
+       └─> ME-08 ─> ME-09 (探索性运行已停止；不进入当前论文)
 ```
 
 ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-06 只有在核心状态机制及评分器稳定后才扩成长运行。
@@ -74,6 +74,18 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-27
 
+- **当前权威 ME-08 证据已更新为两个独立完整 89 题的同期配对运行，不是前 40 题与后 49 题
+  拼接。** 两组均使用 `gpt-5.6-sol`/max、同一 Linux 主机和数据集、并发 8、每题一次、零重试。
+  Morphz 为 72/89（80.90%），官方 Codex 原始评分为 74/89（83.15%）；共同通过 65、共同
+  失败 8、仅 Morphz 通过 7、仅 Codex 通过 9；差 −2.25pp，任务级自助法 95% CI
+  `[-11.24,+6.74]`，双侧精确配对 `p=0.803619`。Morphz 使用 Runtime
+  `4bbc3d63f4bda09947dc79dc5656edc71f8c02fa` 和固定二进制
+  `31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`；Codex 为 CLI
+  `0.149.1`。完整报告见
+  [`artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md`](./artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md)。
+  旧 40+49 合并结果、历史 70/89 对 73/89 和两次 Morphz-only 刷新继续保留作工程历史，
+  但不再作为论文当前主结果；
+
 - ME-07 单次正式批次已完整闭合：150 个 paired held-out cell、450 个 terminal trial，所有
   terminal failure 原样保留并计零。主要结果为 Morphz 122/150（81.33%）、Letta 93/150
   （62.00%）、Mem0-backed reference 96/150（64.00%）；Morphz−Letta 为 +19.33pp，
@@ -90,19 +102,23 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   138,942,200、Letta 40,143,631、Mem0 7,364,662；原始计数继续保留供审计，三组均排除训练
   成本。正式结果与脱敏证据见
   [`artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；
-- ME-09 八 Session/八 Execution Target smoke 已 8/8 形成 Runtime reply，随后完整 89 题按授权
-  启动。它使用与 ME-08 当前工程测量相同的 `4bbc3d63` 二进制，当前仍运行中且不进入本稿
-  已报告结果；
-- ME-08 `4bbc3d63` 当前修复版 Morphz-only 完整 89 题刷新已经闭合：官方 verifier
+- ME-09 八 Session/八 Execution Target smoke 8/8 闭合，正式运行随后因订阅额度耗尽停止。
+  截止首次 `usage_limit_reached` 前的 43 题有效前缀为共享 Context 25/43、ME-08 同题隔离
+  Context 33/43；唯一一条跨 Session 显式 Frame 引用没有带来成功提升。该结果只作为探索性
+  设计证据，不进入当前论文；详见
+  [`me_09_shared_context_interim_stop_audit_2026_08_27.md`](./me_09_shared_context_interim_stop_audit_2026_08_27.md)；
+- 【历史单臂刷新，已由本日完整同期配对取代】ME-08 `4bbc3d63` Morphz-only 完整 89 题
+  刷新已经闭合：官方 verifier
   72/89（80.90%，Wilson 95% CI `[71.52%,87.72%]`），并发 8、每题一次、零重试；
   `strict_result.json` 含 89 个唯一任务且完整性 Gate 通过。三个 `AgentTimeoutError` 与其余
   失败均按零保留。Provider 报告输入 57,541,202、输出 1,246,760，总逻辑 Token
   58,787,962；缓存输入子集 9,389,568，不作为架构效率评分。报告与脱敏产物见
   [`artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md`](./artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md)；
-- 该 72/89 没有同期 Codex arm，不能替换历史 70/89 对 73/89 的 paired 统计。相对前一次
+- 【历史状态，已由本日完整 89 题同期 Codex 运行 supersede】该 72/89 在当时没有同期 Codex
+  arm，不能替换历史 70/89 对 73/89 的 paired 统计。相对前一次
   `ad60e` Morphz-only 73/89，本轮 4 题由错转对、5 题由对转错；这说明单次运行同时包含
   任务采样波动和实现变化，不能把一分差解释为 Runtime 修复的单调因果效果；
-- ME-08 `ad60e` Morphz 单臂完整 89 题刷新已经闭合：官方 verifier 73/89
+- 【历史单臂刷新】ME-08 `ad60e` Morphz 单臂完整 89 题刷新已经闭合：官方 verifier 73/89
   （82.02%，Wilson 95% CI `[72.77%, 88.62%]`），89 个唯一任务、完整性 Gate 和资源记录
   均通过。该数值与历史 Codex 73/89 相同，但 Codex 没有在本轮重跑，故只可称为相同任务、
   模型和评分器下的非同期参考，不是新的严格配对或等价性结论。报告和脱敏原始 JSON 见
