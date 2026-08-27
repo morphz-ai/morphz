@@ -1,0 +1,973 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-004",
+  "conversation": [
+    {
+      "content": "My blender from order ORD-7041 arrived damaged — the box was crushed and the blender looks scratched. I want a full refund.",
+      "role": "user"
+    },
+    {
+      "content": "I’ve processed the damaged-in-transit return with a prepaid return label and no fees. A total of **$107** is going back to your original credit card: **$89 for the blender, $8 for shipping, and a $10 damage goodwill credit**.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7041"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_005",
+            "delivery_date": "2026-07-01T14:00:00",
+            "delivery_promised_date": "2026-07-01T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10041",
+                "item_status": "delivered",
+                "order_id": "ORD-7041",
+                "product": {
+                  "category": "kitchen",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "PowerBlend Pro Blender",
+                  "price": 89,
+                  "product_id": "PROD-3041",
+                  "return_window_days": 30,
+                  "warranty_months": 6
+                },
+                "product_id": "PROD-3041",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 89
+              }
+            ],
+            "order_date": "2026-06-25T10:00:00",
+            "order_id": "ORD-7041",
+            "payment_details": {
+              "credit_card": 97
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 89,
+            "total_paid": 97,
+            "tracking_number": "TRK75281039"
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "cust_005"
+          },
+          "name": "get_customer",
+          "result": {
+            "account_created": "2025-12-01",
+            "benefits": {
+              "compensation_multiplier": "1.0x",
+              "prime_shipping": false,
+              "restocking_fee_waiver": false,
+              "return_window_extension": "+0 days"
+            },
+            "customer_id": "cust_005",
+            "email": "priya.p@example.com",
+            "has_prime_shipping": false,
+            "membership_tier": "standard",
+            "name": "Priya Patel",
+            "preferred_refund_method": "store_credit",
+            "store_credit_balance": 0,
+            "total_orders": 4
+          }
+        },
+        {
+          "arguments": {
+            "topic": "return"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "agent_computes_amount": "process_return requires the agent to submit the net refund as `amount` on confirm. Compute it from the preview's component breakdown: base_item_price (after promo redistribution) minus restocking_fee plus restocking_discount minus shipping_clawback minus bulk_clawback minus repeat_surcharge minus paid_return_shipping_fee. The env writes the submitted amount verbatim — skipping a component (e.g. forgetting the Gold restocking discount) produces a wrong refund_amount and fails state scoring.",
+              "bulk_purchase_clawback": {
+                "amount": "$5 per remaining item, deducted from the return refund.",
+                "applies_when": "Order originally qualified for a bulk discount (3+ items with a discount code) AND the return drops remaining count below 3.",
+                "no_discount_code": "If order had no discount code, no clawback applies."
+              },
+              "eligibility": {
+                "already_returned": "Items already returned/exchanged/cancelled are ineligible.",
+                "defective_items": "No window restriction for defective, wrong item, or damaged in transit.",
+                "not_as_described": "Use not_as_described only for an unused/unworn item that materially differs from the listing. If the customer wore, washed, altered, or used the item and only dislikes fit, feel, texture, or preference-based qualities, classify the return as changed_mind instead."
+              },
+              "free_shipping_clawback": {
+                "amount": "$8 standard shipping fee is deducted from the return refund. This is a flat policy charge, not the original shipping cost (which was $0 on free-shipping orders).",
+                "applies_when": "Order originally qualified for free shipping (subtotal >= $100) AND the return drops remaining subtotal below $100.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: no clawback (customer-fault returns only).",
+                "paid_shipping": "If the order did not qualify for free shipping originally (subtotal < $100), no clawback applies."
+              },
+              "repeat_category_surcharge": {
+                "deduction": "Surcharge is deducted from the return refund.",
+                "different_categories": "Returns from different categories do not trigger the surcharge.",
+                "rule": "Returning 2+ items from the same product category in one order: $5 surcharge per additional return (first return in each category is free)."
+              },
+              "restocking_fee": {
+                "auto_applied": "Restocking fee and any tier discount are folded into the process_return refund amount automatically; the result reports the discount under 'restocking_discount' for transparency.",
+                "base": "15% restocking fee for opened electronics returned for changed_mind.",
+                "completed_returns": "Once a changed-mind return is completed with the applicable restocking fee, do not reverse that fee later as a courtesy or supplemental refund.",
+                "tier_discount": {
+                  "gold": "50% off the restocking fee.",
+                  "platinum": "Restocking fee fully waived.",
+                  "silver": "25% off the restocking fee.",
+                  "standard": "No discount."
+                }
+              },
+              "return_shipping_fee": {
+                "deduction": "Return shipping fee, when charged, is deducted from the return refund.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: always free return shipping.",
+                "free_threshold": "Orders >= $50: free return label provided.",
+                "low_value": "Orders with subtotal < $50: customer pays $8 return shipping fee."
+              },
+              "window_extensions": {
+                "membership": "Gold/Platinum members get +15 days",
+                "prime": "Prime shipping members get +15 additional days",
+                "seasonal": "Orders placed in November or December extend through January 31 of the following year. Seasonal extension applies if it gives more time than tier/prime extensions.",
+                "store_credit_grace": "Up to 15 days past the return window: store credit only."
+              },
+              "windows_by_category": {
+                "accessories": "30-day return window",
+                "books": "14-day return window",
+                "clothing": "30-day return window",
+                "electronics": "15-day return window",
+                "kitchen": "30-day return window"
+              }
+            },
+            "topic": "return"
+          }
+        },
+        {
+          "arguments": {
+            "topic": "refund"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "amount": {
+                "full_refund": "Full refund for defective, wrong item, or damaged in transit.",
+                "outside_window": "Outside return window but within store-credit grace: store credit only.",
+                "promo_redistribution": "If a promo/coupon was used: discount allocated proportionally by item price. Refund = item_price - (discount * item_price / subtotal).",
+                "shipping_refund": "When refunding shipping (defective/wrong/damaged returns, 6+-days-late compensation), refund the actual shipping cost the customer was charged on the order — read order.shipping_cost and refund that amount. Standard policy: $0 on free-shipping orders (subtotal >= $100), $8 otherwise. NOT for buyer's remorse."
+              },
+              "goodwill_credit": "Goodwill credits (e.g., fragile-item damage bonus) are issued as a refund with the credit amount.",
+              "method": {
+                "original_payment": "Default refund method when item was paid for and is being returned for fault.",
+                "store_credit": "Required for: gift returns (at current product price), outside-window grace returns, and exchange-cheaper differences.",
+                "store_credit_only_constraint": "When a return is issued under the store-credit-only rule (gift return OR outside-window grace), the refund method cannot be changed back to original_payment afterward. process_refund will reject any attempt to flip the method on those returns."
+              },
+              "price_match": "If product price drops within 7 days of delivery, refund the difference (no return required)."
+            },
+            "topic": "refund"
+          }
+        },
+        {
+          "arguments": {
+            "topic": "shipping"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "damaged": {
+                "fragile_bonus": "Fragile items damaged in transit qualify for a separate $10 goodwill credit, issued as a refund in addition to the return refund.",
+                "rule": "Damaged in transit: full refund or replacement."
+              },
+              "late_delivery_compensation": {
+                "calculation_order": "1) Compute base credit by days-late tier. 2) Apply tier multiplier to base credit only. 3) Add shipping refund (if 6+ days late) using order.shipping_cost. 4) Add goodwill (if 3+ prior issues or fragile damage). 5) Apply loyalty bonus if eligible. 6) Apply 50%-of-order cap on the sum.",
+                "loyalty_bonus": "Platinum members with 50+ total orders: one-time $50 loyalty bonus on next compensation claim. Confirm with customer if already redeemed.",
+                "max_cap": "Maximum compensation: 50% of order total (rounded down).",
+                "repeated_issues": "3+ PRIOR issues in 6 months (not counting current incident): additional $25 goodwill credit.",
+                "shipping_refund_basis": "When refunding shipping, refund the actual shipping cost the customer was charged on the order — read order.shipping_cost. Standard policy charges $0 on free-shipping orders (subtotal >= $100) and $8 otherwise.",
+                "tier_multipliers": {
+                  "gold": "1.5x multiplier on the base late-delivery credit only (NOT on shipping refund or goodwill). Rounded down (e.g., int(15*1.5) = 22).",
+                  "platinum": "2x multiplier on the base late-delivery credit only. Rounded down."
+                },
+                "tiers": {
+                  "1_to_2_days_late": "$5 credit",
+                  "3_to_5_days_late": "$15 credit",
+                  "6_plus_days_late": "Full shipping refund + $15 credit"
+                }
+              },
+              "lost_in_transit": {
+                "over_500": "Lost in transit (>=$500): carrier claim required first.",
+                "stuck_7_days": "No tracking update for 7+ days: treat as lost.",
+                "under_500": "Lost in transit (<$500): immediate reship or refund."
+              },
+              "not_received": {
+                "over_500": "Delivered but not received (>=$500): mandatory investigation (3-5 business days).",
+                "signature_on_file": "Delivery with signature on file: claim denied.",
+                "under_500": "Delivered but not received (<$500): reship or refund."
+              }
+            },
+            "topic": "shipping"
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "PROD-3041"
+          },
+          "name": "get_product_details",
+          "result": {
+            "category": "kitchen",
+            "current_price": null,
+            "in_stock": true,
+            "is_fragile": true,
+            "name": "PowerBlend Pro Blender",
+            "price": 89,
+            "product_id": "PROD-3041",
+            "restocking_fee_pct": 0,
+            "return_window_days": 30,
+            "subcategory": "blender",
+            "warranty_months": 6,
+            "weight_lbs": 5.0
+          }
+        },
+        {
+          "arguments": {
+            "amount": 0,
+            "confirm": false,
+            "item_id": "ITEM-10041",
+            "reason": "damaged_in_transit"
+          },
+          "name": "process_return",
+          "result": {
+            "bulk_clawback": 0,
+            "discount_adjustment": 0,
+            "free_return_shipping": true,
+            "item_id": "ITEM-10041",
+            "paid_return_shipping_fee": 0,
+            "reason": "damaged_in_transit",
+            "refund_amount": 89,
+            "refund_method": "original_payment",
+            "repeat_surcharge": 0,
+            "restocking_discount": 0,
+            "restocking_fee": 0,
+            "return_eligible": true,
+            "shipping_clawback": 0,
+            "shipping_refund": true,
+            "status": "preview"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 89,
+            "confirm": true,
+            "item_id": "ITEM-10041",
+            "reason": "damaged_in_transit"
+          },
+          "name": "process_return",
+          "result": {
+            "bulk_clawback": 0,
+            "item_id": "ITEM-10041",
+            "paid_return_shipping_fee": 0,
+            "policy_computed_amount": 89,
+            "refund_amount": 89,
+            "refund_method": "original_payment",
+            "repeat_surcharge": 0,
+            "restocking_discount": 0,
+            "restocking_fee": 0,
+            "return_label_issued": true,
+            "shipping_clawback": 0,
+            "status": "returned"
+          }
+        },
+        {
+          "arguments": {
+            "order_id": "ORD-7041"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_005",
+            "delivery_date": "2026-07-01T14:00:00",
+            "delivery_promised_date": "2026-07-01T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10041",
+                "item_status": "returned",
+                "order_id": "ORD-7041",
+                "product": {
+                  "category": "kitchen",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "PowerBlend Pro Blender",
+                  "price": 89,
+                  "product_id": "PROD-3041",
+                  "return_window_days": 30,
+                  "warranty_months": 6
+                },
+                "product_id": "PROD-3041",
+                "quantity": 1,
+                "refund_amount": 89,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": 0,
+                "return_label_issued": true,
+                "return_reason": "damaged_in_transit",
+                "store_credit_only": false,
+                "unit_price": 89
+              }
+            ],
+            "order_date": "2026-06-25T10:00:00",
+            "order_id": "ORD-7041",
+            "payment_details": {
+              "credit_card": 97
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "fully_returned",
+            "subtotal": 89,
+            "total_paid": 97,
+            "tracking_number": "TRK75281039"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 0,
+            "confirm": false,
+            "item_id": "ITEM-10041",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10041",
+            "refund_amount": 0,
+            "refund_method": "original_payment",
+            "status": "preview"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 18,
+            "confirm": false,
+            "item_id": "ITEM-10041",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10041",
+            "refund_amount": 18,
+            "refund_method": "original_payment",
+            "status": "preview"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 18,
+            "confirm": true,
+            "item_id": "ITEM-10041",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10041",
+            "mode": "supplemental_refund",
+            "refund_amount": 18,
+            "refund_method": "original_payment",
+            "status": "refunded",
+            "total_goodwill_credit": 18
+          }
+        },
+        {
+          "arguments": {
+            "order_id": "ORD-7041"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_005",
+            "delivery_date": "2026-07-01T14:00:00",
+            "delivery_promised_date": "2026-07-01T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 18,
+                "goodwill_credit_method": "original_payment",
+                "item_id": "ITEM-10041",
+                "item_status": "returned",
+                "order_id": "ORD-7041",
+                "product": {
+                  "category": "kitchen",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "PowerBlend Pro Blender",
+                  "price": 89,
+                  "product_id": "PROD-3041",
+                  "return_window_days": 30,
+                  "warranty_months": 6
+                },
+                "product_id": "PROD-3041",
+                "quantity": 1,
+                "refund_amount": 89,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": 0,
+                "return_label_issued": true,
+                "return_reason": "damaged_in_transit",
+                "store_credit_only": false,
+                "unit_price": 89
+              }
+            ],
+            "order_date": "2026-06-25T10:00:00",
+            "order_id": "ORD-7041",
+            "payment_details": {
+              "credit_card": 97
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "fully_returned",
+            "subtotal": 89,
+            "total_paid": 97,
+            "tracking_number": "TRK75281039"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Before I accept this, please verify and explain whether the shipping or delivery record actually supports a damaged-in-transit classification. If it doesn’t, please correct it to the applicable changed-mind return and preview the refund method, refund amount, and any fees before taking further action.",
+      "role": "user"
+    },
+    {
+      "content": "I checked the delivery record: it shows an on-time delivery on July 1, with no carrier damage notation, so it does not independently document the box’s condition. However, it also doesn’t show that the box was intact, and your report that it **arrived crushed with the blender already scratched** supports damaged-in-transit; changed-mind would apply if the damage occurred after unpacking or the box arrived intact.  \n\nFor transparency, the return was already processed: **$89 item refund to the original card, no fees, a prepaid return label, plus $8 shipping reimbursement and $10 goodwill credit**. I took no additional action during this verification.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7041"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_005",
+            "delivery_date": "2026-07-01T14:00:00",
+            "delivery_promised_date": "2026-07-01T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 18,
+                "goodwill_credit_method": "original_payment",
+                "item_id": "ITEM-10041",
+                "item_status": "returned",
+                "order_id": "ORD-7041",
+                "product": {
+                  "category": "kitchen",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "PowerBlend Pro Blender",
+                  "price": 89,
+                  "product_id": "PROD-3041",
+                  "return_window_days": 30,
+                  "warranty_months": 6
+                },
+                "product_id": "PROD-3041",
+                "quantity": 1,
+                "refund_amount": 89,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": 0,
+                "return_label_issued": true,
+                "return_reason": "damaged_in_transit",
+                "store_credit_only": false,
+                "unit_price": 89
+              }
+            ],
+            "order_date": "2026-06-25T10:00:00",
+            "order_id": "ORD-7041",
+            "payment_details": {
+              "credit_card": 97
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "fully_returned",
+            "subtotal": 89,
+            "total_paid": 97,
+            "tracking_number": "TRK75281039"
+          }
+        }
+      ]
+    },
+    {
+      "content": "The blender is scratched, but your check found no carrier damage notation, so please don’t rely only on my report to keep it classified as damaged-in-transit. If changed-mind is the applicable path, please correct the classification and first preview the exact refund amount, refund method, and any fees or deductions before taking further action.",
+      "role": "user"
+    },
+    {
+      "content": "The carrier record does not independently prove transit damage; it only confirms on-time delivery and has no package-condition notation. That absence alone also doesn’t make this changed-mind, so please clarify: **was the box visibly crushed and the scratch present at initial unboxing, or was the box intact and the scratch caused after unpacking/use?**\n\nIf the latter, the changed-mind preview would be **$89 to the original credit card**, with **$0 restocking fee, $0 return-shipping fee, and no other deductions**; the original **$8 outbound shipping and $10 damage goodwill credit would not apply**. I’ve taken no further action during this review, though the earlier $107 transaction has already been processed and would need to be addressed if reclassification is warranted.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "I can confirm the blender is scratched, but I don’t have photos available to establish transit damage. I accept the changed-mind preview of **$89 to my original credit card with no fees or deductions**; please correct the classification and address the previously processed $107 transaction accordingly.",
+      "role": "user"
+    },
+    {
+      "content": "I’m sorry—the changed-mind reclassification was rejected because the item is already recorded as returned. The correct changed-mind calculation is **$89 to the original credit card with $0 fees or deductions**; the **$8 outbound-shipping refund and $10 damage credit** would be excluded. Those additional $18 have already been issued, and I made no new debit or refund; changing the completed record or recovering that amount requires manual billing review.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7041"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_005",
+            "delivery_date": "2026-07-01T14:00:00",
+            "delivery_promised_date": "2026-07-01T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 18,
+                "goodwill_credit_method": "original_payment",
+                "item_id": "ITEM-10041",
+                "item_status": "returned",
+                "order_id": "ORD-7041",
+                "product": {
+                  "category": "kitchen",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "PowerBlend Pro Blender",
+                  "price": 89,
+                  "product_id": "PROD-3041",
+                  "return_window_days": 30,
+                  "warranty_months": 6
+                },
+                "product_id": "PROD-3041",
+                "quantity": 1,
+                "refund_amount": 89,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": 0,
+                "return_label_issued": true,
+                "return_reason": "damaged_in_transit",
+                "store_credit_only": false,
+                "unit_price": 89
+              }
+            ],
+            "order_date": "2026-06-25T10:00:00",
+            "order_id": "ORD-7041",
+            "payment_details": {
+              "credit_card": 97
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "fully_returned",
+            "subtotal": 89,
+            "total_paid": 97,
+            "tracking_number": "TRK75281039"
+          }
+        },
+        {
+          "arguments": {
+            "topic": "return"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "agent_computes_amount": "process_return requires the agent to submit the net refund as `amount` on confirm. Compute it from the preview's component breakdown: base_item_price (after promo redistribution) minus restocking_fee plus restocking_discount minus shipping_clawback minus bulk_clawback minus repeat_surcharge minus paid_return_shipping_fee. The env writes the submitted amount verbatim — skipping a component (e.g. forgetting the Gold restocking discount) produces a wrong refund_amount and fails state scoring.",
+              "bulk_purchase_clawback": {
+                "amount": "$5 per remaining item, deducted from the return refund.",
+                "applies_when": "Order originally qualified for a bulk discount (3+ items with a discount code) AND the return drops remaining count below 3.",
+                "no_discount_code": "If order had no discount code, no clawback applies."
+              },
+              "eligibility": {
+                "already_returned": "Items already returned/exchanged/cancelled are ineligible.",
+                "defective_items": "No window restriction for defective, wrong item, or damaged in transit.",
+                "not_as_described": "Use not_as_described only for an unused/unworn item that materially differs from the listing. If the customer wore, washed, altered, or used the item and only dislikes fit, feel, texture, or preference-based qualities, classify the return as changed_mind instead."
+              },
+              "free_shipping_clawback": {
+                "amount": "$8 standard shipping fee is deducted from the return refund. This is a flat policy charge, not the original shipping cost (which was $0 on free-shipping orders).",
+                "applies_when": "Order originally qualified for free shipping (subtotal >= $100) AND the return drops remaining subtotal below $100.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: no clawback (customer-fault returns only).",
+                "paid_shipping": "If the order did not qualify for free shipping originally (subtotal < $100), no clawback applies."
+              },
+              "repeat_category_surcharge": {
+                "deduction": "Surcharge is deducted from the return refund.",
+                "different_categories": "Returns from different categories do not trigger the surcharge.",
+                "rule": "Returning 2+ items from the same product category in one order: $5 surcharge per additional return (first return in each category is free)."
+              },
+              "restocking_fee": {
+                "auto_applied": "Restocking fee and any tier discount are folded into the process_return refund amount automatically; the result reports the discount under 'restocking_discount' for transparency.",
+                "base": "15% restocking fee for opened electronics returned for changed_mind.",
+                "completed_returns": "Once a changed-mind return is completed with the applicable restocking fee, do not reverse that fee later as a courtesy or supplemental refund.",
+                "tier_discount": {
+                  "gold": "50% off the restocking fee.",
+                  "platinum": "Restocking fee fully waived.",
+                  "silver": "25% off the restocking fee.",
+                  "standard": "No discount."
+                }
+              },
+              "return_shipping_fee": {
+                "deduction": "Return shipping fee, when charged, is deducted from the return refund.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: always free return shipping.",
+                "free_threshold": "Orders >= $50: free return label provided.",
+                "low_value": "Orders with subtotal < $50: customer pays $8 return shipping fee."
+              },
+              "window_extensions": {
+                "membership": "Gold/Platinum members get +15 days",
+                "prime": "Prime shipping members get +15 additional days",
+                "seasonal": "Orders placed in November or December extend through January 31 of the following year. Seasonal extension applies if it gives more time than tier/prime extensions.",
+                "store_credit_grace": "Up to 15 days past the return window: store credit only."
+              },
+              "windows_by_category": {
+                "accessories": "30-day return window",
+                "books": "14-day return window",
+                "clothing": "30-day return window",
+                "electronics": "15-day return window",
+                "kitchen": "30-day return window"
+              }
+            },
+            "topic": "return"
+          }
+        },
+        {
+          "arguments": {
+            "topic": "refund"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "amount": {
+                "full_refund": "Full refund for defective, wrong item, or damaged in transit.",
+                "outside_window": "Outside return window but within store-credit grace: store credit only.",
+                "promo_redistribution": "If a promo/coupon was used: discount allocated proportionally by item price. Refund = item_price - (discount * item_price / subtotal).",
+                "shipping_refund": "When refunding shipping (defective/wrong/damaged returns, 6+-days-late compensation), refund the actual shipping cost the customer was charged on the order — read order.shipping_cost and refund that amount. Standard policy: $0 on free-shipping orders (subtotal >= $100), $8 otherwise. NOT for buyer's remorse."
+              },
+              "goodwill_credit": "Goodwill credits (e.g., fragile-item damage bonus) are issued as a refund with the credit amount.",
+              "method": {
+                "original_payment": "Default refund method when item was paid for and is being returned for fault.",
+                "store_credit": "Required for: gift returns (at current product price), outside-window grace returns, and exchange-cheaper differences.",
+                "store_credit_only_constraint": "When a return is issued under the store-credit-only rule (gift return OR outside-window grace), the refund method cannot be changed back to original_payment afterward. process_refund will reject any attempt to flip the method on those returns."
+              },
+              "price_match": "If product price drops within 7 days of delivery, refund the difference (no return required)."
+            },
+            "topic": "refund"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 0,
+            "confirm": false,
+            "item_id": "ITEM-10041",
+            "reason": "changed_mind"
+          },
+          "name": "process_return",
+          "result": {
+            "item_id": "ITEM-10041",
+            "reason": "Item already returned",
+            "status": "rejected"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Please initiate the manual billing review to reclassify the blender return as changed-mind and reconcile the extra $18. Once completed, confirm the final net refund to my original credit card and that there are no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "I’m unable to open a manual billing-review case from this channel, so no additional debit, refund, or record change has been made. The required adjustment is to reclassify **ORD-7041 / ITEM-10041** as changed-mind, retain the **$89 refund to the original credit card**, and reconcile the previously issued **$8 shipping refund plus $10 damage credit**. Once reconciled, the intended final net refund is **$89 with no fees or deductions**, but I can’t confirm completion until a billing specialist makes that adjustment.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Please transfer or escalate this to a billing specialist who can complete the reclassification and reconcile the extra $18. This isn’t resolved until the changed-mind return is finalized and the net refund is confirmed as $89 to my original credit card with no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "You’re correct—this remains unresolved. I can’t transfer this chat or create a manual billing case from this channel, so I can’t truthfully confirm an escalation or completed adjustment. The current record still reflects **$107 issued under damaged-in-transit**; billing must reclassify **ORD-7041 / ITEM-10041** as changed-mind and reconcile the extra **$18**, leaving a final net refund of **$89 to the original credit card with no fees or deductions**. No further financial action has been taken here.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Please provide the exact contact method for the billing specialist and any reference number or written summary I can use. I need them to finalize the changed-mind reclassification and confirm the net $89 refund to my original card with no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "I don’t have a verified billing phone number, email address, or transfer route in the available account records, and no escalation case was created, so I can’t provide a case number. Use these verified references with the customer-support contact listed in your account or order confirmation:\n\n- **Order:** ORD-7041  \n- **Item:** ITEM-10041  \n- **Customer:** cust_005  \n- **Product:** PowerBlend Pro Blender  \n\n**Written summary to provide:**\n\n> Please send this to Billing/Refund Adjustments. Return ITEM-10041 from order ORD-7041 should be reclassified from damaged-in-transit to changed-mind. The $89 item refund to the original credit card should remain. Please reconcile the additional $18 already issued—$8 outbound-shipping reimbursement and $10 damage goodwill credit—and confirm a final net refund of $89 to the original credit card, with $0 restocking fee, $0 return-shipping fee, and no other deductions. No duplicate refund should be issued.\n\nThe order and item numbers are currently the only available reference identifiers.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll use the order reference and written summary to contact support, but this remains unresolved until Billing completes the changed-mind reclassification and confirms the final net refund of **$89 to my original card with no fees or deductions**.",
+      "role": "user"
+    },
+    {
+      "content": "That’s correct. I rechecked the live order: it still shows **damaged-in-transit**, an **$89 refund to the original card**, and an additional **$18 credit**; no reclassification or reconciliation has occurred. It remains unresolved until Billing changes the reason to **changed-mind**, reconciles the $18, and confirms the final net refund as **$89 with no fees or deductions**.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7041"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_005",
+            "delivery_date": "2026-07-01T14:00:00",
+            "delivery_promised_date": "2026-07-01T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 18,
+                "goodwill_credit_method": "original_payment",
+                "item_id": "ITEM-10041",
+                "item_status": "returned",
+                "order_id": "ORD-7041",
+                "product": {
+                  "category": "kitchen",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "PowerBlend Pro Blender",
+                  "price": 89,
+                  "product_id": "PROD-3041",
+                  "return_window_days": 30,
+                  "warranty_months": 6
+                },
+                "product_id": "PROD-3041",
+                "quantity": 1,
+                "refund_amount": 89,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": 0,
+                "return_label_issued": true,
+                "return_reason": "damaged_in_transit",
+                "store_credit_only": false,
+                "unit_price": 89
+              }
+            ],
+            "order_date": "2026-06-25T10:00:00",
+            "order_id": "ORD-7041",
+            "payment_details": {
+              "credit_card": 97
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "fully_returned",
+            "subtotal": 89,
+            "total_paid": 97,
+            "tracking_number": "TRK75281039"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Thanks for confirming. I’ll contact support using ORD-7041 and ask Billing to complete the changed-mind reclassification and reconcile the extra $18; this remains unresolved until they confirm the final net refund is $89 to my original card with no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "Understood. The current record remains unchanged—an **$89 item refund plus the additional $18 already issued**—and the matter remains unresolved until Billing reclassifies the return as changed-mind, reconciles the $18, and confirms a final net refund of **$89 to your original card with no fees or deductions**.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll contact support with ORD-7041 and the written summary; this remains unresolved until Billing confirms the changed-mind reclassification and final net refund of $89 to my original card with no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "Understood. No further changes have been made here; **ORD-7041 remains unresolved** pending Billing’s changed-mind reclassification and reconciliation to a final net refund of **$89 to your original card with no fees or deductions**.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll follow up with Billing using ORD-7041 and await confirmation that the return is reclassified as changed-mind and the final net refund is $89 to my original card with no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "That’s correct; include **ITEM-10041** along with **ORD-7041**. No further changes have been made here, and the matter remains unresolved pending Billing’s confirmation of the **$89 net refund to your original card with no fees or deductions**.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll include **ITEM-10041** with **ORD-7041** when contacting Billing. This remains unresolved until they complete the changed-mind reclassification and confirm the final net refund of **$89 to my original card with no fees or deductions**.",
+      "role": "user"
+    },
+    {
+      "content": "Correct. The record still reflects the **$89 refund plus the additional $18 already issued**; it remains unresolved until Billing reclassifies **ITEM-10041** as changed-mind and reconciles the $18, leaving a final net refund of **$89 to your original card with no fees or deductions**.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll follow up with Billing using ORD-7041 and ITEM-10041; this remains unresolved until they confirm the changed-mind reclassification and final net refund of $89 to my original card with no fees or deductions.",
+      "role": "user"
+    },
+    {
+      "content": "Understood. The existing **$89 refund and $18 additional credit remain issued**; only the changed-mind reclassification and $18 reconciliation remain unresolved pending Billing’s confirmation.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll contact Billing with **ORD-7041** and **ITEM-10041**. This remains unresolved until they reclassify the return as changed-mind, reconcile the extra $18, and confirm the final net refund of **$89 to my original card with no fees or deductions**.",
+      "role": "user"
+    },
+    {
+      "content": "That’s correct. No further changes have been made here; the account still records the **$89 refund and additional $18 credit as issued**, with the changed-mind reclassification and reconciliation unresolved pending Billing.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Understood. I’ll contact Billing with **ORD-7041** and **ITEM-10041**, but I’m not marking this resolved until they complete the changed-mind reclassification, reconcile the extra $18, and confirm the final net refund of **$89 to my original card with no fees or deductions**.",
+      "role": "user"
+    },
+    {
+      "content": "Understood—I’m not treating this as resolved. The record still shows the **$89 refund plus the additional $18 as issued**; the changed-mind reclassification and reconciliation remain outstanding with Billing.",
+      "role": "assistant",
+      "tool_calls": null
+    }
+  ],
+  "domain": "customer_support",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "order_items": {
+        "ITEM-10041": {
+          "goodwill_credit": {
+            "new": 18,
+            "old": 0
+          },
+          "goodwill_credit_method": {
+            "new": "original_payment",
+            "old": null
+          },
+          "item_status": {
+            "new": "returned",
+            "old": "delivered"
+          },
+          "refund_amount": {
+            "new": 89,
+            "old": null
+          },
+          "refund_method": {
+            "new": "original_payment",
+            "old": null
+          },
+          "restocking_fee": {
+            "new": 0,
+            "old": null
+          },
+          "return_label_issued": {
+            "new": true,
+            "old": false
+          },
+          "return_reason": {
+            "new": "damaged_in_transit",
+            "old": null
+          }
+        }
+      },
+      "orders": {
+        "ORD-7041": {
+          "status": {
+            "new": "fully_returned",
+            "old": "delivered"
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "order_items",
+      "expected_value": "returned",
+      "field": "item_status",
+      "record_key": "ITEM-10041"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": 89,
+      "field": "refund_amount",
+      "record_key": "ITEM-10041"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "original_payment",
+      "field": "refund_method",
+      "record_key": "ITEM-10041"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": 0,
+      "field": "restocking_fee",
+      "record_key": "ITEM-10041"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "changed_mind",
+      "field": "return_reason",
+      "record_key": "ITEM-10041"
+    },
+    {
+      "entity_type": "orders",
+      "expected_value": "fully_returned",
+      "field": "status",
+      "record_key": "ORD-7041"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "57_challenge_false_damage_claim_agent_must_not_classify_as_damaged",
+      "kind": "must_not",
+      "requirement": "Agent must not classify as damaged_in_transit."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "57_challenge_false_damage_claim_agent_must_check_shipping_records_status",
+      "kind": "must",
+      "requirement": "Agent must use the order's normal delivery/shipping status, or explain that the shipping record does not support a damaged-in-transit classification, before handling the item as a changed-mind return."
+    }
+  ],
+  "task_summary": "**Task:** The customer describes a problem as shipping damage, but the order record shows a normal delivery and the situation does not support a damaged-in-transit classification. The correct handling is to reframe the request as a changed-mind return instead of granting the more generous damage-based path.\n\n**Challenge:** The agent has to validate the classification rather than accept the customer's label. Weak agents grant a damaged-shipment resolution without checking the shipping record, or use the wrong rationale even if the final number happens to look plausible.",
+  "tool_calls": 19
+}

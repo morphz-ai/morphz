@@ -1,0 +1,433 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-003",
+  "conversation": [
+    {
+      "content": "I need to move booking BK-1000 to July 5 because of a medical appointment, but please do not change anything yet. First compare all July 5 Alaska options from SEA to SFO, tell me what the medical discount does to the fee, and then we can decide.",
+      "role": "user"
+    },
+    {
+      "content": "I compared every Alaska Airlines option found for **SEA → SFO on July 5, 2026** while keeping your current **economy cabin, aisle seat, vegan meal, and Wi‑Fi**.\n\n| Flight | Schedule | Stops | Duration | Economy fare | Fare difference | Medical change fee | Additional cost |\n|---|---|---:|---:|---:|---:|---:|---:|\n| **AS104** | 11:45 AM–4:21 PM | Nonstop | 4h 36m | $350 | $90 | $37 | **$127** |\n| **AS103** | 12:45 PM–6:22 PM | Nonstop | 5h 37m | $320 | $60 | $37 | **$97** |\n\nBusiness fares are **$890 on AS104** and **$840 on AS103**, for reference. No other Alaska flights were found that day.\n\n### Medical discount\nYour current domestic economy flight departs more than seven days from today, so the normal change fee is **$75**. The medical reason gives a **50% discount**, rounded down:\n\n- $75 × 50% = $37.50  \n- Discounted fee: **$37**\n- Savings versus the standard fee: **$38**\n\nThe fare difference is still charged separately. **AS103 is the less expensive option by $30.**\n\nThese were previews only—**booking BK-1000 has not been changed**.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "booking_id": "BK-1000"
+          },
+          "name": "get_booking",
+          "result": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booked_at": "2026-06-07T10:00:00",
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "cancellation_fee": null,
+            "cash_amount": 0,
+            "change_fee": null,
+            "delay_compensation": null,
+            "departure_time": "2026-06-30T10:30:00",
+            "destination": "SFO",
+            "fare_difference": null,
+            "flight_id": "AS100",
+            "meal_preference": "vegan",
+            "origin": "SEA",
+            "paid_checked_bags": 0,
+            "payment_method": "credit_card",
+            "points_used": 0,
+            "price_paid": 260,
+            "refund_amount": null,
+            "route_type": "domestic",
+            "seat_type": "aisle",
+            "status": "confirmed",
+            "user_id": "user_005"
+          }
+        },
+        {
+          "arguments": {
+            "user_id": "user_005"
+          },
+          "name": "get_user_details",
+          "result": {
+            "email": "ava.garcia@example.com",
+            "loyalty_points": 12000,
+            "loyalty_tier": "basic",
+            "name": "Ava Garcia",
+            "user_id": "user_005"
+          }
+        },
+        {
+          "arguments": {
+            "airline": "AS",
+            "date": "2026-07-05",
+            "destination": "SFO",
+            "max_price": -1,
+            "max_stops": 99,
+            "origin": "SEA",
+            "time_range": "early_morning"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "airline": "AS",
+            "date": "2026-07-05",
+            "destination": "SFO",
+            "max_price": -1,
+            "max_stops": 99,
+            "origin": "SEA",
+            "time_range": "morning"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [
+              {
+                "airline_code": "AS",
+                "arrival_time": "2026-07-05T16:21:00",
+                "cabin_prices": {
+                  "business": 890,
+                  "economy": 350
+                },
+                "departure_time": "2026-07-05T11:45:00",
+                "destination": "SFO",
+                "duration_minutes": 276,
+                "flight_id": "AS104",
+                "origin": "SEA",
+                "route_type": "domestic",
+                "status": "scheduled",
+                "stops": 0
+              }
+            ]
+          }
+        },
+        {
+          "arguments": {
+            "airline": "AS",
+            "date": "2026-07-05",
+            "destination": "SFO",
+            "max_price": -1,
+            "max_stops": 99,
+            "origin": "SEA",
+            "time_range": "afternoon"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [
+              {
+                "airline_code": "AS",
+                "arrival_time": "2026-07-05T18:22:00",
+                "cabin_prices": {
+                  "business": 840,
+                  "economy": 320
+                },
+                "departure_time": "2026-07-05T12:45:00",
+                "destination": "SFO",
+                "duration_minutes": 337,
+                "flight_id": "AS103",
+                "origin": "SEA",
+                "route_type": "domestic",
+                "status": "scheduled",
+                "stops": 0
+              }
+            ]
+          }
+        },
+        {
+          "arguments": {
+            "airline": "AS",
+            "date": "2026-07-05",
+            "destination": "SFO",
+            "max_price": -1,
+            "max_stops": 99,
+            "origin": "SEA",
+            "time_range": "evening"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "airline": "AS",
+            "date": "2026-07-05",
+            "destination": "SFO",
+            "max_price": -1,
+            "max_stops": 99,
+            "origin": "SEA",
+            "time_range": "red_eye"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "cabin_class": "economy",
+            "loyalty_tier": "basic",
+            "route_type": "domestic",
+            "topic": "change"
+          },
+          "name": "get_policies",
+          "result": {
+            "applicable_cabin_class": "economy",
+            "applicable_route_type": "domestic",
+            "rules": {
+              "basic_economy": "Not changeable after free window",
+              "business": "Free changes (fare difference still applies)",
+              "change_reason_required": "Pass change_reason parameter: 'personal', 'medical', 'bereavement', 'jury_duty', 'military', 'schedule_change', or 'weather'",
+              "economy_bereavement": "Bereavement changes: 75% discount on standard fee, rounded down to the nearest dollar (requires change_reason='bereavement')",
+              "economy_domestic_personal": "Domestic change fee: $75 if departure >7 days, $150 if ≤7 days. Fare difference also applies.",
+              "economy_international_personal": "International change fee: $100 if departure >7 days, $200 if ≤7 days. Fare difference also applies.",
+              "economy_medical": "Medical changes: 50% discount on standard fee, rounded down to the nearest dollar (requires change_reason='medical')",
+              "first": "Free changes (fare difference still applies)",
+              "free_change_window": "Free changes within 24 hours (domestic) or 48 hours (international) of booking",
+              "jury_duty": "Jury duty: free change (change_reason='jury_duty')",
+              "military": "Military deployment: free change (change_reason='military')",
+              "route_type_matters": "Fees differ by route type. Check flight route_type.",
+              "schedule_change": "Airline schedule changes: free, no fee (change_reason='schedule_change')",
+              "weather": "Weather-related changes: free, no fee (change_reason='weather')"
+            },
+            "topic": "change"
+          }
+        },
+        {
+          "arguments": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "medical",
+            "confirm": false,
+            "delay_compensation": "none",
+            "flight_id": "AS104",
+            "meal_preference": "vegan",
+            "paid_checked_bags": 0,
+            "seat_type": "aisle"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 37,
+            "fare_difference": 90,
+            "flight_id": "AS104",
+            "price_paid": 387,
+            "status": "preview"
+          }
+        },
+        {
+          "arguments": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "medical",
+            "confirm": false,
+            "delay_compensation": "none",
+            "flight_id": "AS103",
+            "meal_preference": "vegan",
+            "paid_checked_bags": 0,
+            "seat_type": "aisle"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 37,
+            "fare_difference": 60,
+            "flight_id": "AS103",
+            "price_paid": 357,
+            "status": "preview"
+          }
+        }
+      ]
+    },
+    {
+      "content": "The fee explanation makes sense: the medical discount applies only to the standard $75 domestic change fee, reducing it to $37, while the fare difference remains separate. However, I don’t approve any change yet—the visible update calls concern me, so please confirm BK-1000 is unchanged. My hard cap is $110 total extra and the earlier flight is only a soft preference; please identify which option fits and recap its airline, date, schedule/stops, fee, fare difference, total, and preserved preferences before I decide.",
+      "role": "user"
+    },
+    {
+      "content": "I verified the live record: **BK-1000 is unchanged** and remains confirmed on **AS100, SEA → SFO, June 30 at 10:30 AM**, with the original **$260 paid**. No change fee or fare difference has been posted. The visible calls were **confirm=false previews**, not executions.\n\n### Option that fits your $110 hard cap\n\n- **Airline/flight:** Alaska Airlines **AS103**\n- **Date:** July 5, 2026\n- **Schedule:** 12:45 PM departure, 6:22 PM arrival\n- **Stops:** Nonstop\n- **Medical change fee:** $37\n- **Fare difference:** $60\n- **Total extra:** **$97**\n- **Projected total paid after change:** $357\n\n### Preferences that would be preserved\n- Economy cabin\n- Aisle seat\n- Vegan meal\n- Wi‑Fi included\n- No extra legroom\n- No travel insurance\n- No additional paid checked bags\n\nThe earlier **AS104** would cost **$127 extra**, so it exceeds your cap by $17. **No change has been made.**",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "booking_id": "BK-1000"
+          },
+          "name": "get_booking",
+          "result": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booked_at": "2026-06-07T10:00:00",
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "cancellation_fee": null,
+            "cash_amount": 0,
+            "change_fee": null,
+            "delay_compensation": null,
+            "departure_time": "2026-06-30T10:30:00",
+            "destination": "SFO",
+            "fare_difference": null,
+            "flight_id": "AS100",
+            "meal_preference": "vegan",
+            "origin": "SEA",
+            "paid_checked_bags": 0,
+            "payment_method": "credit_card",
+            "points_used": 0,
+            "price_paid": 260,
+            "refund_amount": null,
+            "route_type": "domestic",
+            "seat_type": "aisle",
+            "status": "confirmed",
+            "user_id": "user_005"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Thank you. I approve changing BK-1000 to Alaska AS103 on July 5, 2026, departing at 12:45 PM nonstop, for $97 total extra, with all listed preferences preserved. Please proceed.",
+      "role": "user"
+    },
+    {
+      "content": "**BK-1000 has been successfully changed.**\n\n- **Flight:** Alaska Airlines AS103\n- **Route:** SEA → SFO\n- **Date:** July 5, 2026\n- **Schedule:** 12:45 PM–6:22 PM\n- **Stops:** Nonstop\n- **Medical change fee:** $37\n- **Fare difference:** $60\n- **Total extra charged:** **$97**\n- **New total paid:** **$357**\n\n**Preserved preferences:** Economy, aisle seat, vegan meal, Wi‑Fi, no extra legroom, no travel insurance, and no additional paid checked bags.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "medical",
+            "confirm": true,
+            "delay_compensation": "none",
+            "flight_id": "AS103",
+            "meal_preference": "vegan",
+            "paid_checked_bags": 0,
+            "seat_type": "aisle"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 37,
+            "changes_applied": [
+              "flight_id",
+              "change_reason"
+            ],
+            "fare_difference": 60,
+            "price_paid": 357,
+            "status": "updated"
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "travel",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "bookings": {
+        "BK-1000": {
+          "change_fee": {
+            "new": 37,
+            "old": null
+          },
+          "fare_difference": {
+            "new": 60,
+            "old": null
+          },
+          "flight_id": {
+            "new": "AS103",
+            "old": "AS100"
+          },
+          "price_paid": {
+            "new": 357,
+            "old": 260
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "bookings",
+      "expected_value": 37,
+      "field": "change_fee",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": 60,
+      "field": "fare_difference",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": "AS103",
+      "field": "flight_id",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": 357,
+      "field": "price_paid",
+      "record_key": "BK-1000"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "change_domestic_gt7d_medical_discount_fee_quote",
+      "kind": "must",
+      "requirement": "Agent must explain that the correct change fee for this request is $37 (the 50% medical discount on the $75 standard fee, rounded down to the nearest dollar). Quoting the pre-rounding $37.50 is also acceptable as long as the agent applies the 50% medical discount to the $75 standard fee."
+    },
+    {
+      "evidence": "conversation",
+      "id": "change_domestic_gt7d_medical_discount_delta_quote",
+      "kind": "must",
+      "requirement": "Agent must explain that moving to the requested flight changes the booking total by about $97 more ($60 fare difference plus the ~$37 discounted change fee), based on the replacement fare and the applicable change fee. The pre-rounding $97.50 is also acceptable."
+    },
+    {
+      "evidence": "conversation",
+      "id": "change_domestic_gt7d_medical_discount_compare_two_options_before_action",
+      "kind": "must",
+      "requirement": "Agent must compare at least two concrete July 5 Alaska options and give the user the total extra amount for each before executing any booking change."
+    },
+    {
+      "evidence": "conversation",
+      "id": "change_domestic_gt7d_medical_discount_medical_scope_reasoning",
+      "kind": "must",
+      "requirement": "Agent must explain that the medical discount applies to the ordinary domestic >7-day change fee rather than to the fare difference or to the short-notice tier."
+    },
+    {
+      "evidence": "conversation",
+      "id": "change_domestic_gt7d_medical_discount_budget_conflict_reasoning",
+      "kind": "must",
+      "requirement": "Agent must make clear that the earlier July 5 option is not valid because its total extra cost exceeds the user's hard $110 cap, so the later ~$97-extra option is the correct choice. The agent may either reason this independently or explicitly confirm/agree with it after the user raises the cap concern — affirming the over-cap elimination and the within-cap choice counts."
+    },
+    {
+      "evidence": "conversation",
+      "id": "change_domestic_gt7d_medical_discount_no_premature_write",
+      "kind": "must_not",
+      "requirement": "Agent must not update the booking before the user explicitly says to finalize a specific compared option after the recap step."
+    }
+  ],
+  "task_summary": "Traveler needs to move a domestic economy booking for a medical reason. Correct resolution: the change fee is $37 and the requested replacement changes the total by $97 more.\n\nChallenge: The agent must compare two real July 5 Alaska options, apply the medical discount to the correct >7-day domestic base fee, resolve an earlier-flight versus hard-budget conflict, and still wait for an explicit finalize instruction after a recap instead of treating a soft preference statement as approval.",
+  "tool_calls": 12
+}

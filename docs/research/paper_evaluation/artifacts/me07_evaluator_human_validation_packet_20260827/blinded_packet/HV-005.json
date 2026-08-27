@@ -1,0 +1,359 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-005",
+  "conversation": [
+    {
+      "content": "I have a medical issue and need to postpone my Tokyo flight BK-1000 from June 28 to July 5. Is there a medical discount on the change fee? My user ID is user_002.",
+      "role": "user"
+    },
+    {
+      "content": "Yes. Your international economy booking qualifies for a **50% medical discount** on the standard change fee:\n\n- Standard change fee more than 7 days before departure: **$100**\n- Medical discount: **50%**\n- Discounted change fee: **$50**\n\nFor the available **AA101** option on **July 5**:\n\n- Departure: **7:45 PM**\n- Stops: **0 (nonstop)**\n- Fare difference: **$50**\n- **Total additional cost: $100**\n- New booking total: **$1,300**\n\nThis was only a preview—**BK-1000 has not been changed**.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "booking_id": "BK-1000"
+          },
+          "name": "get_booking",
+          "result": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": false,
+            "booked_at": "2026-06-01T10:00:00",
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "cancellation_fee": null,
+            "cash_amount": 0,
+            "change_fee": null,
+            "delay_compensation": null,
+            "departure_time": "2026-06-28T17:30:00",
+            "destination": "NRT",
+            "fare_difference": null,
+            "flight_id": "AA100",
+            "meal_preference": "vegetarian",
+            "origin": "JFK",
+            "paid_checked_bags": 0,
+            "payment_method": "credit_card",
+            "points_used": 0,
+            "price_paid": 1200,
+            "refund_amount": null,
+            "route_type": "international",
+            "seat_type": "window",
+            "status": "confirmed",
+            "user_id": "user_002"
+          }
+        },
+        {
+          "arguments": {
+            "user_id": "user_002"
+          },
+          "name": "get_user_details",
+          "result": {
+            "email": "liam.johnson@example.com",
+            "loyalty_points": 5000,
+            "loyalty_tier": "basic",
+            "name": "Liam Johnson",
+            "user_id": "user_002"
+          }
+        },
+        {
+          "arguments": {
+            "cabin_class": "economy",
+            "loyalty_tier": "basic",
+            "route_type": "international",
+            "topic": "change"
+          },
+          "name": "get_policies",
+          "result": {
+            "applicable_cabin_class": "economy",
+            "applicable_route_type": "international",
+            "rules": {
+              "basic_economy": "Not changeable after free window",
+              "business": "Free changes (fare difference still applies)",
+              "change_reason_required": "Pass change_reason parameter: 'personal', 'medical', 'bereavement', 'jury_duty', 'military', 'schedule_change', or 'weather'",
+              "economy_bereavement": "Bereavement changes: 75% discount on standard fee, rounded down to the nearest dollar (requires change_reason='bereavement')",
+              "economy_domestic_personal": "Domestic change fee: $75 if departure >7 days, $150 if ≤7 days. Fare difference also applies.",
+              "economy_international_personal": "International change fee: $100 if departure >7 days, $200 if ≤7 days. Fare difference also applies.",
+              "economy_medical": "Medical changes: 50% discount on standard fee, rounded down to the nearest dollar (requires change_reason='medical')",
+              "first": "Free changes (fare difference still applies)",
+              "free_change_window": "Free changes within 24 hours (domestic) or 48 hours (international) of booking",
+              "jury_duty": "Jury duty: free change (change_reason='jury_duty')",
+              "military": "Military deployment: free change (change_reason='military')",
+              "route_type_matters": "Fees differ by route type. Check flight route_type.",
+              "schedule_change": "Airline schedule changes: free, no fee (change_reason='schedule_change')",
+              "weather": "Weather-related changes: free, no fee (change_reason='weather')"
+            },
+            "topic": "change"
+          }
+        },
+        {
+          "arguments": {
+            "date": "2026-07-05",
+            "destination": "NRT",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "JFK",
+            "time_range": "early_morning"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "date": "2026-07-05",
+            "destination": "NRT",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "JFK",
+            "time_range": "morning"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "date": "2026-07-05",
+            "destination": "NRT",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "JFK",
+            "time_range": "afternoon"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "date": "2026-07-05",
+            "destination": "NRT",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "JFK",
+            "time_range": "evening"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [
+              {
+                "airline_code": "AA",
+                "arrival_time": "2026-07-06T00:56:00",
+                "cabin_prices": {
+                  "business": 3125,
+                  "economy": 1250
+                },
+                "departure_time": "2026-07-05T19:45:00",
+                "destination": "NRT",
+                "duration_minutes": 311,
+                "flight_id": "AA101",
+                "origin": "JFK",
+                "route_type": "international",
+                "status": "scheduled",
+                "stops": 0
+              }
+            ]
+          }
+        },
+        {
+          "arguments": {
+            "date": "2026-07-05",
+            "destination": "NRT",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "JFK",
+            "time_range": "red_eye"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": false,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "medical",
+            "confirm": false,
+            "delay_compensation": "none",
+            "flight_id": "AA101",
+            "meal_preference": "vegetarian",
+            "paid_checked_bags": 0,
+            "seat_type": "window"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 50,
+            "fare_difference": 50,
+            "flight_id": "AA101",
+            "price_paid": 1300,
+            "status": "preview"
+          }
+        }
+      ]
+    },
+    {
+      "content": "That works. Please proceed with the change to the July 5 AA101 flight for the $100 total added cost, and keep all existing booking preferences unchanged.",
+      "role": "user"
+    },
+    {
+      "content": "Done — **BK-1000** has been changed successfully.\n\n### Updated flight\n- **Flight:** AA101\n- **Route:** JFK → NRT\n- **Date:** July 5, 2026\n- **Departure:** 7:45 PM\n- **Stops:** Nonstop\n- **Status:** Confirmed\n\n### Final cost\n- **Medical change fee:** $50\n- **Fare difference:** $50\n- **Total added cost:** **$100**\n- **New booking total:** **$1,300**\n\n### Preferences verified unchanged\n- Cabin: Economy\n- Seat: Window\n- Meal: Vegetarian\n- Wi‑Fi: No\n- Extra legroom: No\n- Insurance: No\n- Extra checked bags: 0",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": false,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "medical",
+            "confirm": true,
+            "delay_compensation": "none",
+            "flight_id": "AA101",
+            "meal_preference": "vegetarian",
+            "paid_checked_bags": 0,
+            "seat_type": "window"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 50,
+            "changes_applied": [
+              "flight_id",
+              "change_reason"
+            ],
+            "fare_difference": 50,
+            "price_paid": 1300,
+            "status": "updated"
+          }
+        },
+        {
+          "arguments": {
+            "booking_id": "BK-1000"
+          },
+          "name": "get_booking",
+          "result": {
+            "add_extra_legroom": false,
+            "add_insurance": false,
+            "add_wifi": false,
+            "booked_at": "2026-06-01T10:00:00",
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "cancellation_fee": null,
+            "cash_amount": 0,
+            "change_fee": 50,
+            "delay_compensation": null,
+            "departure_time": "2026-07-05T19:45:00",
+            "destination": "NRT",
+            "fare_difference": 50,
+            "flight_id": "AA101",
+            "meal_preference": "vegetarian",
+            "origin": "JFK",
+            "paid_checked_bags": 0,
+            "payment_method": "credit_card",
+            "points_used": 0,
+            "price_paid": 1300,
+            "refund_amount": null,
+            "route_type": "international",
+            "seat_type": "window",
+            "status": "confirmed",
+            "user_id": "user_002"
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "travel",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "bookings": {
+        "BK-1000": {
+          "change_fee": {
+            "new": 50,
+            "old": null
+          },
+          "fare_difference": {
+            "new": 50,
+            "old": null
+          },
+          "flight_id": {
+            "new": "AA101",
+            "old": "AA100"
+          },
+          "price_paid": {
+            "new": 1300,
+            "old": 1200
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "bookings",
+      "expected_value": 50,
+      "field": "change_fee",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": 50,
+      "field": "fare_difference",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": "AA101",
+      "field": "flight_id",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": 1300,
+      "field": "price_paid",
+      "record_key": "BK-1000"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "state_medical_discount_applied",
+      "kind": "must",
+      "requirement": "Agent must explain that the medical discount reduces the applicable change fee to $50 for this booking."
+    },
+    {
+      "evidence": "conversation",
+      "id": "state_correct_total_fee_math",
+      "kind": "must",
+      "requirement": "Agent must keep the fee math on the international more-than-7-days path rather than describing this as a domestic-rate, within-7-days, or full-price change fee."
+    },
+    {
+      "evidence": "conversation",
+      "id": "state_not_wrong_fee",
+      "kind": "must_not",
+      "requirement": "Agent must not tell the user that the correct medical change fee is $37, $100, or $200 for this booking."
+    }
+  ],
+  "task_summary": "**Task:** A traveler requests a medical change on an international booking that is more than 7 days out. Correct resolution: The medical discount reduces the applicable change fee to $50 for the booking.\n\n**Challenge:** The agent combines the correct international fee tier, the correct >7 day window, and the 50% medical discount rather than drifting into a domestic, <=7 day, or undiscounted fee.",
+  "tool_calls": 11
+}

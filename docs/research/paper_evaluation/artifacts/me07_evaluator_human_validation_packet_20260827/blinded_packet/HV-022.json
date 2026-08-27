@@ -1,0 +1,250 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-022",
+  "conversation": [
+    {
+      "content": "The basic headphones from ORD-7208 are cheaper now, so I want $30 back.",
+      "role": "user"
+    },
+    {
+      "content": "You paid $149, and the headphones are now $139, so the eligible price adjustment is $10—not $30. Since they were delivered yesterday, they qualify; I can refund $10 to your original card if you’d like.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7208"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_002",
+            "delivery_date": "2026-07-07T12:00:00",
+            "delivery_promised_date": "2026-06-05T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10209",
+                "item_status": "delivered",
+                "order_id": "ORD-7208",
+                "product": {
+                  "category": "electronics",
+                  "current_price": 139,
+                  "in_stock": true,
+                  "name": "SoundMax Basic Headphones",
+                  "price": 149,
+                  "product_id": "PROD-4210",
+                  "return_window_days": 15,
+                  "warranty_months": 12
+                },
+                "product_id": "PROD-4210",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 149
+              }
+            ],
+            "order_date": "2026-06-01T10:00:00",
+            "order_id": "ORD-7208",
+            "payment_details": {
+              "credit_card": 149
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 0,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 149,
+            "total_paid": 149,
+            "tracking_number": "TRK21650757"
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "cust_002"
+          },
+          "name": "get_customer",
+          "result": {
+            "account_created": "2024-06-01",
+            "benefits": {
+              "compensation_multiplier": "1.0x",
+              "prime_shipping": false,
+              "restocking_fee_waiver": false,
+              "return_window_extension": "+0 days"
+            },
+            "customer_id": "cust_002",
+            "email": "marcus.j@example.com",
+            "has_prime_shipping": false,
+            "membership_tier": "standard",
+            "name": "Marcus Johnson",
+            "preferred_refund_method": "store_credit",
+            "store_credit_balance": 0,
+            "total_orders": 12
+          }
+        },
+        {
+          "arguments": {
+            "topic": "refund"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "amount": {
+                "full_refund": "Full refund for defective, wrong item, or damaged in transit.",
+                "outside_window": "Outside return window but within store-credit grace: store credit only.",
+                "promo_redistribution": "If a promo/coupon was used: discount allocated proportionally by item price. Refund = item_price - (discount * item_price / subtotal).",
+                "shipping_refund": "When refunding shipping (defective/wrong/damaged returns, 6+-days-late compensation), refund the actual shipping cost the customer was charged on the order — read order.shipping_cost and refund that amount. Standard policy: $0 on free-shipping orders (subtotal >= $100), $8 otherwise. NOT for buyer's remorse."
+              },
+              "goodwill_credit": "Goodwill credits (e.g., fragile-item damage bonus) are issued as a refund with the credit amount.",
+              "method": {
+                "original_payment": "Default refund method when item was paid for and is being returned for fault.",
+                "store_credit": "Required for: gift returns (at current product price), outside-window grace returns, and exchange-cheaper differences.",
+                "store_credit_only_constraint": "When a return is issued under the store-credit-only rule (gift return OR outside-window grace), the refund method cannot be changed back to original_payment afterward. process_refund will reject any attempt to flip the method on those returns."
+              },
+              "price_match": "If product price drops within 7 days of delivery, refund the difference (no return required)."
+            },
+            "topic": "refund"
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "PROD-4210"
+          },
+          "name": "get_product_details",
+          "result": {
+            "category": "electronics",
+            "current_price": 139,
+            "in_stock": true,
+            "is_fragile": false,
+            "name": "SoundMax Basic Headphones",
+            "price": 149,
+            "product_id": "PROD-4210",
+            "restocking_fee_pct": 15,
+            "return_window_days": 15,
+            "subcategory": "headphones_budget",
+            "warranty_months": 12,
+            "weight_lbs": 0.5
+          }
+        },
+        {
+          "arguments": {
+            "amount": 10,
+            "confirm": false,
+            "item_id": "ITEM-10209",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10209",
+            "refund_amount": 10,
+            "refund_method": "original_payment",
+            "status": "preview"
+          }
+        }
+      ]
+    },
+    {
+      "content": "I was expecting $30, but if the system shows the current price is $139 and only $10 is eligible, that’s fine. Please issue the $10 refund to my original payment method and keep ORD-7208 active.",
+      "role": "user"
+    },
+    {
+      "content": "Done — I issued the $10 price-match refund to your original payment method. ORD-7208 remains active, with no items canceled.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "amount": 10,
+            "confirm": true,
+            "item_id": "ITEM-10209",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10209",
+            "mode": "refund",
+            "refund_amount": 10,
+            "refund_method": "original_payment",
+            "status": "refunded",
+            "total_goodwill_credit": 0
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "customer_support",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "order_items": {
+        "ITEM-10209": {
+          "refund_amount": {
+            "new": 10,
+            "old": null
+          },
+          "refund_method": {
+            "new": "original_payment",
+            "old": null
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "order_items",
+      "expected_value": 10,
+      "field": "refund_amount",
+      "record_key": "ITEM-10209"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "original_payment",
+      "field": "refund_method",
+      "record_key": "ITEM-10209"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "hard_price_match_customer_quotes_wrong_amount_price_match_only",
+      "kind": "must",
+      "requirement": "Agent must issue a $10 price-match refund and keep the order active."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "hard_price_match_customer_quotes_wrong_amount_lookup",
+      "kind": "must",
+      "requirement": "Agent must verify from system records that the purchased item has current price $139 before issuing the refund."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "hard_price_match_customer_quotes_wrong_amount_no_cancel_return",
+      "kind": "must_not",
+      "requirement": "Agent must not cancel, return, or exchange the item."
+    },
+    {
+      "evidence": "conversation",
+      "id": "hard_price_match_customer_quotes_wrong_amount_hard_correct_quote",
+      "kind": "must",
+      "requirement": "Agent must explicitly tell the customer that the system-record current price is $139, so the eligible price-match amount is $10 rather than the requested $30, before issuing the refund."
+    }
+  ],
+  "task_summary": "Customer demands a $30 price-match refund, but product lookup shows the actual eligible drop is $10. Agent must verify and issue only the policy-supported adjustment.",
+  "tool_calls": 6
+}

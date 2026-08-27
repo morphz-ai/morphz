@@ -1,0 +1,206 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-014",
+  "conversation": [
+    {
+      "content": "The little accessory bundle like my ORD-7204 items is cheaper on another site. It has a USB hub and phone case together, so refund me the difference on my order.",
+      "role": "user"
+    },
+    {
+      "content": "I can’t issue a price-difference refund here. Order **ORD-7204** contains two separate listings:\n\n- **7-Port USB-C Hub:** paid $45; current price $45  \n- **UltraShield Phone Case:** paid $35; current price $35  \n\nA third-party bundle combining similar products isn’t the exact listing purchased, and price adjustments apply only when the identical purchased listing drops within seven days of delivery. This order was delivered on July 7, and neither item’s price has dropped.\n\nNo refund was processed, and both items remain unchanged.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "topic": "refund"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "amount": {
+                "full_refund": "Full refund for defective, wrong item, or damaged in transit.",
+                "outside_window": "Outside return window but within store-credit grace: store credit only.",
+                "promo_redistribution": "If a promo/coupon was used: discount allocated proportionally by item price. Refund = item_price - (discount * item_price / subtotal).",
+                "shipping_refund": "When refunding shipping (defective/wrong/damaged returns, 6+-days-late compensation), refund the actual shipping cost the customer was charged on the order — read order.shipping_cost and refund that amount. Standard policy: $0 on free-shipping orders (subtotal >= $100), $8 otherwise. NOT for buyer's remorse."
+              },
+              "goodwill_credit": "Goodwill credits (e.g., fragile-item damage bonus) are issued as a refund with the credit amount.",
+              "method": {
+                "original_payment": "Default refund method when item was paid for and is being returned for fault.",
+                "store_credit": "Required for: gift returns (at current product price), outside-window grace returns, and exchange-cheaper differences.",
+                "store_credit_only_constraint": "When a return is issued under the store-credit-only rule (gift return OR outside-window grace), the refund method cannot be changed back to original_payment afterward. process_refund will reject any attempt to flip the method on those returns."
+              },
+              "price_match": "If product price drops within 7 days of delivery, refund the difference (no return required)."
+            },
+            "topic": "refund"
+          }
+        },
+        {
+          "arguments": {
+            "order_id": "ORD-7204"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_004",
+            "delivery_date": "2026-07-07T12:00:00",
+            "delivery_promised_date": "2026-06-05T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10204",
+                "item_status": "delivered",
+                "order_id": "ORD-7204",
+                "product": {
+                  "category": "electronics",
+                  "current_price": 45,
+                  "in_stock": true,
+                  "name": "7-Port USB-C Hub",
+                  "price": 45,
+                  "product_id": "PROD-4205",
+                  "return_window_days": 15,
+                  "warranty_months": 12
+                },
+                "product_id": "PROD-4205",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 45
+              },
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10205",
+                "item_status": "delivered",
+                "order_id": "ORD-7204",
+                "product": {
+                  "category": "accessories",
+                  "current_price": 35,
+                  "in_stock": true,
+                  "name": "UltraShield Phone Case",
+                  "price": 35,
+                  "product_id": "PROD-4206",
+                  "return_window_days": 30,
+                  "warranty_months": 3
+                },
+                "product_id": "PROD-4206",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 35
+              }
+            ],
+            "order_date": "2026-06-01T10:00:00",
+            "order_id": "ORD-7204",
+            "payment_details": {
+              "credit_card": 88
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 80,
+            "total_paid": 88,
+            "tracking_number": "TRK36537097"
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "PROD-4206"
+          },
+          "name": "get_product_details",
+          "result": {
+            "category": "accessories",
+            "current_price": 35,
+            "in_stock": true,
+            "is_fragile": false,
+            "name": "UltraShield Phone Case",
+            "price": 35,
+            "product_id": "PROD-4206",
+            "restocking_fee_pct": 0,
+            "return_window_days": 30,
+            "subcategory": "phone_case",
+            "warranty_months": 3,
+            "weight_lbs": 0.2
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "PROD-4205"
+          },
+          "name": "get_product_details",
+          "result": {
+            "category": "electronics",
+            "current_price": 45,
+            "in_stock": true,
+            "is_fragile": false,
+            "name": "7-Port USB-C Hub",
+            "price": 45,
+            "product_id": "PROD-4205",
+            "restocking_fee_pct": 15,
+            "return_window_days": 15,
+            "subcategory": "accessory",
+            "warranty_months": 12,
+            "weight_lbs": 0.3
+          }
+        }
+      ]
+    },
+    {
+      "content": "Understood. Since competitor bundles aren’t eligible and neither of my purchased listings had a price drop within seven days, I accept that no refund will be issued and the order remains unchanged. [TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "customer_support",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {}
+  },
+  "state_requirements": [],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "hard_price_match_two_similar_items_deny_bundle",
+      "kind": "must",
+      "requirement": "Agent must deny the price-match refund, explaining that the store only price-matches its own price drops within 7 days of delivery and does not match a competitor's (bundle) price."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "hard_price_match_two_similar_items_no_local_drop",
+      "kind": "must",
+      "requirement": "Agent must establish that neither purchased item has an eligible task-local price drop before denying the refund."
+    },
+    {
+      "evidence": "conversation",
+      "id": "hard_price_match_two_similar_items_no_refund",
+      "kind": "must_not",
+      "requirement": "Agent must not pitch return-and-rebuy as a way for the customer to capture the competitor bundle price."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "hard_price_match_two_similar_items_no_mutation",
+      "kind": "must_not",
+      "requirement": "Agent must not mutate either order item."
+    }
+  ],
+  "task_summary": "Customer asks for a price match using a cheaper competitor bundle listing that includes a USB hub plus phone case. The purchased order has separate single items with no task-local price drop, so agent must deny price matching and leave the order unchanged.",
+  "tool_calls": 4
+}

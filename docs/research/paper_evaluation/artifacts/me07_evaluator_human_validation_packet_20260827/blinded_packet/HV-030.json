@@ -1,0 +1,392 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-030",
+  "conversation": [
+    {
+      "content": "Add the TechPhone Lite with SAVE10, and also use 200 of my points even if it is below the normal minimum.",
+      "role": "user"
+    },
+    {
+      "content": "SAVE10 is active and can stack with loyalty redemption. However, the minimum redemption is **500 points**, so I can’t redeem 200 or bypass the minimum.\n\nBefore I add the **TechPhone Lite 15**, please provide:\n\n1. Your customer ID  \n2. Gift wrap: **yes or no** ($5)  \n3. Whether to redeem **500 points or another valid amount**, or use no points",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "topic": "promo_stacking"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": [
+              "One promo code per cart.",
+              "Category bundle (5%) does NOT stack with promo codes on the same items — customer gets the better of the two.",
+              "Welcome discount (5%) does NOT stack with promo codes — customer gets the better of the two.",
+              "Brand bundle bonus (3%) DOES stack with everything."
+            ],
+            "summary": "At most one promo code per cart. Some discounts stack with each other but not with promo codes.",
+            "topic": "promo_stacking"
+          }
+        },
+        {
+          "arguments": {
+            "category": "electronics"
+          },
+          "name": "get_promotions",
+          "result": {
+            "promotions": [
+              {
+                "active": true,
+                "category_restriction": null,
+                "description": "10% off eligible orders",
+                "discount_type": "percentage",
+                "discount_value": 10,
+                "expiry_date": "2026-12-31T23:59:59",
+                "max_discount": 0,
+                "min_purchase": 0,
+                "promo_code": "SAVE10"
+              }
+            ]
+          }
+        },
+        {
+          "arguments": {
+            "topic": "loyalty_redemption"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": [
+              "Rate: 100 loyalty points = $1.00 off.",
+              "Cap: redemption cannot exceed 50% of the current cart total.",
+              "Minimum redemption: 500 points ($5).",
+              "Stacking: stacks with promo codes and category bundles.",
+              "Restriction: not combinable with the first-time welcome discount.",
+              "Points are debited from the customer's balance at redemption.",
+              "Agent action rule: do NOT call redeem_loyalty_points without an explicit customer-specified amount. You may discuss and recommend redemption in chat, but the write call must come AFTER the customer names a specific number of points."
+            ],
+            "summary": "Loyalty points can be redeemed at checkout to offset part of the cart total. 100 points = $1.",
+            "topic": "loyalty_redemption"
+          }
+        },
+        {
+          "arguments": {
+            "topic": "gift_wrap"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": [
+              "Fee: $5 per wrapped item.",
+              "Availability: available on all products unless product.gift_wrap_available is False.",
+              "Modification: can be toggled per cart item via update_cart_item."
+            ],
+            "summary": "Gift wrapping is a $5 per-item add-on available on any product.",
+            "topic": "gift_wrap"
+          }
+        },
+        {
+          "arguments": {
+            "category": "electronics",
+            "in_stock_only": true,
+            "query": "TechPhone Lite",
+            "sort_by": "relevance"
+          },
+          "name": "search_products",
+          "result": {
+            "products": [
+              {
+                "brand": "Orion",
+                "category": "electronics",
+                "in_stock": true,
+                "name": "TechPhone Lite 15",
+                "price": 499,
+                "product_id": "SP-H105",
+                "rating": 4.4,
+                "review_count": 2100,
+                "subcategory": "phone"
+              }
+            ],
+            "total_found": 1
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "SP-H105"
+          },
+          "name": "get_variants",
+          "result": {
+            "base_price": 499,
+            "note": "This product has no variants; no variant_id is needed for add_to_cart.",
+            "product_id": "SP-H105",
+            "product_name": "TechPhone Lite 15",
+            "variants": []
+          }
+        }
+      ]
+    },
+    {
+      "content": "Customer ID is shop_004. Please proceed with the TechPhone Lite and SAVE10, with no points redeemed and no gift wrap.",
+      "role": "user"
+    },
+    {
+      "content": "Added to your cart:\n\n- **TechPhone Lite 15** — $499\n- **Gift wrap:** No\n- **Promo:** SAVE10 applied\n- **Discount:** $49\n- **Points redeemed:** 0\n- **Total:** **$450**\n\nShipping has not been selected, so the total is before shipping.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "customer_id": "shop_004"
+          },
+          "name": "get_cart",
+          "result": {
+            "applied_promo_codes": [],
+            "cart_id": "CART-shop_004",
+            "customer_id": "shop_004",
+            "discount_amount": 0,
+            "gift_wrap_fee": 0,
+            "items": [],
+            "loyalty_discount": 0,
+            "loyalty_points_redeemed": 0,
+            "shipping_cost": 0,
+            "shipping_option": null,
+            "subtotal": 0,
+            "total": 0
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_004"
+          },
+          "name": "get_customer_account",
+          "result": {
+            "customer_id": "shop_004",
+            "email": "taylor.kim@example.com",
+            "is_first_time": false,
+            "loyalty_points": 2200,
+            "name": "Taylor Kim",
+            "purchase_history": [],
+            "tier": "standard"
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "SP-H105"
+          },
+          "name": "get_product_details",
+          "result": {
+            "backorder_available": false,
+            "brand": "Orion",
+            "category": "electronics",
+            "compatible_with": [],
+            "description": "TechPhone Lite 15 from Orion.",
+            "gift_wrap_available": true,
+            "in_stock": true,
+            "name": "TechPhone Lite 15",
+            "previous_price": 549,
+            "price": 499,
+            "product_id": "SP-H105",
+            "rating": 4.4,
+            "review_count": 2100,
+            "shipping_days": 2,
+            "shipping_estimate": "2 business days (standard)",
+            "specs": {
+              "storage_gb": 128
+            },
+            "stock_quantity": 50,
+            "subcategory": "phone",
+            "variants": null
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_004",
+            "promo_code": "SAVE10"
+          },
+          "name": "validate_promo",
+          "result": {
+            "estimated_discount": 0,
+            "reason": "Promo applied: 10% off eligible orders",
+            "valid": true
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_004",
+            "gift_wrap": false,
+            "product_id": "SP-H105",
+            "quantity": 1
+          },
+          "name": "add_to_cart",
+          "result": {
+            "cart_item_id": "CI-0001",
+            "cart_subtotal": 499,
+            "cart_total": 499,
+            "gift_wrap": false,
+            "product_id": "SP-H105",
+            "product_name": "TechPhone Lite 15",
+            "quantity": 1,
+            "status": "added",
+            "unit_price": 499,
+            "variant_id": null
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_004",
+            "promo_code": "SAVE10"
+          },
+          "name": "apply_promo",
+          "result": {
+            "applied_promo_codes": [
+              "SAVE10"
+            ],
+            "cart_subtotal": 499,
+            "cart_total": 450,
+            "discount_amount": 49,
+            "promo_code": "SAVE10",
+            "status": "applied"
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_004"
+          },
+          "name": "get_cart",
+          "result": {
+            "applied_promo_codes": [
+              "SAVE10"
+            ],
+            "cart_id": "CART-shop_004",
+            "customer_id": "shop_004",
+            "discount_amount": 49,
+            "gift_wrap_fee": 0,
+            "items": [
+              {
+                "cart_item_id": "CI-0001",
+                "gift_wrap": false,
+                "line_total": 499,
+                "product_id": "SP-H105",
+                "product_name": "TechPhone Lite 15",
+                "quantity": 1,
+                "unit_price": 499
+              }
+            ],
+            "loyalty_discount": 0,
+            "loyalty_points_redeemed": 0,
+            "shipping_cost": 0,
+            "shipping_option": null,
+            "subtotal": 499,
+            "total": 450
+          }
+        }
+      ]
+    },
+    {
+      "content": "Thanks, that’s exactly what I wanted. [TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "shopping_assistant",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {
+      "cart_items": {
+        "CI-0001": {
+          "cart_item_id": "CI-0001",
+          "customer_id": "shop_004",
+          "gift_wrap": false,
+          "product_id": "SP-H105",
+          "quantity": 1,
+          "variant_id": null
+        }
+      }
+    },
+    "deleted": {},
+    "modified": {
+      "carts": {
+        "CART-shop_004": {
+          "applied_promo_codes": {
+            "new": [
+              "SAVE10"
+            ],
+            "old": []
+          },
+          "discount_amount": {
+            "new": 49,
+            "old": 0
+          },
+          "item_ids": {
+            "new": [
+              "CI-0001"
+            ],
+            "old": []
+          },
+          "subtotal": {
+            "new": 499,
+            "old": 0
+          },
+          "total": {
+            "new": 450,
+            "old": 0
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "carts",
+      "expected_value": [
+        "SAVE10"
+      ],
+      "field": "applied_promo_codes",
+      "record_key": "CART-shop_004"
+    },
+    {
+      "entity_type": "carts",
+      "expected_value": 49,
+      "field": "discount_amount",
+      "record_key": "CART-shop_004"
+    },
+    {
+      "entity_type": "carts",
+      "expected_value": 499,
+      "field": "subtotal",
+      "record_key": "CART-shop_004"
+    },
+    {
+      "entity_type": "carts",
+      "expected_value": 450,
+      "field": "total",
+      "record_key": "CART-shop_004"
+    },
+    {
+      "entity_type": "cart_items",
+      "expected_fields": {},
+      "match_fields": {
+        "customer_id": "shop_004",
+        "gift_wrap": false,
+        "product_id": "SP-H105",
+        "quantity": 1
+      }
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "completed_valid_promo",
+      "kind": "must",
+      "requirement": "Agent added the phone and applied SAVE10 if valid."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "denied_invalid_points",
+      "kind": "must",
+      "requirement": "Agent declined the below-minimum points request."
+    },
+    {
+      "evidence": "tool_calls",
+      "id": "no_points_redeemed",
+      "kind": "must_not",
+      "requirement": "Agent did not redeem loyalty points."
+    }
+  ],
+  "task_summary": "**Task:** Customer shop_004 opens with: \"Add the TechPhone Lite with SAVE10, and also use 200 of my points even if it is below the normal minimum.\" Relevant catalog/policy surface: TechPhone Lite 15 (SP-H105). Correct final state: Add phone, apply valid promo, decline below-minimum points.\n\n**Challenge:** Valid promo action plus invalid points request. Primary pitfall: Redeems points or declines whole task. Correct behavior: Add phone, apply valid promo, decline below-minimum points. Novelty: Valid action plus invalid loyalty branch. Family: compound.",
+  "tool_calls": 13
+}

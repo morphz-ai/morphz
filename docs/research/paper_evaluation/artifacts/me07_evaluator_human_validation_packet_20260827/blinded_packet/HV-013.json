@@ -1,0 +1,253 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-013",
+  "conversation": [
+    {
+      "content": "Hi! I'd like to get the SlimBook Air 13 — adding it to my cart please.",
+      "role": "user"
+    },
+    {
+      "content": "Added **1× SlimBook Air 13** to your cart for **$849**.\n\n**Cart total:** $849, before shipping and tax.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "category": "electronics",
+            "in_stock_only": true,
+            "max_price": 10000,
+            "min_price": 0,
+            "min_rating": 1,
+            "query": "SlimBook Air 13",
+            "sort_by": "relevance"
+          },
+          "name": "search_products",
+          "result": {
+            "products": [
+              {
+                "brand": "SlimBook",
+                "category": "electronics",
+                "in_stock": true,
+                "name": "SlimBook Air 13",
+                "price": 849,
+                "product_id": "SP-1001",
+                "rating": 4.5,
+                "review_count": 1240,
+                "subcategory": "laptop"
+              },
+              {
+                "brand": "SlimBook",
+                "category": "electronics",
+                "in_stock": true,
+                "name": "SlimBook Touch 15",
+                "price": 1099,
+                "product_id": "SP-1107",
+                "rating": 4.5,
+                "review_count": 410,
+                "subcategory": "laptop"
+              },
+              {
+                "brand": "ProBook",
+                "category": "electronics",
+                "in_stock": true,
+                "name": "ProBook Laptop 13-inch",
+                "price": 999,
+                "product_id": "SP-1002",
+                "rating": 4.6,
+                "review_count": 2180,
+                "subcategory": "laptop"
+              }
+            ],
+            "total_found": 3
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_002"
+          },
+          "name": "get_cart",
+          "result": {
+            "applied_promo_codes": [],
+            "cart_id": "CART-shop_002",
+            "customer_id": "shop_002",
+            "discount_amount": 0,
+            "gift_wrap_fee": 0,
+            "items": [],
+            "loyalty_discount": 0,
+            "loyalty_points_redeemed": 0,
+            "shipping_cost": 0,
+            "shipping_option": null,
+            "subtotal": 0,
+            "total": 0
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "SP-1001"
+          },
+          "name": "get_product_details",
+          "result": {
+            "backorder_available": false,
+            "brand": "SlimBook",
+            "category": "electronics",
+            "compatible_with": [],
+            "description": "Lightweight 13-inch laptop built for students. All-day battery and durable chassis.",
+            "gift_wrap_available": true,
+            "in_stock": true,
+            "name": "SlimBook Air 13",
+            "previous_price": null,
+            "price": 849,
+            "product_id": "SP-1001",
+            "rating": 4.5,
+            "review_count": 1240,
+            "shipping_days": 3,
+            "shipping_estimate": "3 business days (standard)",
+            "specs": {
+              "battery_hours": 14,
+              "ram": "8GB",
+              "screen_inches": 13,
+              "ssd": "256GB",
+              "weight_lb": 2.6
+            },
+            "stock_quantity": 40,
+            "subcategory": "laptop",
+            "variants": null
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "SP-1001"
+          },
+          "name": "get_variants",
+          "result": {
+            "base_price": 849,
+            "note": "This product has no variants; no variant_id is needed for add_to_cart.",
+            "product_id": "SP-1001",
+            "product_name": "SlimBook Air 13",
+            "variants": []
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_002",
+            "gift_wrap": false,
+            "product_id": "SP-1001",
+            "quantity": 1,
+            "variant_id": ""
+          },
+          "name": "add_to_cart",
+          "result": {
+            "cart_item_id": "CI-0001",
+            "cart_subtotal": 849,
+            "cart_total": 849,
+            "gift_wrap": false,
+            "product_id": "SP-1001",
+            "product_name": "SlimBook Air 13",
+            "quantity": 1,
+            "status": "added",
+            "unit_price": 849,
+            "variant_id": null
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "shopping_assistant",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {
+      "cart_items": {
+        "CI-0001": {
+          "cart_item_id": "CI-0001",
+          "customer_id": "shop_002",
+          "gift_wrap": false,
+          "product_id": "SP-1001",
+          "quantity": 1,
+          "variant_id": null
+        }
+      }
+    },
+    "deleted": {},
+    "modified": {
+      "carts": {
+        "CART-shop_002": {
+          "item_ids": {
+            "new": [
+              "CI-0001"
+            ],
+            "old": []
+          },
+          "subtotal": {
+            "new": 849,
+            "old": 0
+          },
+          "total": {
+            "new": 849,
+            "old": 0
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "carts",
+      "expected_value": 849,
+      "field": "subtotal",
+      "record_key": "CART-shop_002"
+    },
+    {
+      "entity_type": "carts",
+      "expected_value": 849,
+      "field": "total",
+      "record_key": "CART-shop_002"
+    },
+    {
+      "entity_type": "cart_items",
+      "expected_fields": {},
+      "match_fields": {
+        "customer_id": "shop_002",
+        "gift_wrap": false,
+        "product_id": "SP-1001",
+        "quantity": 1
+      }
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "tool_calls",
+      "id": "checked_customer_profile",
+      "kind": "must",
+      "requirement": "Agent called get_customer_account for shop_002 to determine first-time status and tier before discussing pricing/discounts/points."
+    },
+    {
+      "evidence": "conversation",
+      "id": "disclosed_welcome_eligibility",
+      "kind": "must",
+      "requirement": "Agent proactively mentioned the first-time welcome discount with a specific number (5%, ~$42, or both). Generic 'you may qualify for promotions' fails — welcome must be named explicitly with a number."
+    },
+    {
+      "evidence": "conversation",
+      "id": "disclosed_loyalty_points",
+      "kind": "must",
+      "requirement": "Agent proactively mentioned loyalty points earned on this purchase, with a specific point total (e.g. '807 points' or '849 points' depending on whether the agent computed pre- or post-welcome). Generic 'you'll earn points' without a number fails. Agent must also be using the Standard rate (1 pt/$), not Gold (2) or Platinum (3)."
+    },
+    {
+      "evidence": "tool_calls",
+      "id": "correct_product_added",
+      "kind": "must",
+      "requirement": "Agent added SP-1001 SlimBook Air 13, quantity 1, no gift wrap."
+    },
+    {
+      "evidence": "tool_calls",
+      "id": "no_unsolicited_new_writes",
+      "kind": "must_not",
+      "requirement": "Agent did NOT call set_shipping_option or redeem_loyalty_points. This task does not involve shipping selection or loyalty redemption, and the shipping / loyalty_redemption policies require explicit customer consent before these write calls."
+    }
+  ],
+  "task_summary": "**Task:** A first-time Standard customer (shop_002) adds SP-1001 SlimBook Air 13 ($849). Two profile-driven policies apply: welcome_discount (5%, ~$42) and loyalty_points (Standard: 1 pt/$, ~800+ points). No promo codes in env.\n\n**Challenge:** Tests stacked proactive disclosure. Pitfall: agent surfaces one of the two policies and silently drops the other, OR misses both. Customer is silent on both topics. Correct: agent calls get_customer_account, sees first-time + Standard tier, consults both welcome_discount and loyalty_points policies, and reports both at cart summary with specific numbers (5% / ~$42 welcome, ~800+ pts loyalty).",
+  "tool_calls": 5
+}

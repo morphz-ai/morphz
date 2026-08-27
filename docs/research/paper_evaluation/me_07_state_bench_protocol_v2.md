@@ -1,6 +1,6 @@
 # ME-07 STATE-Bench 公开 Agent 系统对照协议 v2
 
-> 状态：`three-arm-scored-smoke-passed / single-run-cost-amendment-frozen / post-hoc-mind-frame-trace-audit-specified / evaluator-human-validation-pending`
+> 状态：`formal-one-run-complete / mind-frame-trace-audit-complete / evaluator-human-packet-frozen / two-human-ratings-pending`
 >
 > 协议 ID：`ME-07-STATE-Bench-public-agent-systems-v2`
 >
@@ -204,8 +204,15 @@ simulator/judge 的全部成功调用都物理绑定 `gpt-5.6-sol`/max/no-fallba
 CLIProxyAPI `json_object` 模式所需的显式 JSON 格式词缺失，三臂任务轨迹全部保留且未补分；
 适配器只增加“返回有效 JSON 对象”的传输格式约束后，从全新目录重跑三臂并通过 Gate。
 
-上述 smoke 只证明装置闭合，单题得分不进入论文效果统计。正式训练快照、完整交错队列、
-30 条盲化人工 evaluator 复核和正式批次仍未完成，因此目前仍没有 ME-07 v2 可报告效果结论。
+上述 smoke 只证明装置闭合，单题得分不进入论文效果统计。随后完成的单次正式批次已闭合
+150 个 paired cell、每 arm 150 次、合计 450 个终态 trial；其结果与 Mind Frame 只读轨迹审计
+另见正式 Artifact。预留的 30 条盲化人工 evaluator 校准包已按固定 seed 生成并冻结，且通过
+样本哈希、rubric 哈希、arm 标识移除和敏感信息扫描；两名独立人工评审尚未完成评分。因此，
+自动效果可以在明确更新评测器与校准不确定性的条件下报告，但人工一致率仍是发布质量后续项。
+
+这构成一项已披露的协议偏差：原计划要求人工 Pilot 在正式批次前完成，实际正式批次先闭合，
+人工包随后才从冻结结果中确定性抽样。人工评分不得修改、删除或重跑任何正式 trial，只用于
+校准依赖 judge 的 task-requirement 与 UX 次级指标；确定性 state score 与主任务终态不重评。
 
 第一次 Morphz travel 正式训练在第 23 条 episode 后暴露了 adapter 回复等待缺陷：回复和
 Context transaction 已写入 durable Event Store，但旧 adapter 将异步 business subscription

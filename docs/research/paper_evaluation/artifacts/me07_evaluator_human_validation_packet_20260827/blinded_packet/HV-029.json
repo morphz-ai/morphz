@@ -1,0 +1,450 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-029",
+  "conversation": [
+    {
+      "content": "I want to return the headphones from order ORD-7125. Got them in December.",
+      "role": "user"
+    },
+    {
+      "content": "I found the SoundMax Wireless Headphones. What’s the reason for the return—defective, damaged, wrong item, not as described, or changed your mind? If it’s a changed-mind return, please also let me know whether the package was opened.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7125"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_004",
+            "delivery_date": "2026-12-10T14:00:00",
+            "delivery_promised_date": "2026-12-10T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10160",
+                "item_status": "delivered",
+                "order_id": "ORD-7125",
+                "product": {
+                  "category": "electronics",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "SoundMax Wireless Headphones",
+                  "price": 249,
+                  "product_id": "PROD-3160",
+                  "return_window_days": 15,
+                  "warranty_months": 12
+                },
+                "product_id": "PROD-3160",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 249
+              },
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10161",
+                "item_status": "delivered",
+                "order_id": "ORD-7125",
+                "product": {
+                  "category": "books",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "The Great Algorithm (Hardcover)",
+                  "price": 24,
+                  "product_id": "PROD-3161",
+                  "return_window_days": 14,
+                  "warranty_months": 0
+                },
+                "product_id": "PROD-3161",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 24
+              }
+            ],
+            "order_date": "2026-12-05T10:00:00",
+            "order_id": "ORD-7125",
+            "payment_details": {
+              "credit_card": 273
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 0,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 273,
+            "total_paid": 273,
+            "tracking_number": "TRK08147675"
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "cust_004"
+          },
+          "name": "get_customer",
+          "result": {
+            "account_created": "2022-08-10",
+            "benefits": {
+              "compensation_multiplier": "1.0x",
+              "prime_shipping": false,
+              "restocking_fee_waiver": false,
+              "return_window_extension": "+0 days"
+            },
+            "customer_id": "cust_004",
+            "email": "david.kim@example.com",
+            "has_prime_shipping": false,
+            "membership_tier": "silver",
+            "name": "David Kim",
+            "preferred_refund_method": "original_payment",
+            "store_credit_balance": 25,
+            "total_orders": 31
+          }
+        }
+      ]
+    },
+    {
+      "content": "The reason is that I changed my mind. I’m not sure about the package status—could you explain how that affects eligibility and check the order details?",
+      "role": "user"
+    },
+    {
+      "content": "I checked the order: the $249 SoundMax headphones were delivered December 10 and remain eligible for a changed-mind return through January 31 under the holiday extension. The outer shipping carton doesn’t matter—the key is whether the headphones’ retail box or factory seal was opened; opening it doesn’t remove eligibility, but it triggers an electronics restocking fee.\n\nThe current preview treats them as opened: $37 restocking fee, minus your $9 Silver-member discount, plus an $8 free-shipping clawback, resulting in a **$213 refund to your original card** with no separate return-shipping charge. I haven’t processed it; if the retail package is still factory-sealed, let me know before proceeding because the restocking fee should not apply.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "topic": "return"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "agent_computes_amount": "process_return requires the agent to submit the net refund as `amount` on confirm. Compute it from the preview's component breakdown: base_item_price (after promo redistribution) minus restocking_fee plus restocking_discount minus shipping_clawback minus bulk_clawback minus repeat_surcharge minus paid_return_shipping_fee. The env writes the submitted amount verbatim — skipping a component (e.g. forgetting the Gold restocking discount) produces a wrong refund_amount and fails state scoring.",
+              "bulk_purchase_clawback": {
+                "amount": "$5 per remaining item, deducted from the return refund.",
+                "applies_when": "Order originally qualified for a bulk discount (3+ items with a discount code) AND the return drops remaining count below 3.",
+                "no_discount_code": "If order had no discount code, no clawback applies."
+              },
+              "eligibility": {
+                "already_returned": "Items already returned/exchanged/cancelled are ineligible.",
+                "defective_items": "No window restriction for defective, wrong item, or damaged in transit.",
+                "not_as_described": "Use not_as_described only for an unused/unworn item that materially differs from the listing. If the customer wore, washed, altered, or used the item and only dislikes fit, feel, texture, or preference-based qualities, classify the return as changed_mind instead."
+              },
+              "free_shipping_clawback": {
+                "amount": "$8 standard shipping fee is deducted from the return refund. This is a flat policy charge, not the original shipping cost (which was $0 on free-shipping orders).",
+                "applies_when": "Order originally qualified for free shipping (subtotal >= $100) AND the return drops remaining subtotal below $100.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: no clawback (customer-fault returns only).",
+                "paid_shipping": "If the order did not qualify for free shipping originally (subtotal < $100), no clawback applies."
+              },
+              "repeat_category_surcharge": {
+                "deduction": "Surcharge is deducted from the return refund.",
+                "different_categories": "Returns from different categories do not trigger the surcharge.",
+                "rule": "Returning 2+ items from the same product category in one order: $5 surcharge per additional return (first return in each category is free)."
+              },
+              "restocking_fee": {
+                "auto_applied": "Restocking fee and any tier discount are folded into the process_return refund amount automatically; the result reports the discount under 'restocking_discount' for transparency.",
+                "base": "15% restocking fee for opened electronics returned for changed_mind.",
+                "completed_returns": "Once a changed-mind return is completed with the applicable restocking fee, do not reverse that fee later as a courtesy or supplemental refund.",
+                "tier_discount": {
+                  "gold": "50% off the restocking fee.",
+                  "platinum": "Restocking fee fully waived.",
+                  "silver": "25% off the restocking fee.",
+                  "standard": "No discount."
+                }
+              },
+              "return_shipping_fee": {
+                "deduction": "Return shipping fee, when charged, is deducted from the return refund.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: always free return shipping.",
+                "free_threshold": "Orders >= $50: free return label provided.",
+                "low_value": "Orders with subtotal < $50: customer pays $8 return shipping fee."
+              },
+              "window_extensions": {
+                "membership": "Gold/Platinum members get +15 days",
+                "prime": "Prime shipping members get +15 additional days",
+                "seasonal": "Orders placed in November or December extend through January 31 of the following year. Seasonal extension applies if it gives more time than tier/prime extensions.",
+                "store_credit_grace": "Up to 15 days past the return window: store credit only."
+              },
+              "windows_by_category": {
+                "accessories": "30-day return window",
+                "books": "14-day return window",
+                "clothing": "30-day return window",
+                "electronics": "15-day return window",
+                "kitchen": "30-day return window"
+              }
+            },
+            "topic": "return"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 0,
+            "confirm": false,
+            "item_id": "ITEM-10160",
+            "reason": "changed_mind"
+          },
+          "name": "process_return",
+          "result": {
+            "bulk_clawback": 0,
+            "discount_adjustment": 0,
+            "free_return_shipping": false,
+            "item_id": "ITEM-10160",
+            "paid_return_shipping_fee": 0,
+            "reason": "changed_mind",
+            "refund_amount": 213,
+            "refund_method": "original_payment",
+            "repeat_surcharge": 0,
+            "restocking_discount": 9,
+            "restocking_fee": 37,
+            "return_eligible": true,
+            "shipping_clawback": 8,
+            "shipping_refund": false,
+            "status": "preview"
+          }
+        }
+      ]
+    },
+    {
+      "content": "I understand the holiday eligibility, Silver discount, and $8 free-shipping clawback. I’m still unsure whether the retail box or factory seal was opened, so how can we verify that before you process the return and finalize the refund?",
+      "role": "user"
+    },
+    {
+      "content": "The order record can’t show whether the packaging was physically opened, so it has to be verified by inspecting the item. Check the manufacturer’s shrink-wrap or tamper stickers on every opening of the **retail box**, not the shipping carton: all seals must be intact and the contents never removed to qualify as unopened; any cut, lifted, torn, or missing seal means opened.\n\nYou may send clear photos of each sealed edge and I can help assess them, but I won’t process the return until you confirm the condition. If it remains uncertain, the safe option is the opened-item refund of **$213**, since the restocking fee can’t be reversed after the return is completed.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "I can’t verify the seals, so please process the headphones as opened with the **$213 refund to my original card**, including the $37 restocking fee, $9 Silver credit, and $8 free-shipping clawback. Please confirm once ORD-7125 is marked partially returned.",
+      "role": "user"
+    },
+    {
+      "content": "ORD-7125 is now marked **partially returned**, and the headphones are marked **returned**. A **$213 refund** was issued to your original credit card, reflecting the $37 restocking fee, $9 Silver restocking discount, and $8 free-shipping clawback.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "amount": 213,
+            "confirm": true,
+            "item_id": "ITEM-10160",
+            "reason": "changed_mind"
+          },
+          "name": "process_return",
+          "result": {
+            "bulk_clawback": 0,
+            "item_id": "ITEM-10160",
+            "paid_return_shipping_fee": 0,
+            "policy_computed_amount": 213,
+            "refund_amount": 213,
+            "refund_method": "original_payment",
+            "repeat_surcharge": 0,
+            "restocking_discount": 9,
+            "restocking_fee": 37,
+            "return_label_issued": false,
+            "shipping_clawback": 8,
+            "status": "returned"
+          }
+        },
+        {
+          "arguments": {
+            "order_id": "ORD-7125"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_004",
+            "delivery_date": "2026-12-10T14:00:00",
+            "delivery_promised_date": "2026-12-10T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10160",
+                "item_status": "returned",
+                "order_id": "ORD-7125",
+                "product": {
+                  "category": "electronics",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "SoundMax Wireless Headphones",
+                  "price": 249,
+                  "product_id": "PROD-3160",
+                  "return_window_days": 15,
+                  "warranty_months": 12
+                },
+                "product_id": "PROD-3160",
+                "quantity": 1,
+                "refund_amount": 213,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": 37,
+                "return_label_issued": false,
+                "return_reason": "changed_mind",
+                "store_credit_only": false,
+                "unit_price": 249
+              },
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10161",
+                "item_status": "delivered",
+                "order_id": "ORD-7125",
+                "product": {
+                  "category": "books",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "The Great Algorithm (Hardcover)",
+                  "price": 24,
+                  "product_id": "PROD-3161",
+                  "return_window_days": 14,
+                  "warranty_months": 0
+                },
+                "product_id": "PROD-3161",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 24
+              }
+            ],
+            "order_date": "2026-12-05T10:00:00",
+            "order_id": "ORD-7125",
+            "payment_details": {
+              "credit_card": 273
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 0,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "partially_returned",
+            "subtotal": 273,
+            "total_paid": 273,
+            "tracking_number": "TRK08147675"
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "customer_support",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "order_items": {
+        "ITEM-10160": {
+          "item_status": {
+            "new": "returned",
+            "old": "delivered"
+          },
+          "refund_amount": {
+            "new": 213,
+            "old": null
+          },
+          "refund_method": {
+            "new": "original_payment",
+            "old": null
+          },
+          "restocking_fee": {
+            "new": 37,
+            "old": null
+          },
+          "return_reason": {
+            "new": "changed_mind",
+            "old": null
+          }
+        }
+      },
+      "orders": {
+        "ORD-7125": {
+          "status": {
+            "new": "partially_returned",
+            "old": "delivered"
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "order_items",
+      "expected_value": "returned",
+      "field": "item_status",
+      "record_key": "ITEM-10160"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": 213,
+      "field": "refund_amount",
+      "record_key": "ITEM-10160"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "original_payment",
+      "field": "refund_method",
+      "record_key": "ITEM-10160"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": 37,
+      "field": "restocking_fee",
+      "record_key": "ITEM-10160"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "changed_mind",
+      "field": "return_reason",
+      "record_key": "ITEM-10160"
+    },
+    {
+      "entity_type": "orders",
+      "expected_value": "partially_returned",
+      "field": "status",
+      "record_key": "ORD-7125"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "92_challenge_seasonal_restock_shipping_triple_agent_must_not_deny_the_request",
+      "kind": "must",
+      "requirement": "Agent must explain that the seasonal holiday extension makes the December order return-eligible through January 31."
+    },
+    {
+      "evidence": "conversation",
+      "id": "92_challenge_seasonal_restock_shipping_triple_agent_must_explain_refund_breakdown",
+      "kind": "must",
+      "requirement": "Agent must explain that the $213 net refund includes a $37 electronics restocking fee, a $9 Silver restocking-fee discount, and an $8 free-shipping clawback because the remaining order falls below the free-shipping threshold."
+    }
+  ],
+  "task_summary": "**Task:** A Silver customer is returning headphones in January from a December order, so the seasonal extension is what makes the return possible. The correct handling is to process the return, apply the $9 Silver restocking-discount adjustment against the normal electronics fee, and also apply the $8 shipping clawback tied to the remaining order.\n\n**Challenge:** This case combines timing, membership, and order-threshold effects. Weak agents deny the return because they miss the seasonal rule, notice the return but miss the Silver adjustment, or forget the shipping clawback once the other adjustments are in view.",
+  "tool_calls": 6
+}
