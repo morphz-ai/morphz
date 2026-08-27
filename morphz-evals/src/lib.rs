@@ -205,4 +205,5 @@ pub mod roadshow_demo_001_smoke;
 pub mod sexpr_bind_if_eval;
 pub mod sexpr_process_eval;
 pub mod sexpr_reply_eval;
+pub mod state_bench_agent;
 pub mod yao_program_eval;
