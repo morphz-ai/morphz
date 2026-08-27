@@ -467,14 +467,85 @@ fn responses_incomplete_event_is_an_explicit_failure() {
             ModelProtocol::OpenaiResponses,
             json!({
                 "type":"response.incomplete",
-                "response":{"incomplete_details":{"reason":"max_output_tokens"}}
+                "response":{
+                    "incomplete_details":{"reason":"max_output_tokens"},
+                    "output":[{
+                        "type":"message",
+                        "content":[{"type":"output_text","text":"authentication is user content, not an error code"}]
+                    }]
+                }
             }),
             &tx,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-    assert!(error.contains("response.incomplete"));
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
+    assert!(failure.message.contains("response.incomplete"));
+    assert!(!failure.message.contains("authentication"));
+    assert!(!failure.message.contains("user content"));
+}
+
+#[test]
+fn responses_reasoning_only_output_limit_is_a_resumable_boundary() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.reasoning_summary_text.delta",
+                "delta":"reasoning progress"
+            }),
+            &tx,
+        )
+        .unwrap();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({"type":"response.reasoning_summary_text.done"}),
+            &tx,
+        )
+        .unwrap();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.incomplete",
+                "response":{
+                    "error":null,
+                    "incomplete_details":{"reason":"max_output_tokens"},
+                    "output":[{
+                        "type":"reasoning",
+                        "id":"reasoning-output-limit",
+                        "encrypted_content":"opaque-output-limit-state"
+                    }],
+                    "usage":{
+                        "input_tokens":100,
+                        "output_tokens":4096,
+                        "total_tokens":4196,
+                        "output_tokens_details":{"reasoning_tokens":4096}
+                    }
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+
+    let error = accumulator.finish(&tx).unwrap_err();
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+    assert!(!failure.kind.uses_provider_recovery());
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::ProviderContinuation {
+            continuation: ProviderContinuation::OpenaiResponses { reasoning_items }
+        } if reasoning_items.iter().any(|item| {
+            item["id"] == "reasoning-output-limit"
+                && item["encrypted_content"] == "opaque-output-limit-state"
+        })
+    )));
 }
 
 #[test]

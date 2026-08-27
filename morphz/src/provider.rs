@@ -2029,6 +2029,100 @@ impl StreamAccumulator {
         false
     }
 
+    /// A Responses request which exhausts `max_output_tokens` has reached a
+    /// native terminal boundary even though the envelope is named
+    /// `response.incomplete`. When every accumulated output item is reasoning,
+    /// that boundary is semantically identical to a completed reasoning-only
+    /// response: preserve its opaque continuation state and let `finish`
+    /// return the request-scoped `EmptyResponse` used by the Orchestrator's
+    /// durable reasoning-continuation path.
+    ///
+    /// Do not generalize this to arbitrary incomplete responses. Refusals,
+    /// transport failures and malformed terminal envelopes remain failures,
+    /// while public text/tool truncation must retain its distinct semantics.
+    fn accept_reasoning_only_output_limit(
+        &mut self,
+        event: &Value,
+        stream: &ModelStreamSender,
+    ) -> bool {
+        let response = event.get("response").unwrap_or(&Value::Null);
+        let output_limit = response
+            .pointer("/incomplete_details/reason")
+            .and_then(Value::as_str)
+            == Some("max_output_tokens");
+        let has_provider_error = response.get("error").is_some_and(|error| !error.is_null());
+        if !output_limit
+            || has_provider_error
+            || !self.content.trim().is_empty()
+            || !self.tools.is_empty()
+        {
+            return false;
+        }
+
+        let output = response
+            .get("output")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let terminal_has_reasoning = output
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"));
+        let terminal_is_reasoning_only = output
+            .iter()
+            .all(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"));
+        if !terminal_is_reasoning_only
+            || (!terminal_has_reasoning && self.responses_reasoning_items.is_empty())
+        {
+            return false;
+        }
+
+        for (index, item) in output.iter().enumerate() {
+            self.apply_openai_responses_output_item(index, item, true, stream);
+        }
+        if let Some(usage) = response.get("usage") {
+            let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
+            let cached_input_tokens = usage
+                .pointer("/input_tokens_details/cached_tokens")
+                .and_then(Value::as_u64);
+            self.usage(
+                ModelUsage {
+                    input_tokens,
+                    uncached_input_tokens: subtract_optional(input_tokens, cached_input_tokens),
+                    cached_input_tokens,
+                    output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+                    reasoning_tokens: usage
+                        .pointer("/output_tokens_details/reasoning_tokens")
+                        .and_then(Value::as_u64),
+                    total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+                    raw: vec![usage.clone()],
+                    ..ModelUsage::default()
+                },
+                stream,
+            );
+        }
+        self.terminal = true;
+        true
+    }
+
+    fn openai_responses_terminal_failure(&self, kind: &str, event: &Value) -> ProviderError {
+        let response = event.get("response").unwrap_or(&Value::Null);
+        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+            return provider_stream_error(ModelProtocol::OpenaiResponses, &error.to_string());
+        }
+        if kind == "error" {
+            let error = event.get("error").unwrap_or(event);
+            return provider_stream_error(ModelProtocol::OpenaiResponses, &error.to_string());
+        }
+        let reason = response
+            .pointer("/incomplete_details/reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unspecified");
+        provider_protocol_failure(
+            ModelProtocol::OpenaiResponses,
+            format!("{kind} terminal (reason={reason})"),
+        )
+    }
+
     fn usage(&mut self, usage: ModelUsage, stream: &ModelStreamSender) {
         if let Some(input_tokens) = usage.input_tokens {
             self.prompt_tokens = Some(input_tokens);
@@ -2278,9 +2372,10 @@ impl StreamAccumulator {
                     );
                 }
             }
+            "response.incomplete" if self.accept_reasoning_only_output_limit(&event, stream) => {}
             "error" if self.accept_reasoning_only_missing_terminal(&event) => {}
             "response.incomplete" | "response.failed" | "error" => {
-                return Err(format!("OpenAI Responses stream failed: {event}").into());
+                return Err(self.openai_responses_terminal_failure(kind, &event));
             }
             _ => {}
         }
@@ -5124,6 +5219,84 @@ mod tests {
             } if reasoning_items.iter().any(|item| {
                 item["id"] == "reasoning-1" && item["encrypted_content"] == "opaque-state"
             })
+        )));
+    }
+
+    #[tokio::test]
+    async fn responses_reasoning_only_output_limit_preserves_native_continuation() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    sse(concat!(
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-output-limit\"}}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"reasoning reached the physical output boundary\"}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.done\"}\n\n",
+                        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"reasoning-output-limit\",\"encrypted_content\":\"opaque-output-limit\"}}\n\n",
+                        "data: {\"type\":\"response.incomplete\",\"response\":{\"error\":null,\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"reasoning\",\"id\":\"reasoning-output-limit\",\"encrypted_content\":\"opaque-output-limit\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":4096,\"total_tokens\":4106,\"output_tokens_details\":{\"reasoning_tokens\":4096}}}}\n\n"
+                    ))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "glm-5.3".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let (stream, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let error = client
+            .create_completion_measured_stream(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "continue".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+                None,
+                stream,
+            )
+            .await
+            .unwrap_err();
+
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+        assert!(!failure.kind.uses_provider_recovery());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses { reasoning_items }
+            } if reasoning_items.iter().any(|item| {
+                item["id"] == "reasoning-output-limit"
+                    && item["encrypted_content"] == "opaque-output-limit"
+            })
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::Failed { message }
+                if message.contains("reasoning reached the physical output boundary")
         )));
     }
 
