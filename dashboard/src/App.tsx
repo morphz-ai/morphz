@@ -854,7 +854,7 @@ const ReasoningSummaryBlock = memo(function ReasoningSummaryBlock({
       }}
     >
       <summary>
-        <Brain size={13} />
+        <FileText size={13} />
         <span>{title}</span>
         <small>{live ? liveLabel : persistedLabel}</small>
       </summary>
@@ -7408,7 +7408,7 @@ export default function App() {
               title={t('reasoningSummary.toggleTitle')}
               onClick={() => setShowReasoningSummary(current => !current)}
             >
-              <Brain size={15} />
+              <FileText size={15} />
               <span>{t('reasoningSummary.toggle')}</span>
             </button>
             <button
