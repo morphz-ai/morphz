@@ -82,7 +82,7 @@ Session 不能用一个枚举同时表达 IO、执行、注意力和投影。
 
 - `archived` 会拒绝新消息；`retired` 不会；
 - 超出一天窗口只是 `excluded-by-window`，不是 retired；
-- 超出 50 个只是 `excluded-by-count`，不是 retired；
+- 超出配置的 `max_sessions` 只是 `excluded-by-count`，不是 retired；
 - 因 Token Budget 被移除只是本轮不投影，不改变长期状态；
 - Agent retire 是持久语义决定，但新定向事件会把 Session 恢复为 active；
 - Shared Mind 不随任何 Session 状态退出 Context。
@@ -94,7 +94,7 @@ Session 不能用一个枚举同时表达 IO、执行、注意力和投影。
 ```toml
 [orchestrator.session_working_set]
 active_window = "24h"
-max_sessions = 50
+max_sessions = 1
 ```
 
 Rust 逻辑类型：
@@ -109,12 +109,13 @@ pub struct SessionWorkingSetConfig {
 v1 规则：
 
 1. `active_window` 必须大于 0；默认 `24h`；
-2. `max_sessions` 必须大于等于 1；默认 `50`；
+2. `max_sessions` 必须大于等于 1；默认 `1`；
 3. `max_sessions` 包含当前 Session；
-4. `max_sessions=1` 表示只投影当前 Session 的历史；
+4. `max_sessions=1` 表示 Inbox 只完整投影当前 Session 的历史；共享 Mind、Frame、Context 级 Recall 和其他活跃 Session 的必要元数据仍然共享；
 5. 现有 `context_soft_token_limit/context_hard_token_limit` 继续作为最终物理容量边界；
 6. 每次 Evaluation 只有一个 active Session；Working Set 只控制该请求还能看到哪些共享 Session 证据，不改变响应路由；
-7. 配置重载后只影响后续 Encoding，不修改 Session 持久状态。
+7. 配置重载后只影响后续 Encoding，不修改 Session 持久状态；
+8. 显式配置 `max_sessions>1` 是对跨 Session 原始 Observation 自动投影的选择加入；并发 Session 越多，越可能放大请求 Token、降低稳定前缀复用，并增加 Context 维护频率。
 
 ## 5. Session Working Set 选择算法
 
@@ -683,9 +684,9 @@ context_snapshot_version
 
 ### 17.2 Working Set
 
-1. `max_sessions=1` 时，Inbox 只包含当前 Session，Shared Mind 仍完整；
-2. 一天内 37 个活跃 Session、上限 50 时全部进入 Full Projection；
-3. 一天内 70 个活跃 Session、上限 50 时只选择当前加最近 49 个；
+1. 默认 `max_sessions=1` 时，Inbox 只包含当前 Session，Shared Mind 仍完整；
+2. 显式配置上限 50 时，一天内 37 个活跃 Session 全部进入 Full Projection；
+3. 显式配置上限 50 时，一天内 70 个活跃 Session 只选择当前加最近 49 个；
 4. 时间相同的 Session 使用 ID 稳定排序；
 5. Token 超限时最旧非当前 Session 依次退出，当前 Session 不退出；
 6. 一万个 Registry Session、只有一个近期活跃时，Prompt 大小不随总数线性增长；

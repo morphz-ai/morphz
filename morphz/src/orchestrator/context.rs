@@ -11760,11 +11760,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let engine = ContextEngine::new(
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            OrchestratorConfig::default(),
-        )
-        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        let mut config = OrchestratorConfig::default();
+        config.session_working_set.max_sessions = 2;
+        let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
         let view = engine
             .build_context_encoding_for_activation("encoding-context", &activation, &HashSet::new())
             .await
