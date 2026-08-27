@@ -7,8 +7,8 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
-- 双语稿件仓库提交：`8cee436`（结果收口基线 `982e71d`，并包含此前 `59c78a0`、`8dfb214`）；ME-07 正式结果、Mind Frame 迁移证据、ME-08 当前完整 89 题同期配对、完整参考文献复核和公开作者名均已进入候选稿
-- 英文 PDF：`morphz-ai-biz/output/pdf/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf`（27 页，已逐页视觉复核）
+- 双语稿件仓库提交：`8d4c840`（包含作者与 PDF 收口提交 `8cee436`，结果收口基线 `982e71d`，以及此前 `59c78a0`、`8dfb214`）；ME-07 正式结果、Mind Frame 迁移证据、ME-08 当前完整 89 题同期配对、完整参考文献复核、公开作者名和数学公式渲染均已进入候选稿
+- 英文 PDF：`morphz-ai-biz/output/pdf/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf`（27 页，数学公式已通过 KaTeX 排版并逐页视觉复核）
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 - 收口报告：`paper_finalization_report_20260827.md`
@@ -109,5 +109,6 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。当前主结果必须�
 - [x] 最终全文无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；
 - [x] 作者公开姓名由用户确认为 `Raymond Ren`；其他可选元数据未擅自填写；
 - [x] 英文预印本 PDF 逐页视觉复核与文本边界检查通过；
+- [x] 中英文公式使用标准 LaTeX Markdown；文档系统与 PDF 均完成 KaTeX 渲染验证；
 - [x] `git diff --check`、引用集合、Markdown 结构和限定范围提交通过；
 - [ ] 最终中英文稿由用户人工通读后再公开。

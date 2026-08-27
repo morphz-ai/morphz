@@ -4,7 +4,7 @@
 
 - 中文稿：`morphz-ai-biz/docs/research/morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
 - 英文稿：`morphz-ai-biz/docs/research/morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
-- 稿件仓库提交：`8cee436`（包含结果收口提交 `982e71d1b0333caf4db9ed0f2cd0a1a1ddf41dc5`）
+- 稿件仓库提交：`8d4c840`（包含作者与 PDF 收口提交 `8cee436`，以及结果收口提交 `982e71d1b0333caf4db9ed0f2cd0a1a1ddf41dc5`）
 - 英文预印本 PDF：`morphz-ai-biz/output/pdf/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf`
 
 两稿的机制描述、ME-01～ME-08 数字、限定语、参考文献和附录证据入口已经同步。中文版与
@@ -44,12 +44,13 @@ English version 保持相同事实和主张强度，但允许采用各自的章�
 - 中英文稿均有 26 条参考文献，编号连续且全部被引用；
 - 已按原始出版页面复核全部 26 条文献，并修正 PLSemanticsBench 所属论文标题、AIOS 与
   Voyager 的正式发表信息，以及 MemGPT 的作者列表；
-- 两稿代码围栏均为 38 个，Markdown 结构闭合；
+- 两稿均保留 6 个程序/命令代码块（12 个围栏），并使用标准 LaTeX Markdown 表示 13 个块级公式；Markdown 结构闭合；
 - 未发现旧 ME-08 主结果、`three-task gap`、`Ledger`、开放求值、本机路径或模型凭据残留；
 - 英文 `two-task gap` 与 72/89 对 74/89 一致；中文结论中的指代残句已重写；
 - ME-08 附录同时固定 Morphz 与官方 Codex 两个评测基础设施修订。
-- 中英文稿公开作者名均已确认为 `Raymond Ren`；英文 PDF 共 27 页，逐页视觉复核无裁切、
-  空白页或表格、代码块、附录与参考文献溢出。
+- 中英文稿公开作者名均已确认为 `Raymond Ren`；Markdown 文档系统和英文 PDF 均通过 KaTeX
+  渲染公式。英文 PDF 共 27 页，逐页视觉复核无裁切、空白页或公式、表格、代码块、附录与
+  参考文献溢出。
 
 ## 4. 未进入当前论文的实验
 
