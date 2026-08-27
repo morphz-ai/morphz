@@ -71,6 +71,40 @@ def _numeric(value: object, default: float = 0.0) -> float:
     return default
 
 
+def _morphz_training_baselines(root: Path) -> dict[str, int]:
+    """Return cumulative training tokens embedded in each cloned domain DB.
+
+    Morphz evaluation tasks clone a trained SQLite database.  The Runtime turn
+    receipt reports cumulative usage from that database, so the first held-out
+    turn includes the same 100-episode training total in every clone.  Subtract
+    that immutable baseline once per scored clone while preserving the raw
+    cumulative value for audit.
+    """
+
+    baselines: dict[str, int] = {}
+    for path in sorted(root.rglob("*-morphz-training-receipt.json")):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        domain = str(value.get("domain", ""))
+        episodes = value.get("episodes")
+        if not domain or not isinstance(episodes, list) or len(episodes) != 100:
+            raise RuntimeError(f"invalid Morphz training receipt: {path}")
+        total = 0
+        for episode in episodes:
+            usage = episode.get("usage") if isinstance(episode, dict) else None
+            if not isinstance(usage, dict):
+                raise TypeError(f"missing episode usage in {path}")
+            total += int(usage.get("total_tokens", 0))
+        if domain in baselines:
+            raise RuntimeError(f"duplicate Morphz training receipt for {domain}")
+        baselines[domain] = total
+    expected = {"customer_support", "shopping_assistant", "travel"}
+    if set(baselines) != expected:
+        raise RuntimeError(
+            f"expected Morphz training baselines for {sorted(expected)}, got {baselines}"
+        )
+    return baselines
+
+
 def _job_score(job: dict[str, Any]) -> dict[str, float]:
     trajectory = job.get("trajectory")
     if job.get("official_score_eligible") is not True or not isinstance(
@@ -82,6 +116,7 @@ def _job_score(job: dict[str, Any]) -> dict[str, float]:
             "task": 0.0,
             "ux": 0.0,
             "tokens": 0.0,
+            "raw_tokens": 0.0,
             "elapsed": _numeric(job.get("elapsed_seconds")),
             "scored": 0.0,
         }
@@ -93,12 +128,17 @@ def _job_score(job: dict[str, Any]) -> dict[str, float]:
     )
     completion = trajectory.get("task_completion_pass")
     scored = completion in {0, 1}
+    raw_tokens = tokens
+    adjusted = job.get("_evaluation_total_tokens")
+    if isinstance(adjusted, int):
+        tokens = float(adjusted)
     return {
         "completion": _numeric(completion) if scored else 0.0,
         "state": _numeric(trajectory.get("state_requirements_met")),
         "task": _numeric(trajectory.get("task_requirements_met")),
         "ux": _numeric(trajectory.get("ux_score")),
         "tokens": tokens,
+        "raw_tokens": raw_tokens,
         "elapsed": _numeric(job.get("elapsed_seconds")),
         "scored": float(scored),
     }
@@ -107,11 +147,23 @@ def _job_score(job: dict[str, Any]) -> dict[str, float]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument(
+        "--morphz-training-receipts",
+        type=Path,
+        help="Frozen training receipts used to correct cloned cumulative usage",
+    )
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--output-markdown", type=Path)
     args = parser.parse_args()
 
     root = args.run_root.resolve(strict=True)
+    morphz_training_baselines = (
+        _morphz_training_baselines(
+            args.morphz_training_receipts.resolve(strict=True)
+        )
+        if args.morphz_training_receipts
+        else {}
+    )
     queue_value = json.loads((root / "queue.json").read_text(encoding="utf-8"))
     if queue_value.get("protocol_id") != PROTOCOL_ID:
         raise RuntimeError("ME-07 queue protocol mismatch")
@@ -156,6 +208,24 @@ def main() -> int:
                     f"mismatch:{cell['cell_id']}:{arm}:{mismatches}"
                 )
                 continue
+            if (
+                arm == "morphz"
+                and morphz_training_baselines
+                and value.get("official_score_eligible") is True
+            ):
+                trajectory = value.get("trajectory")
+                if isinstance(trajectory, dict):
+                    usage = trajectory.get("token_usage")
+                    if isinstance(usage, dict):
+                        raw_total = int(usage.get("total_tokens", 0))
+                        baseline = morphz_training_baselines[domain]
+                        if raw_total < baseline:
+                            integrity_errors.append(
+                                "morphz_token_baseline_exceeds_raw:"
+                                f"{cell['cell_id']}:{raw_total}:{baseline}"
+                            )
+                            continue
+                        value["_evaluation_total_tokens"] = raw_total - baseline
             jobs[(domain, task_id, run_idx, arm)] = value
     if integrity_errors:
         raise RuntimeError(
@@ -205,6 +275,14 @@ def main() -> int:
                 sum(1 for score in trials if not score["scored"])
             ),
             "agent_total_tokens": int(sum(score["tokens"] for score in trials)),
+            "agent_total_tokens_raw": int(
+                sum(score["raw_tokens"] for score in trials)
+            ),
+            "agent_total_tokens_scope": (
+                "heldout_evaluation_after_cloned_training_baseline_subtraction"
+                if arm == "morphz" and morphz_training_baselines
+                else "heldout_evaluation_provider_reported"
+            ),
             "elapsed_seconds": sum(score["elapsed"] for score in trials),
         }
 
@@ -247,6 +325,18 @@ def main() -> int:
             "permutation_resamples": RESAMPLES,
             "permutation_seed": PERMUTATION_SEED,
             "multiple_comparison_correction": "holm",
+        },
+        "token_accounting": {
+            "morphz_training_baseline_total_tokens_by_domain": (
+                morphz_training_baselines
+            ),
+            "morphz_raw_values_are_cumulative_clone_counters": bool(
+                morphz_training_baselines
+            ),
+            "morphz_reported_agent_total_tokens_subtracts_one_domain_training_baseline_per_scored_clone": bool(
+                morphz_training_baselines
+            ),
+            "training_cost_excluded_from_all_three_heldout_arms": True,
         },
         "integrity": {
             "paired_cells": len(cells),
@@ -293,10 +383,31 @@ def main() -> int:
     lines.extend(
         [
             "",
+            "| Arm | Held-out Agent tokens | Raw token counter | Accounting scope |",
+            "| --- | ---: | ---: | --- |",
+        ]
+    )
+    for arm in ARMS:
+        value = arm_summary[arm]
+        lines.append(
+            f"| {arm} | {value['agent_total_tokens']:,} | "
+            f"{value['agent_total_tokens_raw']:,} | "
+            f"{value['agent_total_tokens_scope']} |"
+        )
+    lines.extend(
+        [
+            "",
             (
                 "All terminal harness/provider failures are retained and scored as "
                 "zero. This updated-evaluator result is not an official STATE-Bench "
                 "leaderboard score."
+            ),
+            (
+                "Morphz raw token counters include the cumulative 100-episode "
+                "training history embedded in every cloned domain database. The "
+                "held-out Morphz total deterministically subtracts that frozen "
+                "domain baseline once per scored clone; the raw value is retained "
+                "for audit. Training cost is excluded from all three arms."
             ),
             "",
         ]

@@ -1,0 +1,58 @@
+{
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "kind": "formal_confirmatory_run",
+  "reportable_score": true,
+  "num_runs": 1,
+  "paired_cells": 150,
+  "terminal_trials": 450,
+  "max_attempts": 1,
+  "model": {
+    "route": "gpt-5.6-sol",
+    "physical_model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "api": "responses",
+    "provider_transport": "cliproxyapi",
+    "fallback": false
+  },
+  "systems": {
+    "morphz": {
+      "runtime_source_commit": "2249878536ce5f7a8d7449add2f5c8743395b69b",
+      "runtime_binary_sha256": "7b0c63cd685f4b4420f362bea1f986fa4546ad27482802aec5af3c9cbdbb356e"
+    },
+    "letta": {
+      "version": "0.16.8"
+    },
+    "mem0_reference": {
+      "version": "2.0.19",
+      "vector_store": "local-qdrant",
+      "embedding_model": "nomic-embed-text"
+    }
+  },
+  "state_bench_commit": "5644b1838d96bc4483da29642d058ecaa6f80f7f",
+  "queue_sha256": "41f5b56fc322f3410898daaf4244445a984fb6089f3799180cad7536e1dcb2b9",
+  "protocol_amendment": {
+    "superseded_num_runs": 5,
+    "num_runs": 1,
+    "reason": "cost_and_wall_clock_reduction_before_any_run2_job",
+    "preserved_prefix_cells": 31,
+    "preserved_prefix_jobs": 93,
+    "prefix_import_receipt_sha256": "e741822e3c049a7f8d71b8b7b28aaeefd37dad95a7d0a1c7a575fdf56a62c9a8"
+  },
+  "frozen_snapshot_sha256": {
+    "customer_support": {
+      "morphz": "44a74fa8cd7fb34a0db1d9ddf3763f2259cb051b7feb325bf212cf91cf5891a6",
+      "letta": "69186413cf549ee4c7a314bb138f60858a4b807de36ba4d015b0e84bf88806ec",
+      "mem0": "5ca96feb20262db77b59dce483e1f970b564e110d148bc2f78e81371971b8852"
+    },
+    "shopping_assistant": {
+      "morphz": "e045fbf131289e7a85071ce6958b831e8da51ff77a39d120d9229ad40b011368",
+      "letta": "66c591a13eaaffda0b675822045a50bfe7d1a1c4c0d2db5a4878eb2e6952b680",
+      "mem0": "c08a169fd770443d7813bf267681f80e8174793276e32b33d4de1d3b42e7b71a"
+    },
+    "travel": {
+      "morphz": "9d1ae23a8d6492b184478326731176d147be895beeb15ae785d213f02feb017c",
+      "letta": "e1778d7038f4ad758059357af1f2b9b513618087e695a85320ca9ba26759c734",
+      "mem0": "3b8b9da513ecfed308f5e053c1e6b4ee68031166ca0660fb22f6a2486469e5ff"
+    }
+  }
+}

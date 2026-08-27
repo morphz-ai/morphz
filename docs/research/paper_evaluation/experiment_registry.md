@@ -5,9 +5,12 @@
 
 ## Runtime 基线
 
-新实验当前默认 Runtime 源码基线为完整 commit
-`ad60e300f115fe84e03a8cd3ab70940deb06ae68`，其中包含 Harbor workspace/exec drain
-修复和 Objective 通用收敛契约。已完成的 ME-06 与原始 ME-08 仍保留其历史
+实验不再继承一个会随开发主线漂移的“默认 Runtime”。每个正式 Run 必须在启动前冻结并记录
+精确源码 commit 与二进制 SHA-256：ME-07 使用组合 commit
+`2249878536ce5f7a8d7449add2f5c8743395b69b`；当前 ME-08 与 ME-09 对照使用
+`4bbc3d63f4bda09947dc79dc5656edc71f8c02fa`、二进制 SHA-256
+`31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`。已完成的
+ME-06 与原始 ME-08 仍保留其历史
 [`paper-eval-runtime-v4`](./runtime_baseline_v4.md) 基线
 `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；历史 v3 继续对应
 [`f875b93869282a14b738edec2f3a4069fd003600`](./runtime_baseline_v3.md)，历史 v2 对应
@@ -23,7 +26,7 @@
 - 授权模式：隔离实验节点使用 `full-access`，episode 中不得混入人工审批等待；
 - 隔离：专用 Morphz 节点、专用数据库、专用 Context；不同 arm/run 使用独立可写
   状态，不读取共享 Context、产品数据库或历史 Session；只有协议明确把共享 Context 本身定义为
-  处理变量时才可例外，并必须另列隔离控制（当前仅 ME-09 Proposal）；
+  处理变量时才可例外，并必须另列隔离控制（当前 ME-09 把单 Agent 的共享 Context 定义为处理变量）；
 - `full-access` 不改变公开 Benchmark 自身的 sandbox、网络、数据和工具规则。
 
 ## 总览
@@ -37,9 +40,9 @@
 | ME-04 | Runtime 权威边界与故障注入 | RQ4 | P0 | `D`（8/8 cells） | `deterministic-gate-complete` | [`p1 frozen`](./me_04_runtime_authority_fault_injection_protocol_p1.md) | 进入 ME-02；未来 Runtime 基线变化按回归策略重跑 |
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 结果写入论文；不重复简单样本，进入 ME-06 长程实验 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态、3/3 行动；Morphz 40 次事务；完整 Morphz 的原始 token 为精简受控参照约 16.4×，但 scaffold 不同，不能解释为完整 Agent 效率排名 | `pilot-complete` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 写入论文；保留满分天花板、三个样本与成本不可归因边界，不重复补跑 |
-| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | v1 A-MEM Gate 已归档；v2 三臂 adapter、持久化重载、精确模型绑定、九份训练快照和同题 scored smoke 已闭合；成本修订后的单次正式批次已在云端运行，目标为每 arm 150、总计 450 个 terminal trial | `v2-gates-passed / snapshots-frozen / single-run-formal-active / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md) | 闭合 150 个 paired cells/450 个正式 trial，运行单次口径汇总器并生成 30 条盲评材料；任何 terminal failure 计零且不静默重跑 |
+| ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation | `formal-complete / trace-audit-complete / human-validation-pending` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md) | 完成预留 30 条盲化人工评测器校准；不重跑正式分数、不把系统级效果全部归因于 Mind Frame |
 | ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证与 post-fix 刷新 | 外部效度 | P1 | 历史严格同环境：Morphz 70/89、Codex 73/89；`ad60e` Morphz 单臂刷新 73/89；当前 `4bbc3d63` Morphz-only 并发 8 刷新 72/89（80.90%），89 个官方 reward、唯一性、身份、失败保留与完整性 Gate 全部闭合 | `historical-paired-complete / ad60e-refresh-complete / finalfix-4bbc3d6-complete` | [`historical result`](./artifacts/me08_terminal_bench_all_89_20260826/RESULT.md)；[`ad60e refresh`](./artifacts/me08_postfix_all89_ad60e_concurrency8_20260826/RESULT.md)；[`4bbc3d6 result`](./artifacts/me08_terminal_bench_postfix_all89_20260827/RESULT.md) | 把当前 Morphz-only 工程结果单独写入论文；不与历史 Codex 拼接为同期 paired 结果，不按单次 72/73 波动推断修复的因果效应 |
-| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 仅形成预结果解释与完整性 Gate，尚未运行 | `proposal-only / not-authorized-for-model-run` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md) | 先向用户展示并确认；证明无需改变 Runtime 二进制即可接入八个隔离 Execution Target，再做无模型 dry-run |
+| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | 八 Session/八 Execution Target smoke 8/8 闭合；完整 89 题已按用户授权在云端运行，沿用 ME-08 相同 `4bbc3d63` 二进制 | `smoke-complete / full-run-active / excluded-from-current-paper-results` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md) | 完整运行结束后审计 Session/Target 路由、共享 Context 事务与官方 reward，再单独判断是否进入论文补充结果 |
 
 ## 依赖
 
@@ -49,7 +52,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
        ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
-       └─> ME-08 ─> ME-09 (候选；共享 Context 为显式处理变量)
+       └─> ME-08 ─> ME-09 (运行中；共享 Context 为显式处理变量)
 ```
 
 ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-06 只有在核心状态机制及评分器稳定后才扩成长运行。
@@ -71,6 +74,25 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-27
 
+- ME-07 单次正式批次已完整闭合：150 个 paired held-out cell、450 个 terminal trial，所有
+  terminal failure 原样保留并计零。主要结果为 Morphz 122/150（81.33%）、Letta 93/150
+  （62.00%）、Mem0-backed reference 96/150（64.00%）；Morphz−Letta 为 +19.33pp，
+  task-clustered bootstrap 95% CI `[+10.67,+28.00]`；Morphz−Mem0 为 +17.33pp，
+  CI `[+10.00,+24.67]`；两项 Holm 校正 paired sign-flip `p=0.000060`。该结果是完整
+  Agent 系统边界对照，不把全部分差单独归因于 Mind Frame；
+- ME-07 只读 Mind Frame transfer audit 在 150/150 held-out task 上通过：三个领域各有
+  100 次训练 Context transaction 并冻结于 revision 100，共形成 144 个活跃 Mind Frame、
+  395 条 Relation 和 795 个 retired object；每个 held-out task 都从对应的精确 revision-100
+  Context 开始，三个购物任务又通过六次事务继续更新 Context。该证据证明训练经验实际成为
+  held-out 求值的结构化计算状态；
+- ME-07 原始 Morphz Token 计数 3,555,918,978 重复包含每个 clone 的累计训练历史，不能进入
+  论文。按领域冻结训练基线对每个有效 clone 固定扣除一次后，held-out 总量为 Morphz
+  138,942,200、Letta 40,143,631、Mem0 7,364,662；原始计数继续保留供审计，三组均排除训练
+  成本。正式结果与脱敏证据见
+  [`artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；
+- ME-09 八 Session/八 Execution Target smoke 已 8/8 形成 Runtime reply，随后完整 89 题按授权
+  启动。它使用与 ME-08 当前工程测量相同的 `4bbc3d63` 二进制，当前仍运行中且不进入本稿
+  已报告结果；
 - ME-08 `4bbc3d63` 当前修复版 Morphz-only 完整 89 题刷新已经闭合：官方 verifier
   72/89（80.90%，Wilson 95% CI `[71.52%,87.72%]`），并发 8、每题一次、零重试；
   `strict_result.json` 含 89 个唯一任务且完整性 Gate 通过。三个 `AgentTimeoutError` 与其余
@@ -103,8 +125,9 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
   inactive 是预期状态，等待云端 Morphz/Mem0 剩余训练和 ME-08 节点释放；详见
   [`me_07_cloud_execution_handoff_20260826.md`](./me_07_cloud_execution_handoff_20260826.md)；
 
-- ME-08 新完整批次暴露了一条 terminal commit—delivery 竞态：任务结果已持久化成功，但交付
-  future 被终态监控提前取消，并可留下未回滚事务。为避免 ME-07 的 2,250 个正式 trial 使用
+- 【当时 v1 规模，已被 450-trial v2 单次协议取代】ME-08 新完整批次暴露了一条 terminal
+  commit—delivery 竞态：任务结果已持久化成功，但交付 future 被终态监控提前取消，并可留下
+  未回滚事务。为避免当时规划的 ME-07 2,250 个正式 trial 使用
   已知有缺陷的旧二进制，云端 finalizer 已增加显式 Runtime release receipt Gate；训练继续
   运行，但正式 smoke/批次只有在修复回归、Linux release build 和无模型 Gate 全部通过后才会
   启动。不得把这一运行时修复解释为记忆机制调参，也不得复用旧二进制身份；

@@ -1,0 +1,99 @@
+{
+  "arm_summary": {
+    "letta": {
+      "agent_total_tokens": 40143631,
+      "agent_total_tokens_raw": 40143631,
+      "agent_total_tokens_scope": "heldout_evaluation_provider_reported",
+      "elapsed_seconds": 31651.673,
+      "scored_trajectories": 143,
+      "state_pass@1": 0.7933333333333333,
+      "task_completion_all_runs": 0.62,
+      "task_completion_pass@1": 0.62,
+      "task_requirements_pass@1": 0.68,
+      "tasks": 150,
+      "terminal_failures_counted_as_zero": 7,
+      "trials": 150,
+      "ux_mean": 3.6254000000000004
+    },
+    "mem0": {
+      "agent_total_tokens": 7364662,
+      "agent_total_tokens_raw": 7364662,
+      "agent_total_tokens_scope": "heldout_evaluation_provider_reported",
+      "elapsed_seconds": 20375.275,
+      "scored_trajectories": 146,
+      "state_pass@1": 0.8266666666666667,
+      "task_completion_all_runs": 0.64,
+      "task_completion_pass@1": 0.64,
+      "task_requirements_pass@1": 0.7,
+      "tasks": 150,
+      "terminal_failures_counted_as_zero": 4,
+      "trials": 150,
+      "ux_mean": 3.8327999999999998
+    },
+    "morphz": {
+      "agent_total_tokens": 138942200,
+      "agent_total_tokens_raw": 3555918978,
+      "agent_total_tokens_scope": "heldout_evaluation_after_cloned_training_baseline_subtraction",
+      "elapsed_seconds": 23319.448,
+      "scored_trajectories": 149,
+      "state_pass@1": 0.9266666666666666,
+      "task_completion_all_runs": 0.8133333333333334,
+      "task_completion_pass@1": 0.8133333333333334,
+      "task_requirements_pass@1": 0.8533333333333334,
+      "tasks": 150,
+      "terminal_failures_counted_as_zero": 1,
+      "trials": 150,
+      "ux_mean": 4.4104
+    }
+  },
+  "integrity": {
+    "paired_cells": 150,
+    "passed": true,
+    "terminal_jobs": 450
+  },
+  "kind": "formal_confirmatory_result",
+  "num_runs": 1,
+  "paired_contrasts": {
+    "morphz_minus_letta": {
+      "cluster_bootstrap_95_ci": [
+        0.10666666666666667,
+        0.28
+      ],
+      "estimate": 0.19333333333333333,
+      "holm_adjusted_pvalue": 5.999940000599994e-05,
+      "paired_sign_flip_pvalue": 3.999960000399996e-05,
+      "task_clusters": 150
+    },
+    "morphz_minus_mem0": {
+      "cluster_bootstrap_95_ci": [
+        0.1,
+        0.24666666666666667
+      ],
+      "estimate": 0.17333333333333334,
+      "holm_adjusted_pvalue": 5.999940000599994e-05,
+      "paired_sign_flip_pvalue": 2.999970000299997e-05,
+      "task_clusters": 150
+    }
+  },
+  "primary_metric": "updated_protocol_task_completion_pass@1",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "reportable_score": true,
+  "statistics": {
+    "bootstrap_resamples": 100000,
+    "bootstrap_seed": 7007026,
+    "cluster_unit": "heldout_task",
+    "multiple_comparison_correction": "holm",
+    "permutation_resamples": 100000,
+    "permutation_seed": 7107026
+  },
+  "token_accounting": {
+    "morphz_raw_values_are_cumulative_clone_counters": true,
+    "morphz_reported_agent_total_tokens_subtracts_one_domain_training_baseline_per_scored_clone": true,
+    "morphz_training_baseline_total_tokens_by_domain": {
+      "customer_support": 22899822,
+      "shopping_assistant": 22911063,
+      "travel": 22986647
+    },
+    "training_cost_excluded_from_all_three_heldout_arms": true
+  }
+}

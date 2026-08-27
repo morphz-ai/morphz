@@ -1,4 +1,4 @@
-# Morphz 预印本发布审计（2026-08-26）
+# Morphz 预印本发布审计（更新于 2026-08-27）
 
 > 用途：证明中英文论文从实验草稿进入可发布状态时，没有遗漏临时结果、越界主张、
 > 取消实验或不可复现数字。本文档是发布 Gate，不新增实验结论。
@@ -7,7 +7,7 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
-- 双语结果当前隔离分支：`codex/paper-final-20260826@a5044a1`；已加入冻结 ME-07 研究问题与方法，并明确 ME-08 `ad60e`/`ac3344e` 边界，最终效果结果尚未形成定稿提交
+- 双语结果当前隔离分支：`codex/paper-final-20260826`；ME-07 正式结果、Mind Frame 迁移证据与 ME-08 边界已进入候选稿，等待最终一致性审计与提交
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 
@@ -16,7 +16,7 @@
 | 项目 | 当前状态 | 发布要求 |
 | --- | --- | --- |
 | ME-01～ME-06 | 已完成并进入中英文稿 | 保持冻结数字、协议边界和限制条件 |
-| ME-07 | v2 Morphz/Letta/Mem0 adapter、持久化重载、精确模型绑定、九份训练快照与三臂 scored smoke Gate 已通过；单次正式批次正在运行，目标为每 arm 150、总计 450 个 trial | 不报告旧 LongMemEval 或 A-MEM v1 局部结果；450 个终态结果、正式统计及人工校准闭合前只写方法、Gate 与预注册边界 |
+| ME-07 | 单次正式批次 150 paired cells/450 terminal trials 已闭合：Morphz 122/150、Letta 93/150、Mem0 96/150；Mind Frame 迁移 Gate 150/150 | 报告更新评测器下的本地系统级结果及其统计边界；不得冒充官方榜分，不得把全部分差单独归因于 Mind Frame；盲化人工校准列为剩余发布质量项 |
 | ME-08 前 40 题 | 已冻结，Morphz 30/40、official Codex 28/40 | 只作冻结子集历史，不作为最终主结果 |
 | ME-08 后 49 题 | 已完成，Morphz 40/49、official Codex 45/49 | 与前 40 的身份和任务集合核验后合并 |
 | ME-08 历史完整 89 题 | 已完成，Morphz 70/89、Codex 73/89；差 −3.37pp，`p=0.678` | 保留为原始 Runtime、并发 1 的同环境 paired 历史结果；不得与后修复运行拼接 |
@@ -25,12 +25,12 @@
 
 ## 3. 最终结果必须同步的位置
 
-历史完整 89 题、`ad60e` Morphz-only 刷新及 `4bbc3d63` 当前 Runtime 刷新均已闭合。中英文稿必须同步更新：
+ME-07、历史完整 89 题、`ad60e` Morphz-only 刷新及 `4bbc3d63` 当前 Runtime 刷新均已闭合。中英文稿必须同步更新：
 
 1. 稿件状态与进度行；
-2. 摘要中的 Terminal-Bench 数字和边界结论；
+2. 摘要中的 ME-07、Terminal-Bench 数字和边界结论；
 3. Evaluation/研究问题与共同控制；
-4. ME-08 结果小节；
+4. ME-07 与 ME-08 结果小节；
 5. 外部效度、统计效力、成本和系统成熟度限制；
 6. 结论；
 7. 附录 Claim–Evidence Matrix；
@@ -78,9 +78,9 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。本轮 `ad60e` Runtime
 - “开放求值 / open evaluation”只用于说明为何不采用该宽泛术语；
 - 两稿均明确 S-Expression 是当前表示选择，不是贡献本身；
 - 两稿均明确 Program-valued `infer` 是未来工作；
-- 两稿不报告 ME-07 效果分数；旧 LongMemEval-V2 与 A-MEM v1 只作为取消/取代历史。
-  STATE-Bench v2 的 Morphz/Letta/Mem0 协议可作为预注册材料，但 Letta Gate、更新评测器
-  验证和正式运行完成前不得写入效果数字。
+- 两稿均只报告完整 STATE-Bench v2 单次正式批次，不报告旧 LongMemEval-V2、A-MEM v1 或
+  中止批次的局部效果；ME-07 分数、CI、`p` 值、失败数和 Mind Frame trace 数字来自同一组
+  已闭合 Artifact。系统级优势与机制参与证据分层陈述，不越界为单机制纯因果效果。
 
 ## 6. 尚需用户提供的发布元数据
 
@@ -99,8 +99,10 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。本轮 `ad60e` Runtime
 - [x] 历史合并 89 题时验证任务集合不重叠且并集恰为 89；
 - [x] `ad60e` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
 - [x] `4bbc3d63` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
-- [ ] ME-07 九份快照、450-trial 三臂正式批次、统计与盲评材料闭合；
-- [ ] 新结果进入主张—证据矩阵、实验登记及中英文摘要/正文/结论，且数字一致；
+- [x] ME-07 九份快照、450-trial 三臂正式批次、统计和只读 Mind Frame trace 审计闭合；
+- [ ] ME-07 预留 30 条盲化人工评测器校准闭合；
+- [x] 新结果进入主张—证据矩阵、实验登记及中英文摘要/正文/结论；
+- [ ] 双语数字与限定语最终机器审计一致；
 - [ ] 最终全文无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；
 - [ ] 作者元数据由用户确认；
 - [x] `git diff --check`、引用集合、Markdown 结构和限定范围提交通过；
