@@ -23,9 +23,10 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, provider_continuation_message, Client, Message, ModelAttemptBinding,
-    ModelAttemptBindingError, ModelFailure, ModelFailureKind, ModelRequestContext, ModelUsage,
-    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolDefinition,
+    attachment_message, model_attachments, provider_continuation_message, Client, Message,
+    ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
+    ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation,
+    ToolDefinition,
 };
 use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
@@ -1165,6 +1166,25 @@ fn retain_context_maintenance_tools(
     });
 }
 
+/// Critical maintenance replaces the ordinary tool transcript with a bounded
+/// Context Projection, but native attachments are the evidence rather than
+/// transport noise. Keep those attachment messages in the maintenance request
+/// so the model can preserve task-relevant visual conclusions before retiring
+/// the corresponding metadata Observation.
+fn continuation_messages_for_projection(
+    messages: &[Message],
+    bounded_critical_projection: bool,
+) -> Vec<Message> {
+    if !bounded_critical_projection {
+        return messages.to_vec();
+    }
+    messages
+        .iter()
+        .filter(|message| model_attachments(message).is_some())
+        .cloned()
+        .collect()
+}
+
 /// A final-reply turn is reply-only for ordinary work. A bound Objective still
 /// needs its one deterministic lifecycle operation; completing the public
 /// reply without updating the Objective would leave the Supervisor running.
@@ -1242,6 +1262,7 @@ const SOFT_CHECKPOINT_PROMPT: &str = r#"The Runtime is at a soft-checkpoint. Thi
 
 const CRITICAL_MAINTENANCE_PROMPT: &str = r#"The Runtime has entered critical-maintenance: this Context reached critical pressure and must release capacity before more external work.
 - To keep maintenance itself receivable, the Runtime may project only a bounded Inbox slice. kernel.context-pressure.active-observations is the complete active count; the current Inbox contains this batch's causal root plus the oldest unprotected maintenance candidates. Missing observations remain persisted as Events and are neither lost nor retired. After this batch commits, the Runtime reevaluates and supplies another batch if still over limit.
+- Native image attachments from the triggering tool result remain present when they are the evidence being maintained. Inspect them now and preserve task-relevant visual conclusions, not merely paths, hashes, sizes, or loaded status, before retiring their Observation.
 - Call only tools actually provided in this request. External physical tools are temporarily removed; do not repeat the previous physical call or assume it ran.
 - Prefer one accurate context_tx that compresses Mind/Inbox while preserving the current objective, user constraints, latest reliable facts, unfinished work, and evidence required to continue. Summarize or retire stale, duplicate, or superseded content.
 - Use recall only for source evidence truly missing before maintenance, not to begin new external work. The Runtime recalculates pressure and restores applicable physical tools after maintenance.
@@ -7597,6 +7618,33 @@ impl Orchestrator {
         // That transition is performed in run_attempt from the persisted plan,
         // never inferred from a process-local gate.
         let existing_thread = session_store.get_thread_by_root(&root_turn_id).await?;
+        let requested_target_id = if event.event_type == TYPE_USER_MESSAGE {
+            event
+                .payload
+                .get("target_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        if let (Some(existing), Some(requested)) =
+            (existing_thread.as_ref(), requested_target_id.as_ref())
+        {
+            if existing.target_id.as_deref() != Some(requested.as_str()) {
+                return Err(format!(
+                    "Dialogue Thread '{}' is already bound to Execution Target '{}'; Event '{}' cannot redirect it to '{}'",
+                    existing.id,
+                    existing.target_id.as_deref().unwrap_or("unbound"),
+                    event.id,
+                    requested
+                )
+                .into());
+            }
+        }
+        let initial_target_id = existing_thread
+            .as_ref()
+            .and_then(|thread| thread.target_id.clone())
+            .or(requested_target_id);
         let initial_thread_kind = existing_thread
             .as_ref()
             .map(|thread| thread.kind)
@@ -7638,7 +7686,7 @@ impl Orchestrator {
                     "self".to_string()
                 },
                 executor_id: plan_execution_id,
-                target_id: None,
+                target_id: initial_target_id,
                 supervision,
             })
             .await?;
@@ -10279,9 +10327,10 @@ impl Orchestrator {
                 tool_calls: None,
             },
         ];
-        if !bounded_critical_projection {
-            messages.extend(continuation_messages.clone());
-        }
+        messages.extend(continuation_messages_for_projection(
+            &continuation_messages,
+            bounded_critical_projection,
+        ));
         if let Some(message) = attachment_message {
             messages.push(message);
         }
@@ -10440,6 +10489,10 @@ impl Orchestrator {
                     lease.release();
                 }
                 self.refill_activation_admission_queue().await?;
+                // `run_attempt_inner` already carries a large async state
+                // machine. Keep the coordination tool executor behind a heap
+                // boundary so enabling this optional path does not increase
+                // every ordinary Evaluation's stack requirement.
                 Box::pin(self.execute_tool_calls(
                     session_id,
                     &attempt_id,
@@ -11296,7 +11349,8 @@ impl Orchestrator {
                     // boundary. Linux test workers use a smaller default
                     // stack than the process main thread, and leaving this
                     // branch inline still made the enclosing Evaluation
-                    // future exceed that stack.
+                    // future exceed that stack even though the required-
+                    // coordination branch was already boxed.
                     let outcome = Box::pin(self.execute_tool_calls(
                         session_id,
                         &attempt_id,
@@ -17952,19 +18006,43 @@ async fn durable_activation_revocation_reason(
             "Activation '{activation_id}' no longer exists in durable state"
         )));
     };
+    Ok(durable_activation_revocation_reason_for_record(
+        &current,
+        runtime_claimant_id,
+    ))
+}
+
+fn durable_activation_revocation_reason_for_record(
+    current: &ThreadActivationRecord,
+    runtime_claimant_id: &str,
+) -> Option<String> {
+    // A successful or failed status can be the outcome committed by this
+    // exact evaluation future.  The future still owns required post-commit
+    // work (persisted Event dispatch, completion-delivery timer arming and
+    // supervisor wakes), so treating its own terminal commit as revocation
+    // cancels the durable/live handoff halfway through.  Duplicate work from
+    // a stale owner remains fenced by the immutable activation outcome.
+    if matches!(
+        current.status,
+        ThreadActivationStatus::Succeeded | ThreadActivationStatus::Failed
+    ) {
+        return None;
+    }
     if current.status != ThreadActivationStatus::Running {
-        return Ok(Some(format!(
+        return Some(format!(
             "Activation '{activation_id}' durable status changed to {}",
-            current.status.as_str()
-        )));
+            current.status.as_str(),
+            activation_id = current.id,
+        ));
     }
     if current.claimed_by.as_deref() != Some(runtime_claimant_id) {
-        return Ok(Some(format!(
+        return Some(format!(
             "Activation '{activation_id}' durable ownership moved from Runtime '{runtime_claimant_id}' to '{}'",
-            current.claimed_by.as_deref().unwrap_or("unclaimed")
-        )));
+            current.claimed_by.as_deref().unwrap_or("unclaimed"),
+            activation_id = current.id,
+        ));
     }
-    Ok(None)
+    None
 }
 
 fn delivery_flush_timer_id(session_id: &str) -> String {
@@ -19663,11 +19741,13 @@ mod tests {
         action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
         attached_delegation_return_route, baseline_system_prompt, classify_terminal_response,
         cognitive_sexpr_vm_system_prompt, completed_objective_update_call,
-        compose_context_encoding, critical_maintenance_transaction_available,
-        decide_provider_circuit_admission, derived_thread_kind,
-        durable_activation_revocation_reason, durable_reasoning_continuation_state_from_events,
-        extend_exec_output_facts, harness_entry_callable_tools, infer_tool_status,
-        legacy_plan_effect_sequence, model_binding_completion_error, model_harness_tool_scope,
+        compose_context_encoding, continuation_messages_for_projection,
+        critical_maintenance_transaction_available, decide_provider_circuit_admission,
+        derived_thread_kind, durable_activation_revocation_reason,
+        durable_activation_revocation_reason_for_record,
+        durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
+        harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
+        model_binding_completion_error, model_harness_tool_scope,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persistent_provider_wait_contexts, plan_infer_tool_scope,
@@ -19694,8 +19774,9 @@ mod tests {
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
-        FunctionCall, ModelAttemptBinding, ModelAttemptBindingError, ModelFailureKind, ModelUsage,
-        PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
+        attachment_message, model_attachments, FunctionCall, Message, ModelAttemptBinding,
+        ModelAttemptBindingError, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
+        PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -20327,6 +20408,57 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with(&format!("runtime:{}:", std::process::id())));
         assert!(second.starts_with(&format!("runtime:{}:", std::process::id())));
+    }
+
+    #[test]
+    fn terminal_outcome_does_not_revoke_its_own_post_commit_handoff() {
+        let now = chrono::Utc::now();
+        let owner = "runtime:current";
+        let activation = |status| ThreadActivationRecord {
+            id: "activation-handoff".to_string(),
+            revision: 2,
+            generation: 0,
+            agent_id: "agent-handoff".to_string(),
+            context_id: "context-handoff".to_string(),
+            session_id: "session-handoff".to_string(),
+            initiating_principal_id: None,
+            trigger_event_id: "trigger-handoff".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "chat/user_message".to_string(),
+            parent_activation_id: None,
+            root_turn_id: "root-handoff".to_string(),
+            model_alias: None,
+            reasoning_effort: None,
+            context_snapshot_version: None,
+            status,
+            claimed_by: None,
+            lease_expires_at: None,
+            dialogue_lane_released_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        assert_eq!(
+            durable_activation_revocation_reason_for_record(
+                &activation(ThreadActivationStatus::Succeeded),
+                owner,
+            ),
+            None,
+            "a successful outcome still has to dispatch its persisted Event and arm delivery"
+        );
+        assert_eq!(
+            durable_activation_revocation_reason_for_record(
+                &activation(ThreadActivationStatus::Failed),
+                owner,
+            ),
+            None,
+            "a failed outcome still has to dispatch its durable failure reply"
+        );
+        assert!(durable_activation_revocation_reason_for_record(
+            &activation(ThreadActivationStatus::Cancelled),
+            owner,
+        )
+        .is_some());
     }
 
     #[tokio::test]
@@ -21182,6 +21314,40 @@ mod tests {
         let mut unbound_final_reply = named_tools(&["exec", "objective_update", "objective_amend"]);
         retain_final_reply_control_tools(&mut unbound_final_reply, false, true);
         assert_eq!(unbound_final_reply[0].name, "objective_amend");
+    }
+
+    #[test]
+    fn critical_projection_keeps_native_attachments_without_replaying_tool_transcript() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: String::new(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(Vec::new()),
+            },
+            Message {
+                role: "tool".to_string(),
+                content: r#"{"path":"/app/contact.jpg","sha256":"stable"}"#.to_string(),
+                name: Some("read".to_string()),
+                tool_call_id: Some("call-image".to_string()),
+                tool_calls: None,
+            },
+            attachment_message(vec![crate::llm::ModelAttachment {
+                name: "contact.jpg".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data_base64: "aW1hZ2U=".to_string(),
+            }])
+            .unwrap(),
+        ];
+
+        assert_eq!(
+            continuation_messages_for_projection(&messages, false),
+            messages
+        );
+        let projected = continuation_messages_for_projection(&messages, true);
+        assert_eq!(projected.len(), 1);
+        assert!(model_attachments(&projected[0]).is_some());
     }
 
     #[test]

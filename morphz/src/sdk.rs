@@ -365,6 +365,12 @@ pub struct SendMessageCommand {
     /// mutate the Session default and is validated against the selected route.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Optional one-shot physical Execution Target for the Dialogue Thread
+    /// rooted at this message. The Runtime validates visibility and target
+    /// liveness before ingress, then persists the binding on the Thread so
+    /// every physical tool continuation stays on the same destination.
+    #[serde(default)]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3579,6 +3585,17 @@ impl MorphzSdk {
     ) -> SdkResult<MessageReceipt> {
         self.authorize_session(&principal.principal_id, &command.session_id)
             .await?;
+        if let Some(target_id) = command.target_id.as_deref() {
+            let target = self
+                .inspect_execution_target(&principal.principal_id, target_id)
+                .await?;
+            if !target.status.accepts_jobs() {
+                return Err(SdkError::new(
+                    SdkErrorCode::Conflict,
+                    format!("Execution Target '{target_id}' is not online"),
+                ));
+            }
+        }
         self.runtime
             .session(command.session_id)
             .send_as_principal_with_options(
@@ -3593,6 +3610,7 @@ impl MorphzSdk {
                     dispatch_mode: command.dispatch_mode,
                     model_alias: command.model_alias,
                     reasoning_effort: command.reasoning_effort,
+                    target_id: command.target_id,
                 },
             )
             .await
@@ -3996,6 +4014,7 @@ mod tests {
                     dispatch_mode: Some(MessageDispatchMode::Parallel),
                     model_alias: None,
                     reasoning_effort: None,
+                    target_id: None,
                 },
             )
             .await
@@ -4058,6 +4077,7 @@ mod tests {
                     dispatch_mode: None,
                     model_alias: None,
                     reasoning_effort: None,
+                    target_id: None,
                 },
             )
             .await
@@ -4092,6 +4112,7 @@ mod tests {
                     dispatch_mode: None,
                     model_alias: None,
                     reasoning_effort: None,
+                    target_id: None,
                 },
             )
             .await

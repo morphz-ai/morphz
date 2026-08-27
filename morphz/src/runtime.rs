@@ -5916,6 +5916,14 @@ impl MorphzRuntime {
         self.inner.bus.publish(event).await
     }
 
+    /// Subscribe to process-local EventBus delivery.
+    ///
+    /// This is a live notification surface, not a durable request/reply
+    /// protocol. In particular, exact-topic subscriptions are asynchronous
+    /// business handlers and may still be queued when the publishing call
+    /// returns. Callers waiting for the terminal reply of one DialogueTurn
+    /// must use [`Self::wait_for_turn_reply`], which closes the durable
+    /// commit/subscription race and fences the result by root turn.
     pub fn subscribe(&self, topic: impl Into<String>, capacity: usize) -> RuntimeEventStream {
         let (sender, receiver) = tokio::sync::mpsc::channel(capacity.max(1));
         let subscription_id = self.inner.bus.subscribe(
@@ -5944,6 +5952,68 @@ impl MorphzRuntime {
             bus: Arc::downgrade(&self.inner.bus),
             subscription_id,
         }
+    }
+
+    /// Wait for the durable Assistant reply belonging to exactly one
+    /// DialogueTurn.
+    ///
+    /// The observer is installed before the indexed durable lookup. A reply
+    /// committed before registration is therefore found in the Event Store;
+    /// a reply committed after the lookup crosses the synchronous wildcard
+    /// observation boundary. The live EventBus remains only a low-latency
+    /// wakeup: the immutable Event Store is the completion authority.
+    pub async fn wait_for_turn_reply(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Event, RuntimeError> {
+        let session_id = session_id.trim();
+        let root_turn_id = root_turn_id.trim();
+        if session_id.is_empty() || root_turn_id.is_empty() {
+            return Err("session_id and root_turn_id must not be empty".into());
+        }
+
+        // `*` observers are dispatched synchronously after the persistence
+        // boundary and do not compete for an asynchronous business-handler
+        // permit. Runtime model-stream drafts use try_send and may be dropped;
+        // durable facts retain backpressure until this active waiter drains
+        // them. Register before querying so commit-before-wait has no gap.
+        let mut events = self.subscribe("*", 64);
+        if let Some(reply) = self
+            .query_events(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                root_turn_id: Some(root_turn_id.to_string()),
+                topic: Some("chat/reply".to_string()),
+                latest_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| reply_matches_turn(event, session_id, root_turn_id))
+        {
+            return Ok(reply);
+        }
+
+        tokio::time::timeout(timeout, async {
+            loop {
+                let event = events
+                    .recv()
+                    .await
+                    .ok_or("Runtime Event stream closed before the DialogueTurn reply")?;
+                if reply_matches_turn(&event, session_id, root_turn_id) {
+                    return Ok::<Event, RuntimeError>(event);
+                }
+            }
+        })
+        .await
+        .map_err(|_| -> RuntimeError {
+            format!(
+                "DialogueTurn '{}' in Session '{}' did not produce a reply within {:?}",
+                root_turn_id, session_id, timeout
+            )
+            .into()
+        })?
     }
 
     /// Enable one process-local diagnostic projection for the lifetime of an
@@ -8767,6 +8837,12 @@ pub struct RuntimeEventStream {
     subscription_id: String,
 }
 
+fn reply_matches_turn(event: &Event, session_id: &str, root_turn_id: &str) -> bool {
+    event.topic == "chat/reply"
+        && crate::memory::causal_payload_string(event, "session_id") == Some(session_id)
+        && crate::memory::causal_payload_string(event, "root_turn_id") == Some(root_turn_id)
+}
+
 impl RuntimeEventStream {
     pub async fn recv(&mut self) -> Option<Event> {
         self.receiver.recv().await
@@ -8813,6 +8889,10 @@ pub struct SessionMessageOptions {
     /// One-shot reasoning level persisted on the root Event and frozen on the
     /// resulting Activation without mutating the Session default.
     pub reasoning_effort: Option<String>,
+    /// One-shot physical destination for the Dialogue Thread rooted at this
+    /// message. Once persisted, Thread target affinity governs every
+    /// continuation; later Events cannot silently redirect it.
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8967,6 +9047,7 @@ impl SessionHandle {
             dispatch_mode,
             model_alias,
             reasoning_effort,
+            target_id,
         } = options;
         let actor = actor.into();
         let session = self
@@ -9060,6 +9141,46 @@ impl SessionHandle {
                 }
             }
             Some(parsed.as_str().to_string())
+        } else {
+            None
+        };
+        let target_id = if let Some(target_id) = target_id {
+            let target_id = target_id.trim().to_string();
+            if target_id.is_empty() {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    "target_id must not be empty; omit it to use the default Execution Target",
+                )));
+            }
+            let target = self
+                .runtime
+                .inner
+                .store
+                .get_execution_target(&target_id)
+                .await?
+                .ok_or_else(|| {
+                    Box::new(MessageIngressError::new(
+                        MessageIngressErrorKind::InvalidArgument,
+                        format!("Execution Target '{target_id}' does not exist"),
+                    )) as RuntimeError
+                })?;
+            if target.owner_principal_id.is_some()
+                && target.owner_principal_id.as_deref() != Some(principal_id.as_str())
+            {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Forbidden,
+                    format!(
+                        "Principal '{principal_id}' cannot route to Execution Target '{target_id}'"
+                    ),
+                )));
+            }
+            if !target.status.accepts_jobs() {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::Conflict,
+                    format!("Execution Target '{target_id}' is not online"),
+                )));
+            }
+            Some(target_id)
         } else {
             None
         };
@@ -9195,6 +9316,9 @@ impl SessionHandle {
         }
         if let Some(reasoning_effort) = reasoning_effort {
             payload.insert("reasoning_effort".to_string(), json!(reasoning_effort));
+        }
+        if let Some(target_id) = target_id {
+            payload.insert("target_id".to_string(), json!(target_id));
         }
         if !canonical_references.is_empty() {
             payload.insert("references".to_string(), Value::Array(canonical_references));
@@ -11620,6 +11744,211 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_sessions_bind_new_dialogue_threads_to_distinct_requested_targets() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let principal_id = runtime.identity().principal_id.clone();
+        for target_id in ["edge-session-a", "edge-session-b"] {
+            runtime
+                .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                    id: target_id.to_string(),
+                    owner_principal_id: Some(principal_id.clone()),
+                    provider_node_id: None,
+                    kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                    name: target_id.to_string(),
+                    status: crate::memory::ExecutionTargetStatus::Online,
+                    platform: Some("linux-x86_64".to_string()),
+                    workspace_root: None,
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({"test": "message_ingress_target_affinity"}),
+                    policy_digest: format!("policy-{target_id}"),
+                    last_seen_at: Some(chrono::Utc::now()),
+                })
+                .await
+                .unwrap();
+        }
+        let session_a = runtime
+            .ensure_session(NewSession {
+                id: "session-target-a".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Target A".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let session_b = runtime
+            .ensure_session(NewSession {
+                id: "session-target-b".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Target B".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(&session_a.id).await.unwrap();
+        runtime.bind_default_principal(&session_b.id).await.unwrap();
+
+        let (receipt_a, receipt_b) = tokio::join!(
+            session_a.send_as_principal_with_options(
+                "work only on target A",
+                "User-Test",
+                principal_id.clone(),
+                Some("client-target-a".to_string()),
+                SessionMessageOptions {
+                    target_id: Some("edge-session-a".to_string()),
+                    ..SessionMessageOptions::default()
+                },
+            ),
+            session_b.send_as_principal_with_options(
+                "work only on target B",
+                "User-Test",
+                principal_id.clone(),
+                Some("client-target-b".to_string()),
+                SessionMessageOptions {
+                    target_id: Some("edge-session-b".to_string()),
+                    ..SessionMessageOptions::default()
+                },
+            )
+        );
+        let receipt_a = receipt_a.unwrap();
+        let receipt_b = receipt_b.unwrap();
+        let (thread_a, thread_b) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let thread_a = runtime
+                    .inner
+                    .store
+                    .get_thread_by_root(&receipt_a.event_id)
+                    .await
+                    .unwrap();
+                let thread_b = runtime
+                    .inner
+                    .store
+                    .get_thread_by_root(&receipt_b.event_id)
+                    .await
+                    .unwrap();
+                if let (Some(thread_a), Some(thread_b)) = (thread_a, thread_b) {
+                    break (thread_a, thread_b);
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both Dialogue Threads were not persisted");
+        assert_eq!(thread_a.target_id.as_deref(), Some("edge-session-a"));
+        assert_eq!(thread_b.target_id.as_deref(), Some("edge-session-b"));
+        assert_ne!(thread_a.target_id, thread_b.target_id);
+
+        for (event_id, target_id) in [
+            (&receipt_a.event_id, "edge-session-a"),
+            (&receipt_b.event_id, "edge-session-b"),
+        ] {
+            let event = runtime
+                .query_events(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(event.payload["target_id"], target_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn message_ingress_rejects_missing_offline_and_foreign_targets_before_commit() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let principal_id = runtime.identity().principal_id.clone();
+        for (target_id, owner, status) in [
+            (
+                "edge-offline",
+                principal_id.as_str(),
+                crate::memory::ExecutionTargetStatus::Offline,
+            ),
+            (
+                "edge-foreign",
+                "principal-foreign",
+                crate::memory::ExecutionTargetStatus::Online,
+            ),
+        ] {
+            runtime
+                .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                    id: target_id.to_string(),
+                    owner_principal_id: Some(owner.to_string()),
+                    provider_node_id: None,
+                    kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                    name: target_id.to_string(),
+                    status,
+                    platform: None,
+                    workspace_root: None,
+                    capabilities: vec!["exec".to_string()],
+                    metadata: json!({}),
+                    policy_digest: format!("policy-{target_id}"),
+                    last_seen_at: Some(chrono::Utc::now()),
+                })
+                .await
+                .unwrap();
+        }
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-target-rejections".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Target rejections".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(&session.id).await.unwrap();
+
+        for (index, target_id, expected) in [
+            (1, "edge-missing", "does not exist"),
+            (2, "edge-offline", "is not online"),
+            (3, "edge-foreign", "cannot route"),
+        ] {
+            let error = session
+                .send_as_principal_with_options(
+                    "this message must not commit",
+                    "User-Test",
+                    principal_id.clone(),
+                    Some(format!("client-target-rejection-{index}")),
+                    SessionMessageOptions {
+                        target_id: Some(target_id.to_string()),
+                        ..SessionMessageOptions::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        let events = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id.clone()),
+                topic: Some(TYPE_USER_MESSAGE.to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
     async fn attention_acknowledgement_is_durable_audit_not_scheduler_work() {
         let database = NamedTempFile::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
@@ -13106,6 +13435,109 @@ mod tests {
             assert!(!tools.iter().any(|tool| tool.name == "objective_amend"));
             Ok(text_response("objective-complete"))
         }
+    }
+
+    #[tokio::test]
+    async fn durable_turn_reply_waiter_bypasses_business_saturation_and_fences_root() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.orchestrator.event_bus.max_in_flight = 1;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+
+        let blocker_started = Arc::new(tokio::sync::Notify::new());
+        let blocker_release = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::clone(&blocker_started);
+        let release = Arc::clone(&blocker_release);
+        runtime.inner.bus.subscribe(
+            "runtime/test_reply_blocker".to_string(),
+            Arc::new(move |_event| {
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                Box::pin(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok(())
+                })
+            }),
+        );
+        runtime
+            .publish(Event::new(
+                "reply-blocker".to_string(),
+                "Runtime-Test".to_string(),
+                "runtime_control".to_string(),
+                "runtime/test_reply_blocker".to_string(),
+                serde_json::Map::new(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            blocker_started.notified(),
+        )
+        .await
+        .expect("the only asynchronous business permit should be occupied");
+
+        let stale_reply = Event::new(
+            "reply-stale-root".to_string(),
+            "Agent-Test".to_string(),
+            "agent_call".to_string(),
+            "chat/reply".to_string(),
+            vec![
+                ("context_id".to_string(), json!("context-reply-wait")),
+                ("session_id".to_string(), json!("session-reply-wait")),
+                ("root_turn_id".to_string(), json!("root-stale")),
+                ("text".to_string(), json!("stale")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        runtime.publish(stale_reply).await.unwrap();
+
+        let wait_runtime = runtime.clone();
+        let waiter = tokio::spawn(async move {
+            wait_runtime
+                .wait_for_turn_reply(
+                    "session-reply-wait",
+                    "root-target",
+                    std::time::Duration::from_secs(2),
+                )
+                .await
+        });
+        // Let the waiter install its synchronous observation boundary and
+        // finish the durable preflight before the target commit.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let target_reply = Event::new(
+            "reply-target-root".to_string(),
+            "Agent-Test".to_string(),
+            "agent_call".to_string(),
+            "chat/reply".to_string(),
+            vec![
+                ("context_id".to_string(), json!("context-reply-wait")),
+                ("session_id".to_string(), json!("session-reply-wait")),
+                ("root_turn_id".to_string(), json!("root-target")),
+                ("text".to_string(), json!("target")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            runtime.publish(target_reply),
+        )
+        .await
+        .expect("a reply observer must not queue behind business admission")
+        .unwrap();
+
+        let reply = waiter.await.unwrap().unwrap();
+        assert_eq!(reply.id, "reply-target-root");
+        assert_eq!(reply.payload["text"], "target");
+        blocker_release.notify_waiters();
     }
 
     #[tokio::test]

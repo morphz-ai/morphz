@@ -45,6 +45,7 @@ async fn append_dialogue_signal_in_tx(
         .payload
         .get("principal_id")
         .and_then(JsonValue::as_str);
+    let requested_target_id = event.payload.get("target_id").and_then(JsonValue::as_str);
     let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM events WHERE id = $1")
         .bind(&event.id)
         .fetch_one(&mut **tx)
@@ -75,6 +76,7 @@ async fn append_dialogue_signal_in_tx(
                WHERE links.activation_id = activation.id
              ) < $2
              AND activation.initiating_principal_id IS NOT DISTINCT FROM $3
+             AND ($4 IS NULL OR thread.target_id IS NULL OR thread.target_id = $4)
            ORDER BY activation.trigger_sequence, activation.id
            LIMIT 1
            FOR UPDATE OF activation, thread"#,
@@ -82,6 +84,7 @@ async fn append_dialogue_signal_in_tx(
         .bind(session_id)
         .bind(batch_limit)
         .bind(principal_id)
+        .bind(requested_target_id)
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -110,6 +113,7 @@ async fn append_dialogue_signal_in_tx(
                  AND root_event.topic = 'chat/user_message'
                  AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                  AND thread.initiating_principal_id IS NOT DISTINCT FROM $2
+                 AND ($3 IS NULL OR thread.target_id IS NULL OR thread.target_id = $3)
                  AND NOT EXISTS (
                    SELECT 1 FROM thread_activations activation
                    WHERE activation.root_turn_id = thread.root_turn_id
@@ -117,12 +121,13 @@ async fn append_dialogue_signal_in_tx(
                      AND activation.status IN ('queued', 'running')
                  )
                GROUP BY thread.id, thread.generation
-               HAVING COUNT(*) < $3
+               HAVING COUNT(*) < $4
                ORDER BY MIN(signal.sequence), thread.id
                LIMIT 1"#,
             )
             .bind(session_id)
             .bind(principal_id)
+            .bind(requested_target_id)
             .bind(batch_limit)
             .fetch_optional(&mut **tx)
             .await?
@@ -141,12 +146,12 @@ async fn append_dialogue_signal_in_tx(
                 r#"INSERT INTO threads
                    (id, revision, generation, agent_id, context_id, session_id,
                     initiating_principal_id, root_turn_id, kind, status, control_state,
-                    executor_kind, lifetime, supervisor_kind, supervisor_id,
+                    executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                     supervision_generation, completion_contract_json, delivery_status,
                     created_at, updated_at)
                    VALUES ($1, 1, 1, $2, $3, $4, $5, $6, 'dialogue_turn', 'open',
-                           'active', 'self', 'durable', 'runtime', 'dialogue-router', 1,
-                           '{}'::jsonb, 'none', $7, $7)"#,
+                           'active', 'self', $7, 'durable', 'runtime', 'dialogue-router', 1,
+                           '{}'::jsonb, 'none', $8, $8)"#,
             )
             .bind(&thread_id)
             .bind(agent_id)
@@ -154,12 +159,49 @@ async fn append_dialogue_signal_in_tx(
             .bind(session_id)
             .bind(principal_id)
             .bind(&event.id)
+            .bind(requested_target_id)
             .bind(&now)
             .execute(&mut **tx)
             .await?;
             (thread_id, 1, None)
         }
     };
+
+    if let Some(requested_target_id) = requested_target_id {
+        let current_target_id = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT target_id FROM threads WHERE id = $1 FOR UPDATE",
+        )
+        .bind(&thread_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        match current_target_id.as_deref() {
+            Some(current) if current == requested_target_id => {}
+            Some(current) => {
+                return Err(format!(
+                    "Dialogue Thread '{}' is already bound to Execution Target '{}' and cannot accept message Target '{}'",
+                    thread_id, current, requested_target_id
+                )
+                .into());
+            }
+            None => {
+                let updated = sqlx::query(
+                    "UPDATE threads SET target_id = $1, revision = revision + 1, updated_at = $2 WHERE id = $3 AND target_id IS NULL",
+                )
+                .bind(requested_target_id)
+                .bind(&now)
+                .bind(&thread_id)
+                .execute(&mut **tx)
+                .await?;
+                if updated.rows_affected() != 1 {
+                    return Err(format!(
+                        "Dialogue Thread '{}' Target binding changed concurrently",
+                        thread_id
+                    )
+                    .into());
+                }
+            }
+        }
+    }
 
     let signal_id = stable_thread_signal_id(&event.id);
     let status = if activation_id.is_some() {

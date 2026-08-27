@@ -5413,6 +5413,7 @@ async fn submit_prompt(
                 dispatch_mode,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             },
         )
         .await
