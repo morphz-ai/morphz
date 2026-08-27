@@ -1,0 +1,215 @@
+{
+  "allocation": {
+    "customer_support": {
+      "letta": 4,
+      "mem0": 3,
+      "morphz": 3
+    },
+    "shopping_assistant": {
+      "letta": 3,
+      "mem0": 4,
+      "morphz": 3
+    },
+    "travel": {
+      "letta": 3,
+      "mem0": 3,
+      "morphz": 4
+    }
+  },
+  "kind": "blinded_evaluator_human_validation_packet",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "rubrics": [
+    {
+      "domain": "travel",
+      "kind": "judge_task_requirements",
+      "path": "rubrics/travel-judge_task_requirements.md",
+      "sha256": "dd4abe82eedb4873cfa015708df99f59cfbfeaa85ac090b01bd1d75eb0500487"
+    },
+    {
+      "domain": "travel",
+      "kind": "judge_ux_quality",
+      "path": "rubrics/travel-judge_ux_quality.md",
+      "sha256": "b04009d159fb477c3a215f30f10793c4e0a5587e578d07fcd2bfc7d719f90598"
+    },
+    {
+      "domain": "customer_support",
+      "kind": "judge_task_requirements",
+      "path": "rubrics/customer_support-judge_task_requirements.md",
+      "sha256": "246c76f59f3cd0e736da35b9beb985088778ff233287454b8bae674285718c72"
+    },
+    {
+      "domain": "customer_support",
+      "kind": "judge_ux_quality",
+      "path": "rubrics/customer_support-judge_ux_quality.md",
+      "sha256": "8b6ecae22872ab860d4a54f37e5bd4a6a160033b833cd1b0de6a3673640d7067"
+    },
+    {
+      "domain": "shopping_assistant",
+      "kind": "judge_task_requirements",
+      "path": "rubrics/shopping_assistant-judge_task_requirements.md",
+      "sha256": "558947b2ce0b5d90a633e7d44e8599c329a96ac5ed9e43c9d37ffb5e6cf3c055"
+    },
+    {
+      "domain": "shopping_assistant",
+      "kind": "judge_ux_quality",
+      "path": "rubrics/shopping_assistant-judge_ux_quality.md",
+      "sha256": "0234643a8dcf766c390aff2dc11b2f74f0e13ef7a38b29df70165bd333b82656"
+    }
+  ],
+  "sample_count": 30,
+  "samples": [
+    {
+      "blinded_id": "HV-001",
+      "domain": "shopping_assistant",
+      "sample_sha256": "f611eae810d4de683f65d581fdafff5cc14d9961c6b2a9d3c5350054a9fa82a7"
+    },
+    {
+      "blinded_id": "HV-002",
+      "domain": "shopping_assistant",
+      "sample_sha256": "abafeb487dc07d191264aab2de4d75a08450d8d40d414a2af08049cb5409148b"
+    },
+    {
+      "blinded_id": "HV-003",
+      "domain": "travel",
+      "sample_sha256": "1299cce811ffef803b69f84fddc7996bfc4358e5aefc239f426768cc498f0ac5"
+    },
+    {
+      "blinded_id": "HV-004",
+      "domain": "customer_support",
+      "sample_sha256": "169087641be4ed299a1ee3fbdeb0d9004a8d87506cc95109becf66643dfb39b6"
+    },
+    {
+      "blinded_id": "HV-005",
+      "domain": "travel",
+      "sample_sha256": "0d568e0dd11ae5d1eb2c363f25ee110d54e78eb855fac3809f4f4b8553bf94ed"
+    },
+    {
+      "blinded_id": "HV-006",
+      "domain": "travel",
+      "sample_sha256": "6879b43592009fd26f7b0798eeed224977e90e69deec47ac34e171488dae6427"
+    },
+    {
+      "blinded_id": "HV-007",
+      "domain": "travel",
+      "sample_sha256": "d1b28312bae3fa54fa5dfcd0d5ae9b0dd136001145d48e57e2579876273f1138"
+    },
+    {
+      "blinded_id": "HV-008",
+      "domain": "customer_support",
+      "sample_sha256": "4576c27d3a70ec4d7c72bc4e56b4148e7ee89893f204a4054b0d3814c2d68ae9"
+    },
+    {
+      "blinded_id": "HV-009",
+      "domain": "shopping_assistant",
+      "sample_sha256": "0cd7e27c9a304e61936374fc38ed9255f788782b37b50bffa8ba4247cb256fda"
+    },
+    {
+      "blinded_id": "HV-010",
+      "domain": "travel",
+      "sample_sha256": "675669aa17c2c19c5f90248db2a68a456178e1eff630b900dabfaf0adeb1088f"
+    },
+    {
+      "blinded_id": "HV-011",
+      "domain": "customer_support",
+      "sample_sha256": "9d2f05871b8f33c75f38011543818381a727d68d29c2dce36d202f9d474e1b0e"
+    },
+    {
+      "blinded_id": "HV-012",
+      "domain": "shopping_assistant",
+      "sample_sha256": "e1f188a70928de0dd8db1d0f26501a976fab41ee0498ca63c82dcba2890ac8db"
+    },
+    {
+      "blinded_id": "HV-013",
+      "domain": "shopping_assistant",
+      "sample_sha256": "a543ad831fe074ee4cdf69817718d21464d3199c7d0f3c2035f5f5549b18789e"
+    },
+    {
+      "blinded_id": "HV-014",
+      "domain": "customer_support",
+      "sample_sha256": "7456afc780634fe2c26492dfabfeab9cbb3076922cd2325c47c7cb4d2c625bd3"
+    },
+    {
+      "blinded_id": "HV-015",
+      "domain": "shopping_assistant",
+      "sample_sha256": "5988423613a08a610b9b5dbda3d4e1c80140ca9bc14cb6ff30f7a7fe8269632d"
+    },
+    {
+      "blinded_id": "HV-016",
+      "domain": "travel",
+      "sample_sha256": "23fb09ab2e0c0a95af2ca8649390cc3267a612d2442a434d03fedf257537b3b6"
+    },
+    {
+      "blinded_id": "HV-017",
+      "domain": "shopping_assistant",
+      "sample_sha256": "16da35910c769ed7745bb3778328760fbb0d2efc77841ea42c38556ae4e83bb8"
+    },
+    {
+      "blinded_id": "HV-018",
+      "domain": "travel",
+      "sample_sha256": "0ebbdfbe5eac3773f5ab6899afd6d837aa7686c9e2515df4b85d46e8bb14fc0e"
+    },
+    {
+      "blinded_id": "HV-019",
+      "domain": "customer_support",
+      "sample_sha256": "5db0ffab56a570bfa15f7fa5adee02a0eb13e7e2a38fedf874d4a5018ee9be57"
+    },
+    {
+      "blinded_id": "HV-020",
+      "domain": "customer_support",
+      "sample_sha256": "3c438dd37f4e89e95755af0d148c74937eee2bfe30f0eda562a3e184619c5fce"
+    },
+    {
+      "blinded_id": "HV-021",
+      "domain": "customer_support",
+      "sample_sha256": "eb312b6dd29a3ed2bdad5088364cfd1440a81a7d0cc33b85c5d5a69871b52fba"
+    },
+    {
+      "blinded_id": "HV-022",
+      "domain": "customer_support",
+      "sample_sha256": "07dac9ec49e3ccc59d0bfc36fec65e2988cf24363924f90e43ca855f485db3e8"
+    },
+    {
+      "blinded_id": "HV-023",
+      "domain": "shopping_assistant",
+      "sample_sha256": "b7ac5a8e4c3e794d552816dee974fc3bf254a494b5c0c5d1129296c6be38cfaa"
+    },
+    {
+      "blinded_id": "HV-024",
+      "domain": "travel",
+      "sample_sha256": "9fa253c247cab9a52c3ddfda2f311e06cab99bd2ebe49522387ccaca2f9dfc32"
+    },
+    {
+      "blinded_id": "HV-025",
+      "domain": "customer_support",
+      "sample_sha256": "9f5c4c6b0a7b3bca3618894d57d7e8d05e67fcd48e6f60c4a4d5fa32096302c8"
+    },
+    {
+      "blinded_id": "HV-026",
+      "domain": "shopping_assistant",
+      "sample_sha256": "5188d2fc41c26e5b784058cf965b7f392c0673aa769db934e9b34c7226270731"
+    },
+    {
+      "blinded_id": "HV-027",
+      "domain": "travel",
+      "sample_sha256": "a75798acf94ab15aad0d1678cf68390fedf460d609a6a304d1fb05b0d7d33a34"
+    },
+    {
+      "blinded_id": "HV-028",
+      "domain": "travel",
+      "sample_sha256": "7d0ba5b5a5d400c8034fa7a3bd68fbbe55c01622b6f898f2139a067d97413b3c"
+    },
+    {
+      "blinded_id": "HV-029",
+      "domain": "customer_support",
+      "sample_sha256": "7d4d60b5ac88792b83defd5bf0ab8d5b1aff14580c407b4e7ed26adb97ab4d06"
+    },
+    {
+      "blinded_id": "HV-030",
+      "domain": "shopping_assistant",
+      "sample_sha256": "f139f4a832996e430bb2d87ccaac32762ac1b4a1c2c42024b00fd5338a25aa76"
+    }
+  ],
+  "sealed_mapping_sha256": "f37a826e2105bcbd27d5271e0955fcda90d191284a2711dd30ca6ab594a4014f",
+  "two_independent_human_raters_required": true,
+  "validation_seed": 30072026
+}

@@ -1,0 +1,347 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-020",
+  "conversation": [
+    {
+      "content": "Hi, I want to return the wireless headphones from order ORD-7106. I changed my mind.",
+      "role": "user"
+    },
+    {
+      "content": "The return preview for the wireless headphones is:\n\n- Headphones price: $249  \n- Allocated promotion: −$8  \n- Restocking fee: −$37  \n- Gold restocking discount: +$18  \n- Free-shipping clawback: −$8  \n- **Refund: $214 to your original payment method**\n\nNothing has been processed yet. Would you like me to proceed with these terms?",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "order_id": "ORD-7106"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_003",
+            "delivery_date": "2026-06-05T14:00:00",
+            "delivery_promised_date": "2026-06-05T18:00:00",
+            "discount_amount": 10,
+            "discount_code": "SAVE10",
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10128",
+                "item_status": "delivered",
+                "order_id": "ORD-7106",
+                "product": {
+                  "category": "electronics",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "SoundMax Wireless Headphones",
+                  "price": 249,
+                  "product_id": "PROD-3128",
+                  "return_window_days": 15,
+                  "warranty_months": 12
+                },
+                "product_id": "PROD-3128",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 249
+              },
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10129",
+                "item_status": "delivered",
+                "order_id": "ORD-7106",
+                "product": {
+                  "category": "clothing",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "Premium Cotton Shirt",
+                  "price": 59,
+                  "product_id": "PROD-3129",
+                  "return_window_days": 30,
+                  "warranty_months": 0
+                },
+                "product_id": "PROD-3129",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 59
+              }
+            ],
+            "order_date": "2026-06-01T10:00:00",
+            "order_id": "ORD-7106",
+            "payment_details": {
+              "credit_card": 298
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 0,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 308,
+            "total_paid": 298,
+            "tracking_number": "TRK84547268"
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "cust_003"
+          },
+          "name": "get_customer",
+          "result": {
+            "account_created": "2021-11-20",
+            "benefits": {
+              "compensation_multiplier": "1.5x",
+              "prime_shipping": true,
+              "restocking_fee_waiver": false,
+              "return_window_extension": "+15 days"
+            },
+            "customer_id": "cust_003",
+            "email": "sarah.w@example.com",
+            "has_prime_shipping": true,
+            "membership_tier": "gold",
+            "name": "Sarah Williams",
+            "preferred_refund_method": "original_payment",
+            "store_credit_balance": 45,
+            "total_orders": 53
+          }
+        },
+        {
+          "arguments": {
+            "topic": "return"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "agent_computes_amount": "process_return requires the agent to submit the net refund as `amount` on confirm. Compute it from the preview's component breakdown: base_item_price (after promo redistribution) minus restocking_fee plus restocking_discount minus shipping_clawback minus bulk_clawback minus repeat_surcharge minus paid_return_shipping_fee. The env writes the submitted amount verbatim — skipping a component (e.g. forgetting the Gold restocking discount) produces a wrong refund_amount and fails state scoring.",
+              "bulk_purchase_clawback": {
+                "amount": "$5 per remaining item, deducted from the return refund.",
+                "applies_when": "Order originally qualified for a bulk discount (3+ items with a discount code) AND the return drops remaining count below 3.",
+                "no_discount_code": "If order had no discount code, no clawback applies."
+              },
+              "eligibility": {
+                "already_returned": "Items already returned/exchanged/cancelled are ineligible.",
+                "defective_items": "No window restriction for defective, wrong item, or damaged in transit.",
+                "not_as_described": "Use not_as_described only for an unused/unworn item that materially differs from the listing. If the customer wore, washed, altered, or used the item and only dislikes fit, feel, texture, or preference-based qualities, classify the return as changed_mind instead."
+              },
+              "free_shipping_clawback": {
+                "amount": "$8 standard shipping fee is deducted from the return refund. This is a flat policy charge, not the original shipping cost (which was $0 on free-shipping orders).",
+                "applies_when": "Order originally qualified for free shipping (subtotal >= $100) AND the return drops remaining subtotal below $100.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: no clawback (customer-fault returns only).",
+                "paid_shipping": "If the order did not qualify for free shipping originally (subtotal < $100), no clawback applies."
+              },
+              "repeat_category_surcharge": {
+                "deduction": "Surcharge is deducted from the return refund.",
+                "different_categories": "Returns from different categories do not trigger the surcharge.",
+                "rule": "Returning 2+ items from the same product category in one order: $5 surcharge per additional return (first return in each category is free)."
+              },
+              "restocking_fee": {
+                "auto_applied": "Restocking fee and any tier discount are folded into the process_return refund amount automatically; the result reports the discount under 'restocking_discount' for transparency.",
+                "base": "15% restocking fee for opened electronics returned for changed_mind.",
+                "completed_returns": "Once a changed-mind return is completed with the applicable restocking fee, do not reverse that fee later as a courtesy or supplemental refund.",
+                "tier_discount": {
+                  "gold": "50% off the restocking fee.",
+                  "platinum": "Restocking fee fully waived.",
+                  "silver": "25% off the restocking fee.",
+                  "standard": "No discount."
+                }
+              },
+              "return_shipping_fee": {
+                "deduction": "Return shipping fee, when charged, is deducted from the return refund.",
+                "fault_exempt": "Defective, wrong item, or damaged in transit: always free return shipping.",
+                "free_threshold": "Orders >= $50: free return label provided.",
+                "low_value": "Orders with subtotal < $50: customer pays $8 return shipping fee."
+              },
+              "window_extensions": {
+                "membership": "Gold/Platinum members get +15 days",
+                "prime": "Prime shipping members get +15 additional days",
+                "seasonal": "Orders placed in November or December extend through January 31 of the following year. Seasonal extension applies if it gives more time than tier/prime extensions.",
+                "store_credit_grace": "Up to 15 days past the return window: store credit only."
+              },
+              "windows_by_category": {
+                "accessories": "30-day return window",
+                "books": "14-day return window",
+                "clothing": "30-day return window",
+                "electronics": "15-day return window",
+                "kitchen": "30-day return window"
+              }
+            },
+            "topic": "return"
+          }
+        },
+        {
+          "arguments": {
+            "confirm": false,
+            "item_id": "ITEM-10128",
+            "reason": "changed_mind"
+          },
+          "name": "process_return",
+          "result": {
+            "bulk_clawback": 0,
+            "discount_adjustment": 8,
+            "free_return_shipping": false,
+            "item_id": "ITEM-10128",
+            "paid_return_shipping_fee": 0,
+            "reason": "changed_mind",
+            "refund_amount": 214,
+            "refund_method": "original_payment",
+            "repeat_surcharge": 0,
+            "restocking_discount": 18,
+            "restocking_fee": 37,
+            "return_eligible": true,
+            "shipping_clawback": 8,
+            "shipping_refund": false,
+            "status": "preview"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Before I confirm, can you verify that the $8 promotion deduction is the SAVE10 allocation and that Gold reduces the $37 restocking fee by $18 rather than waiving it entirely?",
+      "role": "user"
+    },
+    {
+      "content": "Yes. The $8 is the headphones’ allocated share of the order’s $10 SAVE10 promotion. Gold reduces—but does not waive—the $37 restocking fee: the preview applies an $18 discount, leaving a $19 net restocking deduction. The refund remains $214 to your original payment method, and nothing has been processed yet.",
+      "role": "assistant",
+      "tool_calls": null
+    },
+    {
+      "content": "Thanks for confirming. Please process the headphones return with the $214 refund to my original payment method under those terms.",
+      "role": "user"
+    },
+    {
+      "content": "Done — the wireless headphones return has been processed. The final refund is **$214 to your original payment method**, with the agreed promotion allocation, Gold restocking discount, and shipping clawback applied.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "amount": 214,
+            "confirm": true,
+            "item_id": "ITEM-10128",
+            "reason": "changed_mind"
+          },
+          "name": "process_return",
+          "result": {
+            "bulk_clawback": 0,
+            "item_id": "ITEM-10128",
+            "paid_return_shipping_fee": 0,
+            "policy_computed_amount": 214,
+            "refund_amount": 214,
+            "refund_method": "original_payment",
+            "repeat_surcharge": 0,
+            "restocking_discount": 18,
+            "restocking_fee": 37,
+            "return_label_issued": false,
+            "shipping_clawback": 8,
+            "status": "returned"
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "customer_support",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "order_items": {
+        "ITEM-10128": {
+          "item_status": {
+            "new": "returned",
+            "old": "delivered"
+          },
+          "refund_amount": {
+            "new": 214,
+            "old": null
+          },
+          "refund_method": {
+            "new": "original_payment",
+            "old": null
+          },
+          "restocking_fee": {
+            "new": 37,
+            "old": null
+          },
+          "return_reason": {
+            "new": "changed_mind",
+            "old": null
+          }
+        }
+      },
+      "orders": {
+        "ORD-7106": {
+          "status": {
+            "new": "partially_returned",
+            "old": "delivered"
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "order_items",
+      "expected_value": "returned",
+      "field": "item_status",
+      "record_key": "ITEM-10128"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": 214,
+      "field": "refund_amount",
+      "record_key": "ITEM-10128"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "original_payment",
+      "field": "refund_method",
+      "record_key": "ITEM-10128"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": 37,
+      "field": "restocking_fee",
+      "record_key": "ITEM-10128"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "changed_mind",
+      "field": "return_reason",
+      "record_key": "ITEM-10128"
+    },
+    {
+      "entity_type": "orders",
+      "expected_value": "partially_returned",
+      "field": "status",
+      "record_key": "ORD-7106"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "75_challenge_gold_restock_on_promo_agent_must_know_about_restocking_discount",
+      "kind": "must",
+      "requirement": "Agent must explain that the headphones refund is $214 after the SAVE10 promo allocation, the $37 restocking fee, the $18 Gold restocking discount as a partial fee reduction rather than a full waiver, and the $8 free-shipping clawback."
+    }
+  ],
+  "task_summary": "**Task:** A Gold customer is returning headphones from a SAVE10 promo order. The correct handling is to account for the promo redistribution and the normal $37 restocking deduction, then apply the $18 Gold restocking-discount adjustment rather than waiving the fee outright.\n\n**Challenge:** The subtlety is that Gold changes the economics without erasing the base fee. Weak agents forget the Gold adjustment, eliminate the restocking charge entirely as if the customer were Platinum, or lose the promo adjustment while focusing on the membership discount.",
+  "tool_calls": 5
+}

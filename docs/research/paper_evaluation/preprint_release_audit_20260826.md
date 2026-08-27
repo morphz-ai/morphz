@@ -7,7 +7,7 @@
 
 - 英文：`morphz_cognitive_symbol_evaluation_paper_draft_en_v1.md`
 - 中文：`morphz_cognitive_symbol_evaluation_paper_draft_v1.md`
-- 双语结果当前隔离分支：`codex/paper-final-20260826`；ME-07 正式结果、Mind Frame 迁移证据与 ME-08 边界已进入候选稿，等待最终一致性审计与提交
+- 双语稿已快进到 `morphz-ai-biz/main` 的 `9c79a71`；ME-07 正式结果、Mind Frame 迁移证据与 ME-08 边界已经完成机器一致性审计并提交
 - 数字与主张入口：`paper_claim_evidence_matrix_20260826.md`
 - 实验状态入口：`experiment_registry.md`
 
@@ -16,7 +16,7 @@
 | 项目 | 当前状态 | 发布要求 |
 | --- | --- | --- |
 | ME-01～ME-06 | 已完成并进入中英文稿 | 保持冻结数字、协议边界和限制条件 |
-| ME-07 | 单次正式批次 150 paired cells/450 terminal trials 已闭合：Morphz 122/150、Letta 93/150、Mem0 96/150；Mind Frame 迁移 Gate 150/150 | 报告更新评测器下的本地系统级结果及其统计边界；不得冒充官方榜分，不得把全部分差单独归因于 Mind Frame；盲化人工校准列为剩余发布质量项 |
+| ME-07 | 单次正式批次 150 paired cells/450 terminal trials 已闭合：Morphz 122/150、Letta 93/150、Mem0 96/150；Mind Frame 迁移 Gate 150/150；30 条盲化人工校准包已冻结并通过 blinding/hash Gate | 报告更新评测器下的本地系统级结果及其统计边界；不得冒充官方榜分，不得把全部分差单独归因于 Mind Frame；两名独立人工评分列为剩余发布质量项 |
 | ME-08 前 40 题 | 已冻结，Morphz 30/40、official Codex 28/40 | 只作冻结子集历史，不作为最终主结果 |
 | ME-08 后 49 题 | 已完成，Morphz 40/49、official Codex 45/49 | 与前 40 的身份和任务集合核验后合并 |
 | ME-08 历史完整 89 题 | 已完成，Morphz 70/89、Codex 73/89；差 −3.37pp，`p=0.678` | 保留为原始 Runtime、并发 1 的同环境 paired 历史结果；不得与后修复运行拼接 |
@@ -37,9 +37,11 @@ ME-07、历史完整 89 题、`ad60e` Morphz-only 刷新及 `4bbc3d63` 当前 Ru
 8. 复现入口与最终 artifact 路径；
 9. `experiment_registry.md` 和主张—证据矩阵。
 
-最终稿全文不得残留：`running`、`in progress`、`interim`、`partial`、`运行中`、
-`正在整合最终实验结果`、`完整结果另行闭合`、`剩余 49 题`，或把 30/40 与 28/40
-写成完整结论的句子。前 40 题可以作为审计历史保留，但必须明确为冻结子集。
+最终公开稿关于 ME-01～ME-08 的结果不得残留：`running`、`in progress`、`interim`、
+`partial`、`运行中`、`正在整合最终实验结果`、`完整结果另行闭合`、`剩余 49 题`，或把
+30/40 与 28/40 写成完整结论的句子。前 40 题可以作为审计历史保留，但必须明确为冻结子集。
+ME-09 在当前稿中只能作为明确排除于结果之外的后续实验状态；公开定稿时应根据其最终状态
+更新或移除内部进度行。
 
 ## 4. Runtime release-r3 与 ME-08 报告 Gate
 
@@ -72,7 +74,7 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。本轮 `ad60e` Runtime
 
 ## 5. 已完成的静态审计
 
-- 中英文稿均定义并使用参考文献 `[1]`～`[23]`，无缺号引用；
+- 中英文稿均定义参考文献 `[1]`～`[25]`，正文引用集合与定义一致，无缺号引用；
 - 未发现 `/Users`、`/private` 或 `file://` 本机路径泄漏；
 - 论文主术语统一为“非确定性认知求值 / nondeterministic cognitive evaluation”；
 - “开放求值 / open evaluation”只用于说明为何不采用该宽泛术语；
@@ -100,10 +102,12 @@ ME-08 主口径必须来自官方 verifier `raw_reward`。本轮 `ad60e` Runtime
 - [x] `ad60e` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
 - [x] `4bbc3d63` Runtime Morphz-only 89 题运行闭合并通过 official reward、任务唯一性、身份与哈希 Gate；
 - [x] ME-07 九份快照、450-trial 三臂正式批次、统计和只读 Mind Frame trace 审计闭合；
-- [ ] ME-07 预留 30 条盲化人工评测器校准闭合；
+- [x] ME-07 预留 30 条盲化人工评测器校准包已冻结，样本/量表哈希与 blinding 扫描通过；
+- [ ] ME-07 两名独立人工评审完成评分，并报告一致率与分歧类型；
 - [x] 新结果进入主张—证据矩阵、实验登记及中英文摘要/正文/结论；
-- [ ] 双语数字与限定语最终机器审计一致；
-- [ ] 最终全文无临时状态、占位数字、失效链接、本机路径、密钥或 Provider 凭据；
+- [x] 双语核心数字、统计量、Runtime 边界与限定语最终机器审计一致；
+- [x] 当前候选稿无 ME-01～ME-08 临时状态、占位数字、本机路径、密钥或 Provider 凭据；
+- [ ] 公开导出前复核外部链接，并依据 ME-09 最终状态移除或改写内部进度行；
 - [ ] 作者元数据由用户确认；
 - [x] `git diff --check`、引用集合、Markdown 结构和限定范围提交通过；
 - [ ] 最终中英文稿由用户人工通读后再公开。

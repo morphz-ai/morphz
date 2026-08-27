@@ -1,0 +1,215 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-001",
+  "conversation": [
+    {
+      "content": "Hi — I'm coming back to finish my checkout. Can you tell me what my cart total is right now?",
+      "role": "user"
+    },
+    {
+      "content": "Your cart’s **displayed total is $849**, but it appears stale:\n\n- **1 × SlimBook Air 13:** $799 current price, down from $849\n- Discounts: $0\n- Gift wrap: $0\n- Shipping: not selected\n\nBased on the current line price, the cart should reconcile to **$799 before shipping and tax**. The subtotal and total fields are still showing the previous $849 price—a **$50 mismatch**.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "customer_id": "shop_004"
+          },
+          "name": "get_cart",
+          "result": {
+            "applied_promo_codes": [],
+            "cart_id": "CART-shop_004",
+            "customer_id": "shop_004",
+            "discount_amount": 0,
+            "gift_wrap_fee": 0,
+            "items": [
+              {
+                "cart_item_id": "CI-A1",
+                "gift_wrap": false,
+                "line_total": 799,
+                "product_id": "SP-1001",
+                "product_name": "SlimBook Air 13",
+                "quantity": 1,
+                "unit_price": 799
+              }
+            ],
+            "loyalty_discount": 0,
+            "loyalty_points_redeemed": 0,
+            "shipping_cost": 0,
+            "shipping_option": null,
+            "subtotal": 849,
+            "total": 849
+          }
+        },
+        {
+          "arguments": {
+            "product_id": "SP-1001"
+          },
+          "name": "get_product_details",
+          "result": {
+            "backorder_available": false,
+            "brand": "SlimBook",
+            "category": "electronics",
+            "compatible_with": [],
+            "description": "Lightweight 13-inch laptop built for students. All-day battery and durable chassis.",
+            "gift_wrap_available": true,
+            "in_stock": true,
+            "name": "SlimBook Air 13",
+            "previous_price": 849,
+            "price": 799,
+            "product_id": "SP-1001",
+            "rating": 4.5,
+            "review_count": 1240,
+            "shipping_days": 3,
+            "shipping_estimate": "3 business days (standard)",
+            "specs": {
+              "battery_hours": 14,
+              "ram": "8GB",
+              "screen_inches": 13,
+              "ssd": "256GB",
+              "weight_lb": 2.6
+            },
+            "stock_quantity": 40,
+            "subcategory": "laptop",
+            "variants": null
+          }
+        }
+      ]
+    },
+    {
+      "content": "That’s good news—thanks for catching the $50 price drop. Please update my cart now so it reflects $799 and I’m charged the current price, not the old $849.",
+      "role": "user"
+    },
+    {
+      "content": "Done — your cart now reflects the current price:\n\n- **SlimBook Air 13 × 1:** $799\n- **Subtotal:** $799\n- **Current cart total:** **$799**\n- **Shipping:** Not selected\n\nThe stale **$849** total is gone, so you’re now set to be charged **$799 before shipping and any applicable tax**—a **$50 reduction**.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "customer_id": "shop_004",
+            "gift_wrap": false,
+            "product_id": "SP-1001",
+            "quantity": 1
+          },
+          "name": "update_cart_item",
+          "result": {
+            "cart_item_id": "CI-A1",
+            "cart_subtotal": 799,
+            "cart_total": 799,
+            "gift_wrap": false,
+            "product_id": "SP-1001",
+            "product_name": "SlimBook Air 13",
+            "quantity": 1,
+            "status": "updated",
+            "variant_id": null
+          }
+        },
+        {
+          "arguments": {
+            "customer_id": "shop_004"
+          },
+          "name": "get_cart",
+          "result": {
+            "applied_promo_codes": [],
+            "cart_id": "CART-shop_004",
+            "customer_id": "shop_004",
+            "discount_amount": 0,
+            "gift_wrap_fee": 0,
+            "items": [
+              {
+                "cart_item_id": "CI-A1",
+                "gift_wrap": false,
+                "line_total": 799,
+                "product_id": "SP-1001",
+                "product_name": "SlimBook Air 13",
+                "quantity": 1,
+                "unit_price": 799
+              }
+            ],
+            "loyalty_discount": 0,
+            "loyalty_points_redeemed": 0,
+            "shipping_cost": 0,
+            "shipping_option": null,
+            "subtotal": 799,
+            "total": 799
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "shopping_assistant",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "carts": {
+        "CART-shop_004": {
+          "subtotal": {
+            "new": 799,
+            "old": 849
+          },
+          "total": {
+            "new": 799,
+            "old": 849
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "carts",
+      "expected_value": 799,
+      "field": "subtotal",
+      "record_key": "CART-shop_004"
+    },
+    {
+      "entity_type": "carts",
+      "expected_value": 799,
+      "field": "total",
+      "record_key": "CART-shop_004"
+    },
+    {
+      "entity_type": "cart_items",
+      "expected_fields": {},
+      "match_fields": {
+        "customer_id": "shop_004",
+        "gift_wrap": false,
+        "product_id": "SP-1001",
+        "quantity": 1
+      }
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "tool_calls",
+      "id": "checked_current_price_via_tool",
+      "kind": "must",
+      "requirement": "Agent called get_product (or equivalent) for SP-1001 — not just get_cart. Relying only on get_cart's cached subtotal fails the price-recheck requirement."
+    },
+    {
+      "evidence": "conversation",
+      "id": "detected_and_flagged_price_drop",
+      "kind": "must",
+      "requirement": "Agent proactively told the customer that SP-1001's price dropped from $849 (previous) to $799 (current). Must cite both numbers or the $50 delta. Silent substitution of the lower price without acknowledging the drop is acceptable but sub-optimal; failing to cite the drop explicitly when quoting the total fails. Quoting the stale $849 without flagging also fails."
+    },
+    {
+      "evidence": "conversation",
+      "id": "quoted_correct_current_total",
+      "kind": "must",
+      "requirement": "When asked the total, agent gave the correct CURRENT total of $799 — not the stale $849, not a fabricated middle number."
+    },
+    {
+      "evidence": "tool_calls",
+      "id": "no_unsolicited_new_writes",
+      "kind": "must_not",
+      "requirement": "Agent did NOT call set_shipping_option or redeem_loyalty_points. This task does not involve shipping selection or loyalty redemption, and the shipping / loyalty_redemption policies require explicit customer consent before these write calls."
+    }
+  ],
+  "task_summary": "**Task:** A returning Standard customer (shop_004) has a pre-seeded cart with SP-1001 SlimBook Air 13. The cart's stored subtotal is STALE at $849; the current price has dropped to $799 (previous_price=$849). Customer asks for the total. Agent must verify current prices via get_product, detect the price drop via previous_price field, proactively tell customer about the drop, and ensure final cart reflects $799.\n\n**Challenge:** Stale-seeded total on price drop — INVERSE of T49 (price increase). Pitfall 1: agent trusts get_cart's stale $849 subtotal and silently overcharges. Pitfall 2: agent sees the drop but doesn't surface it. Pitfall 3: agent states $799 without recomputing the stored cart total. Pitfall 4: agent fabricates the price history. Tests whether agent treats seeded cart numbers as authoritative vs. as cached values that need price-recheck on resumption. A deployment risk: customers who come back after a price drop should benefit from the lower price, not pay the stale higher one.",
+  "tool_calls": 4
+}

@@ -1,0 +1,304 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-010",
+  "conversation": [
+    {
+      "content": "I need to move booking BK-1000 to July 5 for personal reasons. Which ends up cheaper: changing it or canceling and rebooking?",
+      "role": "user"
+    },
+    {
+      "content": "**Changing the booking is cheaper by $6.**\n\nFor **UA101**, SFO → YYZ on **July 5 at 3:00 PM**, nonstop, economy:\n\n- **Change BK-1000:**  \n  $100 change fee − $100 fare decrease = **$0 additional**\n\n- **Cancel and rebook:**  \n  - Cancellation fee: **$106**\n  - Net refund: **$424**\n  - New fare: **$430**\n  - Net additional cost: $430 − $424 = **$6**\n\nThe change preview retains your aisle seat preference, standard meal, Wi‑Fi, and extra legroom. **No changes or cancellations have been made.**",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "booking_id": "BK-1000"
+          },
+          "name": "get_booking",
+          "result": {
+            "add_extra_legroom": true,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booked_at": "2026-06-07T10:00:00",
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "cancellation_fee": null,
+            "cash_amount": 0,
+            "change_fee": null,
+            "delay_compensation": null,
+            "departure_time": "2026-06-30T10:15:00",
+            "destination": "YYZ",
+            "fare_difference": null,
+            "flight_id": "UA100",
+            "meal_preference": "standard",
+            "origin": "SFO",
+            "paid_checked_bags": 0,
+            "payment_method": "credit_card",
+            "points_used": 0,
+            "price_paid": 530,
+            "refund_amount": null,
+            "route_type": "international",
+            "seat_type": "aisle",
+            "status": "confirmed",
+            "user_id": "user_003"
+          }
+        },
+        {
+          "arguments": {
+            "booking_id": "BK-1000",
+            "confirm": false
+          },
+          "name": "cancel_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "cancellation_fee": 106,
+            "reason": "International economy cancellation fee: max($75, 20% of $530) = $106",
+            "refund_amount": 424,
+            "status": "preview"
+          }
+        },
+        {
+          "arguments": {
+            "airline": "",
+            "date": "2026-07-05",
+            "destination": "YYZ",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "SFO",
+            "time_range": "early_morning"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "airline": "",
+            "date": "2026-07-05",
+            "destination": "YYZ",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "SFO",
+            "time_range": "morning"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "airline": "",
+            "date": "2026-07-05",
+            "destination": "YYZ",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "SFO",
+            "time_range": "afternoon"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [
+              {
+                "airline_code": "UA",
+                "arrival_time": "2026-07-05T20:42:00",
+                "cabin_prices": {
+                  "business": 1210,
+                  "economy": 430
+                },
+                "departure_time": "2026-07-05T15:00:00",
+                "destination": "YYZ",
+                "duration_minutes": 342,
+                "flight_id": "UA101",
+                "origin": "SFO",
+                "route_type": "international",
+                "status": "scheduled",
+                "stops": 0
+              }
+            ]
+          }
+        },
+        {
+          "arguments": {
+            "airline": "",
+            "date": "2026-07-05",
+            "destination": "YYZ",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "SFO",
+            "time_range": "evening"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "airline": "",
+            "date": "2026-07-05",
+            "destination": "YYZ",
+            "max_price": -1,
+            "max_stops": 2,
+            "origin": "SFO",
+            "time_range": "red_eye"
+          },
+          "name": "search_flights",
+          "result": {
+            "flights": [],
+            "message": "No flights found matching your criteria."
+          }
+        },
+        {
+          "arguments": {
+            "add_extra_legroom": true,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "personal",
+            "confirm": false,
+            "delay_compensation": "none",
+            "flight_id": "UA101",
+            "meal_preference": "standard",
+            "paid_checked_bags": 0,
+            "seat_type": "aisle"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 100,
+            "fare_difference": -100,
+            "flight_id": "UA101",
+            "price_paid": 530,
+            "status": "preview"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Please proceed with the direct change to UA101 on July 5 at 3:00 PM for $0 additional. Keep all current BK-1000 preferences exactly as they are, including the existing insurance setting.",
+      "role": "user"
+    },
+    {
+      "content": "Booking **BK-1000** has been changed successfully.\n\n- **Flight:** UA101, SFO → YYZ, nonstop\n- **Departure:** July 5, 2026 at 3:00 PM\n- **Arrival:** July 5 at 8:42 PM\n- **Additional cost:** **$0**  \n  - Change fee: $100\n  - Fare decrease: −$100\n  - Total paid remains: $530\n\n**Preferences retained exactly:**\n- Economy cabin\n- Aisle seat\n- Standard meal\n- Wi‑Fi: Yes\n- Extra legroom: Yes\n- Travel insurance: **No**\n- Extra paid checked bags: 0",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "add_extra_legroom": true,
+            "add_insurance": false,
+            "add_wifi": true,
+            "booking_id": "BK-1000",
+            "cabin_class": "economy",
+            "change_reason": "personal",
+            "confirm": true,
+            "delay_compensation": "none",
+            "flight_id": "UA101",
+            "meal_preference": "standard",
+            "paid_checked_bags": 0,
+            "seat_type": "aisle"
+          },
+          "name": "update_booking",
+          "result": {
+            "booking_id": "BK-1000",
+            "change_fee": 100,
+            "changes_applied": [
+              "flight_id",
+              "change_reason"
+            ],
+            "fare_difference": -100,
+            "price_paid": 530,
+            "status": "updated"
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "travel",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "bookings": {
+        "BK-1000": {
+          "change_fee": {
+            "new": 100,
+            "old": null
+          },
+          "fare_difference": {
+            "new": -100,
+            "old": null
+          },
+          "flight_id": {
+            "new": "UA101",
+            "old": "UA100"
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "bookings",
+      "expected_value": 100,
+      "field": "change_fee",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": -100,
+      "field": "fare_difference",
+      "record_key": "BK-1000"
+    },
+    {
+      "entity_type": "bookings",
+      "expected_value": "UA101",
+      "field": "flight_id",
+      "record_key": "BK-1000"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "strategy_personal_international_change_cheaper_far_out_compare_both_paths",
+      "kind": "must",
+      "requirement": "Agent must compare the direct-change path against the cancel-and-rebook path before recommending or executing, using the direct-change fee and fare difference on one side and the cancellation fee, refund, and replacement fare on the other side."
+    },
+    {
+      "evidence": "conversation",
+      "id": "strategy_personal_international_change_cheaper_far_out_choose_correct_strategy",
+      "kind": "must",
+      "requirement": "Agent must recommend direct change as the cheaper valid option for this booking."
+    },
+    {
+      "evidence": "conversation",
+      "id": "strategy_personal_international_change_cheaper_far_out_avoid_wrong_strategy",
+      "kind": "must_not",
+      "requirement": "Agent must not frame cancel and rebook as the cheaper valid option for this scenario."
+    },
+    {
+      "evidence": "conversation",
+      "id": "strategy_personal_international_change_cheaper_far_out_international_fee_reasoning",
+      "kind": "must",
+      "requirement": "Agent must apply the international personal-change fee for the Toronto route — quoting the correct $100 economy international fee (the >7-day tier), not the $75 domestic figure — when presenting the direct-change cost. Quoting the correct $100 international fee satisfies this; a separate spoken statement that the route is \"international\" is not separately required."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "strategy_personal_international_change_cheaper_far_out_no_premature_write",
+      "kind": "must_not",
+      "requirement": "Agent must not cancel, create, or update any booking before comparing both paths and identifying the cheaper valid strategy."
+    }
+  ],
+  "task_summary": "Traveler wants the cheaper valid way to move an existing booking to 2026-07-05 and explicitly asks the agent to compare direct change versus cancel-and-rebook. Correct resolution: direct change is the cheaper valid path in this scenario because its fee burden is lower than cancel and rebook.\n\nChallenge: This tests whether the agent preserves international route semantics inside a strategy comparison on a Canada itinerary where direct change remains cheaper than canceling outright.",
+  "tool_calls": 9
+}

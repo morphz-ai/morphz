@@ -1,0 +1,295 @@
+{
+  "automated_result_hidden": true,
+  "blinded_id": "HV-019",
+  "conversation": [
+    {
+      "content": "ORD-7221 says delivered, but the phone case is not here. There was no signature.",
+      "role": "user"
+    },
+    {
+      "content": "I verified that ORD-7221 was marked delivered with **no signature required or on file**. Because the order is under $500, the missing **UltraShield Phone Case** qualifies for an immediate resolution—either:\n\n- A replacement, or  \n- A refund\n\nWhich would you prefer? Nothing has been processed yet.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "topic": "shipping"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "damaged": {
+                "fragile_bonus": "Fragile items damaged in transit qualify for a separate $10 goodwill credit, issued as a refund in addition to the return refund.",
+                "rule": "Damaged in transit: full refund or replacement."
+              },
+              "late_delivery_compensation": {
+                "calculation_order": "1) Compute base credit by days-late tier. 2) Apply tier multiplier to base credit only. 3) Add shipping refund (if 6+ days late) using order.shipping_cost. 4) Add goodwill (if 3+ prior issues or fragile damage). 5) Apply loyalty bonus if eligible. 6) Apply 50%-of-order cap on the sum.",
+                "loyalty_bonus": "Platinum members with 50+ total orders: one-time $50 loyalty bonus on next compensation claim. Confirm with customer if already redeemed.",
+                "max_cap": "Maximum compensation: 50% of order total (rounded down).",
+                "repeated_issues": "3+ PRIOR issues in 6 months (not counting current incident): additional $25 goodwill credit.",
+                "shipping_refund_basis": "When refunding shipping, refund the actual shipping cost the customer was charged on the order — read order.shipping_cost. Standard policy charges $0 on free-shipping orders (subtotal >= $100) and $8 otherwise.",
+                "tier_multipliers": {
+                  "gold": "1.5x multiplier on the base late-delivery credit only (NOT on shipping refund or goodwill). Rounded down (e.g., int(15*1.5) = 22).",
+                  "platinum": "2x multiplier on the base late-delivery credit only. Rounded down."
+                },
+                "tiers": {
+                  "1_to_2_days_late": "$5 credit",
+                  "3_to_5_days_late": "$15 credit",
+                  "6_plus_days_late": "Full shipping refund + $15 credit"
+                }
+              },
+              "lost_in_transit": {
+                "over_500": "Lost in transit (>=$500): carrier claim required first.",
+                "stuck_7_days": "No tracking update for 7+ days: treat as lost.",
+                "under_500": "Lost in transit (<$500): immediate reship or refund."
+              },
+              "not_received": {
+                "over_500": "Delivered but not received (>=$500): mandatory investigation (3-5 business days).",
+                "signature_on_file": "Delivery with signature on file: claim denied.",
+                "under_500": "Delivered but not received (<$500): reship or refund."
+              }
+            },
+            "topic": "shipping"
+          }
+        },
+        {
+          "arguments": {
+            "order_id": "ORD-7221"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_002",
+            "delivery_date": "2026-07-07T12:00:00",
+            "delivery_promised_date": "2026-06-05T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10221",
+                "item_status": "delivered",
+                "order_id": "ORD-7221",
+                "product": {
+                  "category": "accessories",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "UltraShield Phone Case",
+                  "price": 35,
+                  "product_id": "PROD-4231",
+                  "return_window_days": 30,
+                  "warranty_months": 3
+                },
+                "product_id": "PROD-4231",
+                "quantity": 1,
+                "refund_amount": null,
+                "refund_method": null,
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 35
+              }
+            ],
+            "order_date": "2026-06-01T10:00:00",
+            "order_id": "ORD-7221",
+            "payment_details": {
+              "credit_card": 43
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 35,
+            "total_paid": 43,
+            "tracking_number": "TRK53616156"
+          }
+        }
+      ]
+    },
+    {
+      "content": "I’d prefer a refund to my original payment method, please.",
+      "role": "user"
+    },
+    {
+      "content": "Your refund has been completed:\n\n- **Refund:** $43\n- **Destination:** Original credit card\n- **Breakdown:** $35 phone case + $8 shipping\n- **Return required:** No\n\nNo replacement was created.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "topic": "refund"
+          },
+          "name": "get_policies",
+          "result": {
+            "rules": {
+              "amount": {
+                "full_refund": "Full refund for defective, wrong item, or damaged in transit.",
+                "outside_window": "Outside return window but within store-credit grace: store credit only.",
+                "promo_redistribution": "If a promo/coupon was used: discount allocated proportionally by item price. Refund = item_price - (discount * item_price / subtotal).",
+                "shipping_refund": "When refunding shipping (defective/wrong/damaged returns, 6+-days-late compensation), refund the actual shipping cost the customer was charged on the order — read order.shipping_cost and refund that amount. Standard policy: $0 on free-shipping orders (subtotal >= $100), $8 otherwise. NOT for buyer's remorse."
+              },
+              "goodwill_credit": "Goodwill credits (e.g., fragile-item damage bonus) are issued as a refund with the credit amount.",
+              "method": {
+                "original_payment": "Default refund method when item was paid for and is being returned for fault.",
+                "store_credit": "Required for: gift returns (at current product price), outside-window grace returns, and exchange-cheaper differences.",
+                "store_credit_only_constraint": "When a return is issued under the store-credit-only rule (gift return OR outside-window grace), the refund method cannot be changed back to original_payment afterward. process_refund will reject any attempt to flip the method on those returns."
+              },
+              "price_match": "If product price drops within 7 days of delivery, refund the difference (no return required)."
+            },
+            "topic": "refund"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 43,
+            "confirm": false,
+            "item_id": "ITEM-10221",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10221",
+            "refund_amount": 43,
+            "refund_method": "original_payment",
+            "status": "preview"
+          }
+        },
+        {
+          "arguments": {
+            "amount": 43,
+            "confirm": true,
+            "item_id": "ITEM-10221",
+            "refund_method": "original_payment"
+          },
+          "name": "process_refund",
+          "result": {
+            "item_id": "ITEM-10221",
+            "mode": "refund",
+            "refund_amount": 43,
+            "refund_method": "original_payment",
+            "status": "refunded",
+            "total_goodwill_credit": 0
+          }
+        },
+        {
+          "arguments": {
+            "order_id": "ORD-7221"
+          },
+          "name": "get_order",
+          "result": {
+            "customer_id": "cust_002",
+            "delivery_date": "2026-07-07T12:00:00",
+            "delivery_promised_date": "2026-06-05T18:00:00",
+            "discount_amount": 0,
+            "discount_code": null,
+            "gift_sender": null,
+            "is_gift": false,
+            "items": [
+              {
+                "goodwill_credit": 0,
+                "goodwill_credit_method": null,
+                "item_id": "ITEM-10221",
+                "item_status": "delivered",
+                "order_id": "ORD-7221",
+                "product": {
+                  "category": "accessories",
+                  "current_price": null,
+                  "in_stock": true,
+                  "name": "UltraShield Phone Case",
+                  "price": 35,
+                  "product_id": "PROD-4231",
+                  "return_window_days": 30,
+                  "warranty_months": 3
+                },
+                "product_id": "PROD-4231",
+                "quantity": 1,
+                "refund_amount": 43,
+                "refund_method": "original_payment",
+                "replacement_item_id": null,
+                "restocking_fee": null,
+                "return_label_issued": false,
+                "return_reason": null,
+                "store_credit_only": false,
+                "unit_price": 35
+              }
+            ],
+            "order_date": "2026-06-01T10:00:00",
+            "order_id": "ORD-7221",
+            "payment_details": {
+              "credit_card": 43
+            },
+            "payment_method": "credit_card",
+            "shipping_cost": 8,
+            "shipping_method": "standard",
+            "shipping_status": "delivered",
+            "signature_on_file": null,
+            "signature_required": false,
+            "status": "delivered",
+            "subtotal": 35,
+            "total_paid": 43,
+            "tracking_number": "TRK53616156"
+          }
+        }
+      ]
+    },
+    {
+      "content": "[TASK_DONE]",
+      "role": "user"
+    }
+  ],
+  "domain": "customer_support",
+  "protocol_id": "ME-07-STATE-Bench-public-agent-systems-v2",
+  "state_diff": {
+    "created": {},
+    "deleted": {},
+    "modified": {
+      "order_items": {
+        "ITEM-10221": {
+          "refund_amount": {
+            "new": 43,
+            "old": null
+          },
+          "refund_method": {
+            "new": "original_payment",
+            "old": null
+          }
+        }
+      }
+    }
+  },
+  "state_requirements": [
+    {
+      "entity_type": "order_items",
+      "expected_value": 35,
+      "field": "refund_amount",
+      "record_key": "ITEM-10221"
+    },
+    {
+      "entity_type": "order_items",
+      "expected_value": "original_payment",
+      "field": "refund_method",
+      "record_key": "ITEM-10221"
+    }
+  ],
+  "task_requirements": [
+    {
+      "evidence": "conversation",
+      "id": "hard_shipping_low_value_not_received_refund_ask_resolution",
+      "kind": "must",
+      "requirement": "Agent must ask the customer whether they want a refund or a reship before processing one."
+    },
+    {
+      "evidence": "conversation_or_tool_calls",
+      "id": "hard_shipping_low_value_not_received_refund_shipping",
+      "kind": "must",
+      "requirement": "Agent must identify from order/shipping facts that this is a delivered-not-received claim under $500 with no signature, so refund or reship is available."
+    }
+  ],
+  "task_summary": "Low-value delivered phone case was not received and has no signature. Policy allows immediate refund/reship; customer chooses refund.",
+  "tool_calls": 6
+}
