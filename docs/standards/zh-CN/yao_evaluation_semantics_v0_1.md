@@ -18,7 +18,7 @@ lowering、悬挂、持久化、恢复、失败、并行 join 与 Program Value 
 | 根 | Evaluation Loop 所有者 | 语义角色 |
 | --- | --- | --- |
 | `eval` | Runtime | 确定性控制、持久 Effect、带类型数据流 |
-| `infer` | 模型 | Runtime 权威约束下的开放语义判断 |
+| `infer` | 模型 | Runtime 权威约束下的非确定性认知求值 |
 
 两者消费和产生相同 Yao Value。所有权只决定谁选择下一语义步骤，不改变 Value、Effect、
 Capability、因果身份和终态 Outcome 的含义。Runtime Control Loop 始终负责准入、能力
@@ -52,11 +52,19 @@ Effect Request 的稳定身份由父 Plan 与单调 Effect Sequence 派生。Run
 相同身份；只有完全匹配的 Pending Identity 与 Effect Kind 才能恢复父级。完全重复的结果
 幂等，过期或外来结果必须拒绝。授权在准入与交接时都检查，以后者为准。
 
-## 6. 嵌套 inference
+## 6. 模型持有的正文求值
 
-`eval` 内的 `infer` 创建因果相连的模型 Evaluation。请求包含已求值参数、结果契约、证据
-工具上界、父 Program 身份与源码 Span。只有终态 Child Outcome 能恢复父级；Runtime
-必须将其解码为声明类型。Provider 推理文本、部分输出或未经验证的自我声明不得成为终值。
+`eval` 内的 `infer` 创建因果相连的模型 Evaluation。请求包含经过完整校验的 Yao `infer`
+正文，而不是由 Runtime 重新概括出的 task。模型依据共享的 Language Card 求值同一个正文，
+并且只能请求经过能力结算后仍然可用、在正文中静态可见的 Tool。
+
+请求还包含结果契约、父 Program 身份、源码 Span，以及 `(captures ...)` 显式列出的父程序
+绑定值。这些名称构成该边界完整的词法披露集合，对应值可以发送给当前配置的模型服务商；
+Runtime 不得序列化或发送任何其他父程序绑定。进程重启后，必须从持久状态重建字节一致的
+程序、捕获值、Tool 范围和结果契约。
+
+只有终态 Child Outcome 能恢复父级；Runtime 必须将其解码为声明类型。Provider 推理文本、
+部分输出或未经验证的自我声明不得成为终值。
 
 ## 7. 结构化并行
 
@@ -90,11 +98,13 @@ happens-before。
 源码与 Span、生成 Evaluation/Attempt/Model Route/Terminal Event、声明与推导的 Output/
 Effect Contract、创建时 Capability Ceiling、Validator Version 与诊断。
 
-`run` 创建绑定 Program Value Hash 的持久 Child Plan，重新计算当前 Capability 并与历史
-Ceiling 取交集。已经撤销的权威不能由旧 Program Value 恢复。父级等待 Child Plan 终态；
-Child 不得访问调用方局部绑定、修改父 Machine 或扩张聚合 Budget，只能继承 Runtime Profile
-明确允许的不可变 Host Environment。Morphz v0.1 把剩余聚合 Budget 转移给 Child，Join 后
-不返还未使用额度；该保守规则在重启前后保持一致。
+`run` 创建绑定 Program Value Hash 的持久子执行，重新计算当前 Capability 并与历史
+Ceiling 取交集。已经撤销的权威不能由旧 Program Value 恢复。`eval` 根由 Runtime 按 Plan
+控制推进；`infer` 根由持久控制状态立即发出一个正式子 Evaluation，并在其有类型终值返回后
+完成汇合，Runtime 不会把其中的认知工作伪装成确定性求值。父级等待子执行终态；Child 不得
+访问调用方局部绑定、修改父 Machine 或扩张聚合 Budget，只能继承 Runtime Profile 明确允许
+的不可变 Host Environment。Morphz v0.1 把剩余聚合 Budget 转移给 Child，Join 后不返还
+未使用额度；该保守规则在重启前后保持一致。
 
 ## 9. Host Effect 收据
 

@@ -31,7 +31,8 @@ interpreted as normative requirements.
 A conforming Yao Core implementation MUST preserve these properties:
 
 1. **Explicit evaluation ownership.** A program root is either `eval` or `infer`.
-2. **Typed nondeterministic boundaries.** Every nested inference has a declared result type.
+2. **Typed nondeterministic boundaries.** Every inference has a statically known result type,
+   either inferred from its body or narrowed by an explicit result contract.
 3. **Effect visibility.** Effects are statically discoverable upper bounds, not hidden inside pure
    expressions.
 4. **Authority separation.** A declaration requests or narrows authority; it never grants it.
@@ -65,11 +66,12 @@ A program contains exactly one top-level artifact:
 
 ```lisp
 (eval DECLARATION... BODY)
-(infer DECLARATION... INFER-ARGUMENT...)
+(infer DECLARATION... BODY)
 ```
 
 `eval` gives the Runtime ownership of the Evaluation Loop. `infer` gives the model ownership of the
-Evaluation Loop while leaving the Runtime Control Loop authoritative.
+Evaluation Loop while leaving the Runtime Control Loop authoritative. Apart from the owner, both
+roots use the same Yao body language, parser, type system, effect system, and result values.
 
 Declarations precede the body and MAY include, in this order:
 
@@ -117,7 +119,10 @@ required.
 non-forgeability; profiles define concrete kinds and operations.
 
 `Program<T, E>` is an immutable validated Program Value whose terminal value is assignable to `T`
-and whose statically inferred effect set is a subset of `E`.
+and whose effective execution effect set is a subset of `E`. For an `eval` root this is its
+statically inferred effect set. For an `infer` root, first-class execution through `run` adds the
+model-ownership transition as an `infer` effect, because it creates a new formal Evaluation from
+the caller's perspective.
 
 `Record{...}` is a compiler-produced structural record type used for results such as `par` whose
 field names arise from the containing expression. User-declared records remain nominal.
@@ -287,19 +292,37 @@ changed.
 Argument fields and results MUST be checked against the Tool schema. A `call` has effect
 `(tool TOOL)`.
 
-### 9.2 Typed inference
+### 9.2 Model-owned evaluation
 
 ```lisp
 (infer
-  (task EXPR)
-  (tools TOOL...)
-  (returns TYPE)
-  (ARG EXPR...)...)
+  [(captures NAME...)]
+  [(returns TYPE)]
+  BODY)
 ```
 
-`task` and `returns` are required for nested typed inference. `(tools ...)` is optional and narrows
-the available evidence tools. The Runtime MUST decode and validate the terminal result before it
-enters deterministic data flow. Failure to decode is a classified inference failure.
+`BODY` is one complete Yao expression. Replacing an outer `eval` with `infer` changes which
+evaluator owns that expression; it does not lower the expression to a fixed task/evidence request.
+The same frontend MUST parse and type-check the body, and its statically visible effects remain an
+upper bound on what the model-owned Evaluation may request.
+
+At a nested ownership boundary, the body starts with an empty lexical scope. `(captures NAME...)`
+is the only source-level mechanism that imports bindings from the parent program. Every named
+binding MUST exist in the parent scope. Its typed value MAY be serialized into the internal
+Evaluation request and sent to the currently configured model provider. No unlisted parent binding
+or whole Runtime environment may be included implicitly. `captures` authorizes disclosure of a
+value; it does not grant any Tool, Host, or object capability.
+
+Without `(returns TYPE)`, the result contract is the statically inferred type of `BODY`. For an
+ordinary value, an explicit `TYPE` MUST accept the body type. `Program<T,E>` is the one synthesis
+contract: the body describes how the model derives a quarantined Program candidate, and the
+candidate is independently parsed, typed, effect-checked, canonicalized, and persisted before it
+can become a value.
+
+Available evidence tools are derived from statically named `(call TOOL ...)` expressions in the
+body and intersected with root declarations and deployment policy. The Runtime MUST decode and
+validate the terminal result before it enters Runtime-owned data flow. Failure to decode is a
+classified inference failure.
 
 Type names are case-sensitive. Historical lowercase aliases such as `text` and `json` are not Core
 types and MUST be rejected rather than silently normalized.
@@ -336,26 +359,30 @@ An inference may return a Program Value:
 
 ```lisp
 (infer
-  (task "construct a bounded evaluation plan")
   (returns (Program Decision (effects infer (tool read))))
-  (input request))
+  (seq
+    (bind evidence (call read (path "decision-input.json")))
+    evidence))
 ```
 
-Its model transport representation is exactly one JSON object with one field:
+Its model-facing representation is exactly one raw Yao source artifact:
 
-```json
-{"source":"(eval ...)"}
+```lisp
+(eval ...)
+; or
+(infer ...)
 ```
 
-The object MUST contain no additional fields. A bare source string is not a Program Value and MUST
-be rejected. Candidate source MUST NOT be passed to a string evaluator. The Runtime MUST perform
-this admission pipeline before constructing `Program<T, E>`:
+The response MUST contain no JSON wrapper, Markdown fence, or explanatory text. Raw source is only
+a quarantined candidate, not yet a Program Value, and MUST NOT be passed to a string evaluator. The
+Runtime MUST perform this admission pipeline before constructing `Program<T, E>`:
 
 1. parse with source spans;
-2. require an explicit `eval` root;
+2. require exactly one explicit `eval` or `infer` root and preserve its evaluation owner;
 3. resolve declarations and names;
 4. type check the terminal value against `T`;
-5. infer effects and require them to be a subset of `E` and current authority;
+5. infer effects, add `infer` for a model-owned root at the first-class execution boundary, and
+   require the effective set to be a subset of `E` and current authority;
 6. enforce depth, size, effect-count, and profile budgets;
 7. canonicalize the validated representation;
 8. compute a content hash and attach provenance to the producing inference;
@@ -373,10 +400,11 @@ A Program Value executes only through:
 (run PROGRAM-EXPR)
 ```
 
-`run` revalidates current authority, creates a causally linked durable sub-plan, waits for its
-terminal result, and returns the declared output type. It MUST NOT execute by recursive in-process
-evaluation of source text. Program nesting depth and aggregate budgets MUST be bounded by the
-Runtime profile.
+`run` revalidates current authority and creates a causally linked durable child execution. An
+`eval` root advances through Runtime-owned Plan control. An `infer` root immediately suspends at a
+formal child Evaluation and joins its typed result; the durable Plan state remains only as the
+causal, budget, restart, and result boundary. It MUST NOT execute by recursive in-process evaluation
+of source text. Program nesting depth and aggregate budgets MUST be bounded by the Runtime profile.
 
 ## 12. Canonical representation and identity
 

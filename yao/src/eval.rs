@@ -297,6 +297,7 @@ pub fn evaluate_pure(
         }
         HirKind::Call { .. }
         | HirKind::Infer { .. }
+        | HirKind::InferBody { .. }
         | HirKind::Run { .. }
         | HirKind::Host { .. } => fail(
             expression,

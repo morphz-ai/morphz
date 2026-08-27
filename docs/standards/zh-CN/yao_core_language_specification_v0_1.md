@@ -26,7 +26,8 @@ Yao Core 定义与实现无关的语法、值、类型、词法作用域、纯�
 符合 Yao Core 的实现必须保持：
 
 1. **求值所有权显式。** 程序根只能是 `eval` 或 `infer`。
-2. **非确定性边界带类型。** 每个嵌套推理都声明返回类型。
+2. **非确定性边界带类型。** 每次模型求值都有静态可知的结果类型：该类型可以由正文
+   推导，也可以由显式结果契约进一步约束。
 3. **Effect 可见。** Effect 是可静态发现的上界，不隐藏在纯表达式中。
 4. **权威分离。** 声明只能请求或收窄权威，不能授予权威。
 5. **结构化并发。** 并行工作具有词法生命周期、稳定分支身份和确定性的 join 值。
@@ -55,11 +56,12 @@ Span，包含字节偏移以及可读的行列位置。拒绝程序时必须指�
 
 ```lisp
 (eval DECLARATION... BODY)
-(infer DECLARATION... INFER-ARGUMENT...)
+(infer DECLARATION... BODY)
 ```
 
 `eval` 表示 Runtime 持有 Evaluation Loop；`infer` 表示模型持有 Evaluation Loop，但
-Runtime Control Loop 始终由 Runtime 掌握。
+Runtime Control Loop 始终由 Runtime 掌握。除求值所有者不同外，两种根使用同一种 Yao
+正文语言、解析器、类型系统、Effect 系统和结果值。
 
 声明必须出现在正文前，并可以按顺序包含：
 
@@ -98,8 +100,9 @@ Ref<K> Program<T, E>
 `Ref<K>` 是 Host Object 的不透明引用；Core 定义其身份与不可伪造性，Profile 定义具体
 对象类型与操作。
 
-`Program<T, E>` 是不可变、已校验的 Program Value：终值可赋给 `T`，静态 Effect 集是
-`E` 的子集。
+`Program<T, E>` 是不可变、已校验的 Program Value：终值可赋给 `T`，有效执行 Effect 集是
+`E` 的子集。`eval` 根采用静态推导的 Effect 集；`infer` 根作为一等程序值经 `run` 执行时，
+从调用方视角会创建新的正式 Evaluation，因此其有效 Effect 集还必须加入 `infer`。
 
 `Record{...}` 是编译器产生的结构化 Record Type，用于 `par` 这类字段名由表达式产生的
 结果；用户声明的 Record 仍采用名义类型。
@@ -228,7 +231,7 @@ Profile 可以定义额外命名空间 Effect。复合表达式的 Effect 是所
 Target 策略、Package 声明、Program 声明及单次操作收窄结果的交集。静态检查通过并不
 等于已经授权；每个可能发生策略变化的 Effect 边界必须重新校验。
 
-## 9. Tool 与 inference
+## 9. Tool 与模型求值
 
 ```lisp
 (call TOOL (ARG EXPR...)...)
@@ -239,16 +242,30 @@ Schema；Effect 为 `(tool TOOL)`。
 
 ```lisp
 (infer
-  (task EXPR)
-  (tools TOOL...)
-  (returns TYPE)
-  (ARG EXPR...)...)
+  [(captures NAME...)]
+  [(returns TYPE)]
+  BODY)
 ```
 
-嵌套 typed inference 必须提供 `task` 与 `returns`；`tools` 可选且只能收窄证据工具。
-Runtime 必须先解码、校验终值，再允许其进入确定性数据流。失败解码属于 inference 分类
-失败。类型名区分大小写；历史小写别名 `text`、`json` 不属于 Core 类型，必须拒绝，不得
-静默归一化。
+`BODY` 是一个完整的 Yao 表达式。把最外层的 `eval` 换成 `infer`，改变的是谁负责求值
+该表达式，而不是把它降级成固定的 task/evidence 请求。两种求值方式必须使用同一个前端
+解析和类型检查；正文中静态可见的 Effect 仍是模型求值可以请求的上界。
+
+在嵌套的求值所有权边界上，正文从空词法作用域开始。只有 Yao 源码中显式写入
+`(captures NAME...)` 的父程序绑定，才会被带入该正文。每个名称必须已经存在于父作用域；
+对应的带类型值可以被序列化到内部 Evaluation 请求，并发送给当前配置的模型服务商。
+未列出的父程序绑定和完整 Runtime 环境不得被隐式附带。`captures` 只授权披露该值，
+不会授予 Tool、Host 或对象操作权限。
+
+若省略 `(returns TYPE)`，结果契约就是 `BODY` 的静态推导类型。对于普通值，显式声明的
+`TYPE` 必须能够接收正文类型。`Program<T,E>` 是唯一的程序合成契约：正文说明模型如何
+派生一个隔离的候选程序；该候选程序必须独立经过解析、类型检查、Effect 检查、规范化和
+持久化，才能成为 Program Value。
+
+可用证据工具从正文中静态命名的 `(call TOOL ...)` 推导，并与根部声明及部署策略取交集。
+Runtime 必须先解码、校验终值，再允许其进入 Runtime 持有的数据流。解码失败属于模型求值
+分类失败。类型名区分大小写；历史小写别名 `text`、`json` 不属于 Core 类型，必须拒绝，
+不得静默归一化。
 
 ## 10. 结构化并行
 
@@ -273,26 +290,33 @@ v0.1 不包含 detached execution、race、quorum 或隐式共享状态。
 
 ```lisp
 (infer
-  (task "construct a bounded evaluation plan")
   (returns (Program Decision (effects infer (tool read))))
-  (input request))
+  (seq
+    (bind evidence (call read (path "decision-input.json")))
+    evidence))
 ```
 
-Program Value 的模型传输形态必须恰好是只含一个字段的 JSON 对象：
+Program Value 的模型输出必须恰好是一段原始 Yao 源码：
 
-```json
-{"source":"(eval ...)"}
+```lisp
+(eval ...)
+; 或
+(infer ...)
 ```
 
-对象不得包含额外字段；裸源码字符串不是 Program Value，必须拒绝。候选源码不得交给字符串
-eval。Runtime 构造 `Program<T,E>` 前必须进行带 Span 解析、名字与类型检查、Effect 子集
-检查、资源检查、规范化、Hash/Provenance 生成及先持久化后执行。
+输出不得包含 JSON 外壳、Markdown 代码围栏或解释文字。原始源码只是隔离的候选值，尚不
+是 Program Value，也不得交给字符串 eval。Runtime 构造 `Program<T,E>` 前必须进行带
+Span 解析、名字与类型检查、求值所有者保留、有效 Effect 子集检查、资源检查、规范化、
+Hash/Provenance 生成及先持久化后执行；若根为 `infer`，有效 Effect 集必须包含这次新建
+正式 Evaluation 的 `infer` Effect。
 
 Program Value 对普通词法绑定必须闭合，不能引用调用方局部值。Runtime Profile 可以向父子
 程序注入一个显式类型、不可变的 Host Environment（例如 Morphz `runtime`）；它属于继承
-权威而不是词法捕获。执行只能通过 `(run PROGRAM-EXPR)`：`run` 重新校验当前权威、创建
-因果相连的持久 SubPlan、等待终态并返回声明类型。不得在进程内递归执行源码字符串。
-Profile 必须限制嵌套深度与聚合 Budget。
+权威而不是词法捕获。执行只能通过 `(run PROGRAM-EXPR)`：`run` 重新校验当前权威并创建
+因果相连的持久子执行。`eval` 根由 Runtime 按 Plan 控制推进；`infer` 根立即挂起到正式的
+子 Evaluation，并在持久 Plan 状态中完成有类型结果的等待与汇合，该 Plan 状态只承担因果、
+预算、恢复和结果边界。不得在进程内递归执行源码字符串。Profile 必须限制嵌套深度与聚合
+Budget。
 
 ## 12. 规范表示与身份
 

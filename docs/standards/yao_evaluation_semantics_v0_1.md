@@ -27,7 +27,7 @@ Yao has two evaluation owners:
 | Root | Evaluation Loop owner | Semantic role |
 | --- | --- | --- |
 | `eval` | Runtime | Deterministic control, durable effects, typed data flow |
-| `infer` | model | Open semantic judgment under Runtime-mediated authority |
+| `infer` | model | Nondeterministic cognitive evaluation under Runtime-mediated authority |
 
 Both owners consume and produce Yao values. Ownership determines who selects the next semantic
 step; it does not change the meaning of values, effects, capabilities, causal identity, or terminal
@@ -84,11 +84,19 @@ idempotent; stale or foreign completions are rejected.
 
 Authorization is checked both at Program admission and at hand-off. The latter is authoritative.
 
-## 6. Nested inference
+## 6. Model-owned body evaluation
 
 An `eval`-owned nested `infer` creates a causally linked model-owned Evaluation. The request
-contains the fully evaluated typed arguments, result contract, effective evidence-tool ceiling,
-parent Program identity, and producing source span.
+contains the complete validated Yao `infer` body rather than a Runtime-produced task summary. The
+model evaluates that same body using the shared Language Card and may request only the statically
+visible Tools that survive capability settlement.
+
+The request also contains the result contract, parent Program identity, producing source span, and
+the values of bindings explicitly named by `(captures ...)`. Those named values are the complete
+lexical disclosure set for this boundary and MAY be sent to the currently configured model
+provider: the Runtime MUST NOT serialize or send any other parent binding. A restart MUST
+reconstruct byte-identical program, capture, Tool-scope, and result-contract inputs from durable
+state.
 
 Only a terminal child Outcome may resume the parent. The Runtime decodes it into the declared Yao
 type. Invalid decoding is a classified inference failure and may be handled by `fallback`.
@@ -145,11 +153,14 @@ authority. Admission performs the complete Yao Core Program Value pipeline and r
 - effective capability ceiling at creation;
 - validation version and diagnostics.
 
-`run` creates a durable child Plan linked to the Program Value hash. Current capabilities are
+`run` creates a durable child execution linked to the Program Value hash. Current capabilities are
 recomputed and intersected with the stored ceiling. Revoked authority is not restored by a
-previously validated Program Value.
+previously validated Program Value. An `eval` root advances under Runtime-owned Plan control. An
+`infer` root is represented by durable control state that immediately emits one formal child
+Evaluation and later joins its typed terminal result; the Runtime never treats the cognitive work
+itself as deterministic.
 
-The parent waits on the child Plan terminal state. The child cannot access caller bindings, mutate
+The parent waits on the child execution's terminal state. The child cannot access caller bindings, mutate
 the parent machine, or extend aggregate budgets. It receives only the immutable host environment
 explicitly permitted by the Runtime profile. Nested Program execution consumes a profile limit.
 The Morphz v0.1 budget policy transfers the remaining aggregate budget to the child and does not

@@ -4,7 +4,7 @@
 >
 > 维护者：新变元（Newvar）
 >
-> 最后更新：2026-08-21
+> 最后更新：2026-08-28
 >
 > 规范文本：[English](../yao_reference_implementation_verification_v0_1.md)
 
@@ -30,9 +30,11 @@
 | 精确类型名，以及拒绝历史小写 `text` / `json` 别名 | `rejects_historical_lowercase_type_aliases`、`rejects_unknown_and_recursive_named_types` | 通过 |
 | 唯一共享的模型可见 Yao Language Card 及大小预算 | `language_card_is_parseable_bounded_and_unversioned`、Context Protocol 与 `eval` Tool 契约测试 | 通过 |
 | 类型化 Infer 请求/响应、Continuation 序列化与精确恢复 | `sexpr_eval::tests`、`plan_execution::tests` | 通过 |
-| 持久 Infer 默认从空 Tool 集合开始，只能使用节点显式声明的更窄集合 | `plan_infer_tool_scope_never_inherits_parent_tools_implicitly`、`infer_may_gather_evidence_but_is_never_offered_eval`、`plan_infer_handoff` | 通过 |
+| 同一个完整有类型正文可以由 `eval` 或 `infer` 求值，不降级为 task/evidence 请求 | `eval_and_infer_share_one_complete_typed_body`、`complete_yao_body_is_handed_to_the_model_without_task_request_lowering`、`eval_runs_a_submitted_program_and_hands_infer_back_to_the_model` | 通过 |
+| 源码授权的词法披露：只有 `(captures ...)` 列出的绑定可以跨越模型服务商边界；隐式 Runtime 与未列出局部绑定均不能跨越 | `nested_model_body_captures_only_explicit_parent_bindings`、`complete_yao_body_sends_only_source_authorized_lexical_captures`、`infer_discloses_only_source_authorized_parent_bindings_to_the_model` | 通过 |
+| 持久 Infer 的 Tool 范围由正文中静态可见的调用推导，且绝不暴露 `eval` | `plan_infer_tool_scope_never_inherits_parent_tools_implicitly`、`infer_may_gather_evidence_but_is_never_offered_eval`、`plan_infer_handoff` | 通过 |
 | 持久 `par` 子计划、分支隔离、全终态 Barrier、有序 Join、聚合失败与重启 | `sexpr_eval` 和 `plan_execution` 中的 `typed_par_*` 测试 | 通过 |
-| Program Value 精确对象 Transport、准入、规范 Hash、Effect/输出上界、调用者局部变量隔离、持久子计划与共享深度预算 | `program_admission_requires_object_transport_*`、`program_*`、`generated_program_*`、`nested_program_*` 测试 | 通过 |
+| Program Value 原始 Yao Transport、以 `eval` 或 `infer` 为根的程序准入与所有者分派、规范 Hash、有效 Effect/输出上界、调用者局部变量隔离、持久子执行与共享深度预算 | `program_admission_requires_raw_yao_*`、`infer_root_program_value_*`、`program_*`、`generated_program_*`、`nested_program_*` 测试 | 通过 |
 | Typed Harness 入口、保留引号的规范化、模型入口显式 Tool 上界与真实 Function Calling 裁剪 | `typed_program_string_identity_survives_package_normalization`、`model_owned_entry_requires_an_explicit_tool_upper_bound`、Harness 与 Orchestrator 测试 | 通过 |
 | Runtime 环境注入与类型化可选字段投影 | `runtime_context_is_injected_*`、`host_view_normalizes_*` | 通过 |
 | Host Receipt 重放、Candidate 封闭性、引用不可伪造、同 Context Evidence 与 Objective 权限 | `plan_execution::tests` 中的 Host 测试和 `yao::eval::tests` 中的 Candidate 测试 | 通过 |
@@ -64,6 +66,28 @@ cargo clippy --workspace --all-targets --offline -- -D warnings
 语言 crate 完成 38 项测试；上述门禁共完成 1,160 项测试、无失败。另有 6 项测试因明确要求
 真实外部登录或人工终端检查，保持其原有 `ignored` 声明。共享 Yao Language Card 同时通过
 4,800 字符的硬性产物上限和 Context Encoding 中 1,200 估算 Token 的门禁。
+
+### 3.1 完整正文 `infer` 与捕获边界增量验证（2026-08-28）
+
+本次增量使 `eval` 与 `infer` 共享同一个完整有类型正文，并加入源码级 `(captures ...)`
+披露边界。验证命令如下：
+
+```text
+cargo test -p yao-lang
+cargo test -p morphz --lib -- --test-threads=1
+cargo test -p morphz --test attempt_loop
+cargo test -p morphz --test plan_infer_handoff
+cargo clippy -p yao-lang --all-targets -- -D warnings
+cargo clippy -p morphz --all-targets -- -D warnings
+cargo fmt --all -- --check
+git diff --check
+```
+
+本轮通过 47 项 Yao 测试、1,028 项 Morphz 库测试、74 项生产 Attempt Loop 测试和 4 项持久
+Infer Handoff 测试；6 项库测试保持原有 `ignored` 声明。两项 Clippy 门禁、格式检查和 Diff
+检查均通过。此外，还通过 GPT-5.6 Sol 对完整纯正文和包含普通 Tool 调用的完整正文各完成
+一次真实模型 Smoke；非敏感证据记录于
+[`yao_infer_complete_body_live_verification_2026_08_28.md`](../yao_infer_complete_body_live_verification_2026_08_28.md)。
 
 绑定本地 Mock Server 或验证 Morphz 自身 macOS Sandbox 的测试必须在受限父 Sandbox 之外
 运行。在嵌套 Sandbox 内执行时，操作系统会在测试对象运行前以 `Operation not permitted`

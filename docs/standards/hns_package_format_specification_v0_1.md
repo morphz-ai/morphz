@@ -256,7 +256,9 @@ declaration narrows the Package requirement; it does not grant authority. A mode
 ...)` Entry Program MUST contain an explicit `(requires (tools ...))`; `(requires (tools))` means
 pure inference and exposes no model-callable Tool. A Loader MUST reject omission for a model-owned
 entry. A Runtime-owned `(eval ...)` entry MAY omit the declaration only when the active Language
-Profile defines the effective subset; omission MUST NOT mean unrestricted Tool access.
+Profile defines the effective subset; omission MUST NOT mean unrestricted Tool access. For a
+model-owned entry, the actual offered Tool set is the intersection of this upper bound, the
+statically named `(call TOOL ...)` expressions in its complete body, and current authority.
 
 ### 9.3 Execution boundary
 
