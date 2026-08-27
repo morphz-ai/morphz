@@ -57,3 +57,21 @@ surface may translate a stable error or diagnostic code, but must retain the can
 English detail for debugging. Yao diagnostics use `DiagnosticCode` for this purpose; wording must
 never be parsed as control flow. Readers may continue to recognize historical localized persisted
 values for compatibility, but new writers must not produce them.
+
+## Local Cargo disk hygiene
+
+On macOS, Rust's fast `unpacked` debug-info mode leaves `*.rcgu.o` files beside build outputs.
+They make iterative linking faster, but frequent test and feature combinations can accumulate
+hundreds of gigabytes because Cargo does not impose a target-directory size limit.
+
+Run the repository maintenance command after a long development session:
+
+```sh
+./scripts/prune-cargo-unpacked-debuginfo.sh
+```
+
+It removes only unpacked debug objects older than 24 hours. It deliberately preserves Cargo's
+incremental state, dependency libraries, metadata, fingerprints, binaries, and current-day debug
+objects, so ordinary build-cache hits are unchanged. Use
+`MORPHZ_CARGO_DEBUG_OBJECT_MIN_AGE_MINUTES` to choose another retention window, or pass a Cargo
+target directory as the first argument.

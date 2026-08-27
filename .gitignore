@@ -36,3 +36,10 @@ task-*
 /jobs/
 __pycache__/
 *.py[cod]
+
+# Local agent, document, and render workspaces
+/.codex-work/
+/.tmp-*
+/tmp/
+/roadshow/
+/morphz/.morphz/
