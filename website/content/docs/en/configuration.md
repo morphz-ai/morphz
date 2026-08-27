@@ -41,6 +41,16 @@ Use this when the Dashboard default differs from the TOML file you are reading.
 
 API keys and OAuth tokens should not be written into `morphz.toml`. Configuration stores Credential or Secret Store references. Morphz does not implicitly load a working-directory `.env`; only user-controlled environment sources are considered.
 
+## HTTP proxy routing
+
+Provider, OAuth, and Cognitive Coordination traffic follows the system proxy by default. Standard `NO_PROXY` exclusions remain authoritative, so a machine that proxies Internet traffic but reaches a local Mesh directly can use:
+
+```bash
+NO_PROXY=.local,localhost,127.0.0.1,::1 morphz serve ...
+```
+
+`MORPHZ_HTTP_PROXY_MODE=system|direct` sets the global policy. `MORPHZ_PROVIDER_PROXY_MODE`, `MORPHZ_OAUTH_PROXY_MODE`, and `MORPHZ_COORDINATION_PROXY_MODE` override one traffic class. OAuth inherits the Provider override when its own override is absent. Morphz never silently changes Provider routing because a Mesh probe failed.
+
 ## Capacity overrides
 
 Provider capacity fields are optional:

@@ -28,9 +28,9 @@ Morphz 可以使用宿主已有 OpenSSH 配置解析远程目标。代理只提�
 }
 ```
 
-直接使用 IP 或 DNS 名称时可以显式提供用户和端口。没有绑定密钥 Secret 时，已有 `IdentityFile`、`ProxyJump` 和 SSH Agent 设置继续由宿主 OpenSSH 处理。
+直接使用 IP 或 DNS 名称时可以显式提供用户和端口。没有绑定密钥机密项时，已有 `IdentityFile`、`ProxyJump` 和 SSH 代理设置继续由宿主 OpenSSH 处理。
 
-如果不想手工配置 `ssh-agent`，可以把私钥内容保存到 Secret Store，并只把 alias 绑定到 Target：
+如果不想手工配置 `ssh-agent`，可以把私钥内容保存到机密项存储，并只把别名绑定到执行目标：
 
 ```json
 {
@@ -43,7 +43,7 @@ Morphz 可以使用宿主已有 OpenSSH 配置解析远程目标。代理只提�
 }
 ```
 
-私钥口令 alias 是可选的，并且必须与私钥 alias 一起使用。Runtime 按当前 Context、Session、Objective 和 Target scope 解析这些属于 Target 的绑定，把私钥写入 Runtime 私有目录中的 `0600` 临时身份文件，强制 OpenSSH 只使用该身份，并在连接交接完成后删除。凭证值不会进入 Target 元数据、工具参数、Event History 或普通 Shell 环境。`resolve_target` 刻意不接受任意私钥路径。
+私钥口令别名是可选的，并且必须与私钥别名一起使用。运行时按当前认知上下文、会话、目标和执行目标作用域解析这些属于执行目标的绑定，把私钥写入运行时私有目录中的 `0600` 临时身份文件，强制 OpenSSH 只使用该身份，并在连接交接完成后删除。凭证值不会进入执行目标元数据、工具参数、事件历史或普通命令行环境。`resolve_target` 刻意不接受任意私钥路径。
 
 ## 边缘执行节点
 

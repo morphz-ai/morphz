@@ -41,6 +41,16 @@ morphz config explain --format=json
 
 API 密钥和 OAuth 令牌不应直接写在 `morphz.toml`。配置只保存凭证或密钥存储引用。工作目录中的 `.env` 不会被自动加载；Morphz 只会使用用户控制的环境文件或进程环境。
 
+## HTTP 代理路由
+
+模型服务、OAuth 和认知协调流量默认遵循系统代理。标准 `NO_PROXY` 排除规则始终生效；如果一台机器通过代理访问互联网、但需要直连本地认知协调网格（Mesh），可以这样启动：
+
+```bash
+NO_PROXY=.local,localhost,127.0.0.1,::1 morphz serve ...
+```
+
+`MORPHZ_HTTP_PROXY_MODE=system|direct` 设置全局策略。`MORPHZ_PROVIDER_PROXY_MODE`、`MORPHZ_OAUTH_PROXY_MODE` 和 `MORPHZ_COORDINATION_PROXY_MODE` 可以分别覆盖对应流量；OAuth 未单独设置时继承模型服务策略。Morphz 不会因为一次网格探测失败，就静默改变模型服务的路由。
+
 ## 容量覆盖
 
 模型服务的容量字段都是可选的：
