@@ -6,17 +6,17 @@
 >
 > Canonical language: English
 >
-> Date: 2026-08-21
+> Date: 2026-08-25
 >
 > Chinese translation: [zh-CN](zh-CN/IPR_STATUS.md)
 
 ## 1. Purpose
 
 This notice states what readers and contributors may and may not infer while the Morphz technical
-standards remain Drafts. It covers the Structured Context, Agent Trajectory, Harness, HNS, and Yao
-Draft documents unless a particular file states otherwise. It is intended to prevent accidental
-promises before Newvar adopts final source-code, specification-text, patent, contribution, and
-trademark policies.
+standards remain Drafts. It covers the Structured Context, Agent Trajectory, Harness, HNS, Yao, and
+Mind Frame Exchange Draft documents unless a particular file states otherwise. It is intended to
+prevent accidental promises before Newvar adopts final source-code, specification-text, patent,
+contribution, and trademark policies.
 
 This notice is not legal advice and is not a substitute for the final policies or professional
 legal review.

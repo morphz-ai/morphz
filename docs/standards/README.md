@@ -6,13 +6,13 @@
 >
 > Canonical language: English
 >
-> Last updated: 2026-08-21
+> Last updated: 2026-08-25
 >
 > 中文翻译：[zh-CN](zh-CN/README.md)
 
 This directory contains the public technical foundation through which Morphz intends to define,
 implement, and verify Structured Context, Agent Trajectory, Cognitive Applications, portable
-Harness execution, and Yao.
+Harness execution, Yao, and Mind Frame Exchange.
 
 ## Naming roles
 
@@ -20,6 +20,10 @@ Harness execution, and Yao.
 - **Morphz Structured Context** is the Newvar-stewarded standards family defined here.
 - **Agent Trajectory** is the portable, causally structured state-transition record of Agent
   experience; it is not a synonym for Event History, an observability Trace, or a chat transcript.
+- **Mind Frame Exchange (MFX)** is the portable protocol boundary through which independent Agents
+  exchange selected cognition without transferring identity or remote write authority.
+- **Mind Frame Bundle** is the MFX exchange artifact for one Frame or a selected cognitive subgraph;
+  receiving a Bundle does not make its content part of the receiver's Mind.
 - **Cognitive Application** is the product- and ecosystem-level unit that packages reusable
   cognitive practice for an existing Agent; mounting one does not create or replace Agent identity.
 - **Harness** is the portable Evaluation Loop and practice-contract abstraction defined by the
@@ -54,6 +58,20 @@ category and conformance semantics implementation-independent.
 2. [Agent Trajectory Reference Implementation Verification v0.1](morphz_agent_trajectory_reference_implementation_verification_v0_1.md)
    maps Morphz export, validation, immutable Verifier/Reward facts, recovery, rights enforcement,
    and Training Episode derivation to executable evidence and reference JSON Schemas.
+
+## Mind Frame Exchange deliverables
+
+1. [Morphz Mind Frame Exchange Protocol v0.1](morphz_mind_frame_exchange_protocol_v0_1.md)
+   defines the portable Bundle model, cross-authority identity and lineage, evidence closure,
+   rights, offline interpretation, optional remote resolution, quarantine, and local adoption
+   boundaries.
+2. [Morphz Union Mind Federation Vision v1](../morphz_union_mind_federation_vision_v1.md)
+   is a non-normative product vision for discovery, subscription, distributed cognitive
+   activation, collective computation, and multi-authority collaboration above MFX.
+3. [Morphz Cognitive Federation Architecture v1](../morphz_cognitive_federation_architecture_v1.md)
+   is a non-normative conceptual architecture for Shared Mind Projection, Distributed Sparse
+   Cognitive Activation, federated computation, collective deliberation, semantic settlement,
+   state consensus, and Union-owned cognition. It creates no MFX-Core conformance requirement.
 
 ## Harness deliverables
 
@@ -115,6 +133,17 @@ Constitution or equivalent governance instrument is adopted:
 3. accepted Standards Track MEPs only after incorporation into a versioned normative release;
 4. Morphz Runtime and its official exporter, as reference implementations;
 5. explanatory architecture documents, datasets, and examples.
+
+For the Mind Frame Exchange standards family, conflicts are resolved in this order until a
+dedicated Constitution or equivalent governance instrument is adopted:
+
+1. the current Final Morphz Mind Frame Exchange Protocol;
+2. matching Final Profiles and the MFX Conformance Suite, which may verify but cannot redefine the
+   Protocol;
+3. accepted Standards Track MEPs only after incorporation into a versioned normative release;
+4. Morphz Runtime and its official Exporter, Verifier, Importer, and Resolver, as reference
+   implementations;
+5. explanatory architecture and Union Mind Federation vision documents.
 
 An MEP records and approves a change, but becomes normative only after the resulting requirement is
 incorporated into a versioned Constitution or Specification release.

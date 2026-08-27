@@ -6,12 +6,12 @@
 >
 > 规范文本语言：英文
 >
-> 最后更新：2026-08-21
+> 最后更新：2026-08-25
 >
 > 规范文本：[English](../README.md)
 
 本目录包含 Morphz 用来定义、实现和验证 Structured Context、Agent Trajectory、
-Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
+Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange 的公开技术基础。
 
 ## 命名角色
 
@@ -19,6 +19,10 @@ Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
 - **Morphz 结构化上下文**是由新变元维护的标准族；
 - **Agent Trajectory（Agent 执行轨迹）**是 Agent 经验的可移植因果状态转换记录，不是
   Event History、可观测性 Trace 或聊天记录的同义词；
+- **Mind Frame Exchange（MFX）**是独立 Agent 在不转移身份或远程写权限的前提下交换
+  选定认知的可移植协议边界；
+- **Mind Frame Bundle** 是承载一个 Frame 或选定认知子图的 MFX 交换物；接收 Bundle
+  不会让其内容自动成为接收方 Mind 的一部分；
 - **Cognitive Application（认知应用）**是面向产品与生态的单元，把可复用的认知实践
   提供给既有 Agent；挂载认知应用不会创建或替换 Agent 身份；
 - **Harness** 是《Morphz Harness 规范》定义的可移植 Evaluation Loop 与实践契约抽象；
@@ -49,6 +53,19 @@ Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
 2. [《Agent Trajectory 参考实现验证记录 v0.1》](morphz_agent_trajectory_reference_implementation_verification_v0_1.md)
    把 Morphz 导出、校验、不可变 Verifier/Reward Fact、恢复、权利门禁和 Training Episode
    派生映射到可执行证据与参考 JSON Schema。
+
+## Mind Frame Exchange 交付物
+
+1. [《Morphz Mind Frame Exchange 协议 v0.1》](morphz_mind_frame_exchange_protocol_v0_1.md)
+   定义可移植 Bundle 模型、跨权威身份与血缘、证据闭包、权利、离线解释、可选远程求证、
+   隔离与本地吸收边界。
+2. [《Morphz Union Mind Federation：联合大脑与认知联邦愿景 v1》](../../morphz_union_mind_federation_vision_v1.md)
+   是 MFX 之上的 discovery、subscription、分布式认知激活、群体计算与多权威协作的
+   非规范性产品愿景。
+3. [《Morphz Cognitive Federation Architecture v1》](../../morphz_cognitive_federation_architecture_v1.md)
+   是 Shared Mind Projection、Distributed Sparse Cognitive Activation、联邦计算、群体商议、
+   语义结算、状态共识和 Union-owned cognition 的非规范性概念架构，不创建 MFX-Core 一致性
+   要求。
 
 ## Harness 交付物
 
@@ -101,6 +118,16 @@ Cognitive Application、可移植 Harness 执行与 Yao 的公开技术基础。
 3. 已接受的 Standards Track MEP，但仅限已纳入带版本规范发布的部分；
 4. Morphz Runtime 及其官方 Exporter，作为参考实现；
 5. 解释性架构文档、Dataset 与示例。
+
+在专门的 Mind Frame Exchange 宪法或等价治理文件被采纳前，其标准族中的冲突按以下顺序
+解决：
+
+1. 当前处于 Final 状态的 Morphz Mind Frame Exchange 协议；
+2. 与其匹配且处于 Final 状态的 Profile 与 MFX 一致性测试套件；它们可以验证协议，但不能
+   重新定义协议；
+3. 已接受的 Standards Track MEP，但仅限已纳入带版本规范发布的部分；
+4. Morphz Runtime 及其官方 Exporter、Verifier、Importer 与 Resolver，作为参考实现；
+5. 解释性架构文档与 Union Mind Federation 愿景文档。
 
 MEP 用于记录和批准变更，但只有当变更写入带版本的宪法或规范版本后，才成为规范性要求。
 
