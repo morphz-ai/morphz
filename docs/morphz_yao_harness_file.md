@@ -466,9 +466,9 @@ enum PlanNode {
 ```
 
 当前规范 `Infer` 携带完整的有类型正文、显式 captures 和结果契约；正文中的 `call`
-Effect 决定本次求值实际可见的 Tool 子集。有类型 Yao 结果包括 `Program<T,E>`。旧版
-固定 task/evidence 请求仍作为已持久化数据的迁移 IR 保留，但不再是新源码的规范形式。
-这些契约进入可序列化 IR，因此进程内执行与重启恢复使用完全相同的边界规则。
+Effect 决定本次求值实际可见的 Tool 子集。有类型 Yao 结果包括 `Program<T,E>`。固定
+task/evidence 请求不再属于语言或运行时入口。这些契约进入可序列化 IR，因此进程内
+执行与重启恢复使用完全相同的边界规则。
 
 第一版不需要建设复杂编译器。“SExpr Parser → 严格校验 → Rust 枚举”已经构成 Typed Plan IR。
 

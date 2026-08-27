@@ -24,5 +24,4 @@
   (requires
     (tools list_files search read write edit exec context_tx))
   (returns String)
-  (task
-    "Complete the current Evaluation under the user request. Let the dialectical-practice Mind Frame inform your own understanding only when it is useful; choose the concrete analysis, tools, actions, validation, and delivery yourself."))
+  "Complete the current Evaluation under the user request. Let the dialectical-practice Mind Frame inform your own understanding only when it is useful; choose the concrete analysis, tools, actions, validation, and delivery yourself.")

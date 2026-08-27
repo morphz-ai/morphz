@@ -87,10 +87,12 @@ Principal tests:
 ## Automated gates
 
 - Yao: 47 passed
-- Morphz library, single-thread gate: 1,028 passed; 6 declared ignored
+- Removed fixed-field source forms are covered by
+  `fixed_infer_request_syntax_is_rejected_at_every_root` at top-level `infer` and nested under
+  `eval`.
+- Morphz infer evaluator suite: 48 passed
 - Morphz production attempt loop: 74 passed
 - Durable infer handoff: 4 passed
 - Clippy for `yao-lang` and `morphz` with `-D warnings`: passed
 - `cargo fmt --all -- --check`: passed
 - `git diff --check`: passed
-

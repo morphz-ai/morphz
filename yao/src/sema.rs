@@ -319,19 +319,13 @@ pub enum HirKind {
         tool: String,
         arguments: Vec<NamedArgument>,
     },
-    Infer {
-        arguments: Vec<NamedArgument>,
-        tools: Option<Vec<String>>,
-        result: Type,
-    },
     /// A complete Yao expression whose Evaluation Loop is owned by the model.
     ///
     /// This is the canonical `infer` form. The body is analyzed by the same
     /// frontend as an `eval` body, so changing only the outer owner preserves
     /// the program tree, type, and statically visible effects. `source` is the
     /// canonical `(infer BODY)` artifact shown to the model at the ownership
-    /// boundary. The older named request form remains readable as `Infer`
-    /// during migration but is not the language's canonical evaluator form.
+    /// boundary. There is no alternate fixed task/evidence request syntax.
     InferBody {
         body: Box<HirExpr>,
         /// Lexical values that the source explicitly permits to cross from
@@ -484,10 +478,7 @@ impl<'a> Analyzer<'a> {
         };
         if owner == EvaluationOwner::Model {
             let HirKind::InferBody { source, .. } = &mut body.kind else {
-                // A legacy fixed request deliberately retains its migration
-                // representation. Canonical complete-BODY roots preserve the
-                // entire source artifact, including requires/types declarations.
-                return self.finish_program(root, owner, body);
+                unreachable!("model-owned roots always lower to one complete infer BODY")
             };
             *source = canonical_source(root);
         }
@@ -1710,21 +1701,7 @@ impl<'a> Analyzer<'a> {
         root_model_owned: bool,
         depth: usize,
     ) -> Result<HirExpr, Diagnostic> {
-        // Compatibility with pre-BODY Yao artifacts. The canonical language
-        // now uses `(infer BODY)`, but persisted programs and older Harness
-        // packages may still carry the fixed named request shape.
-        let legacy_request = arguments.iter().any(|argument| {
-            argument
-                .as_list()
-                .and_then(|items| items.first())
-                .and_then(Expr::as_symbol)
-                .is_some_and(|name| matches!(name, "task" | "tools" | "model"))
-        });
-        if !legacy_request {
-            return self.analyze_infer_body(arguments, scope, span, root_model_owned, depth);
-        }
-
-        self.analyze_legacy_infer(arguments, scope, span, root_model_owned, depth)
+        self.analyze_infer_body(arguments, scope, span, root_model_owned, depth)
     }
 
     fn analyze_infer_body(
@@ -1832,135 +1809,6 @@ impl<'a> Analyzer<'a> {
                 captures,
                 result: result.clone(),
                 source,
-            },
-            result,
-            effects,
-            span,
-        ))
-    }
-
-    fn analyze_legacy_infer(
-        &mut self,
-        arguments: &[Expr],
-        scope: &mut Scope,
-        span: SourceSpan,
-        root_model_owned: bool,
-        depth: usize,
-    ) -> Result<HirExpr, Diagnostic> {
-        let mut result = None;
-        let mut tools = None;
-        let mut data = Vec::new();
-        let mut has_task = false;
-        for argument in arguments {
-            let items = expect_list(argument, "infer arguments must be lists")?;
-            let Some(name) = items.first().and_then(Expr::as_symbol) else {
-                return Err(diag(
-                    DiagnosticCode::TypeMismatch,
-                    "infer argument must start with a name",
-                    argument.span(),
-                ));
-            };
-            match name {
-                "returns" => {
-                    if result.is_some() || items.len() != 2 {
-                        return Err(diag(
-                            DiagnosticCode::DuplicateName,
-                            "infer requires exactly one (returns TYPE)",
-                            argument.span(),
-                        ));
-                    }
-                    result = Some(self.parse_infer_result(&items[1])?);
-                }
-                "tools" => {
-                    if tools.is_some() {
-                        return Err(diag(
-                            DiagnosticCode::DuplicateName,
-                            "infer contains more than one tools clause",
-                            argument.span(),
-                        ));
-                    }
-                    let mut names = Vec::new();
-                    let mut seen = HashSet::new();
-                    for tool_expr in &items[1..] {
-                        let tool = expect_symbol(tool_expr, "infer tools must be static symbols")?;
-                        if !seen.insert(tool.to_string()) {
-                            return Err(diag(
-                                DiagnosticCode::DuplicateName,
-                                format!("infer repeats tool '{tool}'"),
-                                tool_expr.span(),
-                            ));
-                        }
-                        if self
-                            .requirements
-                            .tools
-                            .as_ref()
-                            .is_some_and(|allowed| !allowed.contains(tool))
-                        {
-                            return Err(diag(
-                                DiagnosticCode::EffectEscape,
-                                format!("infer tool '{tool}' exceeds requires.tools"),
-                                tool_expr.span(),
-                            ));
-                        }
-                        if self.profile.tool_signature(tool).is_none() {
-                            return Err(diag(
-                                DiagnosticCode::UnknownName,
-                                format!("unknown infer evidence tool '{tool}'"),
-                                tool_expr.span(),
-                            ));
-                        }
-                        names.push(tool.to_string());
-                    }
-                    tools = Some(names);
-                }
-                "task" => {
-                    if has_task {
-                        return Err(diag(
-                            DiagnosticCode::DuplicateName,
-                            "infer contains more than one task",
-                            argument.span(),
-                        ));
-                    }
-                    has_task = true;
-                    data.push(argument.clone());
-                }
-                _ => data.push(argument.clone()),
-            }
-        }
-        if !has_task {
-            return Err(diag(
-                DiagnosticCode::TypeMismatch,
-                "infer requires (task EXPR)",
-                span,
-            ));
-        }
-        let Some(result) = result else {
-            return Err(diag(
-                DiagnosticCode::InvalidType,
-                "typed infer requires (returns TYPE)",
-                span,
-            ));
-        };
-        self.validate_type_names(&result, span)?;
-        let named = self.analyze_named_arguments(&data, scope, depth + 1)?;
-        require_pure_all(
-            named.iter().flat_map(|argument| argument.values.iter()),
-            "infer arguments",
-        )?;
-        let mut effects = union_effects(named.iter().flat_map(|argument| argument.values.iter()));
-        if !root_model_owned {
-            effects.insert(Effect::Infer);
-        }
-        if let Some(tool_names) = &tools {
-            for tool in tool_names {
-                effects.insert(Effect::Tool(tool.clone()));
-            }
-        }
-        Ok(hir(
-            HirKind::Infer {
-                arguments: named,
-                tools,
-                result: result.clone(),
             },
             result,
             effects,
@@ -2963,10 +2811,6 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn parse_infer_result(&self, expression: &Expr) -> Result<Type, Diagnostic> {
-        self.parse_type(expression)
-    }
-
     fn parse_effects(&self, expressions: &[Expr]) -> Result<EffectSet, Diagnostic> {
         let mut effects = EffectSet::default();
         for expression in expressions {
@@ -3897,7 +3741,7 @@ mod tests {
     #[test]
     fn rejects_historical_lowercase_type_aliases() {
         for alias in ["text", "json"] {
-            let source = format!("(infer (requires (tools)) (task \"decide\") (returns {alias}))");
+            let source = format!("(infer (requires (tools)) (returns {alias}) \"decide\")");
             let error = analyze(&source, &profile(), AnalysisLimits::default()).unwrap_err();
             assert_eq!(error.code, DiagnosticCode::InvalidType);
             assert!(error.message.contains("unknown type"), "{error}");
@@ -3962,9 +3806,8 @@ mod tests {
             (seq
               (bind found
                 (infer
-                  (task "find evidence")
-                  (tools search)
-                  (returns Json)))
+                  (returns Json)
+                  (call search (query "find evidence"))))
               (call read (path "README.md"))
               (objective.report (objective runtime.objective))))
         "#;
@@ -3982,7 +3825,7 @@ mod tests {
         let source = r#"
           (eval
             (requires (tools read) (effects (tool read)))
-            (infer (task "judge") (returns String)))
+            (infer (returns String) "judge"))
         "#;
         let error = analyze(source, &profile(), AnalysisLimits::default()).unwrap_err();
         assert_eq!(error.code, DiagnosticCode::EffectEscape);
@@ -4022,8 +3865,8 @@ mod tests {
             (seq
               (bind plan
                 (infer
-                  (task "produce a program")
-                  (returns (Program Json (effects (tool read))))))
+                  (returns (Program Json (effects (tool read))))
+                  "produce a program"))
               (run plan)))
         "#;
         let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();

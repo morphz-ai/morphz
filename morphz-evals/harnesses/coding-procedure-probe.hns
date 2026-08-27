@@ -43,5 +43,4 @@
   (requires
     (tools list_files search read write edit exec context_tx))
   (returns String)
-  (task
-    "自主推进当前 Objective。遵守 Contract 的正常编码纪律以及 procedure-probe 的精确顺序；根据现实证据完成修复、验证和如实交付。"))
+  "自主推进当前 Objective。遵守 Contract 的正常编码纪律以及 procedure-probe 的精确顺序；根据现实证据完成修复、验证和如实交付。")

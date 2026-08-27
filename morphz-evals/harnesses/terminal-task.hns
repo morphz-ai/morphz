@@ -24,5 +24,4 @@
   (requires
     (tools list_files search read write edit exec context_tx))
   (returns String)
-  (task
-    "Complete the current Evaluation under the user request. Use the optional cognitive objects only when they improve your own reasoning; choose the concrete analysis, tools, actions, validation, and delivery yourself."))
+  "Complete the current Evaluation under the user request. Use the optional cognitive objects only when they improve your own reasoning; choose the concrete analysis, tools, actions, validation, and delivery yourself.")

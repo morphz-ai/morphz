@@ -31,6 +31,7 @@
 | 唯一共享的模型可见 Yao Language Card 及大小预算 | `language_card_is_parseable_bounded_and_unversioned`、Context Protocol 与 `eval` Tool 契约测试 | 通过 |
 | 类型化 Infer 请求/响应、Continuation 序列化与精确恢复 | `sexpr_eval::tests`、`plan_execution::tests` | 通过 |
 | 同一个完整有类型正文可以由 `eval` 或 `infer` 求值，不降级为 task/evidence 请求 | `eval_and_infer_share_one_complete_typed_body`、`complete_yao_body_is_handed_to_the_model_without_task_request_lowering`、`eval_runs_a_submitted_program_and_hands_infer_back_to_the_model` | 通过 |
+| 在两种求值器根上都拒绝已经移除的 `task`、`evidence`、`tools` 和 `model` 固定字段形式 | `fixed_infer_request_syntax_is_rejected_at_every_root` | 通过 |
 | 源码授权的词法披露：只有 `(captures ...)` 列出的绑定可以跨越模型服务商边界；隐式 Runtime 与未列出局部绑定均不能跨越 | `nested_model_body_captures_only_explicit_parent_bindings`、`complete_yao_body_sends_only_source_authorized_lexical_captures`、`infer_discloses_only_source_authorized_parent_bindings_to_the_model` | 通过 |
 | 持久 Infer 的 Tool 范围由正文中静态可见的调用推导，且绝不暴露 `eval` | `plan_infer_tool_scope_never_inherits_parent_tools_implicitly`、`infer_may_gather_evidence_but_is_never_offered_eval`、`plan_infer_handoff` | 通过 |
 | 持久 `par` 子计划、分支隔离、全终态 Barrier、有序 Join、聚合失败与重启 | `sexpr_eval` 和 `plan_execution` 中的 `typed_par_*` 测试 | 通过 |

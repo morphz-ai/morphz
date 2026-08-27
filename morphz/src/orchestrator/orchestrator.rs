@@ -18335,32 +18335,17 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .orchestrator
             .upgrade()
             .ok_or("The Runtime has shut down and cannot complete infer")?;
-        let task = request
-            .get("task")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let requested_model = request
-            .get("model")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(model) = requested_model {
-            if !orchestrator.client.model_is_agent_allowed(model) {
-                return Err(format!(
-                    "infer requested model '{model}', but it is neither listed in llm.allowed_evaluation_models nor the current primary model"
-                )
-                .into());
-            }
-        }
         let mut evidence = serde_json::Map::new();
         for (key, value) in request {
-            if key != "task" && key != "model" {
+            if key != "program" {
                 evidence.insert(key.clone(), value.clone());
             }
         }
-        let prompt = if let Some(program) =
-            request.get("program").and_then(serde_json::Value::as_str)
-        {
+        let program = request
+            .get("program")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("infer requires one complete Yao program")?;
+        let prompt = {
             let captures = request
                 .get("captures")
                 .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
@@ -18384,16 +18369,6 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             format!(
                 "This is not a user message. It is a model-owned Yao Evaluation requested when a Runtime-owned parent reached (infer ...). Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. You may call only the tools offered for this Evaluation. Once you return a final body without a tool call, that body is decoded and type-checked as the terminal value before the parent resumes. Do not address the user.{}{}\n{}",
                 captures, type_definitions, program
-            )
-        } else {
-            format!(
-                "This is not a user message. It is a decision requested when your submitted program paused at (infer ...).\
-                 You may call tools first if you need more evidence. Once you return text without any tool call,\
-                 that text becomes the value of this step, is bound, and is returned to the program for continued evaluation.\
-                 Therefore, do not write it as a message addressed to the user.\n\
-                 (infer-request\n  (task {task:?})\n  (evidence {}))",
-                serde_json::to_string(&serde_json::Value::Object(evidence.clone()))
-                    .unwrap_or_else(|_| "{}".to_string())
             )
         };
         let mut messages = vec![Message {
@@ -18443,12 +18418,9 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .collect::<Vec<_>>();
 
         for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
-            let mut request_policy = orchestrator
+            let request_policy = orchestrator
                 .effective_model_request_policy(&self.session_id, &self.attempt_id)
                 .await?;
-            if let Some(model) = requested_model {
-                request_policy.model_alias = model.to_string();
-            }
             let ModelCompletion {
                 response,
                 provider_continuation,

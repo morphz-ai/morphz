@@ -289,7 +289,7 @@ pub fn render_state_bench_harness(
         )
     };
     let source = format!(
-        "(manifest\n  (id me07-state-bench-{task_component})\n  (version \"1.0.0\")\n  (title {})\n  (capabilities (tools {declared})))\n\n(contract\n  (version \"1.0.0\")\n  (scope {})\n  (authoritative-domain-policy {}))\n\n(infer\n  (requires (tools {declared}))\n  (returns String)\n  (task {}))\n",
+        "(manifest\n  (id me07-state-bench-{task_component})\n  (version \"1.0.0\")\n  (title {})\n  (capabilities (tools {declared})))\n\n(contract\n  (version \"1.0.0\")\n  (scope {})\n  (authoritative-domain-policy {}))\n\n(infer\n  (requires (tools {declared}))\n  (returns String)\n  {})\n",
         sexpr_string(title)?,
         sexpr_string(scope)?,
         sexpr_string(&manifest.system_prompt)?,

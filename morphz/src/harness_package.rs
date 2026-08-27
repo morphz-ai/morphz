@@ -1083,7 +1083,7 @@ mod tests {
             .replace("(capabilities\n            (tools read search)\n            (skills rust testing))", "(capabilities (tools read search) (skills rust testing))")
             .replace(
                 "(eval\n          (requires (tools read))\n          (call read (path \"README.md\")))",
-                "(infer (task \"decide\") (returns String))",
+                "(infer (returns String) \"decide\")",
             );
         let error = HarnessPackage::from_source("coding.hns", &source)
             .unwrap_err()
@@ -1094,8 +1094,8 @@ mod tests {
         );
 
         let pure = source.replace(
-            "(infer (task \"decide\") (returns String))",
-            "(infer (requires (tools)) (task \"decide\") (returns String))",
+            "(infer (returns String) \"decide\")",
+            "(infer (requires (tools)) (returns String) \"decide\")",
         );
         HarnessPackage::from_source("coding.hns", &pure).unwrap();
     }

@@ -2571,8 +2571,7 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
         InferResultKind::Yao {
             ty: crate::yao::Type::Json,
             ..
-        }
-        | InferResultKind::Json => raw,
+        } => raw,
         InferResultKind::Yao {
             ty: crate::yao::Type::Ref(_) | crate::yao::Type::Nil,
             ..
@@ -2582,7 +2581,6 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
                 "Morphz Host operation cannot decode an authority projection as {ty:?}"
             ))
         }
-        InferResultKind::Text => raw,
     };
     decode_infer_result(kind, transport)
 }
@@ -2917,8 +2915,6 @@ fn infer_request_event(
     )?;
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
-        crate::sexpr_eval::InferResultKind::Text => String::new(),
-        crate::sexpr_eval::InferResultKind::Json => "This node declares returns=json. The final body must contain exactly one complete valid JSON value, without Markdown fences or additional explanation.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao {
             ty: crate::yao::Type::Program { .. },
             ..
@@ -2927,8 +2923,11 @@ fn infer_request_event(
             "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation."
         ),
     };
-    let evaluation_text = if let Some(program) = request.get("program").and_then(JsonValue::as_str)
-    {
+    let program = request
+        .get("program")
+        .and_then(JsonValue::as_str)
+        .ok_or("infer effect is missing its complete Yao program")?;
+    let evaluation_text = {
         let captures = request
             .get("captures")
             .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
@@ -2952,12 +2951,6 @@ fn infer_request_event(
         format!(
             "This is an internal model-owned Yao Evaluation, not a user message. Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. Return only the typed terminal value consumed by the parent Plan.{}{}{}\n\n{}",
             result_instruction, captures, type_definitions, program
-        )
-    } else {
-        format!(
-            "This is an internal infer request from a Yao program executing in Runtime. Decide from the task and evidence in the request; tools declared by the request may gather additional evidence. Return only the result consumed by the parent Plan, and do not treat this as a user message.{}\n\n{}",
-            result_instruction,
-            serde_json::to_string(&JsonValue::Object(request.clone()))?
         )
     };
     let mut payload = serde_json::Map::from_iter([
@@ -4416,9 +4409,8 @@ mod tests {
                  (seq
                    (bind judgement
                      (infer
-                       (task "判断证据是否充分")
-                       (returns Json)
-                       (evidence "A")))
+                       (returns String)
+                       "判断证据是否充分：A"))
                    judgement))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
@@ -4552,10 +4544,7 @@ mod tests {
                     "disposition".to_string(),
                     serde_json::json!("complete_internal_evaluation"),
                 ),
-                (
-                    "text".to_string(),
-                    serde_json::json!(r#"{"sufficient":true,"next":"continue"}"#),
-                ),
+                ("text".to_string(), serde_json::json!("done")),
             ]),
         );
         let child_activation = match store
@@ -4683,10 +4672,7 @@ mod tests {
             .unwrap()
         {
             PlanDriveReceipt::Succeeded { plan, value } => {
-                assert_eq!(
-                    value,
-                    serde_json::json!({"sufficient": true, "next": "continue"})
-                );
+                assert_eq!(value, serde_json::json!("done"));
                 assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
             }
             other => panic!("expected completed infer plan, got {other:?}"),
@@ -4772,8 +4758,8 @@ mod tests {
                  (seq
                    (bind decision
                      (infer
-                       (task "返回后续 read 的结构化决策")
-                       (returns ReadDecision)))
+                       (returns ReadDecision)
+                       (record ReadDecision (path "README.md"))))
                    (call read (path decision.path))))"#,
             &registry,
             &AllowList::new(["read"]),
