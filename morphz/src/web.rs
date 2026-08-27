@@ -3145,6 +3145,7 @@ fn sdk_error_response(error: SdkError) -> axum::response::Response {
         SdkErrorCode::Forbidden => StatusCode::FORBIDDEN,
         SdkErrorCode::NotFound => StatusCode::NOT_FOUND,
         SdkErrorCode::Conflict => StatusCode::CONFLICT,
+        SdkErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         SdkErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let message = if error.code == SdkErrorCode::Internal {
@@ -8296,6 +8297,18 @@ mod tests {
         assert!(!body
             .windows("database password".len())
             .any(|window| window == b"database password"));
+
+        let unavailable = sdk_error_response(SdkError::new(
+            SdkErrorCode::Unavailable,
+            "Edge pairing storage is temporarily unavailable; retry the same request",
+        ));
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(unavailable.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "unavailable");
+        assert_ne!(value["error"]["code"], "unauthorized");
 
         let extractor_rejection = normalize_api_error_response(
             "/api/objectives",

@@ -27,18 +27,18 @@ use crate::identity::PrincipalAssertion;
 use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
 pub use crate::memory::MessageDispatchMode;
 use crate::memory::{
-    ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CognitiveContextRecord, ContextCapabilityBindingRecord, ContextUpdate,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    is_transient_storage_contention, ArtifactTransferExecutionRecord, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
+    ContextCapabilityBindingRecord, ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk,
+    EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
     ExecutionTargetRegistration, ExecutionTargetStatus, NewCognitiveContext,
     NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective,
-    NewSession, ObjectiveRecord, PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
-    ThreadControlAction, ThreadMutation,
+    NewSession, NodePairingCodeError, ObjectiveRecord, PairExecutionNode, QueryFilter,
+    SessionRecord, SessionUpdate, ThreadControlAction, ThreadMutation,
 };
 use crate::orchestrator::context::{
     ContextCommit, ContextTokenBudget, ContextView, MindProjectionAudit,
@@ -85,6 +85,7 @@ pub enum SdkErrorCode {
     Forbidden,
     NotFound,
     Conflict,
+    Unavailable,
     Internal,
 }
 
@@ -96,6 +97,7 @@ impl SdkErrorCode {
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
             Self::Conflict => "conflict",
+            Self::Unavailable => "unavailable",
             Self::Internal => "internal",
         }
     }
@@ -129,6 +131,30 @@ impl fmt::Display for SdkError {
 impl std::error::Error for SdkError {}
 
 pub type SdkResult<T> = Result<T, SdkError>;
+
+fn classify_node_pairing_store_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error.as_ref());
+    while let Some(candidate) = current {
+        if let Some(pairing_error) = candidate.downcast_ref::<NodePairingCodeError>() {
+            return SdkError::new(SdkErrorCode::Unauthorized, pairing_error.to_string());
+        }
+        current = candidate.source();
+    }
+
+    if is_transient_storage_contention(error.as_ref()) {
+        tracing::warn!(
+            error = %error,
+            event_code = "sdk.edge_pairing.storage_unavailable",
+            "Edge pairing could not acquire its durable storage write slot"
+        );
+        return SdkError::new(
+            SdkErrorCode::Unavailable,
+            "Edge pairing storage is temporarily unavailable; retry the same request",
+        );
+    }
+
+    SdkError::internal(error)
+}
 
 /// Product-level OAuth setup request. Callers choose a supported service;
 /// Provider and account identifiers remain an implementation detail of
@@ -2688,6 +2714,12 @@ impl MorphzSdk {
                 "Edge protocol_version must be greater than 0",
             ));
         }
+        if !command.metadata.is_object() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Edge metadata must be a JSON object",
+            ));
+        }
         let node_id = match command.node_id {
             Some(node_id) if !node_id.trim().is_empty() => node_id,
             _ => random_secret("node", 12)?,
@@ -2719,7 +2751,7 @@ impl MorphzSdk {
                 metadata: command.metadata,
             })
             .await
-            .map_err(|error| SdkError::new(SdkErrorCode::Unauthorized, error.to_string()))?;
+            .map_err(classify_node_pairing_store_error)?;
         Ok(PairedExecutionNode { node })
     }
 
@@ -3787,6 +3819,30 @@ mod tests {
             assurance: "trusted-gateway".to_string(),
             display_name: Some(id.to_string()),
         }
+    }
+
+    #[test]
+    fn node_pairing_classifies_only_typed_code_failures_as_unauthorized() {
+        let credential_error = classify_node_pairing_store_error(Box::new(
+            NodePairingCodeError::new(crate::memory::NodePairingCodeErrorKind::Used),
+        ));
+        assert_eq!(credential_error.code, SdkErrorCode::Unauthorized);
+        assert_eq!(credential_error.message, "Node pairing code 已使用");
+
+        let contention = classify_node_pairing_store_error(Box::new(std::io::Error::other(
+            "error returned from database: (code: 5) database is locked",
+        )));
+        assert_eq!(contention.code, SdkErrorCode::Unavailable);
+        assert_eq!(
+            contention.message,
+            "Edge pairing storage is temporarily unavailable; retry the same request"
+        );
+        assert!(!contention.message.contains("database is locked"));
+
+        let unexpected = classify_node_pairing_store_error(Box::new(std::io::Error::other(
+            "unexpected storage failure",
+        )));
+        assert_eq!(unexpected.code, SdkErrorCode::Internal);
     }
 
     #[tokio::test]

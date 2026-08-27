@@ -3,7 +3,7 @@ use crate::memory::{
     EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
     EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, ExecutionNodeMutation,
     ExecutionNodeRecord, ExecutionNodeStatus, NewEdgeCommand, NewExecutionNodeChallenge,
-    NewNodePairingCode, PairExecutionNode,
+    NewNodePairingCode, NodePairingCodeError, NodePairingCodeErrorKind, PairExecutionNode,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -290,12 +290,12 @@ impl EdgeExecutionStore for PostgresStore {
         .bind(&request.code_hash)
         .fetch_optional(&mut *tx)
         .await?
-        .ok_or("Node pairing code 无效")?;
+        .ok_or_else(|| NodePairingCodeError::new(NodePairingCodeErrorKind::Invalid))?;
         if pairing.get::<Option<String>, _>("consumed_at").is_some() {
-            return Err("Node pairing code 已使用".into());
+            return Err(NodePairingCodeError::new(NodePairingCodeErrorKind::Used).into());
         }
         if parse_time(&pairing.get::<String, _>("expires_at")) <= now {
-            return Err("Node pairing code 已过期".into());
+            return Err(NodePairingCodeError::new(NodePairingCodeErrorKind::Expired).into());
         }
         sqlx::query(
             r#"INSERT INTO execution_nodes

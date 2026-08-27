@@ -5,13 +5,13 @@ use crate::config::SqliteStorageConfig;
 use crate::event::{Event, TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
-    message_request_fingerprint, stable_thread_id, stable_thread_signal_id,
-    thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
-    validate_thread_supersede_event, ActionGroupFilter, ActionGroupMemberCommit,
-    ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
-    ActionGroupStore, ActivationContextCounts, ActivationOutcomeCommit, ActivationStore,
-    AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter, ApprovalMutation,
-    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    is_transient_storage_contention, message_request_fingerprint, stable_thread_id,
+    stable_thread_signal_id, thread_cancellation_event, thread_group_barrier_event,
+    thread_terminal_barrier_event, validate_thread_supersede_event, ActionGroupFilter,
+    ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord,
+    ActionGroupStatus, ActionGroupStore, ActivationContextCounts, ActivationOutcomeCommit,
+    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
+    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
     CognitiveClockStore, CognitiveContextRecord, ContextCapabilityBindingMutation,
@@ -37,29 +37,30 @@ use crate::memory::{
     NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
     NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
     NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
-    NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment, ObjectiveCompletionIntent,
-    ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
-    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
-    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
-    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
-    SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
-    StorageMaintenanceReport, StorageMaintenanceStore, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
-    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
-    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
-    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
-    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
-    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
+    NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment, NodePairingCodeError,
+    NodePairingCodeErrorKind, ObjectiveCompletionIntent, ObjectiveMutation,
+    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
+    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
+    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
+    SessionContextSharing, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionSignalClaim,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport,
+    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
+    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
+    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
+    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    WorkAssignmentCreateResult, WorkAssignmentMutation, WorkAssignmentMutationResult,
+    WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::scheduler::{
@@ -108,24 +109,6 @@ fn sqlite_has_wal_reset_fix(version: &str) -> bool {
     (*major, *minor, *patch) >= (3, 51, 3)
         || (*major == 3 && *minor == 50 && *patch >= 7)
         || (*major == 3 && *minor == 44 && *patch >= 6)
-}
-
-fn is_transient_sqlite_contention(error: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current = Some(error);
-    while let Some(error) = current {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("database is locked")
-            || message.contains("database table is locked")
-            || message.contains("sqlite_busy")
-            || message.contains("sqlite_locked")
-            || message.contains("(code: 5)")
-            || message.contains("(code: 6)")
-        {
-            return true;
-        }
-        current = error.source();
-    }
-    false
 }
 
 impl SqliteStore {
@@ -9880,7 +9863,7 @@ impl ActivationStore for SqliteStore {
                 .await
             {
                 Ok(signals) => return Ok(signals),
-                Err(error) if is_transient_sqlite_contention(error.as_ref()) => {
+                Err(error) if is_transient_storage_contention(error.as_ref()) => {
                     contention_retries = contention_retries.saturating_add(1);
                     if contention_retries == 1 || contention_retries.is_power_of_two() {
                         tracing::warn!(
@@ -19178,6 +19161,86 @@ impl ExecutionTargetAuthorizationStore for SqliteStore {
     }
 }
 
+const NODE_PAIRING_SQLITE_MAX_ATTEMPTS: u32 = 3;
+
+impl SqliteStore {
+    async fn pair_execution_node_once(
+        &self,
+        request: &PairExecutionNode,
+        capabilities_json: &str,
+        metadata_json: &str,
+    ) -> Result<ExecutionNodeRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+
+        // SQLite transactions start deferred. The old implementation read the
+        // code before writing the Node, so concurrent pairings could all take
+        // read snapshots and then fail their write upgrade with
+        // SQLITE_BUSY_SNAPSHOT, which deliberately bypasses busy_timeout.
+        // Claim the one-shot code with the first statement instead. This takes
+        // the WAL writer slot up front, where busy_timeout can serialize the
+        // short pairing transactions, and the claim rolls back atomically if
+        // any later Node write fails.
+        let pairing = sqlx::query(
+            r#"UPDATE execution_node_pairing_codes
+               SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+               WHERE code_hash = ? AND consumed_at IS NULL
+                 AND julianday(expires_at) > julianday('now')
+               RETURNING owner_principal_id"#,
+        )
+        .bind(&request.code_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(pairing) = pairing else {
+            let existing = sqlx::query(
+                "SELECT consumed_at FROM execution_node_pairing_codes WHERE code_hash = ?",
+            )
+            .bind(&request.code_hash)
+            .fetch_optional(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            let kind = match existing {
+                None => NodePairingCodeErrorKind::Invalid,
+                Some(row) if row.get::<Option<String>, _>("consumed_at").is_some() => {
+                    NodePairingCodeErrorKind::Used
+                }
+                Some(_) => NodePairingCodeErrorKind::Expired,
+            };
+            return Err(NodePairingCodeError::new(kind).into());
+        };
+        let owner_principal_id: String = pairing.get("owner_principal_id");
+        let now_text = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO execution_nodes
+               (id, revision, owner_principal_id, name, status, device_key_fingerprint,
+                device_public_key, device_token_hash, protocol_version, platform, capabilities_json,
+                metadata_json, created_at, updated_at, last_seen_at)
+               VALUES (?, 1, ?, ?, 'online', ?, ?, '', ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&request.node_id)
+        .bind(owner_principal_id)
+        .bind(&request.name)
+        .bind(&request.device_key_fingerprint)
+        .bind(&request.device_public_key)
+        .bind(i64::from(request.protocol_version))
+        .bind(&request.platform)
+        .bind(capabilities_json)
+        .bind(metadata_json)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(&now_text)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
+            .bind(&request.node_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let node = execution_node_from_row(&row)?;
+        tx.commit().await?;
+        Ok(node)
+    }
+}
+
 #[async_trait::async_trait]
 impl EdgeExecutionStore for SqliteStore {
     async fn wait_for_edge_command_change(&self, timeout: std::time::Duration) {
@@ -19232,58 +19295,34 @@ impl EdgeExecutionStore for SqliteStore {
         request.capabilities.dedup();
         let capabilities_json = serde_json::to_string(&request.capabilities)?;
         let metadata_json = serde_json::to_string(&request.metadata)?;
-        let now = Utc::now();
-        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        let mut tx = self.pool.begin().await?;
-        let pairing = sqlx::query(
-            "SELECT owner_principal_id, expires_at, consumed_at FROM execution_node_pairing_codes WHERE code_hash = ?",
-        )
-        .bind(&request.code_hash)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or("Node pairing code 无效")?;
-        if pairing.get::<Option<String>, _>("consumed_at").is_some() {
-            return Err("Node pairing code 已使用".into());
+        let mut attempt = 1;
+        let mut retry_delay = std::time::Duration::from_millis(25);
+        loop {
+            match self
+                .pair_execution_node_once(&request, &capabilities_json, &metadata_json)
+                .await
+            {
+                Ok(node) => return Ok(node),
+                Err(error)
+                    if attempt < NODE_PAIRING_SQLITE_MAX_ATTEMPTS
+                        && is_transient_storage_contention(error.as_ref()) =>
+                {
+                    tracing::warn!(
+                        node_id = %request.node_id,
+                        attempt,
+                        max_attempts = NODE_PAIRING_SQLITE_MAX_ATTEMPTS,
+                        delay_ms = retry_delay.as_millis(),
+                        error = %error,
+                        event_code = "memory.sqlite.edge_pairing.store_slot_waiting",
+                        "Edge pairing is waiting for a SQLite write slot; retrying the complete atomic pairing transaction"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    attempt += 1;
+                    retry_delay = (retry_delay * 2).min(std::time::Duration::from_millis(100));
+                }
+                Err(error) => return Err(error),
+            }
         }
-        if parse_time(&pairing.get::<String, _>("expires_at")) <= now {
-            return Err("Node pairing code 已过期".into());
-        }
-        let owner_principal_id: String = pairing.get("owner_principal_id");
-        sqlx::query(
-            r#"INSERT INTO execution_nodes
-               (id, revision, owner_principal_id, name, status, device_key_fingerprint,
-                device_public_key, device_token_hash, protocol_version, platform, capabilities_json,
-                metadata_json, created_at, updated_at, last_seen_at)
-               VALUES (?, 1, ?, ?, 'online', ?, ?, '', ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(&request.node_id)
-        .bind(owner_principal_id)
-        .bind(&request.name)
-        .bind(&request.device_key_fingerprint)
-        .bind(&request.device_public_key)
-        .bind(i64::from(request.protocol_version))
-        .bind(&request.platform)
-        .bind(capabilities_json)
-        .bind(metadata_json)
-        .bind(&now_text)
-        .bind(&now_text)
-        .bind(&now_text)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "UPDATE execution_node_pairing_codes SET consumed_at = ? WHERE code_hash = ? AND consumed_at IS NULL",
-        )
-        .bind(&now_text)
-        .bind(&request.code_hash)
-        .execute(&mut *tx)
-        .await?;
-        let row = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
-            .bind(&request.node_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        let node = execution_node_from_row(&row)?;
-        tx.commit().await?;
-        Ok(node)
     }
 
     async fn create_execution_node_challenge(
@@ -22508,7 +22547,7 @@ impl EventStore for SqliteStore {
             .await;
             match result {
                 Ok(()) => return Ok(()),
-                Err(error) if is_transient_sqlite_contention(error.as_ref()) => {
+                Err(error) if is_transient_storage_contention(error.as_ref()) => {
                     contention_retries = contention_retries.saturating_add(1);
                     if contention_retries == 1 || contention_retries.is_power_of_two() {
                         tracing::warn!(
@@ -23856,6 +23895,168 @@ mod tests {
 
         let clamped = runtime_sqlite_pool_options(0);
         assert_eq!(clamped.get_max_connections(), 1);
+    }
+
+    fn node_pairing_request(code_hash: &str, index: usize) -> PairExecutionNode {
+        PairExecutionNode {
+            code_hash: code_hash.to_string(),
+            node_id: format!("pairing-node-{index}"),
+            name: format!("Pairing Node {index}"),
+            device_key_fingerprint: format!("sha256:pairing-{index}"),
+            device_public_key: format!("pairing-public-key-{index}"),
+            protocol_version: 1,
+            platform: Some("test".to_string()),
+            capabilities: vec!["exec".to_string()],
+            metadata: serde_json::json!({"index": index}),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_node_pairings_wait_out_sqlite_writer_contention() {
+        const PAIRING_COUNT: usize = 8;
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_path_buf();
+        let store = Arc::new(
+            SqliteStore::new(path.to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        for index in 0..PAIRING_COUNT {
+            store
+                .create_node_pairing_code(NewNodePairingCode {
+                    code_hash: format!("pairing-code-{index}"),
+                    owner_principal_id: "pairing-owner".to_string(),
+                    expires_at: Utc::now() + chrono::Duration::minutes(1),
+                })
+                .await
+                .unwrap();
+        }
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::ZERO);
+        let mut writer = SqliteConnection::connect_with(&options).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(PAIRING_COUNT + 1));
+        let mut pairings = Vec::with_capacity(PAIRING_COUNT);
+        for index in 0..PAIRING_COUNT {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            pairings.push(tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .pair_execution_node(node_pairing_request(
+                        &format!("pairing-code-{index}"),
+                        index,
+                    ))
+                    .await
+            }));
+        }
+        barrier.wait().await;
+
+        // Cross the configured five-second SQLite busy timeout. Each request
+        // must still be retained by the Store's bounded transaction retry,
+        // rather than escaping as a false authentication failure.
+        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        assert!(
+            pairings.iter().all(|pairing| !pairing.is_finished()),
+            "all pairing requests must remain pending while contention is transient"
+        );
+        writer.execute("COMMIT").await.unwrap();
+
+        for pairing in pairings {
+            tokio::time::timeout(Duration::from_secs(10), pairing)
+                .await
+                .expect("pairing should finish after the Writer is released")
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM execution_nodes")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            PAIRING_COUNT as i64
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM execution_node_pairing_codes WHERE consumed_at IS NOT NULL",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            PAIRING_COUNT as i64
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_redemption_of_one_pairing_code_creates_exactly_one_node() {
+        const REDEEMER_COUNT: usize = 8;
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_node_pairing_code(NewNodePairingCode {
+                code_hash: "one-shot-pairing-code".to_string(),
+                owner_principal_id: "pairing-owner".to_string(),
+                expires_at: Utc::now() + chrono::Duration::minutes(1),
+            })
+            .await
+            .unwrap();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(REDEEMER_COUNT + 1));
+        let mut redemptions = Vec::with_capacity(REDEEMER_COUNT);
+        for index in 0..REDEEMER_COUNT {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            redemptions.push(tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .pair_execution_node(node_pairing_request("one-shot-pairing-code", index))
+                    .await
+            }));
+        }
+        barrier.wait().await;
+
+        let mut successes = 0;
+        let mut already_used = 0;
+        for redemption in redemptions {
+            match redemption.await.unwrap() {
+                Ok(_) => successes += 1,
+                Err(error) => {
+                    let pairing_error = error
+                        .downcast_ref::<NodePairingCodeError>()
+                        .expect("losing redemption must report the typed one-shot code state");
+                    assert_eq!(pairing_error.kind, NodePairingCodeErrorKind::Used);
+                    already_used += 1;
+                }
+            }
+        }
+        assert_eq!(successes, 1);
+        assert_eq!(already_used, REDEEMER_COUNT - 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM execution_nodes")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM execution_node_pairing_codes WHERE consumed_at IS NOT NULL",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

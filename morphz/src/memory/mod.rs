@@ -2027,6 +2027,54 @@ pub struct NewNodePairingCode {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePairingCodeErrorKind {
+    Invalid,
+    Used,
+    Expired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodePairingCodeError {
+    pub kind: NodePairingCodeErrorKind,
+}
+
+impl NodePairingCodeError {
+    pub const fn new(kind: NodePairingCodeErrorKind) -> Self {
+        Self { kind }
+    }
+}
+
+impl std::fmt::Display for NodePairingCodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self.kind {
+            NodePairingCodeErrorKind::Invalid => "Node pairing code 无效",
+            NodePairingCodeErrorKind::Used => "Node pairing code 已使用",
+            NodePairingCodeErrorKind::Expired => "Node pairing code 已过期",
+        })
+    }
+}
+
+impl std::error::Error for NodePairingCodeError {}
+
+pub(crate) fn is_transient_storage_contention(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("database is locked")
+            || message.contains("database table is locked")
+            || message.contains("sqlite_busy")
+            || message.contains("sqlite_locked")
+            || message.contains("(code: 5)")
+            || message.contains("(code: 6)")
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 #[derive(Debug, Clone)]
 pub struct PairExecutionNode {
     pub code_hash: String,
