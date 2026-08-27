@@ -13,6 +13,64 @@ from benchmarks.harbor.morphz_atif import write_trajectory
 
 
 class MorphzAtifTest(unittest.TestCase):
+    def test_shared_store_projection_is_fenced_to_one_root_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            db_path = root / "shared.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                "CREATE TABLE events ("
+                "id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, actor TEXT NOT NULL, "
+                "type TEXT NOT NULL, topic TEXT NOT NULL, root_turn_id TEXT, "
+                "payload TEXT NOT NULL)"
+            )
+
+            def add(
+                event_id: str,
+                topic: str,
+                text: str,
+                root_turn_id: str | None,
+            ) -> None:
+                connection.execute(
+                    "INSERT INTO events "
+                    "(id, timestamp, actor, type, topic, root_turn_id, payload) "
+                    "VALUES (?, '2026-08-27T00:00:00Z', 'Agent', "
+                    "'event', ?, ?, ?)",
+                    (
+                        event_id,
+                        topic,
+                        root_turn_id,
+                        json.dumps({"text": text}),
+                    ),
+                )
+
+            add("turn-a", "chat/user_message", "task a", None)
+            add("reply-a", "chat/reply", "answer a", "turn-a")
+            add("turn-b", "chat/user_message", "task b", None)
+            add("reply-b", "chat/reply", "answer b", "turn-b")
+            connection.commit()
+            connection.close()
+
+            output = root / "trajectory-a.json"
+            trajectory = write_trajectory(
+                db_path,
+                output,
+                instruction="task a",
+                session_id="session-a",
+                context_id="shared-context",
+                agent_version="me09-test",
+                configured_model="gpt-5.6-sol",
+                root_turn_id="turn-a",
+            )
+
+            self.assertEqual(trajectory.extra["root_turn_id"], "turn-a")
+            self.assertEqual(trajectory.extra["event_count"], 2)
+            messages = [step.message for step in trajectory.steps]
+            self.assertIn("task a", messages)
+            self.assertIn("answer a", messages)
+            self.assertNotIn("task b", messages)
+            self.assertNotIn("answer b", messages)
+
     def test_projects_structured_runtime_events_to_atif_v17(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
