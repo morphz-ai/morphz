@@ -107,7 +107,12 @@ static ssize_t read_preserved_process_groups(
     sqlite3_stmt *statement = NULL;
     size_t count = 0;
     const char *sql =
-        "SELECT DISTINCT CAST(json_extract(child.request_json, '$.process_group_id') AS INTEGER) "
+        "SELECT DISTINCT CAST(COALESCE("
+        "  json_extract(child.request_json, '$.process_group_id'), "
+        "  CASE WHEN json_valid(child.progress_ref) "
+        "             AND json_extract(child.progress_ref, '$.kind') = 'local_background_process' "
+        "       THEN json_extract(child.progress_ref, '$.process_group_id') END"
+        ") AS INTEGER) "
         "FROM execution_jobs child "
         "WHERE child.status IN ('queued','waiting_approval','running') "
         "  AND json_extract(child.request_json, '$.kind') = 'background_exec' "
@@ -279,11 +284,14 @@ static int isolate_runtime_for_verifier(
             perror("failed to terminate Morphz Runtime");
             return 4;
         }
+    } else if (kill(runtime_pid, SIGCONT) != 0 && errno != ESRCH) {
+        perror("failed to resume Morphz Runtime background supervisor");
+        return 4;
     }
     fprintf(
         stderr,
         "%s Morphz Runtime pid=%ld; preserved=%zu persistent groups; terminated=%zu transient groups\n",
-        terminate_runtime ? "quiesced" : "prepared verifier with frozen",
+        terminate_runtime ? "quiesced" : "prepared verifier with live supervisor",
         (long)runtime_pid,
         preserved_count,
         terminated_count

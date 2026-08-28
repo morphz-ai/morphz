@@ -158,20 +158,32 @@ class RuntimeCancellationTests(unittest.TestCase):
                 with sqlite3.connect(database) as connection:
                     connection.execute(
                         "CREATE TABLE execution_jobs "
-                        "(id TEXT PRIMARY KEY, status TEXT, request_json TEXT)"
+                        "(id TEXT PRIMARY KEY, status TEXT, request_json TEXT, "
+                        "progress_ref TEXT)"
                     )
                     rows = [
-                        ("parent-keep", "succeeded", {"keep_running": True}),
-                        ("parent-transient", "succeeded", {"keep_running": False}),
+                        ("parent-keep", "succeeded", {"keep_running": True}, None),
+                        (
+                            "parent-transient",
+                            "succeeded",
+                            {"keep_running": False},
+                            None,
+                        ),
                         (
                             "child-keep",
                             "running",
                             {
                                 "kind": "background_exec",
                                 "parent_job_id": "parent-keep",
-                                "process_group_id": keep_pid,
                                 "keep_running": True,
                             },
+                            json.dumps(
+                                {
+                                    "kind": "local_background_process",
+                                    "process_group_id": keep_pid,
+                                    "artifact_path": str(tmp_path / "keep.log"),
+                                }
+                            ),
                         ),
                         (
                             "child-transient",
@@ -182,14 +194,15 @@ class RuntimeCancellationTests(unittest.TestCase):
                                 "process_group_id": transient_pid,
                                 "keep_running": False,
                             },
+                            None,
                         ),
                     ]
                     connection.executemany(
                         "INSERT INTO execution_jobs "
-                        "(id, status, request_json) VALUES (?, ?, ?)",
+                        "(id, status, request_json, progress_ref) VALUES (?, ?, ?, ?)",
                         [
-                            (job_id, status, json.dumps(request))
-                            for job_id, status, request in rows
+                            (job_id, status, json.dumps(request), progress_ref)
+                            for job_id, status, request, progress_ref in rows
                         ],
                     )
 
@@ -247,12 +260,17 @@ class RuntimeCancellationTests(unittest.TestCase):
 
             (tmp_path / "index.html").write_text("verifier-ready\n")
             service_pid_path = tmp_path / "service.pid"
+            runtime_heartbeat_path = tmp_path / "runtime.heartbeat"
+            database = tmp_path / "morphz.db"
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
 
             runtime_script = """
 import pathlib
+import os
+import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -273,8 +291,29 @@ service = subprocess.Popen(
     start_new_session=True,
 )
 pathlib.Path(sys.argv[1]).write_text(str(service.pid))
+database = pathlib.Path(sys.argv[4])
+heartbeat = pathlib.Path(sys.argv[5])
+
+def shutdown(_signum, _frame):
+    try:
+        os.killpg(service.pid, signal.SIGTERM)
+        service.wait(timeout=3)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(service.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if database.is_file():
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE execution_jobs SET status='cancelled' WHERE id='service'"
+            )
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, shutdown)
 while True:
-    time.sleep(60)
+    heartbeat.write_text(str(time.monotonic()))
+    time.sleep(0.05)
 """
             runtime = subprocess.Popen(
                 [
@@ -284,6 +323,8 @@ while True:
                     str(service_pid_path),
                     str(port),
                     str(tmp_path),
+                    str(database),
+                    str(runtime_heartbeat_path),
                 ]
             )
             try:
@@ -303,23 +344,29 @@ while True:
                             raise
                         time.sleep(0.05)
 
-                database = tmp_path / "morphz.db"
                 with sqlite3.connect(database) as connection:
                     connection.execute(
                         "CREATE TABLE execution_jobs "
-                        "(id TEXT PRIMARY KEY, status TEXT, request_json TEXT)"
+                        "(id TEXT PRIMARY KEY, status TEXT, request_json TEXT, "
+                        "progress_ref TEXT)"
                     )
                     connection.execute(
                         "INSERT INTO execution_jobs "
-                        "(id, status, request_json) VALUES (?, ?, ?)",
+                        "(id, status, request_json, progress_ref) VALUES (?, ?, ?, ?)",
                         (
                             "service",
                             "running",
                             json.dumps(
                                 {
                                     "kind": "background_exec",
-                                    "process_group_id": service_pid,
                                     "keep_running": True,
+                                }
+                            ),
+                            json.dumps(
+                                {
+                                    "kind": "local_background_process",
+                                    "process_group_id": service_pid,
+                                    "artifact_path": str(tmp_path / "service.log"),
                                 }
                             ),
                         ),
@@ -339,14 +386,37 @@ while True:
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(_alive(runtime.pid))
                 runtime_status = Path(f"/proc/{runtime.pid}/status").read_text()
-                self.assertIn("State:\tT", runtime_status)
+                self.assertNotIn("State:\tT", runtime_status)
                 self.assertTrue(_alive(service_pid))
+                heartbeat_before = runtime_heartbeat_path.read_text()
+                time.sleep(0.2)
+                self.assertNotEqual(
+                    runtime_heartbeat_path.read_text(),
+                    heartbeat_before,
+                    "the verifier handoff left the Runtime supervisor frozen",
+                )
 
                 # Simulate Harbor's verifier request after the Agent command
-                # returned. The frozen Runtime still owns the pipe read end.
+                # returned. The live Runtime still owns the pipe read end and
+                # remains able to renew/finalize the durable child Job.
                 with urllib.request.urlopen(url, timeout=2) as response:
                     self.assertEqual(response.read(), b"verifier-ready\n")
                 self.assertTrue(_alive(service_pid))
+
+                # Simulate environment teardown. The still-live owner observes
+                # the process exit and closes the durable Job instead of
+                # leaving a lease-expired `running` record.
+                runtime.terminate()
+                runtime.wait(timeout=5)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and _alive(service_pid):
+                    time.sleep(0.05)
+                self.assertFalse(_alive(service_pid))
+                with sqlite3.connect(database) as connection:
+                    status = connection.execute(
+                        "SELECT status FROM execution_jobs WHERE id='service'"
+                    ).fetchone()[0]
+                self.assertEqual(status, "cancelled")
             finally:
                 if "service_pid" in locals() and _alive(service_pid):
                     os.killpg(service_pid, signal.SIGKILL)

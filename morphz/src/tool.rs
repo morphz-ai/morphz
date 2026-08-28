@@ -1228,6 +1228,12 @@ impl BackgroundTaskScheduler {
                 .unwrap_or_else(chrono::Utc::now),
             get_tasks_map()
                 .get(task_id)
+                .map(|task| task.pgid)
+                .ok_or_else(|| {
+                    format!("Live handle for background process '{task_id}' disappeared")
+                })?,
+            get_tasks_map()
+                .get(task_id)
                 .map(|task| task.artifact_path.clone()),
         )
         .await
@@ -1482,11 +1488,16 @@ impl BackgroundTaskScheduler {
         &self,
         mut reserved: ReservedBackgroundExecution,
         started_at: chrono::DateTime<chrono::Utc>,
-        progress_ref: Option<String>,
+        process_group_id: i32,
+        artifact_path: Option<String>,
     ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
         let Some(manager) = &self.execution_jobs else {
             return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
         };
+        let progress_ref = crate::execution::local_background_process_progress_ref(
+            process_group_id,
+            artifact_path.as_deref().unwrap_or_default(),
+        );
         reserved.job = applied_background_job(
             manager
                 .heartbeat(
@@ -1496,7 +1507,7 @@ impl BackgroundTaskScheduler {
                         claim_token: &reserved.claim_token,
                         lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
                         side_effect_started_at: Some(started_at),
-                        progress_ref: progress_ref.as_deref(),
+                        progress_ref: Some(&progress_ref),
                     },
                 )
                 .await?,
@@ -1597,10 +1608,11 @@ impl BackgroundTaskScheduler {
                 if last_heartbeat_at.elapsed() < std::time::Duration::from_secs(30) {
                     continue;
                 }
-                let progress_ref = job
-                    .request
-                    .get("artifact_path")
-                    .and_then(serde_json::Value::as_str);
+                let progress_ref = job.progress_ref.as_deref().or_else(|| {
+                    job.request
+                        .get("artifact_path")
+                        .and_then(serde_json::Value::as_str)
+                });
                 match manager
                     .heartbeat(
                         &job.id,
@@ -5355,7 +5367,7 @@ fn background_execution_snapshot(
         "revision": job.revision,
         "status": status,
         "command": job.request.get("command"),
-        "process_group_id": job.request.get("process_group_id"),
+        "process_group_id": crate::execution::execution_job_process_group_id(job),
         "session_id": job.session_id,
         "context_id": job.context_id,
         "activation_id": job.activation_id,
@@ -8492,6 +8504,7 @@ impl Tool for ExecuteCommandTool {
                 .activate_reserved_execution(
                     reserved,
                     now,
+                    pid,
                     Some(archive_path.to_string_lossy().into_owned()),
                 )
                 .await
@@ -13692,7 +13705,8 @@ Body
                                         "while [ ! -f '{}' ]; do sleep 0.02; done; touch '{}'",
                                         release.display(), completed.display()
                                     ),
-                                    "background": true
+                                    "background": true,
+                                    "keep_running": true
                                 })
                                 .to_string(),
                             ),
@@ -13715,6 +13729,21 @@ Body
         let running = store.get_execution_job(task_id).await.unwrap().unwrap();
         assert_eq!(running.status, ExecutionJobStatus::Running);
         assert!(running.side_effect_started_at.is_some());
+        assert_eq!(running.request["keep_running"], true);
+        assert!(
+            running.request.get("process_group_id").is_none(),
+            "spawn-time process identity must not be forged into the immutable pre-spawn request"
+        );
+        let live_process_group = get_tasks_map().get(task_id).unwrap().pgid;
+        assert_eq!(
+            crate::execution::execution_job_process_group_id(&running),
+            Some(live_process_group),
+            "the fenced post-spawn ownership checkpoint must expose the real process group"
+        );
+        let progress: serde_json::Value =
+            serde_json::from_str(running.progress_ref.as_deref().unwrap()).unwrap();
+        assert_eq!(progress["kind"], "local_background_process");
+        assert_eq!(progress["process_group_id"], live_process_group);
         tokio::fs::write(&release, b"release").await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while !completed.exists() {
@@ -13723,6 +13752,18 @@ Body
         })
         .await
         .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let terminal = store.get_execution_job(task_id).await.unwrap().unwrap();
+                if terminal.status.is_terminal() {
+                    assert_eq!(terminal.status, ExecutionJobStatus::Succeeded);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the keep-running service owner did not commit its natural terminal state");
     }
 
     #[tokio::test]

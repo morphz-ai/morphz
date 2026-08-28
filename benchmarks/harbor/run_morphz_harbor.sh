@@ -97,10 +97,11 @@ printf '%s\n' "$morphz_pid" >"$runtime_pid_file"
   "${MORPHZ_HARBOR_TIMEOUT_SECS:-21600}" 20
 
 # Harbor verifies in the same task container after the Agent returns. Keep the
-# Runtime frozen until Harbor destroys the container: it owns the read ends of
-# persistent-service output pipes, so killing it would make an otherwise live
-# service fail on its first verifier request. The helper also terminates
-# unfinished transient commands, while preserving declared keep_running groups.
+# Runtime alive until Harbor destroys the container: it owns the read ends of
+# persistent-service output pipes and continues renewing/finalizing their
+# durable child Jobs. The helper briefly freezes it only while taking a
+# consistent process snapshot, terminates unfinished transient commands, then
+# resumes it after preserving declared keep_running groups.
 /tmp/morphz-harbor-wait --prepare-verifier \
   "$MORPHZ_STORAGE_SQLITE_PATH" "$morphz_pid"
 : >"$verifier_ready_file"

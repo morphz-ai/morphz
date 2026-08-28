@@ -268,6 +268,48 @@ pub struct JobHeartbeat<'a> {
     pub progress_ref: Option<&'a str>,
 }
 
+const LOCAL_BACKGROUND_PROCESS_PROGRESS_KIND: &str = "local_background_process";
+
+/// Durable, fenced physical-owner checkpoint written only after a local
+/// managed process has spawned. The logical ExecutionJob request is immutable
+/// and is deliberately reserved before spawn, so the process identity cannot
+/// be known when that request is created.
+pub(crate) fn local_background_process_progress_ref(
+    process_group_id: i32,
+    artifact_path: &str,
+) -> String {
+    serde_json::json!({
+        "kind": LOCAL_BACKGROUND_PROCESS_PROGRESS_KIND,
+        "process_group_id": process_group_id,
+        "artifact_path": artifact_path,
+    })
+    .to_string()
+}
+
+/// Reads both the legacy timeout-detach request field and the post-spawn
+/// owner checkpoint used by explicit background execution.
+pub(crate) fn execution_job_process_group_id(job: &ExecutionJobRecord) -> Option<i32> {
+    job.request
+        .get("process_group_id")
+        .and_then(serde_json::Value::as_i64)
+        .or_else(|| {
+            job.progress_ref
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .filter(|value| {
+                    value.get("kind").and_then(serde_json::Value::as_str)
+                        == Some(LOCAL_BACKGROUND_PROCESS_PROGRESS_KIND)
+                })
+                .and_then(|value| {
+                    value
+                        .get("process_group_id")
+                        .and_then(serde_json::Value::as_i64)
+                })
+        })
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value > 1)
+}
+
 /// Pure restart decision for a durable non-terminal Job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestartAction {
@@ -763,13 +805,7 @@ fn same_host_cancelled_background_exit_is_proven(
     {
         return false;
     }
-    let Some(process_group_id) = job
-        .request
-        .get("process_group_id")
-        .and_then(serde_json::Value::as_i64)
-        .and_then(|value| i32::try_from(value).ok())
-        .filter(|value| *value > 0)
-    else {
+    let Some(process_group_id) = execution_job_process_group_id(job) else {
         return false;
     };
     #[cfg(unix)]
@@ -1234,7 +1270,13 @@ mod tests {
         );
         job.tool_name = "exec/background".to_string();
         job.cancel_requested_at = Some(job.updated_at);
-        job.request = json!({ "process_group_id": i32::MAX });
+        job.request = json!({ "kind": "background_exec" });
+        job.progress_ref = Some(local_background_process_progress_ref(
+            i32::MAX,
+            "/tmp/background.log",
+        ));
+
+        assert_eq!(execution_job_process_group_id(&job), Some(i32::MAX));
 
         assert!(same_host_cancelled_background_exit_is_proven(
             &job,
@@ -1249,6 +1291,36 @@ mod tests {
         assert_eq!(event.id, format!("background_output_{}", job.id));
         assert_eq!(event.payload["task_status"], "cancelled");
         assert_eq!(event.payload["wake_policy"], "none");
+    }
+
+    #[test]
+    fn background_process_identity_accepts_only_typed_post_spawn_checkpoints() {
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::ReconcileRequired,
+        );
+        job.request = json!({ "kind": "background_exec" });
+        job.progress_ref = Some(
+            json!({
+                "kind": "unrelated_progress",
+                "process_group_id": 4242,
+            })
+            .to_string(),
+        );
+        assert_eq!(execution_job_process_group_id(&job), None);
+
+        job.progress_ref = Some(local_background_process_progress_ref(
+            4242,
+            "/tmp/background.log",
+        ));
+        assert_eq!(execution_job_process_group_id(&job), Some(4242));
+
+        job.request = json!({ "process_group_id": 3131 });
+        assert_eq!(
+            execution_job_process_group_id(&job),
+            Some(3131),
+            "legacy timeout-detach requests remain readable"
+        );
     }
 
     #[test]
