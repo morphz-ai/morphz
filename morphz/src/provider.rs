@@ -324,6 +324,58 @@ fn provider_safety_refusal(protocol: ModelProtocol, detail: impl Into<String>) -
     )
 }
 
+fn provider_incomplete_response(protocol: ModelProtocol, reason: &str) -> ProviderError {
+    let normalized_reason = reason.trim();
+    let kind = match normalized_reason {
+        "max_output_tokens" | "max_tokens" => ModelFailureKind::OutputLimit,
+        "content_filter" => ModelFailureKind::SafetyRefusal,
+        _ => ModelFailureKind::IncompleteResponse,
+    };
+    let message = match kind {
+        ModelFailureKind::OutputLimit => format!(
+            "{} Provider ended the physical response at its output-token boundary",
+            protocol.as_str()
+        ),
+        ModelFailureKind::SafetyRefusal => format!(
+            "{} Provider ended the response incomplete at its content-filter boundary",
+            protocol.as_str()
+        ),
+        _ => format!(
+            "{} Provider ended the response with an incomplete terminal (reason={})",
+            protocol.as_str(),
+            if normalized_reason.is_empty() {
+                "unspecified"
+            } else {
+                normalized_reason
+            }
+        ),
+    };
+    boxed_model_failure(
+        ModelFailure::new(kind, message).with_provider_code(
+            (!normalized_reason.is_empty()).then(|| normalized_reason.to_string()),
+        ),
+    )
+}
+
+fn incomplete_reason(error: &ProviderError) -> Option<String> {
+    let failure = error.downcast_ref::<ModelFailure>()?;
+    if matches!(
+        failure.kind,
+        ModelFailureKind::OutputLimit | ModelFailureKind::IncompleteResponse
+    ) || (failure.kind == ModelFailureKind::SafetyRefusal
+        && failure.provider_code.as_deref() == Some("content_filter"))
+    {
+        Some(
+            failure
+                .provider_code
+                .clone()
+                .unwrap_or_else(|| "unspecified".to_string()),
+        )
+    } else {
+        None
+    }
+}
+
 fn provider_stream_error(protocol: ModelProtocol, payload: &str) -> ProviderError {
     let message = format!(
         "{} Provider stream returned an error event: {payload}",
@@ -1439,9 +1491,13 @@ impl Client for ProtocolClient {
                 Ok(response)
             }
             Err(error) => {
-                let _ = stream.send(ModelStreamEvent::Failed {
-                    message: error.to_string(),
-                });
+                if let Some(reason) = incomplete_reason(&error) {
+                    let _ = stream.send(ModelStreamEvent::Incomplete { reason });
+                } else {
+                    let _ = stream.send(ModelStreamEvent::Failed {
+                        message: error.to_string(),
+                    });
+                }
                 Err(error)
             }
         }
@@ -1473,9 +1529,13 @@ impl Client for ProtocolClient {
                 Ok(response)
             }
             Err(error) => {
-                let _ = stream.send(ModelStreamEvent::Failed {
-                    message: error.to_string(),
-                });
+                if let Some(reason) = incomplete_reason(&error) {
+                    let _ = stream.send(ModelStreamEvent::Incomplete { reason });
+                } else {
+                    let _ = stream.send(ModelStreamEvent::Failed {
+                        message: error.to_string(),
+                    });
+                }
                 Err(error)
             }
         }
@@ -1824,6 +1884,7 @@ struct StreamAccumulator {
     gemini_tool_index: usize,
     terminal: bool,
     responses_completed: bool,
+    responses_incomplete_reason: Option<String>,
     responses_completed_output_tokens: Option<u64>,
     prompt_tokens: Option<u64>,
     usage: ModelUsage,
@@ -2029,79 +2090,79 @@ impl StreamAccumulator {
         false
     }
 
-    /// A Responses request which exhausts `max_output_tokens` has reached a
-    /// native terminal boundary even though the envelope is named
-    /// `response.incomplete`. When every accumulated output item is reasoning,
-    /// that boundary is semantically identical to a completed reasoning-only
-    /// response: preserve its opaque continuation state and let `finish`
-    /// return the request-scoped `EmptyResponse` used by the Orchestrator's
-    /// durable reasoning-continuation path.
+    fn apply_openai_responses_usage(&mut self, usage: &Value, stream: &ModelStreamSender) {
+        let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
+        let cached_input_tokens = usage
+            .pointer("/input_tokens_details/cached_tokens")
+            .and_then(Value::as_u64);
+        self.usage(
+            ModelUsage {
+                input_tokens,
+                uncached_input_tokens: subtract_optional(input_tokens, cached_input_tokens),
+                cached_input_tokens,
+                output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+                reasoning_tokens: usage
+                    .pointer("/output_tokens_details/reasoning_tokens")
+                    .and_then(Value::as_u64),
+                total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+                raw: vec![usage.clone()],
+                ..ModelUsage::default()
+            },
+            stream,
+        );
+    }
+
+    /// Absorb a standards-compliant Responses `incomplete` terminal without
+    /// pretending it is either `completed` or `failed`.
     ///
-    /// Do not generalize this to arbitrary incomplete responses. Refusals,
-    /// transport failures and malformed terminal envelopes remain failures,
-    /// while public text/tool truncation must retain its distinct semantics.
-    fn accept_reasoning_only_output_limit(
+    /// The terminal output and usage are still authoritative progress. Output
+    /// items are deliberately not finalized as executable tool calls: an
+    /// incomplete response may contain an in-progress function item, and only
+    /// a later complete response may authorize its execution.
+    fn apply_openai_responses_incomplete(
         &mut self,
         event: &Value,
         stream: &ModelStreamSender,
-    ) -> bool {
+    ) -> Result<(), ProviderError> {
         let response = event.get("response").unwrap_or(&Value::Null);
-        let output_limit = response
+        if let Some(status) = response
+            .get("status")
+            .and_then(Value::as_str)
+            .filter(|status| *status != "incomplete")
+        {
+            return Err(provider_protocol_failure(
+                ModelProtocol::OpenaiResponses,
+                format!("response.incomplete carried status '{status}'"),
+            ));
+        }
+        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+            return Err(provider_stream_error(
+                ModelProtocol::OpenaiResponses,
+                &error.to_string(),
+            ));
+        }
+
+        let reason = response
             .pointer("/incomplete_details/reason")
             .and_then(Value::as_str)
-            == Some("max_output_tokens");
-        let has_provider_error = response.get("error").is_some_and(|error| !error.is_null());
-        if !output_limit
-            || has_provider_error
-            || !self.content.trim().is_empty()
-            || !self.tools.is_empty()
-        {
-            return false;
-        }
-
-        let output = response
+            .unwrap_or("unspecified")
+            .to_string();
+        for (index, item) in response
             .get("output")
             .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        let terminal_has_reasoning = output
-            .iter()
-            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"));
-        let terminal_is_reasoning_only = output
-            .iter()
-            .all(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"));
-        if !terminal_is_reasoning_only
-            || (!terminal_has_reasoning && self.responses_reasoning_items.is_empty())
+            .into_iter()
+            .flatten()
+            .enumerate()
         {
-            return false;
+            self.apply_openai_responses_output_item(index, item, false, stream);
         }
-
-        for (index, item) in output.iter().enumerate() {
-            self.apply_openai_responses_output_item(index, item, true, stream);
-        }
+        self.backfill_openai_responses_message_text(stream);
         if let Some(usage) = response.get("usage") {
-            let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
-            let cached_input_tokens = usage
-                .pointer("/input_tokens_details/cached_tokens")
-                .and_then(Value::as_u64);
-            self.usage(
-                ModelUsage {
-                    input_tokens,
-                    uncached_input_tokens: subtract_optional(input_tokens, cached_input_tokens),
-                    cached_input_tokens,
-                    output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-                    reasoning_tokens: usage
-                        .pointer("/output_tokens_details/reasoning_tokens")
-                        .and_then(Value::as_u64),
-                    total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
-                    raw: vec![usage.clone()],
-                    ..ModelUsage::default()
-                },
-                stream,
-            );
+            self.apply_openai_responses_usage(usage, stream);
         }
+        self.responses_incomplete_reason = Some(reason);
         self.terminal = true;
-        true
+        Ok(())
     }
 
     fn openai_responses_terminal_failure(&self, kind: &str, event: &Value) -> ProviderError {
@@ -2113,13 +2174,9 @@ impl StreamAccumulator {
             let error = event.get("error").unwrap_or(event);
             return provider_stream_error(ModelProtocol::OpenaiResponses, &error.to_string());
         }
-        let reason = response
-            .pointer("/incomplete_details/reason")
-            .and_then(Value::as_str)
-            .unwrap_or("unspecified");
         provider_protocol_failure(
             ModelProtocol::OpenaiResponses,
-            format!("{kind} terminal (reason={reason})"),
+            format!("{kind} terminal without a Provider error object"),
         )
     }
 
@@ -2348,33 +2405,14 @@ impl StreamAccumulator {
                 if let Some(usage) = event.pointer("/response/usage") {
                     self.responses_completed_output_tokens =
                         usage.get("output_tokens").and_then(Value::as_u64);
-                    let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
-                    let cached_input_tokens = usage
-                        .pointer("/input_tokens_details/cached_tokens")
-                        .and_then(Value::as_u64);
-                    self.usage(
-                        ModelUsage {
-                            input_tokens,
-                            uncached_input_tokens: subtract_optional(
-                                input_tokens,
-                                cached_input_tokens,
-                            ),
-                            cached_input_tokens,
-                            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-                            reasoning_tokens: usage
-                                .pointer("/output_tokens_details/reasoning_tokens")
-                                .and_then(Value::as_u64),
-                            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
-                            raw: vec![usage.clone()],
-                            ..ModelUsage::default()
-                        },
-                        stream,
-                    );
+                    self.apply_openai_responses_usage(usage, stream);
                 }
             }
-            "response.incomplete" if self.accept_reasoning_only_output_limit(&event, stream) => {}
+            "response.incomplete" => {
+                self.apply_openai_responses_incomplete(&event, stream)?;
+            }
             "error" if self.accept_reasoning_only_missing_terminal(&event) => {}
-            "response.incomplete" | "response.failed" | "error" => {
+            "response.failed" | "error" => {
                 return Err(self.openai_responses_terminal_failure(kind, &event));
             }
             _ => {}
@@ -2548,6 +2586,19 @@ impl StreamAccumulator {
     fn finish(mut self, stream: &ModelStreamSender) -> Result<Response, ProviderError> {
         if !self.terminal {
             return Err("Provider stream disconnected before the protocol terminal event".into());
+        }
+        if let Some(reason) = self.responses_incomplete_reason.take() {
+            if !self.responses_reasoning_items.is_empty() {
+                let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                    continuation: ProviderContinuation::OpenaiResponses {
+                        reasoning_items: self.responses_reasoning_items.values().cloned().collect(),
+                    },
+                });
+            }
+            return Err(provider_incomplete_response(
+                ModelProtocol::OpenaiResponses,
+                &reason,
+            ));
         }
         if self.responses_completed
             && self.responses_completed_output_tokens == Some(0)
@@ -3261,11 +3312,20 @@ fn parse_openai_responses_response(value: Value) -> Result<Response, ProviderErr
     }
     let status = value.get("status").and_then(Value::as_str);
     if status == Some("incomplete") {
-        return Err(format!(
-            "OpenAI Responses response is incomplete: {}",
-            value.get("incomplete_details").unwrap_or(&Value::Null)
-        )
-        .into());
+        if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+            return Err(provider_stream_error(
+                ModelProtocol::OpenaiResponses,
+                &error.to_string(),
+            ));
+        }
+        let reason = value
+            .pointer("/incomplete_details/reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unspecified");
+        return Err(provider_incomplete_response(
+            ModelProtocol::OpenaiResponses,
+            reason,
+        ));
     }
     if let Some(error) = value.get("error").filter(|value| !value.is_null()) {
         return Err(provider_stream_error(
@@ -5280,7 +5340,7 @@ mod tests {
             .unwrap_err();
 
         let failure = error.downcast_ref::<ModelFailure>().unwrap();
-        assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+        assert_eq!(failure.kind, ModelFailureKind::OutputLimit);
         assert!(!failure.kind.uses_provider_recovery());
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
@@ -5297,6 +5357,11 @@ mod tests {
             event,
             ModelStreamEvent::Failed { message }
                 if message.contains("reasoning reached the physical output boundary")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::Incomplete { reason }
+                if reason == "max_output_tokens"
         )));
     }
 

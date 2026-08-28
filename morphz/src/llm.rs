@@ -38,6 +38,16 @@ pub enum ModelFailureKind {
     /// Runtime stopped a reasoning-only continuation loop at its configured
     /// safety boundary. The Provider completed its requests successfully.
     ReasoningContinuationExhausted,
+    /// The Provider reached its configured physical output-token boundary.
+    /// This is a successful protocol terminal with unfinished model work, not
+    /// a Provider failure. The current `Client` trait carries the boundary
+    /// through its legacy `Result` channel so the Orchestrator can append the
+    /// streamed text/reasoning prefix and issue a continuation request.
+    OutputLimit,
+    /// The Provider returned a standards-compliant incomplete terminal for a
+    /// reason which the Runtime cannot resume automatically. This remains
+    /// distinct from `failed`: it must not enter shared Provider recovery.
+    IncompleteResponse,
     /// The Provider completed a syntactically valid response, but emitted
     /// neither public assistant text nor a tool call. This is a response
     /// protocol boundary, not evidence that the shared Provider is down.
@@ -68,6 +78,8 @@ impl ModelFailureKind {
             Self::HardDeadlineExceeded => "hard_deadline_exceeded",
             Self::ProviderQueueTimeout => "provider_queue_timeout",
             Self::ReasoningContinuationExhausted => "reasoning_continuation_exhausted",
+            Self::OutputLimit => "output_limit",
+            Self::IncompleteResponse => "incomplete_response",
             Self::EmptyResponse => "empty_response",
             Self::SafetyRefusal => "safety_refusal",
             Self::StreamIdleTimeout => "stream_idle_timeout",
@@ -97,6 +109,12 @@ impl ModelFailureKind {
         )
     }
 
+    /// A physical request boundary from which the owning Activation may
+    /// continue using already streamed public text or reasoning state.
+    pub const fn is_resumable_request_boundary(self) -> bool {
+        self.is_request_scoped_latency() || matches!(self, Self::OutputLimit)
+    }
+
     /// Whether a failed physical request should enter the durable Provider
     /// recovery loop for an Objective.
     ///
@@ -116,6 +134,8 @@ impl ModelFailureKind {
                 | Self::HardDeadlineExceeded
                 | Self::ProviderQueueTimeout
                 | Self::ReasoningContinuationExhausted
+                | Self::OutputLimit
+                | Self::IncompleteResponse
                 | Self::EmptyResponse
                 | Self::SafetyRefusal
         )
@@ -591,6 +611,8 @@ mod tests {
         assert!(!ModelFailureKind::HardDeadlineExceeded.uses_provider_recovery());
         assert!(!ModelFailureKind::ProviderQueueTimeout.uses_provider_recovery());
         assert!(!ModelFailureKind::ReasoningContinuationExhausted.uses_provider_recovery());
+        assert!(!ModelFailureKind::OutputLimit.uses_provider_recovery());
+        assert!(!ModelFailureKind::IncompleteResponse.uses_provider_recovery());
         assert!(!ModelFailureKind::EmptyResponse.uses_provider_recovery());
         assert!(!ModelFailureKind::SafetyRefusal.uses_provider_recovery());
         assert!(ModelFailureKind::Authentication.uses_provider_recovery());
@@ -635,6 +657,12 @@ pub enum ModelStreamEvent {
     },
     Usage {
         usage: ModelUsage,
+    },
+    /// The Provider ended this physical response in the protocol's distinct
+    /// `incomplete` state. This is presentation/control progress, not a stream
+    /// failure; the Orchestrator decides whether the reason is resumable.
+    Incomplete {
+        reason: String,
     },
     Completed,
     Failed {

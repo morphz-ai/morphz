@@ -1820,6 +1820,11 @@ impl UiState {
                 }
             }
             ModelStreamEvent::Usage { .. } => {}
+            ModelStreamEvent::Incomplete { .. } => {
+                self.status = self
+                    .tr("continuing model response", "正在续接模型响应")
+                    .to_string();
+            }
             ModelStreamEvent::Completed => {
                 self.status = self.tr("processing response", "正在处理响应").to_string();
             }

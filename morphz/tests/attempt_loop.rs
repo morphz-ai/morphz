@@ -97,6 +97,11 @@ struct ReasoningContinuationClient {
     messages_seen: Mutex<Vec<Vec<Message>>>,
 }
 
+struct MixedIncompleteContinuationClient {
+    calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
 struct SessionModelSwitchContinuationClient {
     calls: AtomicUsize,
     bindings: Mutex<Vec<String>>,
@@ -779,30 +784,97 @@ impl Client for ReasoningContinuationClient {
                     ..Default::default()
                 },
             });
-            // Model adapters reject an otherwise-completed response with no
-            // final text or tool call.  This is a reasoning-only boundary,
-            // not a broken Provider stream: Runtime must feed this segment
-            // back into the immediately following continuation request.
+            // OpenAI Responses distinguishes output-limit `incomplete` from a
+            // failed stream. Runtime must feed this reasoning segment into the
+            // immediately following continuation request without opening the
+            // Provider recovery circuit.
             let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
-            let _ = stream.send(ModelStreamEvent::ProviderContinuation {
-                continuation: ProviderContinuation::OpenaiResponses {
-                    reasoning_items: vec![json!({
-                        "type": "reasoning",
-                        "id": format!("reasoning-{}", call + 1),
-                        "encrypted_content": format!("opaque-{}", call + 1),
-                    })],
-                },
+            // Match the live GLM sequence: earlier physical segments may
+            // expose replayable reasoning items, while the output-limited
+            // segment can contain only a portable reasoning summary.
+            if call < 2 {
+                let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                    continuation: ProviderContinuation::OpenaiResponses {
+                        reasoning_items: vec![json!({
+                            "type": "reasoning",
+                            "id": format!("reasoning-{}", call + 1),
+                            "encrypted_content": format!("opaque-{}", call + 1),
+                        })],
+                    },
+                });
+            }
+            let _ = stream.send(ModelStreamEvent::Incomplete {
+                reason: "max_output_tokens".to_string(),
             });
-            let _ = stream.send(ModelStreamEvent::Completed);
-            return Err(Box::new(ModelFailure::new(
-                ModelFailureKind::EmptyResponse,
-                "生产适配器的本地化错误文案不参与调度判断",
-            )));
+            return Err(Box::new(
+                ModelFailure::new(
+                    ModelFailureKind::OutputLimit,
+                    "标准 incomplete 终态的本地化文案不参与调度判断",
+                )
+                .with_provider_code(Some("max_output_tokens".to_string())),
+            ));
         }
         let response = text_reply_response("continued into final text");
         let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
             text: "second reasoning segment".to_string(),
         });
+        let _ = stream.send(ModelStreamEvent::TextDelta {
+            text: response.content.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::Completed);
+        Ok(response)
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for MixedIncompleteContinuationClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("mixed incomplete probe uses the streaming entrypoint")
+    }
+
+    async fn create_completion_measured_stream(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = stream.send(ModelStreamEvent::Started);
+        if call == 0 {
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+                text: "reasoning checkpoint before public text".to_string(),
+            });
+            let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                continuation: ProviderContinuation::OpenaiResponses {
+                    reasoning_items: vec![json!({
+                        "type": "reasoning",
+                        "id": "mixed-reasoning-1",
+                        "encrypted_content": "opaque-mixed-state",
+                    })],
+                },
+            });
+            let _ = stream.send(ModelStreamEvent::TextDelta {
+                text: "partial answer ".to_string(),
+            });
+            let _ = stream.send(ModelStreamEvent::Incomplete {
+                reason: "max_output_tokens".to_string(),
+            });
+            return Err(Box::new(ModelFailure::new(
+                ModelFailureKind::OutputLimit,
+                "mixed reasoning and public text reached output limit",
+            )));
+        }
+        let response = text_reply_response("finished");
         let _ = stream.send(ModelStreamEvent::TextDelta {
             text: response.content.clone(),
         });
@@ -2967,6 +3039,14 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         })
         .await
         .unwrap();
+    let provider_waits = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/provider_wait".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     assert_eq!(client.calls.load(Ordering::SeqCst), 4);
     assert_eq!(replies.len(), 1);
@@ -2979,14 +3059,15 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         .iter()
         .all(|event| event.payload.get("response_state") == Some(&json!("reasoning_only"))));
     assert!(protocol_errors.is_empty());
+    assert!(provider_waits.is_empty());
 
     {
         let requests = client.messages_seen.lock().unwrap();
         assert_eq!(requests.len(), 4);
         assert!(requests[1].iter().any(|message| {
             message.role == "user"
-                && message.content.contains("<previous_reasoning>")
-                && message.content.contains("reasoning segment 1")
+                && message.content.contains("<provider_continuation>")
+                && !message.content.contains("reasoning segment 1")
         }));
         assert!(requests[1].iter().any(|message| {
             matches!(
@@ -2995,6 +3076,30 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
                     if reasoning_items.iter().any(|item| item["id"] == "reasoning-1")
             )
         }));
+        assert!(requests[2].iter().any(|message| {
+            message.role == "user"
+                && message.content.contains("<provider_continuation>")
+                && !message.content.contains("reasoning segment 1")
+                && !message.content.contains("reasoning segment 2")
+        }));
+        let second_continuation_reasoning_ids = requests[2]
+            .iter()
+            .filter_map(provider_continuation)
+            .flat_map(|continuation| match continuation {
+                ProviderContinuation::OpenaiResponses { reasoning_items } => reasoning_items,
+                ProviderContinuation::OpenaiChat { .. } => Vec::new(),
+            })
+            .filter_map(|item| {
+                item.get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            second_continuation_reasoning_ids,
+            ["reasoning-1", "reasoning-2"],
+            "a complete Responses chain must replay every native reasoning output item"
+        );
         assert!(requests[3].iter().any(|message| {
             message.role == "user"
                 && message.content.contains("reasoning segment 1")
@@ -3014,9 +3119,9 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
                     .map(str::to_string)
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            restored_reasoning_ids,
-            ["reasoning-1", "reasoning-2", "reasoning-3"]
+        assert!(
+            restored_reasoning_ids.is_empty(),
+            "a missing native boundary must switch the whole generation to portable summaries"
         );
     }
     let inspections = wait_for_captured_count(&snapshots, 4).await;
@@ -3078,8 +3183,8 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         .expect("first reasoning segment should be durable");
     assert_eq!(
         first_summary.payload.get("complete"),
-        Some(&json!(true)),
-        "a normal reasoning-only response completes its stream even though it needs a continuation"
+        Some(&json!(false)),
+        "an output-limited reasoning segment is durable progress but not a completed response"
     );
     assert!(
         first_summary.payload.get("completion_tokens").is_none(),
@@ -3093,6 +3198,65 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         first_usage.payload["usage"].get("output_tokens"),
         Some(&json!(4_096))
     );
+}
+
+#[tokio::test]
+async fn mixed_incomplete_output_preserves_reasoning_and_public_text_in_one_continuation() {
+    let session_id = "attempt-mixed-incomplete-continuation";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("mixed-incomplete-continuation.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(MixedIncompleteContinuationClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "continue a mixed incomplete response").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let continuations = wait_for_topic(&store, "runtime/reasoning_continuation", session_id).await;
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("partial answer finished"))
+    );
+    assert_eq!(continuations.len(), 1);
+    let requests = client.messages_seen.lock().unwrap();
+    let continuation = &requests[1];
+    assert!(continuation.iter().any(|message| {
+        matches!(
+            provider_continuation(message),
+            Some(ProviderContinuation::OpenaiResponses { reasoning_items })
+                if reasoning_items[0]["id"] == "mixed-reasoning-1"
+        )
+    }));
+    assert!(continuation
+        .iter()
+        .any(|message| { message.role == "assistant" && message.content == "partial answer " }));
+    assert!(continuation.iter().any(|message| {
+        message.role == "user"
+            && message.content.contains("<provider_continuation>")
+            && message
+                .content
+                .contains("Continue the same response from the interruption point")
+    }));
 }
 
 async fn run_session_model_switch_continuation(

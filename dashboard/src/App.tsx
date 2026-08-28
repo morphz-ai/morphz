@@ -4550,6 +4550,9 @@ export default function App() {
                     objectiveId: typeof item.objective_id === 'string' ? item.objective_id : undefined,
                     state: typeof item.state === 'string' ? item.state : 'streaming',
                     terminal: false,
+                    continuationPending: typeof item.continuation_pending === 'boolean'
+                      ? item.continuation_pending
+                      : undefined,
                     timestamp: typeof item.timestamp === 'string' ? item.timestamp : event.timestamp,
                     detail: typeof item.detail === 'string' ? item.detail : undefined,
                   } satisfies ModelAttemptStateItem]
@@ -4596,6 +4599,9 @@ export default function App() {
                   objectiveId: typeof event.payload.objective_id === 'string' ? event.payload.objective_id : undefined,
                   state: typeof event.payload.state === 'string' ? event.payload.state : 'streaming',
                   terminal,
+                  continuationPending: typeof event.payload.continuation_pending === 'boolean'
+                    ? event.payload.continuation_pending
+                    : undefined,
                   timestamp: event.timestamp,
                   detail: typeof event.payload.detail === 'string' ? event.payload.detail : undefined,
                 },
