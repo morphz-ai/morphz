@@ -215,6 +215,23 @@ def identifier_present(text: str, identifier: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(identifier)}(?![A-Za-z0-9_-])", text) is not None
 
 
+def event_root_turn_id(row: dict[str, Any]) -> str:
+    """Return the canonical root turn for a persisted event.
+
+    A root ``chat/user_message`` is itself the root event, so the Event Store
+    intentionally leaves ``root_turn_id`` null and uses the event ``id`` as
+    the root-turn identifier. Descendant events persist that identifier in
+    ``root_turn_id``.
+    """
+
+    root_turn_id = row.get("root_turn_id")
+    if root_turn_id:
+        return str(root_turn_id)
+    if row.get("topic") == "chat/user_message":
+        return str(row.get("id") or "")
+    return ""
+
+
 def audit_database(
     db_path: Path,
     *,
@@ -261,7 +278,7 @@ def audit_database(
     user_events = 0
     for row in events:
         if row["topic"] == "chat/user_message":
-            if row["root_turn_id"] in root_turn_to_task:
+            if event_root_turn_id(row) in root_turn_to_task:
                 user_events += 1
             continue
         payload = parse_payload(row["payload"], event_id=str(row["id"]))

@@ -2,7 +2,7 @@
 
 > 状态：论文证据已闭合（ME-01～ME-08 已在各自证据边界内进入中英文稿；ME-07 三系统
 > 正式批次与 Mind Frame 迁移审计已完成；ME-08 当前证据是两组各自完整 89 题的同期配对；
-> ME-09 探索性共享 Context 实验已停止且不进入当前论文）
+> ME-09 r4 补充实验已完整闭合，但不追改当前论文）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
@@ -31,7 +31,8 @@
 - [ME-07 Benchmark 重选决策](./me_07_benchmark_reselection_decision_20260826.md)：保留初次选择历史；当前 arm/evaluator 以 v2 协议为准；
 - [ME-07 superseded LongMemEval 协议与取消边界](./me_07_longmemeval_v2_small_protocol_v1.md)：未经授权替代模型运行已中止，任何局部结果均不引用；
 - [ME-08 当前完整 89 题同期配对结果](./artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md)：两个独立完整 89 题运行；Morphz 72/89（80.90%），official Codex 74/89（83.15%），配对差 −2.25pp、95% CI [−11.24,+6.74]、双侧精确 `p=0.804`；同模型、主机、数据集、并发 8、每题一次、零重试；
-- [ME-09 共享 Context 探索性实验中止审计](./me_09_shared_context_interim_stop_audit_2026_08_27.md)：额度截止前 43 题有效前缀、跨 Session Frame 引用审计与停止判定；不进入当前论文；
+- [ME-09 r4 共享 Context 完整 89 题结果](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md)：一个 Agent/共享 Context、八 Session/Target、并发 8、`max_sessions=1`；70/89 对 ME-08 隔离 Context 72/89，差异不显著；没有 E2/E3 正向迁移证据，但输入 Token 为 1.84×；不进入当前论文；
+- [ME-09 历史探索性实验中止审计](./me_09_shared_context_interim_stop_audit_2026_08_27.md)：额度截止前 43 题旧前缀、跨 Session Frame 引用审计与停止判定；不与 r4 拼接；
 
 ## 基线、历史与工程审计入口
 

@@ -1,0 +1,40 @@
+{
+  "official_score_is_unchanged_by_diagnostics": true,
+  "official_failures": 19,
+  "categories": {
+    "harbor_agent_timeout": {
+      "count": 7,
+      "tasks": [
+        "train-fasttext",
+        "query-optimize",
+        "install-windows-3.11",
+        "extract-moves-from-video",
+        "make-doom-for-mips",
+        "raman-fitting",
+        "crack-7z-hash"
+      ]
+    },
+    "provider_safety_refusal": {
+      "count": 3,
+      "tasks": [
+        "model-extraction-relu-logits",
+        "vulnerable-secret",
+        "break-filter-js-from-html"
+      ]
+    },
+    "ordinary_task_or_verifier_failure": {
+      "count": 9,
+      "tasks": [
+        "filter-js-from-html",
+        "make-mips-interpreter",
+        "chess-best-move",
+        "pytorch-model-recovery",
+        "video-processing",
+        "compile-compcert",
+        "dna-assembly",
+        "dna-insert",
+        "mteb-leaderboard"
+      ]
+    }
+  }
+}

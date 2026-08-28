@@ -14,6 +14,7 @@ from benchmarks.harbor.run_me09_shared_context import (
     _harbor_command,
     load_and_validate_manifest,
 )
+from benchmarks.harbor.summarize_me09_shared_context import event_root_turn_id
 from benchmarks.harbor.shared_context_agent import (
     SharedContextMorphzAgent,
     _turn_snapshot,
@@ -21,6 +22,28 @@ from benchmarks.harbor.shared_context_agent import (
 
 
 class Me09SharedContextTest(unittest.TestCase):
+    def test_root_user_message_uses_its_event_id_as_root_turn(self) -> None:
+        self.assertEqual(
+            event_root_turn_id(
+                {
+                    "id": "msg-root",
+                    "root_turn_id": None,
+                    "topic": "chat/user_message",
+                }
+            ),
+            "msg-root",
+        )
+        self.assertEqual(
+            event_root_turn_id(
+                {
+                    "id": "reply-event",
+                    "root_turn_id": "msg-root",
+                    "topic": "chat/reply",
+                }
+            ),
+            "msg-root",
+        )
+
     def test_frozen_binary_digest_helper_reads_exact_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             artifact = Path(raw_dir) / "morphz"
