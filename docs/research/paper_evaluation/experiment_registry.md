@@ -46,7 +46,7 @@ ME-06 与原始 ME-08 仍保留其历史
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete / incorporated` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 不重复简单样本；扩展只作未来增强 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation；30 条盲化人工校准包已冻结 | `formal-complete / trace-audit-complete / human-packet-ready / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；[`human packet`](./artifacts/me07_evaluator_human_validation_packet_20260827/README.md) | 两名独立人工评分是可选增强项；不得把系统级效果全部归因于 Mind Frame |
-| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题相同条件运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），Codex 74/89（83.15%）；差 −2.25pp，95% CI [−10.11,+5.62]，精确配对 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7%，API 等效成本为 Codex 的 2.55 倍 | `external-complete / incorporated` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md) | 当前论文证据已闭合；缓存复用仍是明确工程优化项 |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题相同条件运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），Codex 74/89（83.15%）；差 −2.25pp，95% CI [−10.11,+5.62]，精确配对 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7% | `external-complete / incorporated` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md) | 正确率、总逻辑词元和墙钟已进入论文；缓存与 API 成本受已确认的显式缓存封装缺陷影响，只作诊断，修复后需在相同工作负载重测 |
 | ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r4 历史得分 70/89，但 89/89 Evaluation 误绑定 `terminal-task@0.5.0`；ME-08 为无 Harness，因此 r3/r4/r5 均不是预注册的单变量共享 Context 对照 | `invalid / harness-contaminated / diagnostic-only / excluded-from-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`invalidated protocol`](./me_09_shared_context_multisession_terminal_bench_protocol_v1.md)；[`r4 diagnostic result`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md) | 仅在启动器断言零 Harness 绑定、Runtime/模型/权限等重新冻结后才可新开正式批次；旧结果不得拼接或补算 |
 
 ## 依赖
@@ -82,9 +82,9 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 - ME-08 当前论文结果已刷新到 Runtime `d6e6d80053d95577811971e6048033374e4d6901`：Morphz
   72/89，冻结 Codex 对照 74/89；共同通过 66、共同失败 9、仅 Morphz 通过 6、仅 Codex
   通过 8，95% CI `[-10.11,+5.62]`，双侧精确配对 `p=0.790527`。Morphz 输入加输出
-  57,105,318 词元，缓存输入 13,879,296，墙钟 5,320.2 秒；Codex 分别为 83,361,987、
-  76,503,680 和 7,065.2 秒。按当日 GPT-5.6 Sol 公布价表折算，API 等效成本分别为
-  197.20 美元与 77.37 美元。完整结果与成本对账见
+  57,105,318 词元、墙钟 5,320.2 秒；Codex 分别为 83,361,987 和 7,065.2 秒。本轮缓存
+  与成本数据受已确认的显式缓存封装缺陷影响，不进入论文结论；原始数值与诊断仍保留。
+  完整结果见
   [`artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)。
 
 ### 2026-08-28

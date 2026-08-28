@@ -28,11 +28,9 @@
 | --- | ---: | ---: |
 | 输入加输出词元 | 57,105,318 | 83,361,987 |
 | 每题平均词元 | 641,633 | 936,652 |
-| 输入缓存率 | 24.81% | 93.12% |
 | 端到端墙钟 | 5,320.2 秒 | 7,065.2 秒 |
-| API 等效成本 | 197.20 美元 | 77.37 美元 |
 
-Morphz 的总逻辑词元少 31.50%，端到端墙钟短 24.70%，但按 2026-08-29 GPT-5.6 Sol 公开 API 价表折算的成本为 Codex 的 2.55 倍。成本复算及 Runtime usage 对账见 [API_COST_AUDIT.md](./API_COST_AUDIT.md)，低缓存率的逐调用分析见 [PREFIX_CACHE_ANALYSIS.md](./PREFIX_CACHE_ANALYSIS.md)。
+Morphz 的总逻辑词元少 31.50%，端到端墙钟短 24.70%。本轮缓存率和按价表折算的 API 等效成本受已确认的显式缓存封装缺陷影响，不作为论文结果。原始数值与 Runtime usage 对账保留在 [API_COST_AUDIT.md](./API_COST_AUDIT.md)，缺陷证据和逐调用分析见 [PREFIX_CACHE_ANALYSIS.md](./PREFIX_CACHE_ANALYSIS.md)。
 
 ## 主机资源
 

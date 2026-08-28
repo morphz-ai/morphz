@@ -30,7 +30,7 @@
 - [ME-07 历史 GPT-5.4 访问 Gate](./me_07_locked_evaluator_access_gate_20260826.md)：只记录 v1 阻塞；v2 已改用更新版评测协议，不再等待该旧评测器；
 - [ME-07 Benchmark 重选决策](./me_07_benchmark_reselection_decision_20260826.md)：保留初次选择历史；当前 arm/evaluator 以 v2 协议为准；
 - [ME-07 superseded LongMemEval 协议与取消边界](./me_07_longmemeval_v2_small_protocol_v1.md)：未经授权替代模型运行已中止，任何局部结果均不引用；
-- [ME-08 当前 Runtime 完整 89 题结果与成本复算](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)：Morphz 72/89（80.90%），Codex 74/89（83.15%），配对差 −2.25pp、95% CI [−10.11,+5.62]、双侧精确 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7%，按 2026-08-29 GPT-5.6 Sol 公布价表折算的 API 等效成本为 197.20 美元，对照 Codex 为 77.37 美元；
+- [ME-08 当前 Runtime 完整 89 题结果](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)：Morphz 72/89（80.90%），Codex 74/89（83.15%），配对差 −2.25pp、95% CI [−10.11,+5.62]、双侧精确 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7%；本轮缓存与成本数据受已确认的显式缓存封装缺陷影响，仅保留作工程诊断，不进入论文结论；
 - [ME-08 当前 Runtime 单臂补充刷新](./artifacts/me08_current_runtime_2b01310_all89_20260828/RESULT.md)：无 Harness、隔离 Context、89/89 完整；69/89（77.53%）。Edge/background 与 keep-running 定向任务通过，但 7 个 Agent 超时中暴露 Harbor 外层超时后容器内 Runtime 继续进入 verifier 相位的独立缺陷；仅作工程补充，不替换论文 72/89 对 74/89 的冻结同期配对；
 - [ME-09 r4 共享 Context 完整 89 题结果](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md)：一个 Agent/共享 Context、八 Session/Target、并发 8、`max_sessions=1`；70/89 对 ME-08 隔离 Context 72/89，差异不显著；没有 E2/E3 正向迁移证据，但输入 Token 为 1.84×；不进入当前论文；
 - [ME-09 历史探索性实验中止审计](./me_09_shared_context_interim_stop_audit_2026_08_27.md)：额度截止前 43 题旧前缀、跨 Session Frame 引用审计与停止判定；不与 r4 拼接；
