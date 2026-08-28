@@ -57,3 +57,6 @@ CLIProxyAPI 订阅路由、云节点和 Terminal-Bench 2.1 digest。
    只读 manifest；
 3. `validate`、专用单元测试、格式检查和 diff-check 全部通过；
 4. 云节点没有残留的正式 benchmark 容器或 launcher。
+
+云端入口为 `benchmarks/harbor/run_me08_current_cloud.sh`。入口仅在进程内读取服务器现有
+CLIProxyAPI 的第一个 `api-keys`，不打印该值，也不把它写入实验产物或 systemd unit 环境。
