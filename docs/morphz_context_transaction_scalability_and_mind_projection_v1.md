@@ -1,8 +1,8 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1–5 核心实现完成；SQLite 与 PostgreSQL 共享同一 Projection/CAS/Lease 契约，Frame 级 MVCC 已落地，生产级跨主机容量验证仍待真实部署
+> 状态：Phase 1–6 核心实现完成；SQLite 与 PostgreSQL 共享同一 Projection/CAS/Lease 契约，对象级 MVCC 与安全自动 rebase 已落地，生产级跨主机容量验证仍待真实部署
 >
-> 日期：2026-08-01
+> 初稿日期：2026-08-01；对象级事务更新：2026-08-28
 >
 > 适用范围：共享 Mind、Context Transaction、Frame 生命周期、Session 海量并发、Event History、在线状态恢复与多 Runtime Worker
 >
@@ -57,21 +57,21 @@
 - SharedLeases 启动恢复只接管已过期的 Running Activation，不再把另一进程的 queued Activation 或有效 lease 误判为本机遗留任务。
 - Scheduler Snapshot 新增 Context 容量计数：事务/提交/冲突、提交延迟、Mind Projection 加载延迟、Encoding 次数及每次物化 Observation 数；Rust SDK、CLI 与 HTTP API 使用同一读模型。
 - 已增加可复现的 `postgres_multi_process_probe`：父进程启动两个真实子 Runtime 进程竞争同一条消息，并额外强制终止一个持有短 Execution lease 的进程。实测 `ready_workers=2`、`model_calls=1`、`replies=1`，且到期 Job 被另一新进程安全重排。首份结果见 [PostgreSQL Multi-Process Probe — 2026-07-18](./benchmarks/postgres_multi_process_probe_2026-07-18.md)。
-- Frame 级 MVCC 已实现：Runtime 从 `context_tx` 的 SExpr 操作确定性提取受影响 Frame/Relation/Observation；不同 Frame 的并发修改可在验证来源与 revision 后安全自动 rebase，同一 Frame、相同创建 ID、已变化来源或大范围生命周期操作继续冲突。
+- 对象级 MVCC 已实现：Runtime 从 `context_tx` 的 SExpr 操作确定性提取受影响 Frame/Observation、生命周期目标、精确 Relation 边、Frame 顺序和 checkpoint 标识；只有事务实际读写的语义边界发生变化才冲突。`rollback` 和 Session attention 仍保持精确版本 fence。
 - Scheduler Kernel v2 已统一 Context 之外的调度写入边界；Objective readiness 来自结构化 Dependency，内部 Signal 与权威状态原子提交，Reconciler 不再通过历史 Event 或旧 wait 字段创造业务语义。
 
 仍待实施：
 
 - 面向真实公网负载的容量持续采样，以及按 Provider/Agent/Context 的进一步分层配额；
 - 跨主机和生产编排环境的故障注入与容量验证；
-- Frame MVCC 在复杂 Relation、Checkpoint/Rollback 与长期高冲突负载下的进一步验证。
+- 对象级 MVCC 在真实长期高冲突负载下的收益测量，以及同一对象上语义等价意图能否安全合并的后续研究。
 
 ## 1. 本文结论
 
 Morphz 已经具备一套成立的 Context 并发语义：
 
 - Context transaction 显式携带 `base-version`；
-- Runtime 从在线 Mind Projection 读取最新状态并拒绝陈旧版本；
+- Runtime 从在线 Mind Projection 读取最新状态；陈旧事务只有在其完整读写集仍未变化时才自动 rebase，否则精确拒绝；
 - Context 内的事务由进程内互斥锁串行提交；
 - 每次事务形成不可变 persisted Event，并记录事务、Diff 与前后 hash；
 - Mind 可以通过 Event History 确定性重放，退役内容仍可恢复；
@@ -84,7 +84,7 @@ Morphz 已经具备一套成立的 Context 并发语义：
 1. SQLite WAL 仍然是单物理写者；
 2. Event Writer 已能 group commit 并有首份目标硬件吞吐基线，但尚缺真实公网负载的持续尾延迟数据；
 3. 多 Runtime Worker 已通过独立连接池、双完整 Runtime、双 OS 进程和进程崩溃恢复验证，尚缺跨主机与生产编排故障注入；
-4. Frame 级 MVCC 已消除不相干 Frame 写入的保守冲突，但尚缺生产负载下的冲突率、自动 rebase 收益和复杂事务分布数据。
+4. 对象级 MVCC 已消除不相干 Frame、生命周期和 Relation 写入之间的保守冲突，但尚缺生产负载下的冲突率、自动 rebase 收益和复杂事务分布数据。
 
 目标架构不是取消 Event History，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
 
@@ -147,7 +147,7 @@ Phase 0 Runtime 执行：
 | 单进程 Context 提交串行化 | 已支持 |
 | 数据库行级原子 `revision CAS` | SQLite 已支持 |
 | 多 Runtime Worker 共享同一 SQLite Context 提交 | 已防止 lost update；跨主机部署未验证 |
-| Frame 级独立冲突检测 | 已支持：不相干 Frame 可自动 rebase；同一 Frame 与全局操作保持 fence |
+| 对象级独立冲突检测 | 已支持：按 Frame 内容、生命周期目标、精确 Relation 边、Frame 顺序和 checkpoint 标识判定；`rollback` 与 Session attention 保持 fence |
 
 Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止两个 Worker 同时基于版本 18 提交。Phase 1 已增加持久 `context_heads` 和 SQLite transaction 内的 revision CAS：第二个提交会在数据库边界被拒绝。跨主机部署仍需要把相同 Store 契约落到 PostgreSQL 等服务型数据库，并完成 lease、故障恢复和容量验证。
 
@@ -158,9 +158,9 @@ Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止
 - `MindState.version`：一次成功 Context transaction 增加 1，保护整个事务读取的 Context Snapshot；
 - `ContextFrame.revision`：对某个 Frame 执行 `revise` 时增加 1，描述该 Frame 自身的修订历史。
 
-当前实现同时使用两层版本：全局 `MindState.version` 保留 Event History 物理提交顺序与事务审计，`ContextFrame.revision` 则是认知修改的 MVCC 边界。事务即使携带旧 Context version，只要 Runtime 能证明它涉及的 Frame、Relation 与来源在 base-version 后没有变化，就可以安全 rebase 到当前 head；修改不同 Frame 的事务不再无条件互相冲突。
+当前实现保留全局 `MindState.version` 作为 Event History 的物理提交顺序与事务审计，同时使用 `ContextFrame` 的创建/更新时间和持久化的对象级 mutation clocks 表示语义冲突边界。事务即使携带旧 Context version，只要 Runtime 能证明其完整操作列表涉及的 Frame 内容、生命周期目标、精确 Relation 边、Frame 顺序和 checkpoint 标识在 base-version 后均未变化，就可以把整个事务原子地 rebase 到当前 head。
 
-以下情况仍会拒绝并要求基于最新状态重新求值：同一 Frame 被并发 revise/retire、创建相同 Frame ID、derive/revise 所依赖的来源已变化，以及 checkpoint/rollback 等大范围状态操作。模型仍只提交高层 SExpr，不需要显式维护 read/write set 或数据库版本向量。
+以下情况仍会拒绝并要求基于最新状态重新求值：同一 Frame 内容或生命周期目标已变化、相同创建 ID、derive/revise 所依赖的来源已变化、同一 Relation 边或 Frame 顺序已变化、同一 checkpoint 标识已变化，以及任何陈旧的 `rollback` 或 Session attention 操作。普通 `checkpoint` 只与其标识冲突并捕获提交时的完整当前态。模型仍只提交高层 SExpr，不需要显式维护 read/write set 或数据库版本向量。
 
 ## 3. 当前 Mind 重放到底做什么
 
@@ -442,7 +442,7 @@ mind_snapshots
 
 `mind_projections.state_json` 保存完整、开放的 MindState；当前实现没有把 Frame body 拆成 Runtime 固定的 `mind_frames` 业务表。这样既提供 O(当前状态) 的在线读取，也保留 Agent 自主形成 SExpr 结构的自由。这些都是可由 Event History 重建的物理投影，不是对 Agent Mind body 的固定业务 schema。
 
-## 7. Context revision 与 Frame 级 MVCC（已实现）
+## 7. Context revision 与对象级 MVCC（已实现）
 
 ### 7.1 Context 级 CAS 是基础而不是最终冲突粒度
 
@@ -456,7 +456,7 @@ mind_snapshots
 
 缺点是不同 Frame 的并发修改也会冲突。Morphz 的多 Objective/多 Thread 实际运行已经证明这种保守冲突会产生明显的模型重求值成本，因此在保留 Context revision 作为审计顺序的同时，引入了 Frame 级冲突判定。
 
-### 7.2 当前 Frame 级 MVCC 语义
+### 7.2 当前对象级 MVCC 语义
 
 Runtime 从 SExpr 确定性提取 read/write set：
 
@@ -466,6 +466,8 @@ derive new-frame from @e42    读 @e42，写 new-frame
 revise frame-a                读/写 frame-a
 retire frame-a                写 frame-a lifecycle
 relate a supersedes b         读 a/b，写 relation(a, supersedes, b)
+place frame-a before frame-b  读 a/b，写 Frame order
+checkpoint safe-point         写 checkpoint(safe-point)
 ```
 
 基本冲突规则：
@@ -477,10 +479,14 @@ relate a supersedes b         读 a/b，写 relation(a, supersedes, b)
 | revise 同一 Frame | 冲突 |
 | revise 与 retire 同一 Frame | 冲突 |
 | 创建相同 Frame ID | 冲突 |
-| 添加不同 Relation | 通常可以 |
-| rollback / checkpoint 大范围恢复 | 需要 Context 级排他提交 |
+| 添加或删除不同的 Relation 边 | 可以 |
+| 修改不同 ID 的 lifecycle | 可以 |
+| 改变同一 Relation 边或同一 lifecycle 目标 | 冲突 |
+| checkpoint 使用不同标识 | 可以，并捕获提交时的当前态 |
+| 改变 Frame 顺序 | 与其他顺序变化冲突 |
+| rollback / Session attention | 需要精确 Context version |
 
-Frame revision 和 read/write set 由 Runtime 自动维护。模型仍然提交高层 SExpr，不需要手工书写数据库锁、分区或复杂版本向量。
+Frame revision、对象级 mutation clocks 和 read/write set 由 Runtime 自动维护。模型仍然提交高层 SExpr，不需要手工书写数据库锁、分区或复杂版本向量。一次事务只有在全部操作的边界都通过验证后才整体改写 `base-version`，不会只提交其中一部分。
 
 全局 Context revision 仍可作为 Event History 审计顺序存在，但不必让所有不相干 Frame 写入互相冲突。
 
@@ -737,7 +743,16 @@ max_connections = 16
 - 增加不同 Frame 自动 rebase、同 Frame 冲突与来源变化冲突的回归测试；
 - 保留 Context Head revision 作为不可变 Event History 的全局提交顺序。
 
-后续工作不再是“是否实现”，而是基于生产数据扩展复杂 Relation/Checkpoint 场景，并观测自动 rebase 的真实收益。
+### Phase 6：对象级主动 rebase（已完成）
+
+- 为 lifecycle 目标、精确 Relation 边、Frame 顺序、checkpoint 标识和全局替换增加持久 mutation clocks；
+- 对 `retire/restore/protect/unprotect/relate/unrelate/place/checkpoint/drop-checkpoint` 提取实际语义边界；
+- 对边界未变化的陈旧事务执行整笔原子 rebase，对真正同对象变化保持明确冲突；
+- `rollback` 和 Session attention 继续要求精确版本，不用局部规则猜测全局意图；
+- 旧 Projection 第一次写入先建立可信追踪边界，旧 Event 继续按原状态形状和历史 hash 确定性重放；
+- 8 个独立 ContextEngine 并发修改 8 个不同 lifecycle 目标时全部无需模型重试而收敛，Projection 审计一致。
+
+后续工作不再是“是否实现”，而是观测生产自动 rebase 收益，并研究同一对象上的语义等价意图是否值得安全合并。
 
 ## 12. 必须观测的容量指标
 
@@ -784,7 +799,7 @@ snapshot_age_transactions
 2. retired Frame 不进入活跃 Context Encoding，但可被审计和恢复；
 3. Projection 不能成为无法由 Event History 重建的第二事实源；
 4. Context transaction 必须原子应用全部 operation；
-5. 冲突事务不得只替换 `base-version` 后盲目重放，必须重新基于最新状态决策；
+5. 陈旧事务只有在 Runtime 验证其完整语义读写集均未变化后才能整体替换 `base-version` 并重放；任一边界变化都必须基于最新状态重新决策；
 6. 多 Worker 下不能依赖进程内 Mutex 保证共享 Context 一致性；
 7. Runtime 只维护 Frame 的物理结构、来源、版本和生命周期，不解释或固定 body 业务 schema；
 8. 对话和工具等待不能持有 Context 写锁；
@@ -808,4 +823,4 @@ snapshot_age_transactions
 
 本文的核心方向是：
 
-> 保留 Agent-Owned Context 与可审计多版本 Event History，把完整重放从在线热路径移到恢复和审计路径；用可重建 Projection 支撑读取，用数据库级 CAS 保证全局提交顺序，并以 Frame revision/read-write set 降低不相干认知修改之间的冲突。
+> 保留 Agent-Owned Context 与可审计多版本 Event History，把完整重放从在线热路径移到恢复和审计路径；用可重建 Projection 支撑读取，用数据库级 CAS 保证全局提交顺序，并以 Frame revision、对象级 mutation clocks 和 read/write set 消除不相干认知修改之间的保守冲突。

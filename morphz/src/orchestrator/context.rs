@@ -55,7 +55,7 @@ impl std::fmt::Display for RuntimeContextVersionConflict {
 
 impl std::error::Error for RuntimeContextVersionConflict {}
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 34;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 35;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 const FRAME_RECALL_CURSOR_DOMAIN: &[u8] = b"morphz/frame-recall-cursor/v1\0";
@@ -215,7 +215,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("; ");
     format!(
-        "Atomically modify your Mind Context and Session attention. transaction is a versioned S-expression: (context-tx (base-version N) (reason \"...\") OP...). Mind version is the global physical commit sequence and Frame revision is the MVCC boundary for cognitive changes. The Runtime safely rebases concurrent transactions that touch different Frames; reread and semantic merge are required only when a target or source Frame changed after base-version. Supported operations: {operations}. Context observations use deterministic short refs such as @eN. Pass refs unchanged in from/retire/restore/protect/unprotect/relate/unrelate and the Runtime resolves full Event IDs before commit. A Session ID is not an observation ref; use the original ID from session-directory. create/derive/revise accept one or more BODY values; multiple values normalize to (context-body BODY...). revise completely replaces the frame body and never partially merges it, so restate every field that must remain. create does not accept from; evidence-backed creation uses (derive ID (from SOURCE...) BODY...). Before high-risk restructuring use (checkpoint ID), restore with reason-bearing (rollback ID), and remove obsolete snapshots with (drop-checkpoint ID...). One transaction may sequence different operations and atomically includes Mind changes with retire-session/restore-session. Do not issue parallel context_tx calls to express multiple changes. reason is transaction-level and is required for retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint; never place it inside operation arguments. Retiring an Observation releases its active encoding immediately; under pressure clean up consumed Observations no longer needed first. An undelivered root request of the current Activation is causally protected and cannot be retired; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. Retiring an ordinary Frame only enters the organizing window and releases zero tokens now. Judge by semantic value, validity, use, and relations rather than size. Prefer revise, derive, or a sources + supersedes successor; a safe successor may retire its source Frame immediately in the same transaction. Frame count alone is not a retirement reason. Retired content is not deleted and remains recallable by keyword, ID, and relation chain. Context changes are not user replies. BODY values must also follow the canonical epistemic contract: {}",
+        "Atomically modify your Mind Context and Session attention. transaction is a versioned S-expression: (context-tx (base-version N) (reason \"...\") OP...). Mind version is the global physical commit sequence. The Runtime tracks semantic conflict boundaries per Frame content, lifecycle target, exact relation edge, Frame order, and checkpoint identity, and automatically rebases a stale transaction when every boundary it reads or writes is unchanged. If an exact touched boundary changed, reread the latest Context and perform a semantic merge. rollback and Session-attention operations remain exact-version operations and are never rebased. Supported operations: {operations}. Context observations use deterministic short refs such as @eN. Pass refs unchanged in from/retire/restore/protect/unprotect/relate/unrelate and the Runtime resolves full Event IDs before commit. A Session ID is not an observation ref; use the original ID from session-directory. create/derive/revise accept one or more BODY values; multiple values normalize to (context-body BODY...). revise completely replaces the frame body and never partially merges it, so restate every field that must remain. create does not accept from; evidence-backed creation uses (derive ID (from SOURCE...) BODY...). Before high-risk restructuring use (checkpoint ID), restore with reason-bearing (rollback ID), and remove obsolete snapshots with (drop-checkpoint ID...). One transaction may sequence different operations and atomically includes Mind changes with retire-session/restore-session. Do not issue parallel context_tx calls to express multiple changes. reason is transaction-level and is required for retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint; never place it inside operation arguments. Retiring an Observation releases its active encoding immediately; under pressure clean up consumed Observations no longer needed first. An undelivered root request of the current Activation is causally protected and cannot be retired; an independent trigger already consumed by the current Attempt may be summarized and retired in the same transaction. Retiring an ordinary Frame only enters the organizing window and releases zero tokens now. Judge by semantic value, validity, use, and relations rather than size. Prefer revise, derive, or a sources + supersedes successor; a safe successor may retire its source Frame immediately in the same transaction. Frame count alone is not a retirement reason. Retired content is not deleted and remains recallable by keyword, ID, and relation chain. Context changes are not user replies. BODY values must also follow the canonical epistemic contract: {}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -350,6 +350,35 @@ pub struct MindCheckpoint {
     pub created_version: u64,
 }
 
+/// Per-object mutation boundaries used to rebase stale Context transactions.
+///
+/// The global Mind version remains the physical commit sequence. These clocks
+/// record semantic mutation boundaries which are not already represented by
+/// `ContextFrame::{created_version, updated_version}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextMutationClocks {
+    /// Version from which object-local mutations are known to be tracked.
+    /// Legacy materialized projections leave this empty; their first exact
+    /// commit establishes the boundary.
+    #[serde(default)]
+    pub tracking_started_version: Option<u64>,
+    /// Last change to an ID's active/retiring/retired/protected lifecycle.
+    #[serde(default)]
+    pub lifecycle_versions: BTreeMap<String, u64>,
+    /// Last add/remove of one exact semantic relation edge.
+    #[serde(default)]
+    pub relation_versions: BTreeMap<String, u64>,
+    /// Last mutation of Frame presentation order.
+    #[serde(default)]
+    pub frame_order_version: u64,
+    /// Last create/drop of a checkpoint identity.
+    #[serde(default)]
+    pub checkpoint_versions: BTreeMap<String, u64>,
+    /// Last operation, such as rollback, that replaced broad Mind state.
+    #[serde(default)]
+    pub global_barrier_version: u64,
+}
+
 /// Persistent Mind state owned by the agent.
 ///
 /// `retired` may contain both frame IDs and observation IDs from persisted Events. Retirement affects
@@ -366,6 +395,8 @@ pub struct MindState {
     pub protected: BTreeSet<String>,
     #[serde(default)]
     pub checkpoints: Vec<MindCheckpoint>,
+    #[serde(default)]
+    pub mutation_clocks: ContextMutationClocks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2232,7 +2263,7 @@ impl ContextEngine {
             self.capacity_metrics
                 .context_tx_conflicts_total
                 .fetch_add(1, Ordering::Relaxed);
-            rebase_stale_frame_transaction(&current, &mut parsed)?;
+            rebase_stale_context_transaction(&current, &mut parsed)?;
             self.capacity_metrics
                 .context_tx_auto_rebases_total
                 .fetch_add(1, Ordering::Relaxed);
@@ -2263,6 +2294,7 @@ impl ContextEngine {
             &observation_ids,
             retirement_policy,
             &formation,
+            true,
         )?;
         attach_context_change_token_effects(
             &mut changes,
@@ -2305,6 +2337,7 @@ impl ContextEngine {
                 json!(authority.acting_principal_id),
             ),
             ("frame_provenance_version".to_string(), json!(1)),
+            ("mutation_clocks_version".to_string(), json!(1)),
             ("transaction_id".to_string(), json!(tx_id)),
             ("transaction".to_string(), json!(&canonical_transaction)),
             (
@@ -2438,7 +2471,7 @@ impl ContextEngine {
                 effective_base_version = current.version,
                 after_version = next.version,
                 event_code = "context.transaction.rebased",
-                "Context transaction automatically rebased by Frame MVCC"
+                "Context transaction automatically rebased across unchanged semantic boundaries"
             );
         }
         for change in &changes {
@@ -5820,15 +5853,12 @@ fn render_parsed_transaction(transaction: &ParsedTransaction) -> String {
     SExpr::List(items).to_string()
 }
 
-/// Rebase a stale transaction when its semantic read/write set is confined to
-/// Frames that have not changed since the model's Context Encoding. The global
-/// Mind version remains the physical commit sequence; Frame `updated_version`
-/// is the MVCC conflict boundary for cognition authored by the model.
-///
-/// Lifecycle, ordering, relationship, checkpoint and Session-attention
-/// operations intentionally remain conservative because their state is not
-/// fully represented by `ContextFrame::updated_version`.
-fn rebase_stale_frame_transaction(
+/// Rebase a stale transaction when every operation's semantic read/write set
+/// is unchanged since the model's Context Encoding. The global Mind version
+/// remains the physical commit sequence; object-local clocks are the conflict
+/// boundaries. A stale transaction is rewritten only after its complete
+/// operation list passes, preserving atomicity.
+fn rebase_stale_context_transaction(
     current: &MindState,
     transaction: &mut ParsedTransaction,
 ) -> Result<(), String> {
@@ -5842,8 +5872,15 @@ fn rebase_stale_frame_transaction(
     if requested_base == current.version {
         return Ok(());
     }
+    if current.mutation_clocks.global_barrier_version > requested_base {
+        return Err(format!(
+            "Context global-barrier conflict: broad Mind state changed at version {} after the transaction read version {}",
+            current.mutation_clocks.global_barrier_version, requested_base
+        ));
+    }
 
     let mut frames_created_in_transaction = BTreeSet::new();
+    let mut checkpoints_created_in_transaction = BTreeSet::new();
     for operation in &transaction.operations {
         let items = as_list(operation, "context operation")?;
         let name = atom_at(items, 0, "operation name")?;
@@ -5897,17 +5934,270 @@ fn rebase_stale_frame_transaction(
                     }
                 }
             }
-            other => {
+            "retire" => {
+                require_min_len(items, 2, "(retire ID...)")?;
+                for item in items.iter().skip(1) {
+                    let id = validated_id(as_atom(item, "retire target")?)?;
+                    ensure_lifecycle_write_is_current(
+                        current,
+                        id,
+                        requested_base,
+                        &frames_created_in_transaction,
+                    )?;
+                    ensure_frame_read_is_current(
+                        current,
+                        id,
+                        requested_base,
+                        &frames_created_in_transaction,
+                    )?;
+                }
+            }
+            "restore" | "protect" | "unprotect" => {
+                require_min_len(items, 2, "lifecycle operation")?;
+                for item in items.iter().skip(1) {
+                    let id = validated_id(as_atom(item, "lifecycle target")?)?;
+                    ensure_lifecycle_write_is_current(
+                        current,
+                        id,
+                        requested_base,
+                        &frames_created_in_transaction,
+                    )?;
+                }
+            }
+            "finalize-retirement" => {
+                // Runtime-authored finalization carries retirement generation,
+                // Frame revision, and eligibility fences. The application path
+                // turns a stale fence into an audited no-op.
+            }
+            "place" => {
+                require_len(
+                    items,
+                    3,
+                    "(place FRAME first|last|(before FRAME)|(after FRAME))",
+                )?;
+                ensure_tracking_covers(current, requested_base, "Frame order")?;
+                if current.mutation_clocks.frame_order_version > requested_base {
+                    return Err(format!(
+                        "Frame order MVCC conflict: order changed at Mind version {} after the transaction read Mind version {}",
+                        current.mutation_clocks.frame_order_version, requested_base
+                    ));
+                }
+                let id = validated_id(atom_at(items, 1, "frame id")?)?;
+                ensure_frame_read_is_current(
+                    current,
+                    id,
+                    requested_base,
+                    &frames_created_in_transaction,
+                )?;
+                if let SExpr::List(position) = &items[2] {
+                    if position.len() == 2 {
+                        let anchor = validated_id(atom_at(position, 1, "place anchor")?)?;
+                        ensure_frame_read_is_current(
+                            current,
+                            anchor,
+                            requested_base,
+                            &frames_created_in_transaction,
+                        )?;
+                    }
+                }
+            }
+            "relate" | "unrelate" => {
+                require_len(
+                    items,
+                    4,
+                    "(relate SUBJECT RELATION OBJECT) / (unrelate SUBJECT RELATION OBJECT)",
+                )?;
+                let subject = validated_id(atom_at(items, 1, "relation subject")?)?;
+                let relation = validated_id(atom_at(items, 2, "relation name")?)?;
+                let object = validated_id(atom_at(items, 3, "relation object")?)?;
+                ensure_frame_read_is_current(
+                    current,
+                    subject,
+                    requested_base,
+                    &frames_created_in_transaction,
+                )?;
+                ensure_frame_read_is_current(
+                    current,
+                    object,
+                    requested_base,
+                    &frames_created_in_transaction,
+                )?;
+                ensure_tracking_covers(current, requested_base, "Relation")?;
+                let key = relation_mutation_key(subject, relation, object);
+                if current
+                    .mutation_clocks
+                    .relation_versions
+                    .get(&key)
+                    .is_some_and(|version| *version > requested_base)
+                {
+                    return Err(format!(
+                        "Relation MVCC conflict: '{} {} {}' changed after the transaction read Mind version {}",
+                        subject, relation, object, requested_base
+                    ));
+                }
+            }
+            "checkpoint" => {
+                require_len(items, 2, "(checkpoint ID)")?;
+                let id = validated_id(atom_at(items, 1, "checkpoint id")?)?;
+                ensure_tracking_covers(current, requested_base, "Checkpoint")?;
+                if current
+                    .mutation_clocks
+                    .checkpoint_versions
+                    .get(id)
+                    .is_some_and(|version| *version > requested_base)
+                {
+                    return Err(format!(
+                        "Checkpoint MVCC conflict: '{}' changed after the transaction read Mind version {}",
+                        id, requested_base
+                    ));
+                }
+                if current
+                    .checkpoints
+                    .iter()
+                    .any(|checkpoint| checkpoint.id == id)
+                {
+                    return Err(format!(
+                        "Checkpoint MVCC conflict: transaction intends to create '{}', but the ID already exists at Mind version {}",
+                        id, current.version
+                    ));
+                }
+                checkpoints_created_in_transaction.insert(id.to_string());
+            }
+            "drop-checkpoint" => {
+                require_min_len(items, 2, "(drop-checkpoint ID...)")?;
+                ensure_tracking_covers(current, requested_base, "Checkpoint")?;
+                for item in items.iter().skip(1) {
+                    let id = validated_id(as_atom(item, "checkpoint id")?)?;
+                    if checkpoints_created_in_transaction.contains(id) {
+                        continue;
+                    }
+                    if current
+                        .mutation_clocks
+                        .checkpoint_versions
+                        .get(id)
+                        .is_some_and(|version| *version > requested_base)
+                    {
+                        return Err(format!(
+                            "Checkpoint MVCC conflict: '{}' changed after the transaction read Mind version {}",
+                            id, requested_base
+                        ));
+                    }
+                }
+            }
+            "rollback" => {
                 return Err(format!(
-                    "Context version advanced from {} to {}; the transaction contains global or lifecycle operation '{}', which Runtime cannot merge automatically with Frame MVCC. Retry from the latest Context Encoding",
-                    requested_base, current.version, other
+                    "Context global-barrier conflict: rollback cannot be rebased from Mind version {} onto {}; reread the latest Context Encoding",
+                    requested_base, current.version
                 ));
+            }
+            "retire-session" | "restore-session" => {
+                return Err(format!(
+                    "Session attention MVCC conflict: '{}' cannot be rebased from Mind version {} onto {} because Session attention is stored outside the Mind projection",
+                    name, requested_base, current.version
+                ));
+            }
+            other => {
+                return Err(format!("unknown Context primitive '{other}'"));
             }
         }
     }
 
     transaction.base_version = current.version;
     Ok(())
+}
+
+fn ensure_tracking_covers(
+    current: &MindState,
+    requested_base: u64,
+    boundary: &str,
+) -> Result<(), String> {
+    let Some(started) = current.mutation_clocks.tracking_started_version else {
+        return Err(format!(
+            "{boundary} MVCC history is unavailable for this legacy Mind projection; retry from current Mind version {} to establish an object-level rebase boundary",
+            current.version
+        ));
+    };
+    if requested_base < started {
+        return Err(format!(
+            "{boundary} MVCC history starts at Mind version {started}, after the transaction read version {requested_base}; retry from the latest Context Encoding"
+        ));
+    }
+    if current.mutation_clocks.global_barrier_version > requested_base {
+        return Err(format!(
+            "Context global-barrier conflict: broad Mind state changed at version {} after the transaction read version {}",
+            current.mutation_clocks.global_barrier_version, requested_base
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_lifecycle_write_is_current(
+    current: &MindState,
+    id: &str,
+    requested_base: u64,
+    frames_created_in_transaction: &BTreeSet<String>,
+) -> Result<(), String> {
+    if frames_created_in_transaction.contains(id) {
+        return Ok(());
+    }
+    ensure_tracking_covers(current, requested_base, "Context lifecycle")?;
+    if current
+        .mutation_clocks
+        .lifecycle_versions
+        .get(id)
+        .is_some_and(|version| *version > requested_base)
+    {
+        return Err(format!(
+            "Context lifecycle MVCC conflict: '{}' changed at Mind version {} after the transaction read version {}",
+            id,
+            current.mutation_clocks.lifecycle_versions[id],
+            requested_base
+        ));
+    }
+    Ok(())
+}
+
+fn relation_mutation_key(subject: &str, relation: &str, object: &str) -> String {
+    format!("{subject}\u{1f}{relation}\u{1f}{object}")
+}
+
+fn record_lifecycle_mutation(state: &mut MindState, id: &str, version: u64, track_mutations: bool) {
+    if track_mutations {
+        state
+            .mutation_clocks
+            .lifecycle_versions
+            .insert(id.to_string(), version);
+    }
+}
+
+fn record_relation_mutation(
+    state: &mut MindState,
+    subject: &str,
+    relation: &str,
+    object: &str,
+    version: u64,
+    track_mutations: bool,
+) {
+    if track_mutations {
+        state
+            .mutation_clocks
+            .relation_versions
+            .insert(relation_mutation_key(subject, relation, object), version);
+    }
+}
+
+fn record_checkpoint_mutation(
+    state: &mut MindState,
+    id: &str,
+    version: u64,
+    track_mutations: bool,
+) {
+    if track_mutations {
+        state
+            .mutation_clocks
+            .checkpoint_versions
+            .insert(id.to_string(), version);
+    }
 }
 
 fn ensure_frame_read_is_current(
@@ -6105,6 +6395,7 @@ fn apply_parsed_transaction_with_policy(
         observation_ids,
         retirement_policy,
         &FrameFormationContext::default(),
+        true,
     )
 }
 
@@ -6114,6 +6405,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
     observation_ids: &HashSet<String>,
     retirement_policy: FrameRetirementPolicy,
     formation: &FrameFormationContext<'_>,
+    track_mutations: bool,
 ) -> Result<(MindState, Vec<ContextChange>), String> {
     if current.version != tx.base_version {
         return Err(format!(
@@ -6124,6 +6416,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
 
     let mut next = current.clone();
     let next_version = current.version + 1;
+    if track_mutations && next.mutation_clocks.tracking_started_version.is_none() {
+        next.mutation_clocks.tracking_started_version = Some(current.version);
+    }
     let mut changes = Vec::new();
 
     for operation in &tx.operations {
@@ -6148,6 +6443,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     created_version: next_version,
                     updated_version: next_version,
                 });
+                if track_mutations {
+                    next.mutation_clocks.frame_order_version = next_version;
+                }
                 changes.push(change("create", id, None));
             }
             "derive" => {
@@ -6172,6 +6470,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     created_version: next_version,
                     updated_version: next_version,
                 });
+                if track_mutations {
+                    next.mutation_clocks.frame_order_version = next_version;
+                }
                 changes.push(change("derive", id, Some(sources.join(","))));
             }
             "revise" => {
@@ -6220,13 +6521,17 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 }
                 frame.revision += 1;
                 frame.updated_version = next_version;
+                let frame_revision = frame.revision;
+                if cancelled_retirement {
+                    record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
+                }
                 changes.push(change(
                     "revise",
                     id,
                     Some(if cancelled_retirement {
-                        format!("r{}; retirement-cancelled", frame.revision)
+                        format!("r{frame_revision}; retirement-cancelled")
                     } else {
-                        format!("r{}", frame.revision)
+                        format!("r{frame_revision}")
                     }),
                 ));
             }
@@ -6290,6 +6595,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                                 reason: reason.clone(),
                             },
                         );
+                        record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         changes.push(change(
                             "retire-frame-requested",
                             id,
@@ -6298,7 +6604,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                             )),
                         ));
                     } else {
-                        next.retired.insert(id.to_string());
+                        if next.retired.insert(id.to_string()) {
+                            record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
+                        }
                         changes.push(change("retire", id, Some(reason.clone())));
                     }
                 }
@@ -6309,6 +6617,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     let id = validated_id(as_atom(item, "restore target")?)?;
                     ensure_known(&next, observation_ids, id)?;
                     if next.retiring.remove(id).is_some() {
+                        record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         changes.push(change(
                             "restore",
                             id,
@@ -6319,6 +6628,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     if !next.retired.remove(id) {
                         return Err(format!("'{}' is not currently retired", id));
                     }
+                    record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                     changes.push(change("restore", id, None));
                 }
             }
@@ -6373,6 +6683,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 }
                 next.retiring.remove(id);
                 next.retired.insert(id.to_string());
+                record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                 changes.push(change(
                     "retire-frame-finalized",
                     id,
@@ -6427,10 +6738,16 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         }
                     })?;
                     if name == "protect" {
-                        next.retiring.remove(id);
-                        next.protected.insert(id.to_string());
+                        let retirement_cancelled = next.retiring.remove(id).is_some();
+                        let protection_added = next.protected.insert(id.to_string());
+                        let changed = retirement_cancelled || protection_added;
+                        if changed {
+                            record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
+                        }
                     } else if !next.protected.remove(id) {
                         return Err(format!("'{}' is not currently protected", id));
+                    } else {
+                        record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                     }
                     changes.push(change(name, id, tx.reason.clone()));
                 }
@@ -6443,6 +6760,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 )?;
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 place_frame(&mut next, id, &op[2])?;
+                if track_mutations {
+                    next.mutation_clocks.frame_order_version = next_version;
+                }
                 changes.push(change("place", id, Some(op[2].to_string())));
             }
             "relate" | "unrelate" => {
@@ -6488,6 +6808,14 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         subject, relation, object
                     ));
                 }
+                record_relation_mutation(
+                    &mut next,
+                    subject,
+                    relation,
+                    object,
+                    next_version,
+                    track_mutations,
+                );
                 changes.push(change(
                     name,
                     subject,
@@ -6515,6 +6843,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     protected: next.protected.clone(),
                     created_version: next_version,
                 });
+                record_checkpoint_mutation(&mut next, id, next_version, track_mutations);
                 changes.push(change(
                     "checkpoint",
                     id,
@@ -6539,6 +6868,9 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 next.retired = checkpoint.retired;
                 next.retiring = checkpoint.retiring;
                 next.protected = checkpoint.protected;
+                if track_mutations {
+                    next.mutation_clocks.global_barrier_version = next_version;
+                }
                 changes.push(change("rollback", id, Some(reason.clone())));
             }
             "drop-checkpoint" => {
@@ -6555,6 +6887,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         .position(|checkpoint| checkpoint.id == id)
                         .ok_or_else(|| format!("checkpoint '{}' does not exist", id))?;
                     next.checkpoints.remove(index);
+                    record_checkpoint_mutation(&mut next, id, next_version, track_mutations);
                     changes.push(change("drop-checkpoint", id, Some(reason.clone())));
                 }
             }
@@ -6585,6 +6918,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let successor_id = successor.id.clone();
                 next.retiring.remove(&target);
                 next.retired.insert(target.clone());
+                record_lifecycle_mutation(&mut next, &target, next_version, track_mutations);
                 changes.push(change(
                     "retire-frame-finalized",
                     &target,
@@ -9163,6 +9497,10 @@ fn project_mind_seed(source: &MindState) -> MindState {
             .cloned()
             .collect(),
         checkpoints: Vec::new(),
+        mutation_clocks: ContextMutationClocks {
+            tracking_started_version: Some(0),
+            ..Default::default()
+        },
     }
 }
 
@@ -9170,6 +9508,61 @@ fn mind_state_hash(state: &MindState) -> Result<String, String> {
     let bytes = serde_json::to_vec(state)
         .map_err(|error| format!("failed to serialize Mind Snapshot: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Hash view used before object-local Context mutation clocks were persisted.
+/// The clocks are serde-defaulted for compatibility, but even an empty field
+/// changes the serialized projection fence.
+#[derive(Serialize)]
+struct MindCheckpointHashV34<'a> {
+    id: &'a str,
+    frames: &'a [ContextFrame],
+    relations: &'a [ContextRelation],
+    retired: &'a BTreeSet<String>,
+    retiring: &'a BTreeMap<String, FrameRetirement>,
+    protected: &'a BTreeSet<String>,
+    created_version: u64,
+}
+
+#[derive(Serialize)]
+struct MindStateHashV34<'a> {
+    version: u64,
+    frames: &'a [ContextFrame],
+    relations: &'a [ContextRelation],
+    retired: &'a BTreeSet<String>,
+    retiring: &'a BTreeMap<String, FrameRetirement>,
+    protected: &'a BTreeSet<String>,
+    checkpoints: Vec<MindCheckpointHashV34<'a>>,
+}
+
+fn mind_state_hash_v34(state: &MindState) -> Result<Option<String>, String> {
+    if state.mutation_clocks != ContextMutationClocks::default() {
+        return Ok(None);
+    }
+    let legacy = MindStateHashV34 {
+        version: state.version,
+        frames: &state.frames,
+        relations: &state.relations,
+        retired: &state.retired,
+        retiring: &state.retiring,
+        protected: &state.protected,
+        checkpoints: state
+            .checkpoints
+            .iter()
+            .map(|checkpoint| MindCheckpointHashV34 {
+                id: &checkpoint.id,
+                frames: &checkpoint.frames,
+                relations: &checkpoint.relations,
+                retired: &checkpoint.retired,
+                retiring: &checkpoint.retiring,
+                protected: &checkpoint.protected,
+                created_version: checkpoint.created_version,
+            })
+            .collect(),
+    };
+    let bytes = serde_json::to_vec(&legacy)
+        .map_err(|error| format!("failed to serialize Mind v34 Snapshot: {error}"))?;
+    Ok(Some(format!("{:x}", Sha256::digest(bytes))))
 }
 
 /// Hash view used before Context protocol v22 introduced Runtime-derived
@@ -9237,7 +9630,9 @@ fn has_only_legacy_frame_provenance(state: &MindState) -> bool {
 }
 
 fn mind_state_hash_v21(state: &MindState) -> Result<Option<String>, String> {
-    if !has_only_legacy_frame_provenance(state) {
+    if state.mutation_clocks != ContextMutationClocks::default()
+        || !has_only_legacy_frame_provenance(state)
+    {
         return Ok(None);
     }
     let legacy = MindStateHashV21 {
@@ -9295,7 +9690,8 @@ struct MindStateHashV20<'a> {
 }
 
 fn mind_state_hash_v20(state: &MindState) -> Result<Option<String>, String> {
-    if !state.retiring.is_empty()
+    if state.mutation_clocks != ContextMutationClocks::default()
+        || !state.retiring.is_empty()
         || !has_only_legacy_frame_provenance(state)
         || state
             .checkpoints
@@ -9330,6 +9726,9 @@ fn mind_state_hash_v20(state: &MindState) -> Result<Option<String>, String> {
 
 fn mind_state_hash_matches(state: &MindState, recorded_hash: &str) -> Result<bool, String> {
     if mind_state_hash(state)? == recorded_hash {
+        return Ok(true);
+    }
+    if mind_state_hash_v34(state)?.as_deref() == Some(recorded_hash) {
         return Ok(true);
     }
     if mind_state_hash_v21(state)?.as_deref() == Some(recorded_hash) {
@@ -9573,12 +9972,18 @@ fn replay_context_transaction_event(
         formed_session_id: event_session(event),
         observation_origins: Some(observation_origins),
     };
+    let mutation_clocks_enabled = event
+        .payload
+        .get("mutation_clocks_version")
+        .and_then(|value| value.as_u64())
+        == Some(1);
     let (candidate, replayed_changes) = apply_parsed_transaction_with_policy_and_provenance(
         state,
         &parsed,
         &observation_ids,
         retirement_policy,
         &formation,
+        mutation_clocks_enabled,
     )
     .map_err(|error| {
         format!(
@@ -11355,11 +11760,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let engine = ContextEngine::new(
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            OrchestratorConfig::default(),
-        )
-        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        let mut config = OrchestratorConfig::default();
+        config.session_working_set.max_sessions = 2;
+        let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
         let view = engine
             .build_context_encoding_for_activation("encoding-context", &activation, &HashSet::new())
             .await
@@ -11716,6 +12120,10 @@ mod tests {
 
         let mut legacy_state = serde_json::to_value(&state).unwrap();
         legacy_state.as_object_mut().unwrap().remove("retiring");
+        legacy_state
+            .as_object_mut()
+            .unwrap()
+            .remove("mutation_clocks");
         for checkpoint in legacy_state["checkpoints"].as_array_mut().unwrap() {
             checkpoint.as_object_mut().unwrap().remove("retiring");
         }
@@ -11756,7 +12164,15 @@ mod tests {
         let initial = MindState::default();
         let transaction = "(context-tx (base-version 0) (create durable-fact (fact stable)))";
         let parsed = parse_transaction(transaction).unwrap();
-        let (expected, _) = apply_parsed_transaction(&initial, &parsed, &HashSet::new()).unwrap();
+        let (expected, _) = apply_parsed_transaction_with_policy_and_provenance(
+            &initial,
+            &parsed,
+            &HashSet::new(),
+            FrameRetirementPolicy::legacy_immediate(),
+            &FrameFormationContext::default(),
+            false,
+        )
+        .unwrap();
         let event = Event::new(
             "tx-v20".to_string(),
             "Agent-Context".to_string(),
@@ -11870,6 +12286,7 @@ mod tests {
             &observation_ids,
             FrameRetirementPolicy::legacy_immediate(),
             &formed_in_b,
+            true,
         )
         .unwrap();
         let frame = &state.frames[0];
@@ -11906,6 +12323,7 @@ mod tests {
                 formed_session_id: Some("session:c"),
                 observation_origins: Some(&origins),
             },
+            true,
         )
         .unwrap();
         assert_eq!(state.frames[0].provenance, original_provenance);
@@ -11925,6 +12343,7 @@ mod tests {
                 formed_session_id: Some("session:c"),
                 observation_origins: Some(&origins),
             },
+            true,
         )
         .unwrap();
         let revised = &state.frames[0].provenance;
@@ -12472,7 +12891,7 @@ mod tests {
             parse_transaction("(context-tx (base-version 3) (create mine (fact independent)))")
                 .unwrap();
 
-        rebase_stale_frame_transaction(&state, &mut tx).unwrap();
+        rebase_stale_context_transaction(&state, &mut tx).unwrap();
         assert_eq!(tx.base_version, 4);
         let (next, _) = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap();
         assert_eq!(next.version, 5);
@@ -12508,7 +12927,7 @@ mod tests {
         let mut tx =
             parse_transaction("(context-tx (base-version 6) (revise mine (status new)))").unwrap();
 
-        rebase_stale_frame_transaction(&state, &mut tx).unwrap();
+        rebase_stale_context_transaction(&state, &mut tx).unwrap();
         let (next, _) = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap();
         let mine = next.frames.iter().find(|frame| frame.id == "mine").unwrap();
         assert_eq!(mine.revision, 2);
@@ -12534,14 +12953,14 @@ mod tests {
             parse_transaction("(context-tx (base-version 6) (revise shared (status mine)))")
                 .unwrap();
 
-        let error = rebase_stale_frame_transaction(&state, &mut tx).unwrap_err();
+        let error = rebase_stale_context_transaction(&state, &mut tx).unwrap_err();
         assert!(error.contains("Frame MVCC conflict"));
         assert!(error.contains("shared"));
         assert_eq!(tx.base_version, 6);
     }
 
     #[test]
-    fn stale_global_lifecycle_operation_remains_conservative() {
+    fn stale_lifecycle_operation_rebases_when_its_target_is_unchanged() {
         let state = MindState {
             version: 7,
             frames: vec![ContextFrame {
@@ -12553,15 +12972,202 @@ mod tests {
                 created_version: 2,
                 updated_version: 2,
             }],
+            mutation_clocks: ContextMutationClocks {
+                tracking_started_version: Some(0),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut tx =
             parse_transaction("(context-tx (base-version 6) (reason cleanup) (retire shared))")
                 .unwrap();
 
-        let error = rebase_stale_frame_transaction(&state, &mut tx).unwrap_err();
-        assert!(error.contains("cannot merge automatically with Frame MVCC"));
-        assert!(error.contains("retire"));
+        rebase_stale_context_transaction(&state, &mut tx).unwrap();
+        assert_eq!(tx.base_version, 7);
+        let (next, _) = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap();
+        assert!(next.retired.contains("shared"));
+    }
+
+    #[test]
+    fn stale_lifecycle_operation_conflicts_when_its_target_changed() {
+        let state = MindState {
+            version: 7,
+            frames: vec![ContextFrame {
+                id: "shared".to_string(),
+                body: "(status current)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 2,
+                updated_version: 2,
+            }],
+            mutation_clocks: ContextMutationClocks {
+                tracking_started_version: Some(0),
+                lifecycle_versions: BTreeMap::from([("shared".to_string(), 7)]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut tx =
+            parse_transaction("(context-tx (base-version 6) (reason cleanup) (retire shared))")
+                .unwrap();
+
+        let error = rebase_stale_context_transaction(&state, &mut tx).unwrap_err();
+        assert!(error.contains("Context lifecycle MVCC conflict"));
+        assert!(error.contains("shared"));
+        assert_eq!(tx.base_version, 6);
+    }
+
+    #[test]
+    fn stale_mixed_maintenance_transaction_rebases_atomically() {
+        let state = MindState {
+            version: 8,
+            frames: vec![ContextFrame {
+                id: "unrelated".to_string(),
+                body: "(status concurrent)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 8,
+                updated_version: 8,
+            }],
+            mutation_clocks: ContextMutationClocks {
+                tracking_started_version: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut tx = parse_transaction(
+            "(context-tx (base-version 7) (reason compact) \
+             (derive active-task (from observation-1) (status active)) \
+             (protect active-task) (retire observation-1))",
+        )
+        .unwrap();
+
+        rebase_stale_context_transaction(&state, &mut tx).unwrap();
+        let observations = HashSet::from(["observation-1".to_string()]);
+        let (next, _) = apply_parsed_transaction(&state, &tx, &observations).unwrap();
+        assert_eq!(next.version, 9);
+        assert!(next.frames.iter().any(|frame| frame.id == "active-task"));
+        assert!(next.protected.contains("active-task"));
+        assert!(next.retired.contains("observation-1"));
+    }
+
+    #[test]
+    fn stale_relation_rebases_only_when_the_exact_edge_and_endpoints_are_unchanged() {
+        let frames = ["subject", "object", "concurrent"]
+            .into_iter()
+            .map(|id| ContextFrame {
+                id: id.to_string(),
+                body: format!("(fact {id})"),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: if id == "concurrent" { 7 } else { 2 },
+                updated_version: if id == "concurrent" { 7 } else { 2 },
+            })
+            .collect();
+        let state = MindState {
+            version: 7,
+            frames,
+            mutation_clocks: ContextMutationClocks {
+                tracking_started_version: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut disjoint =
+            parse_transaction("(context-tx (base-version 6) (relate subject supports object))")
+                .unwrap();
+        rebase_stale_context_transaction(&state, &mut disjoint).unwrap();
+        let (related, _) = apply_parsed_transaction(&state, &disjoint, &HashSet::new()).unwrap();
+        assert_eq!(related.relations.len(), 1);
+
+        let key = relation_mutation_key("subject", "supports", "object");
+        let mut changed = state;
+        changed.mutation_clocks.relation_versions.insert(key, 7);
+        let mut conflicting =
+            parse_transaction("(context-tx (base-version 6) (relate subject supports object))")
+                .unwrap();
+        let error = rebase_stale_context_transaction(&changed, &mut conflicting).unwrap_err();
+        assert!(error.contains("Relation MVCC conflict"));
+    }
+
+    #[test]
+    fn stale_frame_order_and_global_replacement_remain_semantic_conflicts() {
+        let mut order_changed = MindState {
+            version: 7,
+            frames: vec![ContextFrame {
+                id: "frame".to_string(),
+                body: "(fact current)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 2,
+                updated_version: 2,
+            }],
+            mutation_clocks: ContextMutationClocks {
+                tracking_started_version: Some(0),
+                frame_order_version: 7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut place =
+            parse_transaction("(context-tx (base-version 6) (place frame first))").unwrap();
+        let error = rebase_stale_context_transaction(&order_changed, &mut place).unwrap_err();
+        assert!(error.contains("Frame order MVCC conflict"));
+
+        order_changed.mutation_clocks.frame_order_version = 2;
+        order_changed.mutation_clocks.global_barrier_version = 7;
+        let mut create =
+            parse_transaction("(context-tx (base-version 6) (create new-frame (fact new)))")
+                .unwrap();
+        let error = rebase_stale_context_transaction(&order_changed, &mut create).unwrap_err();
+        assert!(error.contains("global-barrier conflict"));
+    }
+
+    #[test]
+    fn legacy_lifecycle_projection_requires_one_fresh_boundary() {
+        let state = MindState {
+            version: 7,
+            frames: vec![ContextFrame {
+                id: "legacy".to_string(),
+                body: "(fact legacy)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 2,
+                updated_version: 2,
+            }],
+            ..Default::default()
+        };
+        let mut stale =
+            parse_transaction("(context-tx (base-version 6) (protect legacy))").unwrap();
+        let error = rebase_stale_context_transaction(&state, &mut stale).unwrap_err();
+        assert!(error.contains("legacy Mind projection"));
+
+        let exact = parse_transaction("(context-tx (base-version 7) (protect legacy))").unwrap();
+        let (tracked, _) = apply_parsed_transaction(&state, &exact, &HashSet::new()).unwrap();
+        assert_eq!(tracked.mutation_clocks.tracking_started_version, Some(7));
+        assert_eq!(tracked.mutation_clocks.lifecycle_versions["legacy"], 8);
+    }
+
+    #[test]
+    fn legacy_replay_keeps_the_pre_clock_state_shape() {
+        let tx =
+            parse_transaction("(context-tx (base-version 0) (create legacy (fact old)))").unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy_and_provenance(
+            &MindState::default(),
+            &tx,
+            &HashSet::new(),
+            FrameRetirementPolicy::legacy_immediate(),
+            &FrameFormationContext::default(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(state.mutation_clocks, ContextMutationClocks::default());
+        assert!(mind_state_hash_v34(&state).unwrap().is_some());
     }
 
     #[test]
@@ -13984,6 +14590,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_engine_rebases_disjoint_lifecycle_and_relation_changes_but_fences_same_target()
+    {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("object-mvcc.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+        let context_id = "object-mvcc-context";
+
+        engine
+            .apply_context_transaction(
+                context_id,
+                "session-a",
+                "(context-tx (base-version 0) (create frame-a (fact a)) (create frame-b (fact b)))",
+            )
+            .await
+            .unwrap();
+        engine
+            .apply_context_transaction(
+                context_id,
+                "session-b",
+                "(context-tx (base-version 1) (revise frame-b (fact b2)))",
+            )
+            .await
+            .unwrap();
+
+        let rebased = engine
+            .apply_context_transaction(
+                context_id,
+                "session-a",
+                "(context-tx (base-version 1) (protect frame-a) (relate frame-a supports frame-a))",
+            )
+            .await
+            .unwrap();
+        assert_eq!(rebased.before_version, 2);
+        assert_eq!(rebased.after_version, 3);
+
+        let conflict = engine
+            .apply_context_transaction(
+                context_id,
+                "session-c",
+                "(context-tx (base-version 2) (reason \"superseded\") (retire frame-a))",
+            )
+            .await
+            .unwrap_err();
+        assert!(conflict
+            .to_string()
+            .contains("Context lifecycle MVCC conflict"));
+
+        let state = engine.load_current_mind(context_id, None).await.unwrap();
+        assert_eq!(state.version, 3);
+        assert!(state.protected.contains("frame-a"));
+        assert!(state.relations.iter().any(|edge| {
+            edge.subject == "frame-a" && edge.relation == "supports" && edge.object == "frame-a"
+        }));
+        assert_eq!(
+            state.mutation_clocks.lifecycle_versions.get("frame-a"),
+            Some(&3)
+        );
+        assert_eq!(
+            state
+                .mutation_clocks
+                .relation_versions
+                .get(&relation_mutation_key("frame-a", "supports", "frame-a")),
+            Some(&3)
+        );
+        let commits = store
+            .query(QueryFilter {
+                topic: Some("chat/context_tx_committed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let rebased_event = commits
+            .iter()
+            .find(|event| event.payload["after_version"] == json!(3))
+            .unwrap();
+        assert_eq!(rebased_event.payload["auto_rebased"], json!(true));
+        assert_eq!(rebased_event.payload["mutation_clocks_version"], json!(1));
+    }
+
+    #[tokio::test]
     async fn strict_context_commit_is_exactly_versioned_and_idempotent() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(
@@ -15204,6 +15897,84 @@ mod tests {
         assert!(
             engine_left
                 .audit_mind_projection("shared-context")
+                .await
+                .unwrap()
+                .matches
+        );
+    }
+
+    #[tokio::test]
+    async fn eight_concurrent_lifecycle_transactions_converge_on_disjoint_targets() {
+        const WRITERS: usize = 8;
+
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                tmp.path()
+                    .join("context-lifecycle-writers.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "lifecycle-writers-context".to_string(),
+                agent_id: "lifecycle-writers-agent".to_string(),
+                title: "Lifecycle Writers Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let bootstrap = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        let creates = (0..WRITERS)
+            .map(|index| format!("(create frame-{index} (fact {index}))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        bootstrap
+            .apply_context_transaction(
+                "lifecycle-writers-context",
+                "bootstrap-session",
+                &format!("(context-tx (base-version 0) {creates})"),
+            )
+            .await
+            .unwrap();
+
+        let mut handles = Vec::with_capacity(WRITERS);
+        for index in 0..WRITERS {
+            let engine = ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+            handles.push(tokio::spawn(async move {
+                engine
+                    .apply_context_transaction(
+                        "lifecycle-writers-context",
+                        &format!("session-{index}"),
+                        &format!("(context-tx (base-version 1) (protect frame-{index}))"),
+                    )
+                    .await
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+        let state = bootstrap
+            .load_current_mind("lifecycle-writers-context", None)
+            .await
+            .unwrap();
+        assert_eq!(state.version, 1 + WRITERS as u64);
+        assert_eq!(state.protected.len(), WRITERS);
+        assert_eq!(state.mutation_clocks.lifecycle_versions.len(), WRITERS);
+        assert!(
+            bootstrap
+                .audit_mind_projection("lifecycle-writers-context")
                 .await
                 .unwrap()
                 .matches

@@ -12,6 +12,7 @@ from benchmarks.harbor.run_me09_shared_context import (
     DEFAULT_MANIFEST,
     _sha256,
     _harbor_command,
+    _write_runtime_config,
     load_and_validate_manifest,
 )
 from benchmarks.harbor.summarize_me09_shared_context import event_root_turn_id
@@ -63,6 +64,20 @@ class Me09SharedContextTest(unittest.TestCase):
         )
         tasks = [task for lane in manifest["lanes"] for task in lane["tasks"]]
         self.assertEqual(len(set(tasks)), 89)
+
+    def test_runtime_config_freezes_current_session_working_set(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            config_path = Path(raw_dir) / "morphz.toml"
+            _write_runtime_config(
+                config_path,
+                protocol="openai-responses",
+                base_url="http://127.0.0.1:8317/v1",
+            )
+            config = config_path.read_text(encoding="utf-8")
+            self.assertIn(
+                '[orchestrator.session_working_set]\nactive_window = "24h"\nmax_sessions = 1',
+                config,
+            )
 
     def test_agent_rejects_task_outside_selected_lane(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:

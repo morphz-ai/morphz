@@ -68,7 +68,7 @@ SQLite 包含：
 - 不同 Session：可以并发调用模型，即使它们属于同一 Context；
 - 读取 Context：多个求值可以并发读取同一个已提交版本；
 - 修改 Mind：`context_tx` 使用 Context 级互斥锁串行提交；
-- 并发事务：提交时检查 `base-version`。先提交者成功，基于旧版本的后提交者收到版本冲突，不会覆盖新状态。
+- 并发事务：本文 v1 初始实现只检查全局 `base-version`；当前 Runtime 已升级为对象级 MVCC。先提交者仍确定全局物理顺序，后提交者仅在实际触碰的语义边界已变化时冲突，否则由 Runtime 安全自动 rebase，不会覆盖新状态。
 
 Dialogue Lane 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行物理工具前释放；工具执行和等待不持有该锁。每个 Thread 固定 `root_turn_id` 和根事件的 Event sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Activation；终态以 `activation_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
 
@@ -117,7 +117,7 @@ Dashboard 先选择 Cognitive Context，再选择其中的 Session。用户可�
 - 两条回复 Event 保持同一个 `context_id`；
 - Session A 提交的 Mind Frame，Session B 的下一次 Context Encoding 可见；
 - Session B 的 Encoding 同时包含来自 A、B 且有来源标记的 observation；
-- 两个 Session 基于相同版本并发提交 Context transaction 时，恰好一个成功、一个版本冲突；
+- 初版全局版本门禁中，两个 Session 基于相同版本并发提交 Context transaction 时，恰好一个成功、一个版本冲突；当前对象级 MVCC 回归进一步覆盖不同对象全部收敛、同一语义边界保持冲突；
 - 父子 Session 的 parent 路由只按当前 Session 解析，不会形成自唤醒循环。
 
 2026-07-12 另使用 `gemini-3-flash-agent` 对实际 Runtime HTTP 链路做了单样本探针：
@@ -132,11 +132,11 @@ Dashboard 先选择 Cognitive Context，再选择其中的 Session。用户可�
 
 2026-07-15 又完成同 Session 真实重叠测试：A 的 `exec` 前台运行 25 秒，期间 B 到达并先回复 `B_FINAL_OK`；随后 A 工具结果写入并回复 `A_FINAL_OK`。Event History 顺序为 `call A < message B < reply B < result A < reply A`，两个 Reply 的 `root_turn_id` 各自正确。
 
-## 8. 暂不实现
+## 8. 初版未实现项与当前进展
 
 - Context Copy-on-Write、分支、合并和重置；
-- 同一 Mind 的并发无冲突合并或 MVCC 重试策略；
-- 多进程/多节点 Context 锁与一致性协议；
+- 同一 Mind 的对象级 MVCC 与安全自动 rebase 已实现；同一对象上的语义合并仍由 Agent 基于最新状态决定；
+- SQLite 多进程与 PostgreSQL 多 Runtime 的 CAS/lease 协调已实现；跨主机生产故障注入仍待验证；
 - Context/Session 的权限与跨会话信息披露策略；
 - 多个算力节点协同求值同一个 Session。
 
