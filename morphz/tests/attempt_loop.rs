@@ -8221,23 +8221,19 @@ fn eval_response(program: &str) -> Response {
 #[tokio::test]
 async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
     let session_id = "attempt_eval_program";
-    // Three model turns: submit the program, answer the `infer` the Runtime
-    // stopped at, then reply once the value has been folded back in.
+    // Three model turns: submit the program, let the model evaluate the
+    // complete Yao BODY, then reply once the typed value has been folded back
+    // into the Runtime-owned parent.
     let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![
             eval_response(
                 r#"(eval
-                   (requires (tools read))
-                   (seq
-                     (bind body (call read (path "probe.txt")))
-                     (bind judgement
-                       (infer
-                         (task "这个文件说了什么")
-                         (returns String)
-                         (evidence body)))
-                     judgement))"#,
+                   (infer
+                     (seq
+                       (bind total (add 20 22))
+                       (if (gt total 40) (mul total 2) 0))))"#,
             ),
-            text_reply_response("看起来是一个 Rust 工程"),
+            text_reply_response("84"),
             text_reply_response("已完成"),
         ],
         morphz::config::OrchestratorConfig::default(),
@@ -8259,18 +8255,29 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
         "one turn submits the program, one answers the infer, one replies"
     );
 
-    // The middle turn is the trampoline: control came back to the model with
-    // the question, and it must not have been dressed as someone speaking.
+    // The middle turn is the evaluator hand-off: control came back to the
+    // model with the full program tree, not a Runtime-lowered task/evidence
+    // request, and it must not have been dressed as someone speaking.
     let inference_turn = turns[1]
         .iter()
         .rev()
         .find(|message| message.role == "user")
         .expect("the infer request reaches the model");
     assert!(
-        inference_turn.content.contains("(infer-request"),
+        inference_turn
+            .content
+            .contains("Evaluate the complete Yao program"),
         "unexpected infer prompt: {}",
         inference_turn.content
     );
+    assert!(
+        inference_turn
+            .content
+            .contains("(infer (seq (bind total (add 20 22)) (if (gt total 40) (mul total 2) 0)))"),
+        "the complete BODY must reach the model unchanged: {}",
+        inference_turn.content
+    );
+    assert!(!inference_turn.content.contains("\\\"task\\\":"));
     assert!(
         inference_turn
             .content
@@ -8279,8 +8286,8 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
         inference_turn.content
     );
 
-    // The value the model produced is what the program bound and returned, so
-    // the tool output carries it rather than the raw listing.
+    // The typed value the model produced is the value returned by the parent
+    // program, so the eval Tool output carries it.
     let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     let eval_output = outputs
         .iter()
@@ -8291,9 +8298,60 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
             .payload
             .get("text")
             .and_then(|v| v.as_str())
-            .is_some_and(|text| text.contains("Rust 工程")),
+            .is_some_and(|text| text.contains("84")),
         "eval output should carry the inferred value: {:?}",
         eval_output.payload.get("text")
+    );
+}
+
+#[tokio::test]
+async fn infer_discloses_only_source_authorized_parent_bindings_to_the_model() {
+    let session_id = "attempt_infer_explicit_captures";
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            eval_response(
+                r#"(eval
+                   (seq
+                     (bind base 40)
+                     (bind private-note "must-not-cross")
+                     (infer
+                       (captures base)
+                       (add base 2))))"#,
+            ),
+            text_reply_response("42"),
+            text_reply_response("已完成"),
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "执行这个程序").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+
+    let turns = client.messages_seen();
+    assert_eq!(turns.len(), 3, "submit, evaluate infer BODY, then reply");
+    let inference_turn = turns[1]
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .expect("the infer request reaches the configured model provider");
+    assert!(inference_turn.content.contains("(captures base)"));
+    assert!(inference_turn.content.contains(r#"{"base":40}"#));
+    assert!(
+        !inference_turn.content.contains("must-not-cross"),
+        "an unlisted parent binding crossed the provider boundary: {}",
+        inference_turn.content
+    );
+
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let eval_output = outputs
+        .iter()
+        .find(|event| event.payload.get("tool_name").and_then(|v| v.as_str()) == Some("eval"))
+        .expect("the eval call produced an observation");
+    assert_eq!(
+        eval_output.payload.get("text").and_then(|v| v.as_str()),
+        Some("42")
     );
 }
 
@@ -8315,16 +8373,17 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
     let probe = NamedTempFile::new().unwrap();
     std::fs::write(probe.path(), "fn main() {}").unwrap();
     let probe_path = probe.path().to_string_lossy().into_owned();
+    let program = format!(
+        r#"(eval
+          (requires (tools read))
+          (infer
+            (seq
+              (bind source (call read (path {probe_path:?})))
+              (decode String source))))"#
+    );
     let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![
-            eval_response(
-                r#"(eval
-                  (requires (tools read))
-                  (infer
-                    (task "这个仓库是什么语言写的")
-                    (tools read)
-                    (returns String)))"#,
-            ),
+            eval_response(&program),
             // Inside the infer, the model wants evidence before answering.
             read_call_response("infer-read", &probe_path),
             text_reply_response("Rust"),

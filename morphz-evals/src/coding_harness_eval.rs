@@ -905,7 +905,8 @@ mod tests {
             morphz::sexpr_eval::EvaluationOwner::Runtime
         );
         assert!(runtime.entry.source.contains("(returns EditDecision)"));
-        assert!(runtime.entry.source.contains("(tools)"));
+        assert!(runtime.entry.source.contains("(captures baseline service)"));
+        assert!(!runtime.entry.source.contains("(task"));
         assert!(package.contract.to_string().contains("inspect-before-edit"));
         assert!(package.mind.is_some());
 

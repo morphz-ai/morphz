@@ -319,10 +319,32 @@ pub enum HirKind {
         tool: String,
         arguments: Vec<NamedArgument>,
     },
-    Infer {
-        arguments: Vec<NamedArgument>,
-        tools: Option<Vec<String>>,
+    /// A complete Yao expression whose Evaluation Loop is owned by the model.
+    ///
+    /// This is the canonical `infer` form. The body is analyzed by the same
+    /// frontend as an `eval` body, so changing only the outer owner preserves
+    /// the program tree, type, and statically visible effects. `source` is the
+    /// canonical `(infer BODY)` artifact shown to the model at the ownership
+    /// boundary. There is no alternate fixed task/evidence request syntax.
+    InferBody {
+        body: Box<HirExpr>,
+        /// Lexical values that the source explicitly permits to cross from
+        /// the Runtime-owned parent into this model-owned Evaluation.
+        ///
+        /// Captures are declarations, not an implicit serialization of the
+        /// Plan Machine environment.  This keeps the ownership boundary
+        /// auditable and prevents an unrelated binding from leaking merely
+        /// because it happened to be live at the suspension point.
+        #[serde(default)]
+        captures: Vec<String>,
+        /// The typed terminal result accepted from the model.  Without an
+        /// explicit `(returns TYPE)` declaration this is the statically
+        /// inferred BODY type. Ordinary declarations must accept the BODY
+        /// type. `Program<T,E>` is the one synthesis contract: the complete
+        /// BODY specifies how the model derives a quarantined candidate whose
+        /// own output/effects are then independently admitted by Runtime.
         result: Type,
+        source: String,
     },
     Par {
         branches: Vec<ParBranch>,
@@ -339,6 +361,7 @@ pub enum HirKind {
 #[derive(Debug, Clone)]
 struct Scope {
     bindings: HashMap<String, Type>,
+    allow_implicit_bindings: bool,
 }
 
 impl Scope {
@@ -349,7 +372,17 @@ impl Scope {
                 bindings.insert(name.to_string(), ty);
             }
         }
-        Self { bindings }
+        Self {
+            bindings,
+            allow_implicit_bindings: true,
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            bindings: HashMap::new(),
+            allow_implicit_bindings: false,
+        }
     }
 }
 
@@ -421,7 +454,7 @@ impl<'a> Analyzer<'a> {
         }
 
         let mut scope = Scope::new(self.profile);
-        let body = match owner {
+        let mut body = match owner {
             EvaluationOwner::Runtime => {
                 if items.len().saturating_sub(cursor) != 1 {
                     return Err(diag(
@@ -436,13 +469,28 @@ impl<'a> Analyzer<'a> {
                 if cursor >= items.len() {
                     return Err(diag(
                         DiagnosticCode::InvalidType,
-                        "infer root requires a task and result contract",
+                        "infer requires one Yao body",
                         root.span(),
                     ));
                 }
                 self.analyze_infer(&items[cursor..], &mut scope, root.span(), true, 0)?
             }
         };
+        if owner == EvaluationOwner::Model {
+            let HirKind::InferBody { source, .. } = &mut body.kind else {
+                unreachable!("model-owned roots always lower to one complete infer BODY")
+            };
+            *source = canonical_source(root);
+        }
+        self.finish_program(root, owner, body)
+    }
+
+    fn finish_program(
+        self,
+        root: &Expr,
+        owner: EvaluationOwner,
+        body: HirExpr,
+    ) -> Result<Program, Diagnostic> {
         if let Some(declared) = &self.requirements.effects {
             if !body.effects.is_subset(declared) {
                 return Err(diag(
@@ -642,12 +690,12 @@ impl<'a> Analyzer<'a> {
                 span,
             ));
         }
-        let Some(mut ty) = scope
-            .bindings
-            .get(root)
-            .cloned()
-            .or_else(|| self.profile.implicit_binding(root))
-        else {
+        let Some(mut ty) = scope.bindings.get(root).cloned().or_else(|| {
+            scope
+                .allow_implicit_bindings
+                .then(|| self.profile.implicit_binding(root))
+                .flatten()
+        }) else {
             return Err(diag(
                 DiagnosticCode::UnknownName,
                 format!("unknown binding '{root}'"),
@@ -1653,120 +1701,114 @@ impl<'a> Analyzer<'a> {
         root_model_owned: bool,
         depth: usize,
     ) -> Result<HirExpr, Diagnostic> {
-        let mut result = None;
-        let mut tools = None;
-        let mut data = Vec::new();
-        let mut has_task = false;
-        for argument in arguments {
-            let items = expect_list(argument, "infer arguments must be lists")?;
-            let Some(name) = items.first().and_then(Expr::as_symbol) else {
-                return Err(diag(
-                    DiagnosticCode::TypeMismatch,
-                    "infer argument must start with a name",
-                    argument.span(),
-                ));
-            };
-            match name {
-                "returns" => {
-                    if result.is_some() || items.len() != 2 {
-                        return Err(diag(
-                            DiagnosticCode::DuplicateName,
-                            "infer requires exactly one (returns TYPE)",
-                            argument.span(),
-                        ));
-                    }
-                    result = Some(self.parse_infer_result(&items[1])?);
+        self.analyze_infer_body(arguments, scope, span, root_model_owned, depth)
+    }
+
+    fn analyze_infer_body(
+        &mut self,
+        arguments: &[Expr],
+        outer_scope: &Scope,
+        span: SourceSpan,
+        root_model_owned: bool,
+        depth: usize,
+    ) -> Result<HirExpr, Diagnostic> {
+        let mut cursor = 0;
+        let mut captures = Vec::new();
+        if is_form(arguments.get(cursor), "captures") {
+            let items = expect_list(&arguments[cursor], "captures must be a list")?;
+            let mut seen = HashSet::new();
+            for capture in &items[1..] {
+                let name = expect_symbol(capture, "captures entries must be lexical names")?;
+                if !seen.insert(name.to_string()) {
+                    return Err(diag(
+                        DiagnosticCode::DuplicateName,
+                        format!("infer captures lexical name '{name}' more than once"),
+                        capture.span(),
+                    ));
                 }
-                "tools" => {
-                    if tools.is_some() {
-                        return Err(diag(
-                            DiagnosticCode::DuplicateName,
-                            "infer contains more than one tools clause",
-                            argument.span(),
-                        ));
-                    }
-                    let mut names = Vec::new();
-                    let mut seen = HashSet::new();
-                    for tool_expr in &items[1..] {
-                        let tool = expect_symbol(tool_expr, "infer tools must be static symbols")?;
-                        if !seen.insert(tool.to_string()) {
-                            return Err(diag(
-                                DiagnosticCode::DuplicateName,
-                                format!("infer repeats tool '{tool}'"),
-                                tool_expr.span(),
-                            ));
-                        }
-                        if self
-                            .requirements
-                            .tools
-                            .as_ref()
-                            .is_some_and(|allowed| !allowed.contains(tool))
-                        {
-                            return Err(diag(
-                                DiagnosticCode::EffectEscape,
-                                format!("infer tool '{tool}' exceeds requires.tools"),
-                                tool_expr.span(),
-                            ));
-                        }
-                        if self.profile.tool_signature(tool).is_none() {
-                            return Err(diag(
-                                DiagnosticCode::UnknownName,
-                                format!("unknown infer evidence tool '{tool}'"),
-                                tool_expr.span(),
-                            ));
-                        }
-                        names.push(tool.to_string());
-                    }
-                    tools = Some(names);
+                if !outer_scope.bindings.contains_key(name) {
+                    return Err(diag(
+                        DiagnosticCode::UnknownName,
+                        format!("infer capture '{name}' is not bound in the parent scope"),
+                        capture.span(),
+                    ));
                 }
-                "task" => {
-                    if has_task {
-                        return Err(diag(
-                            DiagnosticCode::DuplicateName,
-                            "infer contains more than one task",
-                            argument.span(),
-                        ));
-                    }
-                    has_task = true;
-                    data.push(argument.clone());
-                }
-                _ => data.push(argument.clone()),
+                captures.push(name.to_string());
             }
+            cursor += 1;
         }
-        if !has_task {
-            return Err(diag(
-                DiagnosticCode::TypeMismatch,
-                "infer requires (task EXPR)",
-                span,
-            ));
+
+        let mut declared_result = None;
+        if is_form(arguments.get(cursor), "returns") {
+            let items = expect_list(&arguments[cursor], "returns must be a list")?;
+            if items.len() != 2 {
+                return Err(diag(
+                    DiagnosticCode::InvalidType,
+                    "infer result declaration must be exactly (returns TYPE)",
+                    arguments[cursor].span(),
+                ));
+            }
+            let result = self.parse_type(&items[1])?;
+            self.validate_type_names(&result, arguments[cursor].span())?;
+            declared_result = Some(result);
+            cursor += 1;
         }
-        let Some(result) = result else {
+
+        if arguments.len().saturating_sub(cursor) != 1 {
             return Err(diag(
                 DiagnosticCode::InvalidType,
-                "typed infer requires (returns TYPE)",
+                "infer requires exactly one complete Yao body after optional captures/returns declarations; use seq for multiple steps",
                 span,
             ));
+        }
+        let body_source = &arguments[cursor];
+
+        // Crossing from Runtime-owned control to a model-owned Evaluation is
+        // an explicit closure boundary.  The BODY receives only bindings named
+        // by `(captures ...)`; it never inherits the complete parent scope.
+        let mut body_scope = Scope::empty();
+        for name in &captures {
+            let ty = outer_scope
+                .bindings
+                .get(name)
+                .expect("capture existence checked above")
+                .clone();
+            body_scope.bindings.insert(name.clone(), ty);
+        }
+        let body = self.analyze_expr(body_source, &mut body_scope, depth + 1)?;
+        let result = if let Some(declared) = declared_result {
+            if !body.ty.is_assignable_to(&declared) && !matches!(declared, Type::Program { .. }) {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    format!(
+                        "infer BODY type {:?} is not assignable to declared result {:?}",
+                        body.ty, declared
+                    ),
+                    body.span,
+                ));
+            }
+            declared
+        } else {
+            body.ty.clone()
         };
-        self.validate_type_names(&result, span)?;
-        let named = self.analyze_named_arguments(&data, scope, depth + 1)?;
-        require_pure_all(
-            named.iter().flat_map(|argument| argument.values.iter()),
-            "infer arguments",
-        )?;
-        let mut effects = union_effects(named.iter().flat_map(|argument| argument.values.iter()));
+        let mut effects = body.effects.clone();
         if !root_model_owned {
             effects.insert(Effect::Infer);
         }
-        if let Some(tool_names) = &tools {
-            for tool in tool_names {
-                effects.insert(Effect::Tool(tool.clone()));
-            }
-        }
+        let source = format!(
+            "(infer {})",
+            arguments
+                .iter()
+                .map(canonical_source)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         Ok(hir(
-            HirKind::Infer {
-                arguments: named,
-                tools,
+            HirKind::InferBody {
+                body: Box::new(body),
+                captures,
                 result: result.clone(),
+                source,
             },
             result,
             effects,
@@ -2769,10 +2811,6 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn parse_infer_result(&self, expression: &Expr) -> Result<Type, Diagnostic> {
-        self.parse_type(expression)
-    }
-
     fn parse_effects(&self, expressions: &[Expr]) -> Result<EffectSet, Diagnostic> {
         let mut effects = EffectSet::default();
         for expression in expressions {
@@ -3256,6 +3294,166 @@ mod tests {
     }
 
     #[test]
+    fn eval_and_infer_share_one_complete_typed_body() {
+        let body = "(seq (bind total (add 20 22)) (if (gt total 40) (mul total 2) 0))";
+        let runtime = analyze(
+            &format!("(eval {body})"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        let model = analyze(
+            &format!("(infer {body})"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(runtime.owner, EvaluationOwner::Runtime);
+        assert_eq!(model.owner, EvaluationOwner::Model);
+        assert_eq!(runtime.output, Type::Int);
+        assert_eq!(model.output, runtime.output);
+        assert_eq!(model.effects, runtime.effects);
+        let HirKind::InferBody {
+            body: model_body,
+            source,
+            ..
+        } = &model.body.kind
+        else {
+            panic!("model-owned root did not preserve its complete Yao body")
+        };
+        assert_eq!(model_body.ty, runtime.body.ty);
+        assert_eq!(source, &format!("(infer {body})"));
+
+        let nested = analyze(
+            &format!("(eval (infer {body}))"),
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(nested.output, Type::Int);
+        assert_eq!(nested.effects, EffectSet::new([Effect::Infer]));
+    }
+
+    #[test]
+    fn model_owned_body_preserves_declared_tool_program_structure() {
+        let source = r#"(infer
+            (requires (tools read))
+            (seq
+              (bind listing (call read (path "README.md")))
+              listing))"#;
+        let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
+        assert_eq!(program.output, Type::Json);
+        assert_eq!(
+            program.effects,
+            EffectSet::new([Effect::Tool("read".into())])
+        );
+        let HirKind::InferBody { source, .. } = &program.body.kind else {
+            panic!("expected a complete model-owned body")
+        };
+        assert!(source.starts_with("(infer (requires (tools read))"));
+        assert!(source.contains("(bind listing (call read (path \"README.md\")))"));
+        assert!(source.ends_with("listing))"));
+    }
+
+    #[test]
+    fn model_owned_root_preserves_named_type_declarations_in_provider_source() {
+        let source = r#"(infer
+            (types (record Answer (value Int)))
+            (record Answer (value 42)))"#;
+        let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
+        let HirKind::InferBody {
+            source: provider_source,
+            ..
+        } = &program.body.kind
+        else {
+            panic!("expected complete model-owned BODY")
+        };
+        assert_eq!(
+            provider_source,
+            &canonical_source(&parse_one(source, ParseLimits::default()).unwrap())
+        );
+        assert!(provider_source.contains("(types (record Answer (value Int)))"));
+    }
+
+    #[test]
+    fn nested_model_body_captures_only_explicit_parent_bindings() {
+        let source =
+            "(eval (seq (bind base 40) (bind hidden 99) (infer (captures base) (add base 2))))";
+        let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
+        assert_eq!(program.output, Type::Int);
+        assert_eq!(program.effects, EffectSet::new([Effect::Infer]));
+
+        let error = analyze(
+            "(eval (seq (bind base 40) (infer (add base 2))))",
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::UnknownName);
+        assert!(error.message.contains("base"));
+
+        let error = analyze(
+            "(eval (seq (bind base 40) (infer (captures missing) (add base 2))))",
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::UnknownName);
+        assert!(error.message.contains("capture 'missing'"));
+
+        let error = analyze(
+            "(eval (infer runtime.context))",
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::UnknownName);
+        assert!(error.message.contains("runtime"));
+
+        let explicit_runtime = analyze(
+            "(eval (infer (captures runtime) runtime.context))",
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(explicit_runtime.output, Type::Ref("Context".into()));
+    }
+
+    #[test]
+    fn complete_model_body_may_declare_a_program_value_result_contract() {
+        let source = r#"(eval
+            (infer
+              (returns (Program Int (effects)))
+              (seq
+                (bind candidate (add 20 22))
+                candidate)))"#;
+        let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();
+        assert_eq!(
+            program.output,
+            Type::Program {
+                output: Box::new(Type::Int),
+                effects: EffectSet::default(),
+            }
+        );
+        assert_eq!(program.effects, EffectSet::new([Effect::Infer]));
+        let HirKind::InferBody { body, result, .. } = &program.body.kind else {
+            panic!("expected full model-owned BODY")
+        };
+        assert_eq!(body.ty, Type::Int);
+        assert_eq!(result, &program.output);
+
+        let error = analyze(
+            r#"(eval (infer (returns String) (add 20 22)))"#,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::TypeMismatch);
+        assert!(error.message.contains("not assignable"));
+    }
+
+    #[test]
     fn bare_names_containing_exponent_letters_are_references_not_float_literals() {
         let program = analyze(
             &typed("(seq (bind e 2) (bind evidence (add e 1)) (mul evidence e))"),
@@ -3543,7 +3741,7 @@ mod tests {
     #[test]
     fn rejects_historical_lowercase_type_aliases() {
         for alias in ["text", "json"] {
-            let source = format!("(infer (requires (tools)) (task \"decide\") (returns {alias}))");
+            let source = format!("(infer (requires (tools)) (returns {alias}) \"decide\")");
             let error = analyze(&source, &profile(), AnalysisLimits::default()).unwrap_err();
             assert_eq!(error.code, DiagnosticCode::InvalidType);
             assert!(error.message.contains("unknown type"), "{error}");
@@ -3608,9 +3806,8 @@ mod tests {
             (seq
               (bind found
                 (infer
-                  (task "find evidence")
-                  (tools search)
-                  (returns Json)))
+                  (returns Json)
+                  (call search (query "find evidence"))))
               (call read (path "README.md"))
               (objective.report (objective runtime.objective))))
         "#;
@@ -3628,7 +3825,7 @@ mod tests {
         let source = r#"
           (eval
             (requires (tools read) (effects (tool read)))
-            (infer (task "judge") (returns String)))
+            (infer (returns String) "judge"))
         "#;
         let error = analyze(source, &profile(), AnalysisLimits::default()).unwrap_err();
         assert_eq!(error.code, DiagnosticCode::EffectEscape);
@@ -3668,8 +3865,8 @@ mod tests {
             (seq
               (bind plan
                 (infer
-                  (task "produce a program")
-                  (returns (Program Json (effects (tool read))))))
+                  (returns (Program Json (effects (tool read))))
+                  "produce a program"))
               (run plan)))
         "#;
         let program = analyze(source, &profile(), AnalysisLimits::default()).unwrap();

@@ -174,26 +174,30 @@ impl RuntimeInference for DirectInference {
         request: &JsonMap<String, JsonValue>,
         declared: Option<&[String]>,
     ) -> Result<String, DynError> {
-        let task = request
-            .get("task")
+        let program = request
+            .get("program")
             .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let mut evidence = JsonMap::new();
-        for (key, value) in request {
-            if key != "task" {
-                evidence.insert(key.clone(), value.clone());
-            }
-        }
+            .ok_or("canonical infer request is missing complete Yao program")?;
+        let captures = request
+            .get("captures")
+            .cloned()
+            .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
+        let definitions = request
+            .get("type_definitions")
+            .cloned()
+            .unwrap_or_else(|| JsonValue::Object(JsonMap::new()));
         let mut messages = vec![Message {
             role: "user".to_string(),
             content: format!(
-                "以下不是用户消息，而是你自己提交的程序求值到 (infer ...) 时停下来等待的判断。\
-                 需要更多证据时可以先调用工具；一旦直接给出正文而不调用任何工具，\
-                 那段正文就是这一步的值，会被绑定后交回程序继续求值，\
-                 因此不要把它写成对用户说的话。\n\
-                 (infer-request\n  (task {task:?})\n  (evidence {}))",
-                serde_json::to_string(&JsonValue::Object(evidence))
-                    .unwrap_or_else(|_| "{}".to_string())
+                "以下不是用户消息，而是你自己提交的 Yao 程序求值到 (infer ...) 时建立的正式模型求值。\
+                 请对完整 BODY 求值；需要证据时可以调用静态允许的工具。直接给出的最终正文\
+                 是该 infer 的候选值，会经过返回类型校验后交回父程序继续求值。\n\
+                 显式捕获的父程序绑定：{}\n\
+                 相关类型定义：{}\n\
+                 完整 Yao 程序：\n{}",
+                serde_json::to_string(&captures).unwrap_or_else(|_| "{}".to_string()),
+                serde_json::to_string(&definitions).unwrap_or_else(|_| "{}".to_string()),
+                program
             ),
             name: None,
             tool_call_id: None,

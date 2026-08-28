@@ -277,8 +277,11 @@ Harness 契约可以使用 SExpr 提供结构，同时在基础算子和领域�
 
     (bind plan
       (infer
-        (task "根据仓库证据制定修改方案")
-        (input repository)))
+        (captures repository)
+        (returns Json)
+        (dict
+          (goal "根据仓库证据制定修改方案")
+          (repository repository))))
 
     (call apply-plan
       (plan plan))

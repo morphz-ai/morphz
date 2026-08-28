@@ -2571,8 +2571,7 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
         InferResultKind::Yao {
             ty: crate::yao::Type::Json,
             ..
-        }
-        | InferResultKind::Json => raw,
+        } => raw,
         InferResultKind::Yao {
             ty: crate::yao::Type::Ref(_) | crate::yao::Type::Nil,
             ..
@@ -2582,7 +2581,6 @@ fn normalize_host_result(kind: InferResultKind, raw: JsonValue) -> Result<JsonVa
                 "Morphz Host operation cannot decode an authority projection as {ty:?}"
             ))
         }
-        InferResultKind::Text => raw,
     };
     decode_infer_result(kind, transport)
 }
@@ -2917,18 +2915,49 @@ fn infer_request_event(
     )?;
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
-        crate::sexpr_eval::InferResultKind::Text => String::new(),
-        crate::sexpr_eval::InferResultKind::Json => "This node declares returns=json. The final body must contain exactly one complete valid JSON value, without Markdown fences or additional explanation.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao {
             ty: crate::yao::Type::Program { .. },
             ..
-        } => "This node requires a Yao Program Value candidate. The final body must contain exactly one valid JSON object in the form {\"source\":\"(eval ...)\"}. The source must follow the single Yao Language Card in Context Encoding and must not contain (version ...). Do not use Markdown fences, explanations, or extra fields. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; direct source-string execution is forbidden.".to_string(),
+        } => "This node requires a Yao Program Value candidate. The final body must be exactly one raw Yao program with one explicit (eval ...) or (infer ...) root. Follow the single Yao Language Card in Context Encoding and do not include (version ...), JSON wrapping, Markdown fences, or explanatory text. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; returned source is never executed directly.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
             "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation."
         ),
     };
+    let program = request
+        .get("program")
+        .and_then(JsonValue::as_str)
+        .ok_or("infer effect is missing its complete Yao program")?;
+    let evaluation_text = {
+        let captures = request
+            .get("captures")
+            .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
+            .map(|value| {
+                format!(
+                    "\n\nThe Yao source explicitly authorizes these lexical captures for this ownership boundary. Treat them as immutable input bindings, and do not infer any unlisted parent state:\n{}",
+                    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+                )
+            })
+            .unwrap_or_default();
+        let type_definitions = request
+            .get("type_definitions")
+            .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
+            .map(|value| {
+                format!(
+                    "\n\nNamed types declared by the containing Yao source are provided below as schema metadata. They contain no parent binding values:\n{}",
+                    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "This is an internal model-owned Yao Evaluation, not a user message. Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. Return only the typed terminal value consumed by the parent Plan.{}{}{}\n\n{}",
+            result_instruction, captures, type_definitions, program
+        )
+    };
     let mut payload = serde_json::Map::from_iter([
-        ("agent_id".to_string(), JsonValue::String(plan.agent_id.clone())),
+        (
+            "agent_id".to_string(),
+            JsonValue::String(plan.agent_id.clone()),
+        ),
         (
             "context_id".to_string(),
             JsonValue::String(plan.context_id.clone()),
@@ -2937,10 +2966,7 @@ fn infer_request_event(
             "session_id".to_string(),
             JsonValue::String(plan.session_id.clone()),
         ),
-        (
-            "root_turn_id".to_string(),
-            JsonValue::String(root_turn_id),
-        ),
+        ("root_turn_id".to_string(), JsonValue::String(root_turn_id)),
         (
             "parent_activation_id".to_string(),
             JsonValue::String(plan.activation_id.clone()),
@@ -2953,10 +2979,7 @@ fn infer_request_event(
             "plan_execution_id".to_string(),
             JsonValue::String(plan.id.clone()),
         ),
-        (
-            "plan_effect_id".to_string(),
-            JsonValue::String(effect_id),
-        ),
+        ("plan_effect_id".to_string(), JsonValue::String(effect_id)),
         (
             "plan_effect_sequence".to_string(),
             JsonValue::from(*sequence),
@@ -2975,14 +2998,7 @@ fn infer_request_event(
             "result_kind".to_string(),
             JsonValue::String(result.as_str().to_string()),
         ),
-        (
-            "text".to_string(),
-            JsonValue::String(format!(
-                "This is an internal infer request from a Yao program executing in Runtime. Decide from the task and evidence in the request; tools declared by the request may gather additional evidence. Return only the result consumed by the parent Plan, and do not treat this as a user message.{}\n\n{}",
-                result_instruction,
-                serde_json::to_string(&JsonValue::Object(request.clone()))?
-            )),
-        ),
+        ("text".to_string(), JsonValue::String(evaluation_text)),
     ]);
     if let Some(principal_id) = &plan.initiating_principal_id {
         payload.insert(
@@ -4393,9 +4409,8 @@ mod tests {
                  (seq
                    (bind judgement
                      (infer
-                       (task "判断证据是否充分")
-                       (returns Json)
-                       (evidence "A")))
+                       (returns String)
+                       "判断证据是否充分：A"))
                    judgement))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
@@ -4529,10 +4544,7 @@ mod tests {
                     "disposition".to_string(),
                     serde_json::json!("complete_internal_evaluation"),
                 ),
-                (
-                    "text".to_string(),
-                    serde_json::json!(r#"{"sufficient":true,"next":"continue"}"#),
-                ),
+                ("text".to_string(), serde_json::json!("done")),
             ]),
         );
         let child_activation = match store
@@ -4660,14 +4672,73 @@ mod tests {
             .unwrap()
         {
             PlanDriveReceipt::Succeeded { plan, value } => {
-                assert_eq!(
-                    value,
-                    serde_json::json!({"sufficient": true, "next": "continue"})
-                );
+                assert_eq!(value, serde_json::json!("done"));
                 assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
             }
             other => panic!("expected completed infer plan, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn complete_infer_body_and_explicit_captures_survive_durable_reconstruction() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (types (record Answer (value Int)))
+                 (seq
+                   (bind base 40)
+                   (bind unrelated "must-not-cross")
+                   (infer
+                     (captures base)
+                     (record Answer (value (add base 2))))))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store;
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let (waiting, request_event) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "complete-body-worker",
+                "complete-body-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForEvaluation {
+                plan,
+                request_event,
+                ..
+            } => (plan, request_event),
+            other => panic!("expected complete BODY Evaluation suspension, got {other:?}"),
+        };
+
+        let text = request_event.payload["text"].as_str().unwrap();
+        assert!(text.contains("Evaluate the complete Yao program"));
+        assert!(text.contains("(infer (captures base) (record Answer (value (add base 2))))"));
+        assert!(text.contains(r#"{"base":40}"#));
+        assert!(!text.contains("must-not-cross"));
+        assert!(text.contains("Named types declared by the containing Yao source"));
+        assert!(text.contains("Answer"));
+
+        let reconstructed = pending_infer_request_event(&waiting).unwrap();
+        assert_eq!(reconstructed.id, request_event.id);
+        assert_eq!(reconstructed.payload, request_event.payload);
     }
 
     #[tokio::test]
@@ -4687,8 +4758,8 @@ mod tests {
                  (seq
                    (bind decision
                      (infer
-                       (task "返回后续 read 的结构化决策")
-                       (returns ReadDecision)))
+                       (returns ReadDecision)
+                       (record ReadDecision (path "README.md"))))
                    (call read (path decision.path))))"#,
             &registry,
             &AllowList::new(["read"]),
@@ -5236,8 +5307,10 @@ mod tests {
                  (seq
                    (bind generated
                      (infer
-                       (task "produce a pure integer program")
-                       (returns (Program Int (effects)))))
+                       (returns (Program Int (effects)))
+                       (seq
+                         (bind target (add 20 22))
+                         target)))
                    (run generated)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
@@ -5261,7 +5334,7 @@ mod tests {
         let admitted = admit_program_value_candidate(
             &output,
             &effects,
-            serde_json::json!({"source": r#"(eval (add 20 22))"#}),
+            "(eval (add 20 22))",
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "durable-parent".into(),
@@ -5303,10 +5376,17 @@ mod tests {
         let request_event = infer_request_event(&parent, &infer).unwrap();
         assert_eq!(request_event.payload["tools"], serde_json::json!([]));
         let instruction = request_event.payload["text"].as_str().unwrap();
-        assert!(instruction.contains("{\"source\":\"(eval ...)\"}"));
+        assert!(instruction.contains("exactly one raw Yao program"));
+        assert!(instruction.contains("(eval ...) or (infer ...)"));
         assert!(instruction.contains("single Yao Language Card"));
-        assert!(instruction.contains("must not contain (version ...)"));
-        assert!(instruction.contains("direct source-string execution is forbidden"));
+        assert!(instruction.contains("do not include (version ...)"));
+        assert!(instruction.contains("JSON wrapping"));
+        assert!(instruction.contains("returned source is never executed directly"));
+        assert!(instruction.contains("Evaluate the complete Yao program"));
+        assert!(instruction.contains(
+            "(infer (returns (Program Int (effects))) (seq (bind target (add 20 22)) target))"
+        ));
+        assert!(!instruction.contains("infer-request"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
         let (waiting_parent, child) = match coordinator
@@ -5391,6 +5471,148 @@ mod tests {
                 assert_eq!(value, serde_json::json!(42));
             }
             other => panic!("expected Program parent completion, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn infer_root_program_value_recovers_then_dispatches_a_formal_child_evaluation() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let parent_program = validate(
+            r#"(eval
+                 (seq
+                   (bind generated
+                     (infer
+                       (returns (Program String (effects infer)))
+                       (seq
+                         (bind desired "continue as a formal child evaluation")
+                         desired)))
+                   (run generated)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut parent_machine = PlanMachine::new(&parent_program).unwrap();
+        let producer = match parent_machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing infer, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = producer.clone() else {
+            unreachable!()
+        };
+        let crate::sexpr_eval::InferResultKind::Yao {
+            ty: crate::yao::Type::Program { output, effects },
+            ..
+        } = result
+        else {
+            panic!("producer did not retain its Program contract")
+        };
+        let admitted = admit_program_value_candidate(
+            &output,
+            &effects,
+            r#"(infer "continue as a formal child evaluation")"#,
+            &registry,
+            ProgramValueProvenance {
+                parent_plan_execution_id: "durable-parent".into(),
+                producer_evaluation_id: "producer-evaluation".into(),
+                terminal_event_id: Some("producer-terminal".into()),
+                validation_version: "yao-0.1".into(),
+            },
+        )
+        .unwrap();
+        parent_machine
+            .resume_effect(producer.sequence(), Ok(admitted))
+            .unwrap();
+
+        let route = seed_route(&store).await;
+        let parent_id =
+            deterministic_plan_execution_id(&route.activation_id, &route.tool_call_id).unwrap();
+        let parent = store
+            .create_plan_execution(NewPlanExecution {
+                id: parent_id,
+                activation_id: route.activation_id,
+                thread_id: route.thread_id,
+                agent_id: route.agent_id,
+                context_id: route.context_id,
+                session_id: route.session_id,
+                initiating_principal_id: route.initiating_principal_id,
+                tool_call_id: route.tool_call_id,
+                objective_id: route.objective_id,
+                objective_evaluation_id: route.objective_evaluation_id,
+                harness_id: None,
+                harness_version: None,
+                source_artifact_hash: "sha256:parent-infer-program".into(),
+                ir_schema_version: 1,
+                program_json: serde_json::to_value(&parent_program).unwrap(),
+                state_json: serde_json::to_value(&parent_machine).unwrap(),
+                budget_json: parent_machine.budget_json().unwrap(),
+            })
+            .await
+            .unwrap();
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
+        let (waiting_parent, child) = match coordinator
+            .drive_once(
+                &parent.id,
+                parent.revision,
+                "infer-program-parent-worker",
+                "infer-program-parent-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForPlanExecution { plan, child, .. } => (plan, *child),
+            other => panic!("expected durable Program child, got {other:?}"),
+        };
+        assert_eq!(
+            waiting_parent.pending_kind,
+            Some(PlanExecutionWaitKind::PlanExecution)
+        );
+        let child_program: crate::sexpr_eval::Program =
+            serde_json::from_value(child.program_json.clone()).unwrap();
+        assert_eq!(
+            child_program.owner(),
+            crate::sexpr_eval::EvaluationOwner::Model
+        );
+
+        // Recreate the coordinator before the child takes its first step: the
+        // owner dispatch must be derived entirely from durable Program and
+        // machine state rather than an in-process shortcut.
+        drop(coordinator);
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let restarted = PlanExecutionCoordinator::new(runtime_store, registry);
+        match restarted
+            .drive_once(
+                &child.id,
+                child.revision,
+                "infer-program-child-worker",
+                "infer-program-child-claim",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForEvaluation {
+                plan,
+                request_event,
+                activation_id,
+                existing,
+            } => {
+                assert!(!existing);
+                assert_eq!(plan.pending_kind, Some(PlanExecutionWaitKind::Evaluation));
+                assert_eq!(plan.pending_id.as_deref(), Some(activation_id.as_str()));
+                assert_eq!(request_event.payload["result_kind"], "yao");
+                assert_eq!(request_event.payload["plan_execution_id"], child.id);
+            }
+            other => panic!("infer-root Program did not dispatch a child Evaluation: {other:?}"),
         }
     }
 }

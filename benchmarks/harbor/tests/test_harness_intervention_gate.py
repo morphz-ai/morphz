@@ -103,7 +103,7 @@ class HarnessInterventionGateTest(unittest.TestCase):
 
 (infer
   (returns String)
-  (task \"Use the current user request as the task.\"))
+  \"Use the current user request as the task.\")
 """
         review = _review_for(
             source,
@@ -135,7 +135,7 @@ class HarnessInterventionGateTest(unittest.TestCase):
 
 (infer
   (returns String)
-  (task \"Use the current user request as the task.\"))
+  \"Use the current user request as the task.\")
 """
         review = _review_for(
             source,
@@ -156,7 +156,7 @@ class HarnessInterventionGateTest(unittest.TestCase):
 (contract (version \"candidate\")
   (scope \"Optional working state for the current task.\"))
 (mind (frame (id x/state) (body \"Optional state.\")))
-(infer (returns String) (task \"Use the current user request as the task.\"))
+(infer (returns String) \"Use the current user request as the task.\")
 """
         review = _review_for(
             source,

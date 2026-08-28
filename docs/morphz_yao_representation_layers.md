@@ -127,8 +127,11 @@ Harness Manifest 声明包级最大能力；每个程序在显式根内部进一
         (query "铜印")))
 
     (infer
-      (task "根据证据判断铜印当前形态")
-      (input hits))))
+      (captures hits)
+      (returns Json)
+      (dict
+        (goal "根据证据判断铜印当前形态")
+        (evidence hits)))))
 ```
 
 Program 声明属于 Yao 语义源层，因为它影响程序允许产生哪些效应，也使独立 artifact 可审计。真正的授权和强制属于 Runtime 机制层。

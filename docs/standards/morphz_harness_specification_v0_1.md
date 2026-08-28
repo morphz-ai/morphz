@@ -264,14 +264,19 @@ A model-owned Entry Program MUST explicitly declare `(requires (tools ...))`. Th
 the complete model-visible Tool upper bound for that Evaluation after intersection with Package,
 Principal, deployment, and Runtime policy. `(requires (tools))` declares pure inference with no
 model-callable evidence Tool. Omission MUST be rejected rather than interpreted as inheritance or
-unrestricted access.
+unrestricted access. Within that upper bound, the actual Tool set offered for one complete Yao body
+is derived from the statically named `(call TOOL ...)` expressions in that body. An unused declared
+Tool MUST NOT become visible merely because it appears in `requires`.
 
 ### 6.4 Nested inference
 
 A Runtime-owned program MAY create a bounded child inference. The child MUST have explicit causal
 identity and an effective capability scope no wider than its parent. Only its declared terminal
 result or classified failure may satisfy the parent wait; intermediate reasoning MUST NOT be
-misrepresented as the terminal result.
+misrepresented as the terminal result. Only parent lexical bindings explicitly named by
+`(captures NAME...)` in Yao source may be serialized into that child request and sent to the
+currently configured model provider. Unlisted bindings and the whole Runtime environment MUST NOT
+cross implicitly. A capture authorizes disclosure of a value, not any additional capability.
 
 ### 6.5 Open-ended work
 

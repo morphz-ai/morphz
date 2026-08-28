@@ -222,12 +222,9 @@ pub struct PlanArgument {
 /// answer crosses back into deterministic data flow.  Keeping the contract in
 /// Typed Plan IR makes restart recovery apply the same decoding rule as the
 /// initial in-process execution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferResultKind {
-    #[default]
-    Text,
-    Json,
     /// A typed Yao value. The definitions travel with the durable effect so a
     /// different worker applies exactly the admission-time decoder on resume.
     Yao {
@@ -240,8 +237,6 @@ pub enum InferResultKind {
 impl InferResultKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Text => "text",
-            Self::Json => "json",
             Self::Yao { .. } => "yao",
         }
     }
@@ -255,8 +250,7 @@ impl InferResultKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum PlanNode {
-    /// Fully typed Yao program. Persisted legacy Plan IR remains readable as a
-    /// storage migration concern; no legacy source is admitted.
+    /// Fully typed Yao program.
     Typed {
         program: Box<crate::yao::Program>,
     },
@@ -284,16 +278,6 @@ pub enum PlanNode {
         element: String,
         body: Box<PlanNode>,
     },
-    Infer {
-        arguments: Vec<PlanArgument>,
-        /// Optional per-node evidence tool scope. `None` inherits the outer
-        /// `(requires (tools ...))` declaration; `Some([])` explicitly makes
-        /// this infer node pure model computation over its supplied data.
-        #[serde(default)]
-        tools: Option<Vec<String>>,
-        #[serde(default)]
-        result: InferResultKind,
-    },
     Call {
         tool: String,
         arguments: Vec<PlanArgument>,
@@ -310,20 +294,18 @@ pub struct Program {
     ///
     /// Callers settle capability and approval from this before the Job starts,
     /// and derive retry safety by taking the strictest `retry_safety` among
-    /// them. A pure `infer` contributes nothing; an `infer` with an explicit
-    /// `(tools ...)` scope contributes exactly those evidence tools. The model
-    /// computation itself has no physical effect, while any evidence gathering
-    /// still crosses the ordinary Scheduler/permission boundary.
+    /// them. Canonical model-owned BODYs contribute their statically named
+    /// `call` effects. The model computation itself has no physical effect,
+    /// while any evidence gathering still crosses the ordinary permission
+    /// boundary.
     tools: Vec<String>,
     /// Tools declared by `(requires (tools NAME...))` inside the explicit
     /// `eval`/`infer` root.
     ///
-    /// Declaration exists for the part static analysis cannot see: which
-    /// tools an `infer` may gather evidence with is decided at run time. An
-    /// infer node must declare its own `(tools ...)` scope; omission or
-    /// `(tools)` makes that node pure. The root declaration is only the
-    /// admissible upper bound for those node-local scopes. It is never an
-    /// implicit grant. The declaration lives in the program text —
+    /// For canonical complete-BODY inference, this declaration is the
+    /// admissible upper bound and statically named `call` effects narrow it
+    /// further. The declaration is never an implicit grant. It lives in the
+    /// program text —
     /// not in a side channel — because a `.yao` file loaded by the Runtime
     /// has no other way to state its needs; the model's `program` argument
     /// and a `.yao` file are the same artifact. `None` means no declaration
@@ -367,8 +349,9 @@ pub struct ProgramValueProvenance {
 }
 
 /// Runtime-admitted immutable Program Value. Source alone is never this type:
-/// the validated Program, typed contracts, hash, and producer provenance must
-/// travel together across persistence and restart.
+/// the validated Program (whether Runtime-owned `eval` or model-owned
+/// `infer`), typed contracts, hash, and producer provenance must travel
+/// together across persistence and restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanProgramValue {
     pub hash: String,
@@ -414,17 +397,33 @@ fn decode_program_value(value: &JsonValue) -> Result<PlanProgramValue, String> {
         .program
         .typed_program()
         .ok_or("Program Value does not carry a typed Yao Program")?;
+    let effective_effects = program_value_effects(&admitted.program, typed);
     let computed_hash = crate::yao::program_hash(typed);
     if declared_hash != admitted.hash
         || admitted.hash != typed.source_hash
         || admitted.hash != computed_hash
         || admitted.source != typed.canonical_source
         || admitted.output != typed.output
-        || admitted.effects != typed.effects
+        || admitted.effects != effective_effects
     {
         return Err("Program Value content hash or typed contract validation failed".to_string());
     }
     Ok(admitted)
+}
+
+/// Effects observed by a caller that executes a first-class Program Value.
+///
+/// A standalone model-owned root is already *inside* an Evaluation, so Yao's
+/// ordinary program analysis does not count that ownership as a nested
+/// `infer` effect.  Once the same artifact is returned as `Program<T,E>` and
+/// later passed to `run`, crossing from the parent Plan into a new formal
+/// Evaluation is observable work and must be covered by `E`.
+fn program_value_effects(program: &Program, typed: &crate::yao::Program) -> crate::yao::EffectSet {
+    let mut effects = typed.effects.clone();
+    if program.owner() == EvaluationOwner::Model {
+        effects.insert(crate::yao::Effect::Infer);
+    }
+    effects
 }
 
 /// Converts quarantined model output into a non-forgeable Program Value.
@@ -433,49 +432,42 @@ fn decode_program_value(value: &JsonValue) -> Result<PlanProgramValue, String> {
 pub fn admit_program_value_candidate(
     expected_output: &crate::yao::Type,
     expected_effects: &crate::yao::EffectSet,
-    value: JsonValue,
+    source: &str,
     registry: &Registry,
     provenance: ProgramValueProvenance,
 ) -> Result<JsonValue, String> {
-    let JsonValue::Object(object) = value else {
-        return Err("Program Value transport must be exactly {\"source\": \"(eval ...)\"}".into());
-    };
-    if object.len() != 1 {
-        return Err("Program Value transport must be exactly {\"source\": \"(eval ...)\"}".into());
+    let source = source.trim();
+    if source.is_empty() {
+        return Err(
+            "Program Value result must be one raw Yao (eval ...) or (infer ...) source".into(),
+        );
     }
-    let source = object
-        .get("source")
-        .and_then(JsonValue::as_str)
-        .map(str::to_string)
-        .ok_or("Program Value transport must be exactly {\"source\": \"(eval ...)\"}")?;
     let allowed_tools = expected_effects.iter().filter_map(|effect| match effect {
         crate::yao::Effect::Tool(name) => Some(name.clone()),
         _ => None,
     });
     let gate = AllowList::new(allowed_tools);
-    let program = validate_typed(&source, registry, &gate).map_err(|error| error.message)?;
-    if program.owner() != EvaluationOwner::Runtime {
-        return Err("Program Value candidate must have an (eval ...) root".to_string());
-    }
+    let program = validate_typed(source, registry, &gate).map_err(|error| error.message)?;
     let typed = program
         .typed_program()
         .ok_or("Program Value candidate did not produce a typed Yao Program")?;
+    let effective_effects = program_value_effects(&program, typed);
     if !typed.output.is_assignable_to(expected_output) {
         return Err(format!(
             "Program Value output {:?} is not assignable to declared type {:?}",
             typed.output, expected_output
         ));
     }
-    if !typed.effects.is_subset(expected_effects) {
+    if !effective_effects.is_subset(expected_effects) {
         return Err(format!(
             "Program Value effects {:?} exceed declared upper bound {:?}",
-            typed.effects, expected_effects
+            effective_effects, expected_effects
         ));
     }
     let hash = typed.source_hash.clone();
     let source = typed.canonical_source.clone();
     let output = typed.output.clone();
-    let effects = typed.effects.clone();
+    let effects = effective_effects;
     let admitted = PlanProgramValue {
         hash,
         source,
@@ -922,7 +914,7 @@ fn split_program(
         }
         EvaluationOwner::Model => {
             if body.is_empty() {
-                return err("(infer ...) requires at least one (task ...) argument".to_string());
+                return err("(infer ...) requires exactly one Yao BODY".to_string());
             }
             let mut infer = Vec::with_capacity(body.len() + 1);
             infer.push(SExpr::Atom("infer".to_string()));
@@ -1107,49 +1099,6 @@ fn check(
             check(body, depth + 1, &mut body_scope, registry, gate, facts)?;
             Ok(())
         }
-        "infer" => {
-            // `infer` returns data, never a program. Letting it return
-            // something evaluable would close the loop
-            // `infer -> eval -> infer` and make the language Turing complete,
-            // at which point `validate` can no longer bound a program before
-            // running it. That is the property this evaluator is built on.
-            if args.is_empty() {
-                return err(
-                    "(infer (task \"...\") ...) requires at least one (task ...) argument"
-                        .to_string(),
-                );
-            }
-            let data_arguments = args
-                .iter()
-                .filter(|argument| argument_name(argument) != Some("tools"))
-                .cloned()
-                .collect::<Vec<_>>();
-            check_pair_arguments("infer", &data_arguments, scope)?;
-            let has_task = args.iter().any(|argument| {
-                matches!(argument, SExpr::List(items)
-                    if items.first() == Some(&SExpr::Atom("task".to_string())))
-            });
-            if !has_task {
-                return err(
-                    "(infer ...) must provide (task ...) describing what to decide".to_string(),
-                );
-            }
-            if let Some(tools) = infer_tool_names(args)? {
-                for tool in tools {
-                    if !gate.is_callable(&tool) {
-                        return err(gate.describe_refusal(&tool));
-                    }
-                    if registry.get(&tool).is_none() {
-                        return err(format!("tool '{tool}' declared by infer does not exist"));
-                    }
-                    if !facts.tools.iter().any(|seen| seen == &tool) {
-                        facts.tools.push(tool);
-                    }
-                }
-            }
-            infer_result_kind(args)?;
-            Ok(())
-        }
         "call" => {
             let Some(SExpr::Atom(tool)) = args.first() else {
                 return err("(call tool argument...) is missing the tool name".to_string());
@@ -1274,85 +1223,6 @@ fn lower_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
 }
 
 #[cfg(test)]
-fn argument_name(expr: &SExpr) -> Option<&str> {
-    let SExpr::List(items) = expr else {
-        return None;
-    };
-    let Some(SExpr::Atom(name)) = items.first() else {
-        return None;
-    };
-    Some(name)
-}
-
-#[cfg(test)]
-fn infer_result_kind(args: &[SExpr]) -> Result<InferResultKind, EvalError> {
-    let declarations = args
-        .iter()
-        .filter(|argument| argument_name(argument) == Some("returns"))
-        .collect::<Vec<_>>();
-    if declarations.len() > 1 {
-        return err("(infer ...) specifies '(returns ...)' more than once".to_string());
-    }
-    let Some(returns) = declarations.first().copied() else {
-        return Ok(InferResultKind::Text);
-    };
-    let SExpr::List(items) = returns else {
-        unreachable!("argument_name accepted only a list")
-    };
-    let [SExpr::Atom(_), SExpr::Atom(kind)] = items.as_slice() else {
-        return err("(returns text|json) must specify exactly one static result type".to_string());
-    };
-    match kind.as_str() {
-        "text" => Ok(InferResultKind::Text),
-        "json" => Ok(InferResultKind::Json),
-        other => err(format!(
-            "unknown infer result type '{other}'; supported legacy types are text and json"
-        )),
-    }
-}
-
-#[cfg(test)]
-fn infer_tool_names(args: &[SExpr]) -> Result<Option<Vec<String>>, EvalError> {
-    let declarations = args
-        .iter()
-        .filter(|argument| argument_name(argument) == Some("tools"))
-        .collect::<Vec<_>>();
-    if declarations.len() > 1 {
-        return err("(infer ...) specifies '(tools ...)' more than once".to_string());
-    }
-    let Some(tools) = declarations.first().copied() else {
-        return Ok(None);
-    };
-    let SExpr::List(items) = tools else {
-        unreachable!("argument_name accepted only a list")
-    };
-    let mut names = Vec::new();
-    for item in &items[1..] {
-        let SExpr::Atom(name) = item else {
-            return err("(tools ...) accepts only static atomic tool names".to_string());
-        };
-        if name.starts_with('$') {
-            return err("(tools ...) does not accept dynamic binding references".to_string());
-        }
-        if names.iter().any(|seen| seen == name) {
-            return err(format!("(tools ...) declares tool '{name}' more than once"));
-        }
-        names.push(name.clone());
-    }
-    Ok(Some(names))
-}
-
-#[cfg(test)]
-fn lower_infer_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
-    let data_arguments = args
-        .iter()
-        .filter(|argument| !matches!(argument_name(argument), Some("returns") | Some("tools")))
-        .cloned()
-        .collect::<Vec<_>>();
-    lower_arguments(&data_arguments)
-}
-
-#[cfg(test)]
 fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
     if matches!(expr, SExpr::Atom(_)) {
         return Ok(PlanNode::Value {
@@ -1402,11 +1272,10 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
                 body: Box::new(lower_expr(body)?),
             })
         }
-        "infer" => Ok(PlanNode::Infer {
-            arguments: lower_infer_arguments(args)?,
-            tools: infer_tool_names(args)?,
-            result: infer_result_kind(args)?,
-        }),
+        "infer" => err(
+            "fixed infer requests are not part of Yao; use typed (infer [(captures NAME...)] [(returns TYPE)] BODY) source"
+                .to_string(),
+        ),
         "call" => {
             let Some(SExpr::Atom(tool)) = args.first() else {
                 return err("malformed (call TOOL ...)".to_string());
@@ -1428,14 +1297,15 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
 /// than quietly acquiring its own. The trait exists only because this module
 /// cannot depend on the Orchestrator that depends on it.
 ///
-/// The arguments an `infer` node declares are its whole input. What they become
-/// in a request is the Orchestrator's business; the evaluator does not assemble
-/// prompts.
+/// A canonical request carries the complete Yao BODY plus only the lexical
+/// values explicitly authorized by `(captures ...)`. What these typed values
+/// become in a provider request is the Orchestrator's business; the evaluator
+/// does not assemble prompts.
 #[async_trait::async_trait]
 pub trait RuntimeInference: Send + Sync {
-    /// `tools` is the program's declaration, when it made one: the host must
-    /// offer no more than this while the model gathers evidence. `None` means
-    /// the deployment default applies.
+    /// `tools` is the already narrowed set for this Evaluation. Canonical
+    /// complete-BODY requests derive it from statically named `call` effects.
+    /// The host must offer no more than this set.
     async fn infer(
         &self,
         request: &JsonMap<String, JsonValue>,
@@ -1462,7 +1332,6 @@ pub enum PlanEffect {
         sequence: u64,
         request: JsonMap<String, JsonValue>,
         tools: Option<Vec<String>>,
-        #[serde(default)]
         result: InferResultKind,
     },
     Parallel {
@@ -1582,6 +1451,13 @@ enum MachineFrame {
     TypedEval {
         expression: crate::yao::HirExpr,
     },
+    /// Entry frame for a model-owned Program Value.  A standalone top-level
+    /// `infer` is already inside an Evaluation and therefore carries no
+    /// nested-infer Effect in Yao HIR.  `run` changes that perspective: this
+    /// frame turns the ownership boundary into one formal child Evaluation.
+    TypedModelRoot {
+        expression: crate::yao::HirExpr,
+    },
     TypedSeq {
         steps: Vec<crate::yao::HirExpr>,
         next: usize,
@@ -1603,13 +1479,16 @@ enum MachineFrame {
     },
 }
 
-/// Durable deterministic state of one Runtime-owned Yao program.
+/// Durable deterministic control state of one admitted Yao program.
 ///
 /// `PlanMachine` is the `state_json` stored by `PlanExecution`.  Calling
 /// [`PlanMachine::advance`] is pure control work until it returns
 /// [`PlanAdvance::Suspended`].  The pending effect remains embedded in the
 /// state until a causally matching result is supplied, which is what makes
-/// process restart and lease takeover safe.
+/// process restart and lease takeover safe.  An `eval` root advances through
+/// Runtime-owned control.  An `infer` root immediately suspends at a formal
+/// child Evaluation, so the machine persists and joins model-owned work
+/// without pretending to evaluate it deterministically.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanMachine {
     frames: Vec<MachineFrame>,
@@ -1628,20 +1507,28 @@ pub struct PlanMachine {
 
 impl PlanMachine {
     pub fn new(program: &Program) -> Result<Self, EvalError> {
-        if program.owner != EvaluationOwner::Runtime {
-            return err(
-                "(infer ...) is model-owned and must create a formal Evaluation; it cannot be submitted to the Runtime Plan Executor"
-                    .to_string(),
-            );
-        }
         let typed_definitions = match &program.root {
             PlanNode::Typed { program } => program.types.clone(),
             _ => BTreeMap::new(),
         };
-        Ok(Self {
-            frames: vec![MachineFrame::Eval {
+        let frames = match (&program.owner, &program.root) {
+            (EvaluationOwner::Model, PlanNode::Typed { program }) => {
+                if !matches!(&program.body.kind, crate::yao::HirKind::InferBody { .. }) {
+                    return err(
+                        "model-owned Yao Program does not contain an infer root after validation"
+                            .to_string(),
+                    );
+                }
+                vec![MachineFrame::TypedModelRoot {
+                    expression: program.body.clone(),
+                }]
+            }
+            _ => vec![MachineFrame::Eval {
                 node: program.root.clone(),
             }],
+        };
+        Ok(Self {
+            frames,
             env: HashMap::new(),
             signal: None,
             pending: None,
@@ -1893,32 +1780,6 @@ impl PlanMachine {
                             ))),
                             Err(error) => self.raise(error),
                         },
-                        PlanNode::Infer {
-                            arguments,
-                            tools,
-                            result,
-                        } => {
-                            if self.budget.infers_left == 0 {
-                                self.raise(EvalError::from(format!(
-                                    "program exceeds the infer limit of {MAX_PROGRAM_INFERS}"
-                                )));
-                                continue;
-                            }
-                            match build_arguments(&arguments, &self.env, None) {
-                                Ok(request) => {
-                                    self.budget.infers_left -= 1;
-                                    let effect = PlanEffect::Infer {
-                                        sequence: self.take_effect_sequence(),
-                                        request,
-                                        tools: tools.or_else(|| self.declared_tools.clone()),
-                                        result,
-                                    };
-                                    self.pending = Some(effect.clone());
-                                    return PlanAdvance::Suspended(effect);
-                                }
-                                Err(error) => self.raise(error),
-                            }
-                        }
                         PlanNode::Call { tool, arguments } => {
                             if self.budget.calls_left == 0 {
                                 self.raise(EvalError::from(format!(
@@ -1953,6 +1814,20 @@ impl PlanMachine {
                             "Plan Machine attempted to evaluate typed HIR after producing a result",
                         );
                     }
+                    if let Some(advance) = self.advance_typed(expression, registry) {
+                        return advance;
+                    }
+                }
+                MachineFrame::TypedModelRoot { mut expression } => {
+                    if self.signal.is_some() {
+                        return self.fail_internal(
+                            "Plan Machine attempted to enter a model-owned root after producing a result",
+                        );
+                    }
+                    // Program Value execution crosses into a new formal
+                    // Evaluation even though standalone model-owned HIR does
+                    // not count its own root as a nested infer Effect.
+                    expression.effects.insert(crate::yao::Effect::Infer);
                     if let Some(advance) = self.advance_typed(expression, registry) {
                         return advance;
                     }
@@ -2316,10 +2191,11 @@ impl PlanMachine {
                     Err(error) => self.raise(error),
                 }
             }
-            crate::yao::HirKind::Infer {
-                arguments,
-                tools,
+            crate::yao::HirKind::InferBody {
+                body,
+                captures,
                 result,
+                source,
             } => {
                 if self.budget.infers_left == 0 {
                     self.raise(EvalError::from(format!(
@@ -2327,24 +2203,54 @@ impl PlanMachine {
                     )));
                     return None;
                 }
-                match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
-                    Ok(request) => {
-                        self.budget.infers_left -= 1;
-                        let effect = PlanEffect::Infer {
-                            sequence: self.take_effect_sequence(),
-                            request,
-                            tools: tools.or_else(|| self.declared_tools.clone()),
-                            result: InferResultKind::Yao {
-                                ty: result,
-                                definitions: self.typed_definitions.clone(),
-                                span,
-                            },
-                        };
-                        self.pending = Some(effect.clone());
-                        return Some(PlanAdvance::Suspended(effect));
-                    }
-                    Err(error) => self.raise(error),
+                let tools = body
+                    .effects
+                    .iter()
+                    .filter_map(|effect| match effect {
+                        crate::yao::Effect::Tool(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let mut captured_values = JsonMap::new();
+                for name in captures {
+                    let Some(value) = self.env.get(&name).cloned() else {
+                        self.raise(EvalError::from(format!(
+                            "infer capture '{name}' is unavailable at the ownership boundary"
+                        )));
+                        return None;
+                    };
+                    captured_values.insert(name, value);
                 }
+                let mut request =
+                    JsonMap::from_iter([("program".to_string(), JsonValue::String(source))]);
+                if !captured_values.is_empty() {
+                    request.insert("captures".to_string(), JsonValue::Object(captured_values));
+                }
+                if !self.typed_definitions.is_empty() {
+                    let definitions = match serde_json::to_value(&self.typed_definitions) {
+                        Ok(definitions) => definitions,
+                        Err(error) => {
+                            self.raise(EvalError::from(format!(
+                                "Yao type definitions cannot cross the infer boundary: {error}"
+                            )));
+                            return None;
+                        }
+                    };
+                    request.insert("type_definitions".to_string(), definitions);
+                }
+                self.budget.infers_left -= 1;
+                let effect = PlanEffect::Infer {
+                    sequence: self.take_effect_sequence(),
+                    request,
+                    tools: Some(tools),
+                    result: InferResultKind::Yao {
+                        ty: result,
+                        definitions: self.typed_definitions.clone(),
+                        span,
+                    },
+                };
+                self.pending = Some(effect.clone());
+                return Some(PlanAdvance::Suspended(effect));
             }
             crate::yao::HirKind::Par { branches } => {
                 let tool_branch_count = branches
@@ -2803,15 +2709,6 @@ fn as_json(output: String) -> JsonValue {
 /// wants a recovery path.
 pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<JsonValue, String> {
     match kind {
-        InferResultKind::Text => Ok(value),
-        InferResultKind::Json => match value {
-            JsonValue::String(text) => serde_json::from_str(text.trim()).map_err(|error| {
-                format!(
-                    "infer declared returns=json, but the final body is not valid JSON: {error}"
-                )
-            }),
-            structured => Ok(structured),
-        },
         InferResultKind::Yao {
             ty,
             definitions,
@@ -2851,14 +2748,13 @@ pub fn decode_infer_result_with_admission(
             ty: crate::yao::Type::Program { output, effects },
             ..
         } => {
-            let transport = match value {
-                JsonValue::String(text) => serde_json::from_str(text.trim()).map_err(|_| {
-                    "Program Value transport must be exactly {\"source\": \"(eval ...)\"}"
-                        .to_string()
-                })?,
-                structured => structured,
+            let JsonValue::String(source) = value else {
+                return Err(
+                    "Program Value result must be one raw Yao (eval ...) or (infer ...) source"
+                        .to_string(),
+                );
             };
-            admit_program_value_candidate(&output, &effects, transport, registry, provenance)
+            admit_program_value_candidate(&output, &effects, &source, registry, provenance)
         }
         other => decode_infer_result(other, value),
     }
@@ -2926,10 +2822,9 @@ tokio::task_local! {
 ///
 /// An operator may widen or narrow this deployment gate through configuration.
 /// `call` reads the gate directly. A nested `infer` receives only the tools in
-/// its own explicit `(tools ...)` clause, intersected with this gate; omission
-/// or `(tools)` means no tools. A model-owned top-level `(infer ...)` Harness
-/// likewise declares a narrowing of the ordinary Function Calling surface and
-/// never executes through `EvalTool`.
+/// its statically referenced `call` effects, intersected with this gate. A
+/// model-owned top-level `(infer ...)` Harness likewise narrows the ordinary
+/// Function Calling surface and never executes through `EvalTool`.
 pub const DEFAULT_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
 
 pub struct EvalTool {
@@ -3375,11 +3270,17 @@ mod tests {
             ("search", JsonValue::Null),
         ]);
         let (inference, requests) = host("两半");
-        let program = validate_legacy_source(
-            r#"(eval (seq
+        let program = validate(
+            r#"(eval
+                 (requires (tools read search))
+                 (seq
                  (bind body (call read (path "ch041.md")))
-                 (bind form (infer (task "铜印现在是什么形态") (evidence $body)))
-                 (call search (query $form))))"#,
+                 (bind form
+                   (infer
+                     (captures body)
+                     (returns String)
+                     "根据 body 判断铜印现在是什么形态"))
+                 (call search (query form))))"#,
             &registry,
             &gate(),
         )
@@ -3391,36 +3292,109 @@ mod tests {
 
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        // The declared arguments are the whole viewport: the tool result the
-        // program chose to pass, and nothing the Runtime added on its own.
+        // The source-authorized capture is the whole lexical viewport: the
+        // tool result the program chose to pass, and nothing Runtime added.
         assert_eq!(
-            requests[0].get("task").and_then(JsonValue::as_str),
-            Some("铜印现在是什么形态")
-        );
-        assert_eq!(
-            requests[0].get("evidence").and_then(JsonValue::as_str),
+            requests[0]
+                .get("captures")
+                .and_then(JsonValue::as_object)
+                .and_then(|captures| captures.get("body"))
+                .and_then(JsonValue::as_str),
             Some("沈砚握紧了铜印")
+        );
+        assert!(requests[0]
+            .get("program")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|program| program.contains("根据 body 判断铜印现在是什么形态")));
+    }
+
+    #[tokio::test]
+    async fn complete_yao_body_is_handed_to_the_model_without_task_request_lowering() {
+        let registry = fixture(&[]).0;
+        let program = validate(
+            r#"(eval
+                 (infer
+                   (seq
+                     (bind total (add 20 22))
+                     (if (gt total 40) (mul total 2) 0))))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let (inference, requests) = host("84");
+
+        assert_eq!(
+            evaluate(&program, registry, inference).await.unwrap(),
+            JsonValue::from(84)
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("program").and_then(JsonValue::as_str),
+            Some("(infer (seq (bind total (add 20 22)) (if (gt total 40) (mul total 2) 0)))")
+        );
+        assert!(!requests[0].contains_key("task"));
+        assert!(!requests[0].contains_key("evidence"));
+        assert!(!requests[0].contains_key("returns"));
+    }
+
+    #[tokio::test]
+    async fn complete_yao_body_sends_only_source_authorized_lexical_captures() {
+        let registry = fixture(&[]).0;
+        let program = validate(
+            r#"(eval
+                 (seq
+                   (bind base 40)
+                   (bind unrelated "must-not-cross")
+                   (infer
+                     (captures base)
+                     (add base 2))))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let (inference, requests) = host("42");
+
+        assert_eq!(
+            evaluate(&program, registry, inference).await.unwrap(),
+            JsonValue::from(42)
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].get("captures"),
+            Some(&serde_json::json!({"base": 40}))
+        );
+        assert!(!requests[0]
+            .get("captures")
+            .and_then(JsonValue::as_object)
+            .is_some_and(|values| values.contains_key("unrelated")));
+        assert_eq!(
+            requests[0].get("program").and_then(JsonValue::as_str),
+            Some("(infer (captures base) (add base 2))")
         );
     }
 
     #[tokio::test]
     async fn json_infer_results_become_addressable_plan_data() {
         let (registry, seen) = fixture(&[("search", serde_json::json!(["matched"]))]);
-        let program = validate_legacy_source(
+        let program = validate(
             r#"(eval
                  (requires (tools search))
+                 (types (record SearchDecision (query String)))
                  (seq
                    (bind decision
                      (infer
-                       (task "选择查询词")
-                       (returns json)
-                       (evidence "fixture")))
-                   (call search (query $decision.query))))"#,
+                       (returns SearchDecision)
+                       (record SearchDecision (query "needle"))))
+                   (call search (query decision.query))))"#,
             &registry,
             &AllowList::new(["search"]),
         )
         .unwrap();
-        let (inference, requests) = host(r#"{"query":"needle"}"#);
+        let (inference, requests) = host(
+            r#"{"$yao":{"kind":"record","type":"SearchDecision","fields":{"query":"needle"}}}"#,
+        );
         let value = evaluate(&program, registry, inference).await.unwrap();
 
         assert_eq!(value, serde_json::json!(["matched"]));
@@ -3428,18 +3402,19 @@ mod tests {
             seen.lock().unwrap().as_slice(),
             &[r#"search:{"query":"needle"}"#.to_string()]
         );
-        assert_eq!(requests.lock().unwrap()[0]["task"], "选择查询词");
-        assert!(requests.lock().unwrap()[0].get("returns").is_none());
+        assert!(requests.lock().unwrap()[0]["program"]
+            .as_str()
+            .is_some_and(|program| program.contains("(returns SearchDecision)")));
     }
 
     #[tokio::test]
     async fn malformed_json_infer_results_are_classified_failures_for_fallback() {
         let registry = fixture(&[]).0;
-        let program = validate_legacy_source(
+        let program = validate(
             r#"(eval
                  (fallback
-                   (infer (task "返回对象") (returns json))
-                   "recovered"))"#,
+                   (infer (returns Int) 1)
+                   0))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
         )
@@ -3448,7 +3423,7 @@ mod tests {
 
         assert_eq!(
             evaluate(&program, registry, inference).await.unwrap(),
-            serde_json::json!("recovered")
+            serde_json::json!(0)
         );
     }
 
@@ -3456,31 +3431,39 @@ mod tests {
     fn infer_result_contract_is_static_and_known_before_execution() {
         let registry = fixture(&[]).0;
         for source in [
-            r#"(eval (infer (task "x") (returns yaml)))"#,
-            r#"(eval (infer (task "x") (returns json text)))"#,
-            r#"(eval (infer (task "x") (returns json) (returns text)))"#,
-            r#"(eval (infer (task "x") (tools) (tools search)))"#,
+            r#"(eval (infer (returns yaml) "x"))"#,
+            r#"(eval (infer (returns Json String) "x"))"#,
+            r#"(eval (infer (returns Json) (returns String) "x"))"#,
+            r#"(eval (infer (tools) "x"))"#,
         ] {
-            let error =
-                validate_legacy_source(source, &registry, &AllowList::new(Vec::<String>::new()))
-                    .unwrap_err()
-                    .message;
+            let error = validate(source, &registry, &AllowList::new(Vec::<String>::new()))
+                .unwrap_err()
+                .message;
             assert!(
                 error.contains("returns")
                     || error.contains("result type")
-                    || error.contains("tools"),
+                    || error.contains("tools")
+                    || error.contains("unknown type"),
                 "{error}"
             );
         }
     }
 
     #[tokio::test]
-    async fn infer_must_say_what_it_is_asking() {
+    async fn fixed_infer_request_syntax_is_rejected_at_every_root() {
         let registry = fixture(&[]).0;
-        let error = validate_legacy_source(r#"(infer (evidence "x"))"#, &registry, &gate())
-            .expect_err("an infer without a task has no question")
-            .message;
-        assert!(error.contains("(task"), "got: {error}");
+        for source in [
+            r#"(infer (task "x"))"#,
+            r#"(infer (evidence "x"))"#,
+            r#"(infer (tools read) "x")"#,
+            r#"(infer (model "gpt") "x")"#,
+            r#"(infer (task "x") (returns String))"#,
+            r#"(eval (infer (task "x")))"#,
+        ] {
+            validate(source, &registry, &gate()).expect_err(&format!(
+                "fixed infer request field must be rejected: {source}"
+            ));
+        }
     }
 
     #[tokio::test]
@@ -3490,8 +3473,17 @@ mod tests {
             .collect::<Vec<_>>();
         let (registry, _) = fixture(&[("list_files", serde_json::json!(items))]);
         let (inference, requests) = host("ok");
-        let program = validate_legacy_source(
-            r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (infer (task "看一下") (item $e)))))"#,
+        let program = validate(
+            r#"(eval
+                 (requires (tools list_files))
+                 (seq
+                   (bind raw (call list_files (path "src")))
+                   (bind files (decode (List String) raw))
+                   (map files e
+                     (infer
+                       (captures e)
+                       (returns String)
+                       "查看 e"))))"#,
             &registry,
             &gate(),
         )
@@ -3582,8 +3574,7 @@ mod tests {
         let registry = fixture(&[]).0;
         let tool = EvalTool::with_default_tools(registry);
         let arguments =
-            serde_json::json!({"program": r#"(eval (infer (task "判断") (returns String)))"#})
-                .to_string();
+            serde_json::json!({"program": r#"(eval (infer (returns String) "判断"))"#}).to_string();
         let error = CURRENT_INFERENCE
             .scope(None, tool.execute(&arguments))
             .await
@@ -3663,8 +3654,17 @@ mod tests {
         .message;
         assert!(error.contains("accepts only search"), "got: {error}");
 
-        let program = validate_legacy_source(
-            r#"(eval (requires (tools search)) (seq (bind r (call search (query "x"))) (infer (task "判断") (hits $r))))"#,
+        let program = validate(
+            r#"(eval
+                 (requires (tools search))
+                 (seq
+                   (bind r (call search (query "x")))
+                   (infer
+                     (captures r)
+                     (returns String)
+                     (seq
+                       (call search (query "supporting evidence"))
+                       "判断 r"))))"#,
             &registry,
             &gate(),
         )
@@ -3692,12 +3692,15 @@ mod tests {
             ("read", serde_json::json!("evidence")),
             ("search", serde_json::json!([])),
         ]);
-        let pure = validate_legacy_source(
+        let pure = validate(
             r#"(eval
                  (requires (tools read search))
                  (seq
                    (bind evidence (call read (path "a")))
-                   (infer (task "judge") (tools) (evidence $evidence))))"#,
+                   (infer
+                     (captures evidence)
+                     (returns String)
+                     "judge evidence")))"#,
             &registry,
             &gate(),
         )
@@ -3712,10 +3715,14 @@ mod tests {
         evaluate(&pure, Arc::clone(&registry), host).await.unwrap();
         assert_eq!(offered.lock().unwrap().as_slice(), &[Some(Vec::new())]);
 
-        let narrowed = validate_legacy_source(
+        let narrowed = validate(
             r#"(eval
                  (requires (tools read search))
-                 (infer (task "research") (tools search)))"#,
+                 (infer
+                   (returns String)
+                   (seq
+                     (call search (query "research"))
+                     "research")))"#,
             &registry,
             &gate(),
         )
@@ -3793,7 +3800,7 @@ mod tests {
         assert!(error.contains("expected eval or infer"), "{error}");
 
         let model = validate(
-            r#"(infer (task "判断当前状态") (returns String))"#,
+            r#"(infer (returns String) "判断当前状态")"#,
             &registry,
             &gate(),
         )
@@ -3838,7 +3845,10 @@ mod tests {
                  (requires (tools read))
                  (seq
                    (bind body (call read (path "README.md")))
-                   (infer (task "归纳") (returns String) (input body))))"#,
+                   (infer
+                     (captures body)
+                     (returns Json)
+                     body)))"#,
             &registry,
             &gate(),
         )
@@ -4003,9 +4013,9 @@ mod tests {
                    (bind evidence (call read (path "a.txt")))
                    (bind score
                      (infer
-                       (task "return an integer")
+                       (captures evidence)
                        (returns Int)
-                       (evidence (decode String evidence))))
+                       (if (eq (decode String evidence) "evidence") 41 0)))
                    (add score 1)))"#,
             &registry,
             &AllowList::new(["read"]),
@@ -4060,8 +4070,10 @@ mod tests {
                  (seq
                    (bind generated
                      (infer
-                       (task "produce a pure integer program")
-                       (returns (Program Int (effects)))))
+                       (returns (Program Int (effects)))
+                       (seq
+                         (bind target (add 20 22))
+                         target)))
                    (run generated)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
@@ -4075,9 +4087,22 @@ mod tests {
         let PlanEffect::Infer { result, .. } = inference.clone() else {
             unreachable!()
         };
+        assert!(decode_infer_result_with_admission(
+            result.clone(),
+            serde_json::json!({"source": "(eval (add 20 22))"}),
+            &registry,
+            ProgramValueProvenance {
+                parent_plan_execution_id: "parent-plan".into(),
+                producer_evaluation_id: "child-eval".into(),
+                terminal_event_id: Some("terminal-event".into()),
+                validation_version: "yao-0.1".into(),
+            },
+        )
+        .unwrap_err()
+        .contains("raw Yao"));
         let admitted = decode_infer_result_with_admission(
             result,
-            JsonValue::String(r#"{"source":"(eval (add 20 22))"}"#.to_string()),
+            JsonValue::String("(eval (add 20 22))".to_string()),
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "parent-plan".into(),
@@ -4125,6 +4150,81 @@ mod tests {
     }
 
     #[test]
+    fn infer_root_program_value_is_admitted_and_runs_as_a_persisted_child_evaluation() {
+        let registry = fixture(&[]).0;
+        let parent = validate(
+            r#"(eval
+                 (seq
+                   (bind generated
+                     (infer
+                       (returns (Program String (effects infer)))
+                       (seq
+                         (bind desired "continue model-owned evaluation")
+                         desired)))
+                   (run generated)))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut parent_machine = PlanMachine::new(&parent).unwrap();
+        let producer = match parent_machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("expected Program-producing infer, got {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = producer.clone() else {
+            unreachable!()
+        };
+        let admitted = decode_infer_result_with_admission(
+            result,
+            JsonValue::String(r#"(infer "continue model-owned evaluation")"#.to_string()),
+            &registry,
+            ProgramValueProvenance {
+                parent_plan_execution_id: "parent-plan".into(),
+                producer_evaluation_id: "producer-evaluation".into(),
+                terminal_event_id: Some("producer-terminal".into()),
+                validation_version: "yao-0.1".into(),
+            },
+        )
+        .unwrap();
+        let decoded = decode_program_value(&admitted).unwrap();
+        assert_eq!(decoded.program.owner(), EvaluationOwner::Model);
+
+        parent_machine
+            .resume_effect(producer.sequence(), Ok(admitted))
+            .unwrap();
+        let child = match parent_machine.advance(&registry) {
+            PlanAdvance::Suspended(PlanEffect::Program { machine, .. }) => *machine,
+            other => panic!("expected durable Program child boundary, got {other:?}"),
+        };
+        let encoded = serde_json::to_string(&child).unwrap();
+        let mut restored: PlanMachine = serde_json::from_str(&encoded).unwrap();
+        let child_evaluation = match restored.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => effect,
+            other => panic!("infer-root Program did not create a child Evaluation: {other:?}"),
+        };
+        let PlanEffect::Infer { result, .. } = child_evaluation.clone() else {
+            unreachable!()
+        };
+        assert!(matches!(
+            result,
+            InferResultKind::Yao {
+                ty: crate::yao::Type::String,
+                ..
+            }
+        ));
+        restored
+            .resume_effect(
+                child_evaluation.sequence(),
+                Ok(JsonValue::String("done".into())),
+            )
+            .unwrap();
+        assert_eq!(
+            restored.advance(&registry),
+            PlanAdvance::Complete(JsonValue::String("done".into()))
+        );
+    }
+
+    #[test]
     fn generated_program_inherits_only_the_runtime_snapshot() {
         let registry = fixture(&[]).0;
         let parent = validate(
@@ -4133,8 +4233,8 @@ mod tests {
                    (bind caller-local "must-not-leak")
                    (bind generated
                      (infer
-                       (task "produce a program that reads its Context Ref")
-                       (returns (Program (Ref Context) (effects)))))
+                       (returns (Program (Ref Context) (effects)))
+                       "produce a program that reads its Context Ref"))
                    (run generated)))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
@@ -4186,7 +4286,7 @@ mod tests {
         };
         let admitted = decode_infer_result_with_admission(
             result,
-            serde_json::json!({"source": r#"(eval runtime.context)"#}),
+            JsonValue::String("(eval runtime.context)".to_string()),
             &registry,
             ProgramValueProvenance {
                 parent_plan_execution_id: "parent-plan".into(),
@@ -4220,8 +4320,7 @@ mod tests {
     }
 
     #[test]
-    fn program_admission_requires_object_transport_and_rejects_version_contract_escape_and_forgery()
-    {
+    fn program_admission_requires_raw_yao_and_rejects_version_contract_escape_and_forgery() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let provenance = || ProgramValueProvenance {
             parent_plan_execution_id: "parent-plan".into(),
@@ -4233,13 +4332,35 @@ mod tests {
         let admitted = admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            serde_json::json!({"source": "(eval   1 ; normalize me\n)"}),
+            "(eval   1 ; normalize me\n)",
             &registry,
             provenance(),
         )
         .expect("unversioned Program Value source is admitted");
         let decoded = decode_program_value(&admitted).expect("admitted Program Value is decodable");
         assert_eq!(decoded.source, "(eval 1)");
+        let infer_effects = crate::yao::EffectSet::new([crate::yao::Effect::Infer]);
+        let admitted_infer = admit_program_value_candidate(
+            &crate::yao::Type::String,
+            &infer_effects,
+            r#"(infer "continue")"#,
+            &registry,
+            provenance(),
+        )
+        .expect("model-owned Yao root is a valid Program Value");
+        let decoded_infer =
+            decode_program_value(&admitted_infer).expect("infer Program Value is decodable");
+        assert_eq!(decoded_infer.program.owner(), EvaluationOwner::Model);
+        assert!(decoded_infer.effects.contains(&crate::yao::Effect::Infer));
+        assert!(admit_program_value_candidate(
+            &crate::yao::Type::String,
+            &empty,
+            r#"(infer "continue")"#,
+            &registry,
+            provenance(),
+        )
+        .unwrap_err()
+        .contains("effects"));
         let mut tampered_source = admitted.clone();
         *tampered_source
             .pointer_mut("/$yao/value/source")
@@ -4251,7 +4372,7 @@ mod tests {
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            serde_json::json!({"source": r#"(eval (version "0.1") 1)"#}),
+            r#"(eval (version "0.1") 1)"#,
             &registry,
             provenance(),
         )
@@ -4260,7 +4381,7 @@ mod tests {
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            serde_json::json!({"source": r#"(eval "wrong")"#}),
+            r#"(eval "wrong")"#,
             &registry,
             provenance(),
         )
@@ -4269,7 +4390,7 @@ mod tests {
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Json,
             &empty,
-            serde_json::json!({"source": r#"(eval (requires (tools read)) (call read (path "x")))"#}),
+            r#"(eval (requires (tools read)) (call read (path "x")))"#,
             &registry,
             provenance(),
         )
@@ -4277,21 +4398,19 @@ mod tests {
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            JsonValue::String("(eval 1)".into()),
+            "```lisp\n(eval 1)\n```",
             &registry,
             provenance(),
         )
-        .unwrap_err()
-        .contains("exactly"));
+        .is_err());
         assert!(admit_program_value_candidate(
             &crate::yao::Type::Int,
             &empty,
-            serde_json::json!({"source": "(eval 1)", "extra": true}),
+            r#"{"source":"(eval 1)"}"#,
             &registry,
             provenance(),
         )
-        .unwrap_err()
-        .contains("exactly"));
+        .is_err());
         assert!(decode_program_value(&serde_json::json!({
             "$yao": {"kind": "program", "hash": "sha256:forged", "value": {}}
         }))
@@ -4305,8 +4424,10 @@ mod tests {
               (seq
                (bind generated
                  (infer
-                   (task "produce a pure integer program")
-                   (returns (Program Int (effects)))))
+                   (returns (Program Int (effects)))
+                   (seq
+                     (bind target 42)
+                     target)))
                (run generated)))"#;
         let program = validate(
             parent_source,
@@ -4330,7 +4451,7 @@ mod tests {
         };
         let admitted = decode_infer_result_with_admission(
             result,
-            JsonValue::String(r#"{"source":"(eval 42)"}"#.to_string()),
+            JsonValue::String("(eval 42)".to_string()),
             &registry,
             provenance(),
         )

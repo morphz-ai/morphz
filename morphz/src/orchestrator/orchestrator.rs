@@ -18475,40 +18475,45 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .orchestrator
             .upgrade()
             .ok_or("The Runtime has shut down and cannot complete infer")?;
-        let task = request
-            .get("task")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let requested_model = request
-            .get("model")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(model) = requested_model {
-            if !orchestrator.client.model_is_agent_allowed(model) {
-                return Err(format!(
-                    "infer requested model '{model}', but it is neither listed in llm.allowed_evaluation_models nor the current primary model"
-                )
-                .into());
-            }
-        }
         let mut evidence = serde_json::Map::new();
         for (key, value) in request {
-            if key != "task" && key != "model" {
+            if key != "program" {
                 evidence.insert(key.clone(), value.clone());
             }
         }
+        let program = request
+            .get("program")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("infer requires one complete Yao program")?;
+        let prompt = {
+            let captures = request
+                .get("captures")
+                .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
+                .map(|value| {
+                    format!(
+                        "\nThe Yao source explicitly authorizes these immutable lexical captures for this ownership boundary; no unlisted parent binding is available:\n{}\n",
+                        serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+                    )
+                })
+                .unwrap_or_default();
+            let type_definitions = request
+                .get("type_definitions")
+                .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
+                .map(|value| {
+                    format!(
+                        "\nNamed types declared by the containing Yao source are provided below as schema metadata. They contain no parent binding values:\n{}\n",
+                        serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                "This is not a user message. It is a model-owned Yao Evaluation requested when a Runtime-owned parent reached (infer ...). Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. You may call only the tools offered for this Evaluation. Once you return a final body without a tool call, that body is decoded and type-checked as the terminal value before the parent resumes. Do not address the user.{}{}\n{}",
+                captures, type_definitions, program
+            )
+        };
         let mut messages = vec![Message {
             role: "user".to_string(),
-            content: format!(
-                "This is not a user message. It is a decision requested when your submitted program paused at (infer ...).\
-                 You may call tools first if you need more evidence. Once you return text without any tool call,\
-                 that text becomes the value of this step, is bound, and is returned to the program for continued evaluation.\
-                 Therefore, do not write it as a message addressed to the user.\n\
-                 (infer-request\n  (task {task:?})\n  (evidence {}))",
-                serde_json::to_string(&serde_json::Value::Object(evidence.clone()))
-                    .unwrap_or_else(|_| "{}".to_string())
-            ),
+            content: prompt,
             name: None,
             tool_call_id: None,
             tool_calls: None,
@@ -18529,11 +18534,12 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
         {
             messages.push(message);
         }
-        // `eval` is absent from this set, and that omission is what keeps the
-        // language total: it severs `eval -> infer -> eval`, so nesting stops
-        // at one level and a submitted program stays statically bounded. What
-        // remains is the same read-only gate the evaluator applies to `call`,
-        // so one policy governs both rather than two that can drift.
+        // `eval` is absent from this set, so a model-owned Evaluation cannot
+        // create an untracked recursive Runtime call. A Yao Program Value may
+        // still return control to either evaluator, but only through typed
+        // admission, persistence, explicit `run`, and the shared finite
+        // nesting/work budgets. What remains here is the same Tool gate the
+        // Yao analyzer applied to the complete BODY.
         // The deployment gate is the outer bound; a program's declaration can
         // only narrow it further. Both cuts are applied here so the model is
         // never shown a tool that execution below would refuse.
@@ -18552,12 +18558,9 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .collect::<Vec<_>>();
 
         for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
-            let mut request_policy = orchestrator
+            let request_policy = orchestrator
                 .effective_model_request_policy(&self.session_id, &self.attempt_id)
                 .await?;
-            if let Some(model) = requested_model {
-                request_policy.model_alias = model.to_string();
-            }
             let ModelCompletion {
                 response,
                 provider_continuation,
@@ -21186,8 +21189,7 @@ mod tests {
                 (contract (identity "research"))
                 (infer
                   (requires (tools))
-                  (task "形成有证据边界的研究结论")
-                  (returns String))
+                  "形成有证据边界的研究结论")
             "#,
         )
         .unwrap();

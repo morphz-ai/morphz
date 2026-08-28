@@ -32,7 +32,7 @@ impl PlanInferClient {
                         r#type: "function".to_string(),
                         func_name: "eval".to_string(),
                         arguments: json!({
-                            "program": "(eval (infer (task \"return the durable handoff value\") (returns String)))"
+                            "program": "(eval (infer (returns String) \"return the durable handoff value\"))"
                         })
                         .to_string(),
                     }],
@@ -61,7 +61,7 @@ impl PlanInferClient {
                             r#type: "function".to_string(),
                             func_name: "eval".to_string(),
                             arguments: json!({
-                                "program": "(eval (infer (task \"return the first value\") (returns String)))"
+                                "program": "(eval (infer (returns String) \"return the first value\"))"
                             })
                             .to_string(),
                         },
@@ -70,7 +70,7 @@ impl PlanInferClient {
                             r#type: "function".to_string(),
                             func_name: "eval".to_string(),
                             arguments: json!({
-                                "program": "(eval (infer (task \"return the second value\") (returns String)))"
+                                "program": "(eval (infer (returns String) \"return the second value\"))"
                             })
                             .to_string(),
                         },
@@ -103,7 +103,7 @@ impl PlanInferClient {
                         r#type: "function".to_string(),
                         func_name: "eval".to_string(),
                         arguments: json!({
-                            "program": "(eval (requires (tools list_files)) (infer (task \"inspect one workspace file\") (tools list_files) (returns String)))"
+                            "program": "(eval (requires (tools list_files)) (infer (returns String) (seq (call list_files (path \".\") (glob \"Cargo.toml\") (max_results 10)) \"inspect one workspace file\")))"
                         })
                         .to_string(),
                     }],

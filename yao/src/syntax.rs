@@ -420,7 +420,7 @@ mod tests {
             DiagnosticCode::UnexpectedClose
         );
         assert_eq!(
-            parse_one("(eval nil) (infer (task \"x\"))", ParseLimits::default())
+            parse_one("(eval nil) (infer \"x\")", ParseLimits::default())
                 .unwrap_err()
                 .code,
             DiagnosticCode::MultipleTopLevelForms

@@ -15077,8 +15077,7 @@ mod tests {
                 (contract (identity "discovery-contract"))
                 (infer
                   (requires (tools))
-                  (task "complete the current evaluation")
-                  (returns String))
+                  "complete the current evaluation")
             "#,
         )
         .unwrap();

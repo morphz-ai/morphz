@@ -76,8 +76,11 @@ coding.hns
   (seq
     (bind repository (call inspect-repository))
     (infer
-      (task "根据仓库证据制定修改方案")
-      (input repository))))
+      (captures repository)
+      (returns Json)
+      (dict
+        (goal "根据仓库证据制定修改方案")
+        (repository repository)))))
 ```
 
 单文件 v1 的基数规则：
@@ -244,10 +247,11 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
     (bind plan
       (infer
-        (task "根据仓库证据制定修改方案")
-        (tools)
-        (returns json)
-        (input repository)))
+        (captures repository)
+        (returns Json)
+        (dict
+          (goal "根据仓库证据制定修改方案")
+          (repository repository))))
 
     (call apply-plan
       (plan plan))
@@ -255,8 +259,11 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
     (fallback
       (call run-tests)
       (infer
-        (task "根据失败证据诊断下一步")
-        (input repository))))))
+        (captures repository)
+        (returns Json)
+        (dict
+          (goal "根据失败证据诊断下一步")
+          (repository repository)))))))
 ```
 
 这里同时存在两种求值：
@@ -267,22 +274,24 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 - 内层 `infer` 物化为子 Evaluation，交给 LLM 做非确定性求值；
 - 子 Evaluation 交付结果后，Runtime 从原节点继续。
 
-内部 `infer` 可以显式声明自己的结果和工具边界：
+内部 `infer` 接收一个完整 Yao 正文，并可以显式声明父程序绑定与结果契约：
 
 ```lisp
 (infer
-  (task "根据显式证据生成编辑参数")
-  (tools)
-  (returns json)
-  (evidence repository))
+  (captures repository)
+  (returns Json)
+  (dict
+    (goal "根据显式证据生成编辑参数")
+    (repository repository)))
 ```
 
-- 不写 `(tools ...)`：继承程序根部 `(requires (tools ...))` 的范围；
-- `(tools)`：纯模型计算，只能使用传入值；
-- `(tools read search)`：只允许列出的证据工具，并且仍须是外层能力的子集；
-- `(returns text)`：返回普通文本值，也是默认行为；
-- `(returns json)`：Runtime 严格解析一个 JSON 值，不剥离 Markdown fence、不修复
+- `(captures repository)`：只有列出的父程序绑定可以进入本次模型请求；未列出的绑定
+  和完整 Runtime 环境不会被隐式发送；
+- 不写 `(returns TYPE)`：结果类型就是正文的静态类型；
+- `(returns Json)`：Runtime 严格解析一个 JSON 值，不剥离 Markdown fence、不修复
   近似 JSON；失败作为分类错误进入 Plan，而不是猜测后继续产生副作用。
+- 可用工具从正文中的 `(call TOOL ...)` 静态推导，并继续受程序根部 `requires` 与
+  部署权限限制；正文没有 `call` 时，本次模型求值不获得物理工具。
 
 这使 Coding Harness 可以让 Runtime 固定取证和验证顺序，同时把真正需要语言
 理解的局部决策交给模型，而不会让 child infer 绕过程序自行编辑或执行命令。
@@ -293,9 +302,12 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 (infer
   (requires
     (tools read write search))
-
-  (task
-    "自主完成当前写作目标；根据证据决定拆分、工具调用和交付方式。"))
+  (seq
+    (bind evidence
+      (call read (path "writing-brief.md")))
+    (dict
+      (goal "自主完成当前写作目标；根据证据决定拆分和交付方式。")
+      (evidence evidence))))
 ```
 
 它挂载 Harness Contract 和 Mind 后进入现有 Agent attempt loop。工具调用仍由 Runtime 调度，不因为 LLM 持有主控制权而绕过 Kernel。
@@ -333,8 +345,11 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
     (bind decision
       (infer
-        (task "制定本轮修改方案")
-        (input repository)))
+        (captures repository)
+        (returns Json)
+        (dict
+          (goal "制定本轮修改方案")
+          (repository repository))))
 
     (call apply-plan
       (plan decision))))
@@ -415,8 +430,11 @@ Typed Plan IR（强类型计划中间表示）是 Yao 可执行程序经过解�
   (seq
     (bind repo (call inspect-repository))
     (infer
-      (task "分析仓库")
-      (input repo))))
+      (captures repo)
+      (returns Json)
+      (dict
+        (goal "分析仓库")
+        (repository repo)))))
 ```
 
 概念上的 IR：
@@ -428,8 +446,9 @@ Plan::Eval
     │   ├── name = repo
     │   └── Call(tool = inspect-repository)
     └── Infer
-        ├── task = "分析仓库"
-        └── input = Ref(repo)
+        ├── captures = [repo]
+        ├── result = Json
+        └── body = Dict(goal, repository)
 ```
 
 Rust 实现可以采用可序列化枚举：
@@ -439,16 +458,17 @@ enum PlanNode {
     Seq(Vec<PlanNode>),
     Bind { name: Symbol, value: Box<PlanNode> },
     Call { tool: ToolId, arguments: ValueExpr },
-    Infer { task: ValueExpr, input: Option<ValueExpr> },
+    Infer { body: TypedExpr, captures: Vec<Symbol>, result: Type },
     If { condition: ValueExpr, then_node: Box<PlanNode>, else_node: Box<PlanNode> },
     Fallback(Vec<PlanNode>),
     Value(ValueExpr),
 }
 ```
 
-实际 v1 的 `Infer` 还携带可选的 per-node tool scope 与
-`InferResultKind::{Text, Json}`；它们进入可序列化 IR，因此进程内执行与重启恢复
-使用完全相同的边界规则。
+当前规范 `Infer` 携带完整的有类型正文、显式 captures 和结果契约；正文中的 `call`
+Effect 决定本次求值实际可见的 Tool 子集。有类型 Yao 结果包括 `Program<T,E>`。固定
+task/evidence 请求不再属于语言或运行时入口。这些契约进入可序列化 IR，因此进程内
+执行与重启恢复使用完全相同的边界规则。
 
 第一版不需要建设复杂编译器。“SExpr Parser → 严格校验 → Rust 枚举”已经构成 Typed Plan IR。
 
@@ -698,8 +718,11 @@ Registry。
 - 正式 `eval` 工具在静态校验后建立稳定 `PlanExecution`；
 - `call` 复用现有 Execution Job、Target、审批、沙箱与结果事件链；
 - `infer` 建立正式 child Activation，终态结果回填后继续 Plan；
-- 内部 `infer` 支持 `(returns text|json)` 与 per-node `(tools ...)` 收窄；空
-  `(tools)` 可建立不具备任何物理工具的纯推断边界；
+- 内部 `infer` 把同一个完整 Yao 正文交给模型求值，支持显式 `(captures ...)`、正文
+  推导或声明的有类型结果，以及从正文 Effect 静态推导的 Tool 范围；
+- 只有 `(captures ...)` 列出的父程序绑定可以随请求发送给当前配置的模型服务商；
+- `Program<T,E>` 的模型输出为一段以 `(eval ...)` 或 `(infer ...)` 为根的原始 Yao
+  候选程序；运行时完成准入、持久化和显式 `run` 子执行，不直接解释模型返回的源码字符串；
 - 严格 JSON 解码失败在重启恢复后仍然失败关闭，后续物理 effect 不会被创建；
 - Planner 失败会终结 Plan，不再遗留无法恢复的 `running` 状态；
 - Runtime 集成测试已覆盖 `eval → read Execution Job → Plan 成功 → 最终回复`；

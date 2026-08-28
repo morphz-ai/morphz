@@ -24,11 +24,12 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (artifact "exactly one (eval ...) or (infer ...) root")
     (versioning "source has no version declaration; (version ...) is invalid")
     (declarations "optional (requires ...) then optional (types ...), before the body")
+    (infer-boundary "nested infer may declare (captures NAME...) and (returns TYPE) before one complete BODY")
     (strings "double-quoted; escape backslash, quote, newline, return, and tab")
     (references "use bare lexical names: name or name.field; '$name' is invalid; bindings are immutable"))
   (ownership
     (eval "Runtime owns the loop and executes a typed plan")
-    (infer "model owns the loop while Runtime authority and declared result type remain binding; a model-owned Harness entry explicitly declares requires.tools"))
+    (infer "model owns the loop for the same complete Yao BODY; Runtime authority and typed result validation remain binding"))
   (types
     (builtins Nil Bool Int Float String Bytes Json EvidenceCandidate OutcomeCandidate ContextTransaction)
     (parameterized "(List T) (Map T) (Option T) (Result OK ERR) (Ref KIND) (Program T (effects ...))")
@@ -48,12 +49,12 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (rule "effectful results must first be bound; conditions, operands, arguments, and collections are pure"))
   (effects
     (call "(call TOOL (ARG EXPR...)...); arguments are checked against the Tool schema")
-    (infer "(infer (task EXPR) (model ROUTE) (tools TOOL...) (returns TYPE) (ARG EXPR...)...); model is optional and defaults to the Runtime primary route; an explicit model must name an evaluation-environment.model-selection.agent-allowed route; task and returns are required")
+    (infer "(infer [(captures NAME...)] [(returns TYPE)] BODY); BODY uses this same language; captures are the only parent lexical values disclosed; without returns the BODY type is the result contract; ordinary returns must accept BODY type; Program returns synthesize a quarantined candidate; tools derive from BODY effects")
     (par "(par (branch NAME EXPR)...); at least two isolated branches, deterministic all-join result")
-    (run "(run PROGRAM); executes only an admitted Program Value through a durable child plan")
+    (run "(run PROGRAM); executes only an admitted Program Value through a durable child execution and dispatches by its eval/infer owner")
     (host "(host.view REF (returns TYPE)) (evidence.commit CANDIDATE) (outcome.commit CANDIDATE) plus profile-published objective.*, context.*, and namespaced operations"))
   (program-value
-    (transport "model returns exactly one JSON object {\"source\":\"(eval ...)\"} with no extra fields")
+    (transport "model returns exactly one raw Yao source artifact with an explicit (eval ...) or (infer ...) root; no JSON wrapper, Markdown fence, or explanatory text")
     (admission "Runtime parses, types, bounds effects, canonicalizes, hashes, persists, and revalidates authority before run")
     (forbidden "never eval a model-returned source string directly"))
   (result
@@ -64,7 +65,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (pure "(eval (seq (bind total (add 20 22)) (mul total 2)))")
     (record "(eval (types (record Answer (value Int) (note String))) (record Answer (value 42) (note \"done\")))")
     (tool "(eval (requires (tools read)) (call read (path \"README.md\")))")
-    (model "(infer (requires (tools read)) (task \"summarize the evidence\") (returns String) (tools read))")))"#;
+    (model "(infer (requires (tools read)) (returns String) (seq (bind source (call read (path \"README.md\"))) source))")))"#;
 
 #[cfg(test)]
 mod tests {
@@ -77,10 +78,10 @@ mod tests {
         assert!(!LANGUAGE_CARD.contains("(version \""));
         assert!(LANGUAGE_CARD.contains("use bare lexical names"));
         assert!(LANGUAGE_CARD.contains("(bind total (add 20 22)) (mul total 2)"));
-        assert!(LANGUAGE_CARD.contains("{\\\"source\\\":\\\"(eval ...)\\\"}"));
-        assert!(
-            LANGUAGE_CARD.contains("model is optional and defaults to the Runtime primary route")
-        );
+        assert!(LANGUAGE_CARD.contains("no JSON wrapper"));
+        assert!(LANGUAGE_CARD.contains("(eval ...) or (infer ...) root"));
+        assert!(LANGUAGE_CARD.contains("same complete Yao BODY"));
+        assert!(LANGUAGE_CARD.contains("captures are the only parent lexical values disclosed"));
         for form in ["(seq E...)", "(bind NAME E)", "(call TOOL", "(par (branch"] {
             assert!(LANGUAGE_CARD.contains(form), "missing {form}");
         }

@@ -50,6 +50,11 @@ runtime.execution_target   Option<Ref<ExecutionTarget>>
 例如 `runtime.context`。快照身份绑定 Evaluation，读取为纯操作；获取更新或扩张的 Host View
 是显式 Host Effect。
 
+Runtime 持有的程序执行到嵌套 `infer` 时，Morphz 不会把父级词法环境隐式复制给模型持有的
+正文。只有 Yao 源码在 `(captures ...)` 中明确列出的父程序绑定才可以越过该边界；Morphz
+只把这些值序列化到可能发送给当前配置模型服务商的内部请求。源码 Artifact、捕获名称与序列化
+值都进入持久因果记录，因此进程重启不能扩大或改变披露集合。
+
 ## 5. 不可变 View
 
 ```lisp
@@ -121,9 +126,9 @@ Authority 所有，而不是由 Yao 自行实现。
 | Yao | Morphz Authority |
 | --- | --- |
 | `call` | `ExecutionJob` 或等价的受控 Tool Completion |
-| nested `infer` | Child `Evaluation` / `ThreadActivation` |
+| nested `infer` | Child `Evaluation` / `ThreadActivation` 中的完整模型持有 Yao 正文 |
 | `par` | Plan Branch Group 与 Child `PlanExecution` |
-| `run` | 绑定 Validated Program Value 的 Child `PlanExecution` |
+| `run` | 绑定 Validated Program Value 的 Child `PlanExecution`；`infer` 根立即发出 Child `Evaluation` |
 | `host.*` | Typed Runtime Command 与 Immutable Event/Transaction |
 | terminal value | Plan Outcome |
 
@@ -170,9 +175,9 @@ Fence 与精确父级恢复、Objective/Context Revision、取消传播、旧 Pr
 ## 14. 实现状态
 
 截至 2026-08-21，参考实现已经包含带 Span Parser、Type/Effect Checked HIR、Pure Evaluator、
-精确 Typed Inference Decode、Named Record/Union 与穷尽 `match`、结构化 `par`、带持久 Child
-Plan 的 Program Value，以及注入的 `runtime` Snapshot。生成的 Program Child 不继承调用方
-局部绑定，剩余 Program Budget 只转移、不补充。
+精确 Typed Inference Decode、Named Record/Union 与穷尽 `match`、结构化 `par`、支持
+以 `eval` 或 `infer` 为根并按求值所有者持久分派的 Program Value，以及注入的 `runtime` Snapshot。
+生成的 Program Child 不继承调用方局部绑定，剩余 Program Budget 只转移、不补充。
 
 Morphz 还实现了可安全重放的 Host Receipt、受权 Immutable View、Evidence/Outcome Commit、
 实际应用的 Objective Operation 与类型化 Context Transaction。Host 边界会重新验证 Candidate

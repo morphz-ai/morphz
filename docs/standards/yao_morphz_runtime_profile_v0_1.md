@@ -60,6 +60,13 @@ Programs reference these values as `runtime.context`, for example. The snapshot 
 to the Evaluation. Reading it is pure. Fetching a newer or expanded host view is an explicit host
 effect.
 
+When a Runtime-owned program reaches a nested `infer`, Morphz starts the model-owned body with no
+implicit copy of the parent lexical environment. A parent binding crosses this boundary only when
+the Yao source names it in `(captures ...)`. Morphz serializes exactly those values into the
+internal request that may be sent to the currently configured model provider. The source artifact,
+capture names and serialized values remain in the durable causal record so restart cannot widen or
+change the disclosure set.
+
 ## 5. Immutable views
 
 ```lisp
@@ -171,9 +178,9 @@ Morphz lowers effectful Yao HIR to the following durable authorities:
 | Yao construct | Morphz authority |
 | --- | --- |
 | `call` | `ExecutionJob` or an equivalent mediated Tool completion |
-| nested `infer` | child `Evaluation` / `ThreadActivation` |
+| nested `infer` | complete model-owned Yao body in a child `Evaluation` / `ThreadActivation` |
 | `par` | Plan Branch Group plus child `PlanExecution` continuations |
-| `run` | child `PlanExecution` bound to a validated Program Value |
+| `run` | child `PlanExecution` bound to a validated Program Value; an `infer` root immediately emits a child `Evaluation` |
 | `host.*` | typed Runtime command and immutable Event/transaction |
 | terminal value | Plan Outcome |
 
@@ -246,9 +253,9 @@ Morphz MUST test and enforce:
 
 As of 2026-08-21, the reference implementation includes the spanned parser, typed/effect-checked
 HIR, pure evaluator, exact typed inference decoding, named records/unions and exhaustive `match`,
-structured `par`, admitted Program Values with durable child Plans, and the injected `runtime`
-snapshot. Caller-local bindings do not enter generated Program children, and remaining Program
-budgets are transferred without refill.
+structured `par`, admitted `eval`/`infer` Program Values with durable owner-directed child
+execution, and the injected `runtime` snapshot. Caller-local bindings do not enter generated
+Program children, and remaining Program budgets are transferred without refill.
 
 Morphz also persists replay-safe Host receipts, authorized immutable views, Evidence/Outcome
 commits, applied Objective operations, and typed Context transactions. Candidate transport is

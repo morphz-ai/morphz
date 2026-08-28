@@ -243,6 +243,8 @@ Entry Program 声明的每个 Tool 都必须出现在 Manifest Tool 集合中。
 `(requires (tools ...))`；`(requires (tools))` 表示纯推理，不向模型暴露可调用 Tool。
 Loader 必须拒绝 Model-owned 入口省略该声明。Runtime-owned `(eval ...)` 入口只有在当前
 Language Profile 能够确定有效子集时才可以省略；省略不得表示不受限制的 Tool 访问。
+对于 Model-owned 入口，实际提供给模型的 Tool 集合，是该上界、完整正文中静态命名的
+`(call TOOL ...)` 与当前权限三者的交集。
 
 ### 9.3 执行边界
 

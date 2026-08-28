@@ -3,7 +3,7 @@
   "package": {
     "id": "terminal-task",
     "version": "0.4.0",
-    "source_sha256": "1c150f5ec72ee1e66d722b17ad418aaf87e7ece4514d98497d6fddf982da88a6"
+    "source_sha256": "afe247d10ec9a4630241dd8206bac5667c45e127c59a61e927cb03cee07ab2eb"
   },
   "status": "closed-rejected",
   "units": [
