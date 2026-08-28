@@ -108,6 +108,132 @@ test('reasoning completion is distinct from final response completion', () => {
   assert.equal(state.attempts['attempt-a'].text, '')
 })
 
+test('incomplete terminal continues settling without presenting a stream failure', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 3,
+    items: [
+      stream('attempt-a', 'dialogue-a', { kind: 'started' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'reasoning_summary_delta', text: 'more work remains' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'incomplete', reason: 'max_output_tokens' }),
+    ],
+  })
+
+  assert.equal(state.attempts['attempt-a'].runtimeState, 'settling')
+  assert.equal(state.attempts['attempt-a'].status, 'settling')
+  assert.equal(state.attempts['attempt-a'].error, undefined)
+  assert.equal(state.attempts['attempt-a'].reasoningSummary, 'more work remains')
+  assert.equal(state.attempts['attempt-a'].continuationPending, true)
+})
+
+test('incomplete physical attempts hand off as one live logical response', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 3,
+    items: [
+      stream('attempt-a', 'dialogue-a', { kind: 'started' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'reasoning_summary_delta', text: 'first thought ' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'text_delta', text: 'first ' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'incomplete', reason: 'max_output_tokens' }),
+      stream('attempt-b', 'dialogue-a', { kind: 'started' }),
+      stream('attempt-b', 'dialogue-a', { kind: 'reasoning_summary_delta', text: 'second thought' }),
+      stream('attempt-b', 'dialogue-a', { kind: 'text_delta', text: 'second' }),
+    ],
+  })
+
+  const visible = Object.values(visibleLiveModelAttempts(state, 'session-a'))
+  assert.equal(visible.length, 1)
+  assert.equal(visible[0].attemptId, 'attempt-b')
+  assert.equal(visible[0].text, 'first second')
+  assert.equal(visible[0].reasoningSummary, 'first thought second thought')
+  assert.deepEqual(visible[0].absorbedAttemptIds, ['attempt-a'])
+  assert.equal(liveReasoningSummaryText([
+    {
+      eventId: 'summary-a',
+      attemptId: 'attempt-a',
+      activationId: 'dialogue-a',
+      threadKind: 'dialogue_turn',
+      text: 'first thought ',
+      complete: false,
+      timestamp: '2026-07-17T00:00:00Z',
+    },
+  ], visible[0]), 'first thought second thought')
+})
+
+test('completed physical attempts are not folded across ordinary model-loop steps', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 3,
+    items: [
+      stream('attempt-a', 'dialogue-a', { kind: 'started' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'text_delta', text: 'before tool' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'completed' }),
+      stream('attempt-b', 'dialogue-a', { kind: 'started' }),
+    ],
+  })
+
+  assert.equal(Object.keys(visibleLiveModelAttempts(state, 'session-a')).length, 2)
+})
+
+test('snapshot preserves an explicit incomplete continuation across reconnect', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'snapshot',
+    sessionId: 'session-a',
+    nowMs: 3,
+    items: [{
+      attemptId: 'attempt-a',
+      activationId: 'dialogue-a',
+      threadKind: 'dialogue_turn',
+      state: 'settling',
+      terminal: false,
+      continuationPending: true,
+      timestamp: '2026-07-17T00:00:00Z',
+    }],
+  })
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 4,
+    items: [stream('attempt-b', 'dialogue-a', { kind: 'started' })],
+  })
+
+  assert.deepEqual(Object.keys(state.attempts), ['attempt-b'])
+  assert.deepEqual(state.attempts['attempt-b'].absorbedAttemptIds, ['attempt-a'])
+})
+
+test('snapshot does not infer continuation from an ordinary completed settling state', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'snapshot',
+    sessionId: 'session-a',
+    nowMs: 3,
+    items: [{
+      attemptId: 'attempt-a',
+      activationId: 'dialogue-a',
+      threadKind: 'dialogue_turn',
+      state: 'settling',
+      terminal: false,
+      continuationPending: false,
+      timestamp: '2026-07-17T00:00:00Z',
+    }],
+  })
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 4,
+    items: [stream('attempt-b', 'dialogue-a', { kind: 'started' })],
+  })
+
+  assert.deepEqual(Object.keys(state.attempts).sort(), ['attempt-a', 'attempt-b'])
+})
+
 test('physical terminal state keeps the draft until a durable semantic outcome resolves it', () => {
   let state = createLiveModelState('session-a')
   state = modelStreamReducer(state, {

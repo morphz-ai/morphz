@@ -7871,6 +7871,7 @@ fn fold_active_model_attempts(
                 "thread_kind": event.payload.get("thread_kind"),
                 "objective_id": event.payload.get("objective_id"),
                 "state": event.payload.get("state"),
+                "continuation_pending": event.payload.get("continuation_pending"),
                 "detail": event.payload.get("detail"),
                 "timestamp": event.timestamp,
             })
@@ -8683,7 +8684,12 @@ mod tests {
 
     #[test]
     fn model_attempt_snapshot_folds_latest_nonterminal_state_for_live_activation() {
-        let state = |id: &str, attempt: &str, activation: &str, value: &str, terminal: bool| {
+        let state = |id: &str,
+                     attempt: &str,
+                     activation: &str,
+                     value: &str,
+                     terminal: bool,
+                     continuation_pending: bool| {
             Event::new(
                 id.to_string(),
                 "Runtime-Test".to_string(),
@@ -8698,6 +8704,10 @@ mod tests {
                     ("objective_id".to_string(), json!("objective-live")),
                     ("state".to_string(), json!(value)),
                     ("terminal".to_string(), json!(terminal)),
+                    (
+                        "continuation_pending".to_string(),
+                        json!(continuation_pending),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -8706,16 +8716,38 @@ mod tests {
         let active = HashSet::from(["activation-live".to_string()]);
         let attempts = fold_active_model_attempts(
             vec![
-                state("1", "attempt-live", "activation-live", "queued", false),
+                state(
+                    "1",
+                    "attempt-live",
+                    "activation-live",
+                    "queued",
+                    false,
+                    false,
+                ),
                 state(
                     "2",
                     "attempt-live",
                     "activation-live",
                     "waiting_final_output",
                     false,
+                    true,
                 ),
-                state("3", "attempt-done", "activation-live", "completed", true),
-                state("4", "attempt-stale", "activation-stale", "streaming", false),
+                state(
+                    "3",
+                    "attempt-done",
+                    "activation-live",
+                    "completed",
+                    true,
+                    false,
+                ),
+                state(
+                    "4",
+                    "attempt-stale",
+                    "activation-stale",
+                    "streaming",
+                    false,
+                    false,
+                ),
             ],
             &active,
         );
@@ -8732,6 +8764,7 @@ mod tests {
             attempts[0].get("state"),
             Some(&json!("waiting_final_output"))
         );
+        assert_eq!(attempts[0].get("continuation_pending"), Some(&json!(true)));
     }
 
     #[test]
@@ -11969,6 +12002,7 @@ account = "xai-account"
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await

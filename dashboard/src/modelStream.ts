@@ -19,6 +19,7 @@ export type ModelStreamEvent =
         raw?: unknown[]
       }
     }
+  | { kind: 'incomplete'; reason: string }
   | { kind: 'completed' }
   | { kind: 'failed'; message: string }
 
@@ -40,6 +41,14 @@ export interface LiveModelAttempt {
   responseResolved: boolean
   /** Runtime's authoritative physical-attempt terminal marker. */
   terminal: boolean
+  /**
+   * Physical attempts already folded into this live continuation. Runtime
+   * still records each request independently; this is presentation metadata
+   * which prevents a logical response from briefly splitting into cards.
+   */
+  absorbedAttemptIds?: string[]
+  /** An incomplete request whose next physical attempt must inherit this draft. */
+  continuationPending?: boolean
   error?: string
 }
 
@@ -73,6 +82,7 @@ export interface ModelAttemptStateItem {
   objectiveId?: string
   state: string
   terminal: boolean
+  continuationPending?: boolean
   timestamp: string
   detail?: string
 }
@@ -134,6 +144,7 @@ export function isModelStreamEvent(value: unknown): value is ModelStreamEvent {
     'tool_arguments_delta',
     'tool_call_completed',
     'usage',
+    'incomplete',
     'completed',
     'failed',
   ].includes(kind)
@@ -146,8 +157,22 @@ function reduceAttempt(
 ): Record<string, LiveModelAttempt> {
   const { attemptId, activationId, threadKind, timestamp, stream } = item
   if (stream.kind === 'started') {
+    const predecessors = Object.values(previous)
+      .filter(attempt => (
+        attempt.attemptId !== attemptId
+        && attempt.activationId === activationId
+        && attempt.continuationPending
+      ))
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+    const predecessorIds = new Set(predecessors.flatMap(attempt => [
+      ...(attempt.absorbedAttemptIds ?? []),
+      attempt.attemptId,
+    ]))
+    const retained = predecessorIds.size === 0
+      ? previous
+      : Object.fromEntries(Object.entries(previous).filter(([, attempt]) => !predecessorIds.has(attempt.attemptId)))
     return {
-      ...previous,
+      ...retained,
       [attemptId]: {
         attemptId,
         activationId,
@@ -155,16 +180,18 @@ function reduceAttempt(
         threadId: item.threadId?.trim() ?? '',
         rootTurnId: item.rootTurnId?.trim() ?? '',
         objectiveId: item.objectiveId?.trim() ?? '',
-        text: '',
-        reasoningSummary: '',
-        startedAt: timestamp,
+        text: predecessors.map(attempt => attempt.text).join(''),
+        reasoningSummary: predecessors.map(attempt => attempt.reasoningSummary).join(''),
+        startedAt: predecessors[0]?.startedAt ?? timestamp,
         lastEventMs: nowMs,
         status: 'streaming',
         runtimeState: 'streaming',
-        toolCallCount: 0,
+        toolCallCount: predecessors.reduce((total, attempt) => total + attempt.toolCallCount, 0),
         reasoningSummaryPersisted: false,
         responseResolved: false,
         terminal: false,
+        absorbedAttemptIds: [...predecessorIds],
+        continuationPending: false,
       },
     }
   }
@@ -215,10 +242,40 @@ function reduceAttempt(
     }
   }
   if (stream.kind === 'completed') {
-    return { ...previous, [attemptId]: { ...routed, lastEventMs: nowMs, status: 'settling', runtimeState: 'settling' } }
+    return {
+      ...previous,
+      [attemptId]: {
+        ...routed,
+        lastEventMs: nowMs,
+        status: 'settling',
+        runtimeState: 'settling',
+        continuationPending: false,
+      },
+    }
+  }
+  if (stream.kind === 'incomplete') {
+    return {
+      ...previous,
+      [attemptId]: {
+        ...routed,
+        lastEventMs: nowMs,
+        status: 'settling',
+        runtimeState: 'settling',
+        continuationPending: true,
+      },
+    }
   }
   if (stream.kind === 'failed') {
-    return { ...previous, [attemptId]: { ...routed, lastEventMs: nowMs, status: 'failed', error: stream.message } }
+    return {
+      ...previous,
+      [attemptId]: {
+        ...routed,
+        lastEventMs: nowMs,
+        status: 'failed',
+        continuationPending: false,
+        error: stream.message,
+      },
+    }
   }
   return { ...previous, [attemptId]: { ...routed, lastEventMs: nowMs } }
 }
@@ -247,6 +304,7 @@ function reduceAttemptState(
         runtimeState: 'settling',
         error: item.state === 'failed' ? item.detail ?? current.error : current.error,
         terminal: true,
+        continuationPending: item.continuationPending ?? current.continuationPending,
       },
     }
   }
@@ -277,6 +335,8 @@ function reduceAttemptState(
       reasoningSummaryPersisted: current?.reasoningSummaryPersisted ?? false,
       responseResolved: current?.responseResolved ?? false,
       terminal: false,
+      absorbedAttemptIds: current?.absorbedAttemptIds,
+      continuationPending: item.continuationPending ?? current?.continuationPending ?? false,
     },
   }
 }
@@ -470,10 +530,14 @@ export function liveReasoningSummaryText(
   continuations: DurableReasoningSummary[],
   attempt: LiveModelAttempt,
 ): string {
+  const liveAttemptIds = new Set([
+    attempt.attemptId,
+    ...(attempt.absorbedAttemptIds ?? []),
+  ])
   const durablePrefix = continuations
     .filter(summary => (
       summary.activationId === attempt.activationId
-      && summary.attemptId !== attempt.attemptId
+      && !liveAttemptIds.has(summary.attemptId)
     ))
     .sort((left, right) => left.timestamp.localeCompare(right.timestamp))
     .map(summary => summary.text)

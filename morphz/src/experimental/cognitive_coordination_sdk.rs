@@ -499,6 +499,7 @@ impl CognitiveEvaluationTransport for SdkEvaluationTransport {
                     dispatch_mode: Some(MessageDispatchMode::Parallel),
                     model_alias: assignment.model.route.clone(),
                     reasoning_effort: assignment.model.reasoning_effort.clone(),
+                    target_id: None,
                 },
             )
             .await

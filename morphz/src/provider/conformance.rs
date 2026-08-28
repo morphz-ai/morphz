@@ -459,31 +459,43 @@ fn truncated_stream_is_never_promoted_to_a_successful_response() {
 }
 
 #[test]
-fn responses_incomplete_event_is_an_explicit_failure() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+fn responses_incomplete_event_preserves_partial_output_as_a_distinct_terminal() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut accumulator = StreamAccumulator::default();
-    let error = accumulator
+    accumulator
         .apply(
             ModelProtocol::OpenaiResponses,
             json!({
                 "type":"response.incomplete",
                 "response":{
+                    "status":"incomplete",
+                    "error":null,
                     "incomplete_details":{"reason":"max_output_tokens"},
                     "output":[{
                         "type":"message",
+                        "status":"in_progress",
                         "content":[{"type":"output_text","text":"authentication is user content, not an error code"}]
                     }]
                 }
             }),
             &tx,
         )
-        .unwrap_err();
+        .unwrap();
 
+    let error = accumulator.finish(&tx).unwrap_err();
     let failure = error.downcast_ref::<ModelFailure>().unwrap();
-    assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
-    assert!(failure.message.contains("response.incomplete"));
+    assert_eq!(failure.kind, ModelFailureKind::OutputLimit);
+    assert_eq!(failure.provider_code.as_deref(), Some("max_output_tokens"));
     assert!(!failure.message.contains("authentication"));
     assert!(!failure.message.contains("user content"));
+    assert!(!failure.kind.uses_provider_recovery());
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+            event,
+            ModelStreamEvent::TextDelta { text }
+                if text == "authentication is user content, not an error code"
+        ))
+    );
 }
 
 #[test]
@@ -534,7 +546,7 @@ fn responses_reasoning_only_output_limit_is_a_resumable_boundary() {
 
     let error = accumulator.finish(&tx).unwrap_err();
     let failure = error.downcast_ref::<ModelFailure>().unwrap();
-    assert_eq!(failure.kind, ModelFailureKind::EmptyResponse);
+    assert_eq!(failure.kind, ModelFailureKind::OutputLimit);
     assert!(!failure.kind.uses_provider_recovery());
     let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(events.iter().any(|event| matches!(
@@ -546,6 +558,63 @@ fn responses_reasoning_only_output_limit_is_a_resumable_boundary() {
                 && item["encrypted_content"] == "opaque-output-limit-state"
         })
     )));
+}
+
+#[test]
+fn responses_summary_only_output_limit_does_not_require_a_reasoning_item() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.reasoning_summary_text.delta",
+                "delta":"GLM still has useful reasoning progress"
+            }),
+            &tx,
+        )
+        .unwrap();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({"type":"response.reasoning_summary_text.done"}),
+            &tx,
+        )
+        .unwrap();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiResponses,
+            json!({
+                "type":"response.incomplete",
+                "response":{
+                    "status":"incomplete",
+                    "error":null,
+                    "incomplete_details":{"reason":"max_output_tokens"},
+                    "output":[],
+                    "usage":{
+                        "input_tokens":100,
+                        "output_tokens":4096,
+                        "total_tokens":4196,
+                        "output_tokens_details":{"reasoning_tokens":4096}
+                    }
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+
+    let error = accumulator.finish(&tx).unwrap_err();
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::OutputLimit);
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ModelStreamEvent::ReasoningSummaryDelta { text }
+            if text == "GLM still has useful reasoning progress"
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, ModelStreamEvent::Failed { .. })));
 }
 
 #[test]
@@ -700,6 +769,57 @@ fn responses_nonstream_failed_status_preserves_the_provider_error() {
     assert_eq!(failure.kind, ModelFailureKind::ServerUnavailable);
     assert_eq!(failure.provider_code.as_deref(), Some("upstream_failure"));
     assert!(failure.message.contains("gateway failed"));
+}
+
+#[test]
+fn responses_nonstream_incomplete_status_is_not_a_provider_failure() {
+    let error = parse_openai_responses_response(json!({
+        "status":"incomplete",
+        "error":null,
+        "incomplete_details":{"reason":"max_output_tokens"},
+        "output":[]
+    }))
+    .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::OutputLimit);
+    assert_eq!(failure.provider_code.as_deref(), Some("max_output_tokens"));
+    assert!(!failure.kind.uses_provider_recovery());
+}
+
+#[test]
+fn responses_nonstream_content_filter_incomplete_is_a_safety_boundary() {
+    let error = parse_openai_responses_response(json!({
+        "status":"incomplete",
+        "error":null,
+        "incomplete_details":{"reason":"content_filter"},
+        "output":[]
+    }))
+    .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::SafetyRefusal);
+    assert_eq!(failure.provider_code.as_deref(), Some("content_filter"));
+    assert!(!failure.kind.uses_provider_recovery());
+}
+
+#[test]
+fn responses_nonstream_unknown_incomplete_reason_stays_distinct_from_failed() {
+    let error = parse_openai_responses_response(json!({
+        "status":"incomplete",
+        "error":null,
+        "incomplete_details":{"reason":"provider_specific_boundary"},
+        "output":[]
+    }))
+    .unwrap_err();
+
+    let failure = error.downcast_ref::<ModelFailure>().unwrap();
+    assert_eq!(failure.kind, ModelFailureKind::IncompleteResponse);
+    assert_eq!(
+        failure.provider_code.as_deref(),
+        Some("provider_specific_boundary")
+    );
+    assert!(!failure.kind.uses_provider_recovery());
 }
 
 #[test]

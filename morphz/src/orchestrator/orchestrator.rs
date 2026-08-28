@@ -1594,6 +1594,11 @@ struct DurableReasoningContinuationState {
     stalled_count: usize,
     summaries: Vec<String>,
     provider_continuations: Vec<ProviderContinuation>,
+    /// Whether every boundary in the current reasoning generation has a
+    /// replayable OpenAI Responses output item. A partial native chain must
+    /// never be mixed with portable summaries: doing so both loses ordering
+    /// and presents the same reasoning twice.
+    provider_continuation_chain_complete: bool,
     /// Physical model that produced the latest persisted continuation. This
     /// fences opaque Provider state across both live model switches and
     /// process restart; portable summaries remain model-independent.
@@ -1622,7 +1627,11 @@ fn durable_reasoning_continuation_state_from_events(
             ))
         })
         .collect::<HashMap<_, _>>();
-    let mut restored = DurableReasoningContinuationState::default();
+    let mut restored = DurableReasoningContinuationState {
+        // An empty generation is complete until a boundary proves otherwise.
+        provider_continuation_chain_complete: true,
+        ..DurableReasoningContinuationState::default()
+    };
     let mut seen_attempts = HashSet::new();
     for event in events
         .iter()
@@ -1654,6 +1663,7 @@ fn durable_reasoning_continuation_state_from_events(
             restored.stalled_count = 0;
             restored.summaries.clear();
             restored.provider_continuations.clear();
+            restored.provider_continuation_chain_complete = true;
             restored.last_model_alias = None;
         } else if continuation_count <= restored.continuation_count {
             continue;
@@ -1689,14 +1699,35 @@ fn durable_reasoning_continuation_state_from_events(
             }
             restored.summaries.push(summary);
         }
-        if let Some(provider_continuation) = provider_continuation {
-            restored.provider_continuations.push(provider_continuation);
-        }
-        restored.last_model_alias = event
+        let model_alias = event
             .payload
             .get("model_alias")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        if restored.last_model_alias.is_some()
+            && model_alias.is_some()
+            && restored.last_model_alias != model_alias
+        {
+            restored.provider_continuations.clear();
+            restored.provider_continuation_chain_complete = false;
+        }
+        // Responses manual-history mode requires every prior response output
+        // item. Keep the native chain only while it is complete. Once one
+        // boundary lacks a replayable Responses item, portable summaries are
+        // the sole authoritative representation for the whole generation;
+        // later native items cannot repair the missing middle of the chain.
+        if restored.provider_continuation_chain_complete {
+            match provider_continuation {
+                Some(continuation @ ProviderContinuation::OpenaiResponses { .. }) => {
+                    restored.provider_continuations.push(continuation);
+                }
+                _ => {
+                    restored.provider_continuations.clear();
+                    restored.provider_continuation_chain_complete = false;
+                }
+            }
+        }
+        restored.last_model_alias = model_alias;
         restored.continuation_count = continuation_count;
     }
     Ok(restored)
@@ -2540,6 +2571,7 @@ async fn persist_model_attempt_state(
     route: &[(String, serde_json::Value)],
     state: &str,
     terminal: bool,
+    continuation_pending: bool,
     detail: Option<&str>,
     attributes: &[(String, serde_json::Value)],
 ) -> Result<(), DynError> {
@@ -2549,6 +2581,10 @@ async fn persist_model_attempt_state(
         ("attempt_id".to_string(), json!(attempt_id)),
         ("state".to_string(), json!(state)),
         ("terminal".to_string(), json!(terminal)),
+        (
+            "continuation_pending".to_string(),
+            json!(continuation_pending),
+        ),
     ];
     if let Some(detail) = detail.filter(|value| !value.trim().is_empty()) {
         payload.push(("detail".to_string(), json!(detail)));
@@ -2784,36 +2820,42 @@ fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let prior_progress = if reasoning.is_empty() && has_provider_continuation {
+    let prior_progress = if has_provider_continuation {
         "<provider_continuation>The Runtime attached the Provider-native reasoning continuation state in the request protocol; this state is neither a user message nor visible assistant content.</provider_continuation>".to_string()
     } else {
         format!("<previous_reasoning>\n{reasoning}\n</previous_reasoning>")
     };
     format!(
-        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning summaries and Provider-native continuation states in order; they are neither user messages nor assistant content already sent to the user. Continue from this progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid terminal state: return non-empty ordinary assistant text without tool calls, execute the required tool calls, or call no_reply exclusively when no message is genuinely needed.\n\n{prior_progress}"
+        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid terminal state: return non-empty ordinary assistant text without tool calls, execute the required tool calls, or call no_reply exclusively when no message is genuinely needed.\n\n{prior_progress}"
     )
 }
 
 fn append_reasoning_continuation_input(
     messages: &mut Vec<Message>,
     provider_continuations: &[ProviderContinuation],
+    provider_continuation_chain_complete: bool,
     reasoning_history: &[String],
 ) -> Result<(), DynError> {
-    // OpenAI Responses continuation items are self-contained input items and
-    // can be replayed before the next user instruction. OpenAI Chat's
-    // reasoning_content, by contrast, is only legal on the assistant message
-    // which owns a tool call; a reasoning-only response has no such message,
-    // so Chat-compatible providers use the durable summary prompt instead.
-    let mut has_provider_continuation = false;
-    for continuation in provider_continuations {
-        if matches!(continuation, ProviderContinuation::OpenaiResponses { .. }) {
+    // In manually managed Responses history, every prior response output item
+    // must be replayed. The complete available portable-summary history is
+    // the fallback for a chain with a missing item or a model switch, but must
+    // not be sent beside a complete native chain because that double-encodes
+    // the same reasoning.
+    // OpenAI Chat reasoning_content is only legal on the assistant tool-call
+    // message it owns, so reasoning-only Chat boundaries always use summaries.
+    let use_provider_continuations = provider_continuation_chain_complete
+        && !provider_continuations.is_empty()
+        && provider_continuations.iter().all(|continuation| {
+            matches!(continuation, ProviderContinuation::OpenaiResponses { .. })
+        });
+    if use_provider_continuations {
+        for continuation in provider_continuations {
             messages.push(provider_continuation_message(continuation.clone())?);
-            has_provider_continuation = true;
         }
     }
     messages.push(Message {
         role: "user".to_string(),
-        content: reasoning_continuation_prompt(reasoning_history, has_provider_continuation),
+        content: reasoning_continuation_prompt(reasoning_history, use_provider_continuations),
         name: None,
         tool_call_id: None,
         tool_calls: None,
@@ -8510,6 +8552,7 @@ impl Orchestrator {
                 &stream_route,
                 "input_rejected",
                 true,
+                false,
                 Some(&detail),
                 &model_input_attributes,
             )
@@ -8524,6 +8567,7 @@ impl Orchestrator {
             &stream_attempt_id,
             &stream_route,
             "streaming",
+            false,
             false,
             None,
             &model_input_attributes,
@@ -8577,6 +8621,7 @@ impl Orchestrator {
                             &forward_route,
                             "waiting_final_output",
                             false,
+                            false,
                             Some("provider reasoning item completed"),
                             &[],
                         )
@@ -8597,6 +8642,33 @@ impl Orchestrator {
                         let mut summary = forward_reasoning_summary.lock().await;
                         summary.usage.merge_from(usage);
                     }
+                    crate::llm::ModelStreamEvent::Incomplete { reason } => {
+                        if let Err(error) = persist_model_attempt_state(
+                            &forward_bus,
+                            &forward_context_id,
+                            &forward_session_id,
+                            &forward_attempt_id,
+                            &forward_route,
+                            "settling",
+                            false,
+                            true,
+                            Some(&format!(
+                                "provider response incomplete ({reason}); Runtime is classifying continuation"
+                            )),
+                            &[],
+                        )
+                        .await
+                        {
+                            tracing::warn!(event_code = "orchestrator.model_stream.incomplete_persist_failed", %error, "Failed to persist model-response incomplete state");
+                        }
+                        tracing::info!(
+                            session_id = %forward_session_id,
+                            attempt_id = %forward_attempt_id,
+                            reason,
+                            event_code = "orchestrator.model_stream.incomplete",
+                            "Native model stream reached an incomplete terminal"
+                        );
+                    }
                     crate::llm::ModelStreamEvent::Completed => {
                         forward_reasoning_summary.lock().await.complete = true;
                         if let Err(error) = persist_model_attempt_state(
@@ -8606,6 +8678,7 @@ impl Orchestrator {
                             &forward_attempt_id,
                             &forward_route,
                             "settling",
+                            false,
                             false,
                             Some("provider response completed; Runtime is classifying output"),
                             &[],
@@ -8896,7 +8969,13 @@ impl Orchestrator {
             // causes the model to reason about the same work repeatedly.
             Err(error)
                 if error.origin == ModelCompletionErrorOrigin::Provider
-                    && error.failure().kind == ModelFailureKind::EmptyResponse =>
+                    && matches!(
+                        error.failure().kind,
+                        ModelFailureKind::EmptyResponse
+                            | ModelFailureKind::OutputLimit
+                            | ModelFailureKind::IncompleteResponse
+                            | ModelFailureKind::SafetyRefusal
+                    ) =>
             {
                 self.record_provider_success(&bound_provider_resource).await;
             }
@@ -10641,12 +10720,14 @@ impl Orchestrator {
             .last_model_alias
             .clone()
             .unwrap_or_else(|| activation_model_alias.clone());
+        let mut reasoning_provider_continuation_chain_complete =
+            restored_reasoning.provider_continuation_chain_complete;
         let mut restored_provider_continuations = restored_reasoning.provider_continuations;
         if restored_reasoning.physical_continuations > 0
             && initial_request_policy.model_alias != restored_continuation_model_alias
-            && !restored_provider_continuations.is_empty()
         {
             restored_provider_continuations.clear();
+            reasoning_provider_continuation_chain_complete = false;
             tracing::info!(
                 session_id,
                 activation_id = %activation.id,
@@ -10660,6 +10741,7 @@ impl Orchestrator {
             append_reasoning_continuation_input(
                 &mut protocol_messages,
                 &restored_provider_continuations,
+                reasoning_provider_continuation_chain_complete,
                 &restored_reasoning.summaries,
             )?;
             // The restored protocol envelope is part of the next physical
@@ -10726,14 +10808,16 @@ impl Orchestrator {
                 .effective_model_request_policy(session_id, &model_attempt_id)
                 .await?;
             if last_request_model_alias.as_deref() != Some(request_policy.model_alias.as_str())
-                && !reasoning_provider_continuations.is_empty()
+                && reasoning_continuations > 0
             {
                 let previous_model = last_request_model_alias.as_deref().unwrap_or("unknown");
                 reasoning_provider_continuations.clear();
+                reasoning_provider_continuation_chain_complete = false;
                 protocol_messages = base_protocol_messages.clone();
                 append_reasoning_continuation_input(
                     &mut protocol_messages,
                     &reasoning_provider_continuations,
+                    reasoning_provider_continuation_chain_complete,
                     &reasoning_history,
                 )?;
                 tracing::info!(
@@ -11022,6 +11106,7 @@ impl Orchestrator {
                     previous_reasoning_summary = None;
                     reasoning_history.clear();
                     reasoning_provider_continuations.clear();
+                    reasoning_provider_continuation_chain_complete = true;
                     interrupted_public_text.clear();
                     tracing::warn!(
                         context_id = %context_id,
@@ -11036,8 +11121,10 @@ impl Orchestrator {
                     continue;
                 }
                 Err(error)
-                    if error.failure().kind.is_request_scoped_latency()
-                        && !error.partial_text.is_empty() =>
+                    if error.failure().kind.is_resumable_request_boundary()
+                        && !error.partial_text.is_empty()
+                        && error.reasoning_summary.trim().is_empty()
+                        && error.provider_continuation.is_none() =>
                 {
                     let provider_error = error.to_string();
                     self.record_model_attempt_terminal_state(
@@ -11068,7 +11155,7 @@ impl Orchestrator {
                 Err(error)
                     if (!error.reasoning_summary.trim().is_empty()
                         || error.provider_continuation.is_some())
-                        && (error.failure().kind.is_request_scoped_latency()
+                        && (error.failure().kind.is_resumable_request_boundary()
                             || error.failure().kind == ModelFailureKind::EmptyResponse) =>
                 {
                     let provider_error = error.to_string();
@@ -11150,15 +11237,55 @@ impl Orchestrator {
                         previous_reasoning_summary = Some(reasoning_summary.clone());
                         reasoning_history.push(reasoning_summary);
                     }
-                    if let Some(provider_continuation) = error.provider_continuation {
-                        reasoning_provider_continuations.push(provider_continuation);
+                    // Preserve the complete native Responses output-item
+                    // chain. If this boundary has no replayable item, discard
+                    // the partial native chain and use every portable summary;
+                    // a later item cannot fill the missing causal boundary.
+                    if reasoning_provider_continuation_chain_complete {
+                        match error.provider_continuation {
+                            Some(
+                                provider_continuation @ ProviderContinuation::OpenaiResponses {
+                                    ..
+                                },
+                            ) => {
+                                reasoning_provider_continuations.push(provider_continuation);
+                            }
+                            _ => {
+                                reasoning_provider_continuations.clear();
+                                reasoning_provider_continuation_chain_complete = false;
+                            }
+                        }
+                    }
+                    if !error.partial_text.is_empty() {
+                        interrupted_public_text.push_str(&error.partial_text);
                     }
                     protocol_messages = base_protocol_messages.clone();
                     append_reasoning_continuation_input(
                         &mut protocol_messages,
                         &reasoning_provider_continuations,
+                        reasoning_provider_continuation_chain_complete,
                         &reasoning_history,
                     )?;
+                    if !interrupted_public_text.is_empty() {
+                        let continuation_prompt = protocol_messages
+                            .pop()
+                            .ok_or("reasoning continuation prompt disappeared")?;
+                        protocol_messages.push(Message {
+                            role: "assistant".to_string(),
+                            content: interrupted_public_text.clone(),
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
+                        protocol_messages.push(Message {
+                            content: format!(
+                                "{}\n\n{}",
+                                continuation_prompt.content,
+                                interrupted_text_continuation_prompt()
+                            ),
+                            ..continuation_prompt
+                        });
+                    }
                     continue;
                 }
                 Err(error) if error.failure().kind == ModelFailureKind::SafetyRefusal => {
@@ -11245,6 +11372,7 @@ impl Orchestrator {
                     previous_reasoning_summary = None;
                     reasoning_history.clear();
                     reasoning_provider_continuations.clear();
+                    reasoning_provider_continuation_chain_complete = true;
                     interrupted_public_text.clear();
                     tracing::warn!(
                         context_id = %context_id,
@@ -13549,6 +13677,8 @@ impl Orchestrator {
                 failure.kind,
                 ModelFailureKind::InvalidModelOrRequest
                     | ModelFailureKind::QuotaExhausted
+                    | ModelFailureKind::OutputLimit
+                    | ModelFailureKind::IncompleteResponse
                     | ModelFailureKind::SafetyRefusal
             );
         let ordinary_provider_wait = failure.kind.uses_provider_recovery()
@@ -13663,6 +13793,14 @@ impl Orchestrator {
             }
             ModelFailureKind::ReasoningContinuationExhausted => {
                 "The model repeatedly returned only reasoning progress without producing final content or tool calls within the Runtime's configured safety boundary. This turn was stopped safely rather than misclassified as a Provider failure and retried indefinitely.".to_string()
+            }
+            ModelFailureKind::OutputLimit => {
+                "The model reached its output-token boundary without returning any resumable text or reasoning state. The Runtime stopped this turn without treating the incomplete response as a Provider failure; committed work was preserved.".to_string()
+            }
+            ModelFailureKind::IncompleteResponse => {
+                format!(
+                    "The model returned an incomplete response boundary which the Runtime cannot resume automatically. This was not treated as a Provider outage.\n\nResponse boundary: {error_text}"
+                )
             }
             ModelFailureKind::SafetyRefusal => {
                 "The model explicitly refused this request at its safety boundary. The Runtime tried a bounded recent-evidence recovery and then stopped without treating the refusal as a Provider outage; the Session, Mind state, and committed changes were preserved.".to_string()
@@ -13794,6 +13932,7 @@ impl Orchestrator {
             &route,
             "queued",
             false,
+            false,
             Some("waiting for Provider admission"),
             &attributes,
         )
@@ -13818,6 +13957,7 @@ impl Orchestrator {
             &route,
             state,
             true,
+            state == "continued",
             detail,
             &[],
         )
@@ -20095,7 +20235,7 @@ mod tests {
             summary("attempt-0", "segment one"),
             continuation("attempt-0", 1, "opaque-1", "route-a"),
             summary("attempt-1", "segment two"),
-            continuation("attempt-1", 2, "opaque-2", "route-b"),
+            continuation("attempt-1", 2, "opaque-2", "route-a"),
         ];
 
         let restored =
@@ -20104,13 +20244,27 @@ mod tests {
         assert_eq!(restored.continuation_count, 2);
         assert_eq!(restored.stalled_count, 0);
         assert_eq!(restored.summaries, ["segment one", "segment two"]);
-        assert_eq!(restored.last_model_alias.as_deref(), Some("route-b"));
+        assert_eq!(restored.last_model_alias.as_deref(), Some("route-a"));
+        assert!(restored.provider_continuation_chain_complete);
         assert_eq!(restored.provider_continuations.len(), 2);
         assert!(matches!(
             &restored.provider_continuations[1],
             ProviderContinuation::OpenaiResponses { reasoning_items }
                 if reasoning_items[0]["encrypted_content"] == "opaque-2"
         ));
+
+        let switched_events = vec![
+            summary("attempt-0", "segment one"),
+            continuation("attempt-0", 1, "opaque-1", "route-a"),
+            summary("attempt-1", "segment two"),
+            continuation("attempt-1", 2, "opaque-2", "route-b"),
+        ];
+        let switched =
+            durable_reasoning_continuation_state_from_events("activation-a", &switched_events)
+                .unwrap();
+        assert!(!switched.provider_continuation_chain_complete);
+        assert!(switched.provider_continuations.is_empty());
+        assert_eq!(switched.summaries, ["segment one", "segment two"]);
     }
 
     #[test]
