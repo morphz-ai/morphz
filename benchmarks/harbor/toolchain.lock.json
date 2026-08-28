@@ -14,18 +14,18 @@
     "leaderboard_submission_policy_checked_at": "2026-08-20"
   },
   "runtime": {
-    "git_tag": "me08-runtime-3289fe4-20260828",
-    "git_commit": "3289fe42056c45c357c4b21b7dfd9390b1d4f1a0",
+    "git_tag": "me08-runtime-2b01310-20260828",
+    "git_commit": "2b01310107f3d7819eedd5e07d2605ce46803ea8",
     "rust_toolchain": "1.97.1",
     "builder_image": "rust:1.97.1-bullseye",
     "builder_image_digest": "sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0",
     "rustup_dist_server": "https://static.rust-lang.org",
     "rustup_update_root": "https://static.rust-lang.org/rustup",
     "cargo_registry": "sparse+https://rsproxy.cn/index/",
-    "build_git_commit": "3289fe42056c45c357c4b21b7dfd9390b1d4f1a0",
+    "build_git_commit": "2b01310107f3d7819eedd5e07d2605ce46803ea8",
     "target": "x86_64-unknown-linux-gnu",
     "container_platform": "linux/amd64",
-    "binary_sha256": "4ac3668d219cd25529c287b4dc4f4292f7a77b15f565fea718771ac61dfcd19b",
+    "binary_sha256": "e4a500e4ba7f2fae3284728bcdd338f4504884349da975886a8b78fc56ade77d",
     "prior_finalfix_git_tag": "me08-runtime-4bbc3d6-20260827",
     "prior_finalfix_git_commit": "4bbc3d63f4bda09947dc79dc5656edc71f8c02fa",
     "prior_finalfix_binary_sha256": "31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575",
@@ -36,7 +36,7 @@
     "prior_me08_git_commit": "5e4b0ffcd89245f19d84ec3569605ae27a44e02b",
     "prior_me08_binary_sha256": "f98c17bcc3204216aa39b3833994ad01da45c3015e02216eeb12a9290dd99e67",
     "superseded_cache_affected_binary_sha256": "960a7d49089969bb0bbd6517307561fa2d83fd5a4bad68856b47fc8a75eb68ac",
-    "watcher_sha256": "9bfaa4b2eb87f65274ac09409bf6d46700175acb4870f5522a8f96e458e4bd06",
+    "watcher_sha256": "70b33e20d661574543a478cd2bf9781355be8b2031c6e2124c8aa509d444c97d",
     "superseded_dynamic_sqlite_watcher_sha256": "9873d7945f8a86b583ba5ed8884bc286db51da9292d3f8569e8d8582c19785bb"
   },
   "model": {
