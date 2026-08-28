@@ -2627,6 +2627,9 @@ impl MorphzRuntime {
             }
         });
         let edge_store = Arc::clone(&self.inner.store);
+        let edge_execution_jobs = Arc::clone(&self.inner.execution_jobs);
+        let edge_background_scheduler = Arc::clone(&self.inner.background_scheduler);
+        let edge_worker_coordination = self.inner.store.worker_coordination_mode();
         let reconcile_interval = std::time::Duration::from_secs(
             self.inner
                 .config
@@ -2644,6 +2647,7 @@ impl MorphzRuntime {
             .max(1);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(reconcile_interval);
+            let mut background_outbox_recovery_needed = false;
             // Do not classify a freshly started Node before it has one full
             // heartbeat window to reconnect.
             ticker.tick().await;
@@ -2668,6 +2672,53 @@ impl MorphzRuntime {
                     Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(event_code = "runtime.edge_execution.reconciliation_failed", %error, "Edge execution reconciliation failed")
+                    }
+                }
+                match edge_execution_jobs
+                    .reconcile_expired_edge_background_jobs(
+                        edge_worker_coordination,
+                        edge_store.as_ref(),
+                        Some(edge_store.as_ref()),
+                        now,
+                    )
+                    .await
+                {
+                    Ok(report) => {
+                        let recovered = report.recovered_receipts.len();
+                        let requeued = report.requeue_receipts.len();
+                        let lost = report.lost_receipts.len();
+                        background_outbox_recovery_needed |= recovered + lost > 0;
+                        if recovered + requeued + lost > 0 {
+                            tracing::info!(
+                                recovered,
+                                requeued,
+                                lost,
+                                event_code = "runtime.edge_background.reconciliation_completed",
+                                "Expired Edge background Execution Jobs were reconciled"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            event_code = "runtime.edge_background.reconciliation_failed",
+                            %error,
+                            "Expired Edge background Execution Job reconciliation failed"
+                        );
+                    }
+                }
+                if background_outbox_recovery_needed {
+                    match edge_background_scheduler
+                        .recover_terminal_background_outboxes()
+                        .await
+                    {
+                        Ok(_) => background_outbox_recovery_needed = false,
+                        Err(error) => {
+                            tracing::warn!(
+                                event_code = "runtime.edge_background.outbox_recovery_failed",
+                                %error,
+                                "Reconciled Edge background results could not be delivered; retrying on the next cycle"
+                            );
+                        }
                     }
                 }
             }

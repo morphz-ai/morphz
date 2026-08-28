@@ -1232,9 +1232,10 @@ async fn supervise_edge_background_task(
                 &parent_job_id,
                 &lease,
                 true,
-                Some(format!(
-                    "edge://{}/{}/output",
-                    credentials.node_id, lease.job.id
+                Some(crate::execution::edge_background_process_progress_ref(
+                    &credentials.node_id,
+                    snapshot.process_group_id,
+                    &snapshot.artifact_path,
                 )),
                 lease_seconds,
             )
@@ -1568,6 +1569,33 @@ impl EdgeNodeWorker {
                                     )
                                     .into());
                                 }
+                                let mut lease = lease;
+                                let snapshot = crate::tool::edge_background_task_snapshot(
+                                    &receipt.local_task_id,
+                                )
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Edge background receipt '{}' has no physical process owner checkpoint",
+                                        receipt.local_task_id
+                                    )
+                                })?;
+                                let progress_ref =
+                                    crate::execution::edge_background_process_progress_ref(
+                                        &self.credentials.node_id,
+                                        snapshot.process_group_id,
+                                        &snapshot.artifact_path,
+                                    );
+                                lease.job = self
+                                    .gateway
+                                    .heartbeat_background_execution(
+                                        &self.credentials,
+                                        &command.job_id,
+                                        &lease,
+                                        true,
+                                        Some(progress_ref),
+                                        self.config.lease_seconds,
+                                    )
+                                    .await?;
                                 output = rewrite_edge_background_receipt(&output, &lease.job.id)?;
                                 background_supervisor = Some((lease, receipt.local_task_id));
                             }
@@ -2798,6 +2826,10 @@ mod tests {
         .expect("Edge background terminal Jobs were not durably recorded");
         assert_eq!(terminal_jobs.len(), 2);
         for task_id in &task_ids {
+            let terminal_job = terminal_jobs
+                .iter()
+                .find(|job| job.id == *task_id)
+                .expect("central terminal Edge background Job");
             assert_eq!(
                 terminal_jobs
                     .iter()
@@ -2805,6 +2837,26 @@ mod tests {
                     .count(),
                 1,
                 "one Edge background exit must have exactly one central terminal Job"
+            );
+            let checkpoint: serde_json::Value = serde_json::from_str(
+                terminal_job
+                    .progress_ref
+                    .as_deref()
+                    .expect("Edge background process checkpoint"),
+            )
+            .unwrap();
+            assert_eq!(checkpoint["kind"], "edge_background_process");
+            assert_eq!(checkpoint["node_id"], node_id);
+            assert!(checkpoint["process_group_id"]
+                .as_i64()
+                .is_some_and(|pgid| pgid > 1));
+            assert!(checkpoint["artifact_path"]
+                .as_str()
+                .is_some_and(|path| !path.is_empty()));
+            assert_eq!(
+                crate::execution::execution_job_process_group_id(terminal_job),
+                None,
+                "the central Runtime must not treat an Edge PID namespace as local"
             );
             assert!(runtime.get_execution_job(task_id).await.unwrap().is_none());
         }

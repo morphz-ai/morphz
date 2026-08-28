@@ -269,6 +269,7 @@ pub struct JobHeartbeat<'a> {
 }
 
 const LOCAL_BACKGROUND_PROCESS_PROGRESS_KIND: &str = "local_background_process";
+const EDGE_BACKGROUND_PROCESS_PROGRESS_KIND: &str = "edge_background_process";
 
 /// Durable, fenced physical-owner checkpoint written only after a local
 /// managed process has spawned. The logical ExecutionJob request is immutable
@@ -280,6 +281,24 @@ pub(crate) fn local_background_process_progress_ref(
 ) -> String {
     serde_json::json!({
         "kind": LOCAL_BACKGROUND_PROCESS_PROGRESS_KIND,
+        "process_group_id": process_group_id,
+        "artifact_path": artifact_path,
+    })
+    .to_string()
+}
+
+/// Durable physical-owner checkpoint for a process living inside an Edge
+/// worker.  The PGID is meaningful only in that worker's PID namespace, so it
+/// is deliberately distinct from `local_background_process` and must never be
+/// passed to a central Runtime's `killpg(2)`.
+pub(crate) fn edge_background_process_progress_ref(
+    node_id: &str,
+    process_group_id: i32,
+    artifact_path: &str,
+) -> String {
+    serde_json::json!({
+        "kind": EDGE_BACKGROUND_PROCESS_PROGRESS_KIND,
+        "node_id": node_id,
         "process_group_id": process_group_id,
         "artifact_path": artifact_path,
     })
@@ -384,6 +403,39 @@ pub fn startup_recovery_plan(
         };
     }
     restart_plan(job)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconcileCause {
+    RuntimeStartup,
+    ExpiredEdgeBackgroundLease,
+}
+
+fn recovery_plan(
+    job: &ExecutionJobRecord,
+    coordination: WorkerCoordinationMode,
+    now: chrono::DateTime<chrono::Utc>,
+    cause: ReconcileCause,
+) -> RestartPlan {
+    let mut plan = startup_recovery_plan(job, coordination, now);
+    if cause != ReconcileCause::ExpiredEdgeBackgroundLease {
+        return plan;
+    }
+    plan.action = match plan.action {
+        RestartAction::Preserve => RestartAction::Preserve,
+        RestartAction::Requeue { .. } => RestartAction::Requeue {
+            reason: "Edge background owner lease expired before an irreversible side effect was recorded; fenced parent replay may reclaim the deterministic child Job".to_string(),
+        },
+        RestartAction::MarkLost { .. } if job.cancel_requested_at.is_some() => {
+            RestartAction::MarkLost {
+                reason: "Edge background owner lease expired after cancellation was requested, but physical termination was not proven".to_string(),
+            }
+        }
+        RestartAction::MarkLost { .. } => RestartAction::MarkLost {
+            reason: "Edge background owner lease expired after the persisted side-effect boundary; physical process outcome is unknown and automatic replay is forbidden".to_string(),
+        },
+    };
+    plan
 }
 
 fn restart_lost_reason(job: &ExecutionJobRecord) -> String {
@@ -619,8 +671,74 @@ where
             .store
             .list_execution_jobs(ExecutionJobFilter::default())
             .await?;
-        let mut report = RestartReconcileReport::default();
         let now = chrono::Utc::now();
+
+        self.reconcile_jobs(
+            jobs,
+            coordination,
+            events,
+            action_groups,
+            now,
+            ReconcileCause::RuntimeStartup,
+        )
+        .await
+    }
+
+    /// Reconciles only Edge-owned background children whose durable owner
+    /// lease has expired. Startup recovery cannot close these Jobs while the
+    /// central Runtime remains healthy, so this method is safe to call from
+    /// the ordinary Edge reconciliation loop.
+    pub async fn reconcile_expired_edge_background_jobs<E: EventStore + ?Sized>(
+        &self,
+        coordination: WorkerCoordinationMode,
+        events: &E,
+        action_groups: Option<&dyn ActionGroupStore>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> ExecutionResult<RestartReconcileReport> {
+        let jobs = self
+            .store
+            .list_execution_jobs(ExecutionJobFilter {
+                tool_name: Some("exec/background".to_string()),
+                status: Some(ExecutionJobStatus::Running),
+                include_terminal: false,
+                newest_first: false,
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| {
+                job.request
+                    .get("owner_kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("edge_worker")
+            })
+            .filter(|job| {
+                job.lease_expires_at
+                    .is_none_or(|expires_at| expires_at <= now)
+            })
+            .collect::<Vec<_>>();
+
+        self.reconcile_jobs(
+            jobs,
+            coordination,
+            events,
+            action_groups,
+            now,
+            ReconcileCause::ExpiredEdgeBackgroundLease,
+        )
+        .await
+    }
+
+    async fn reconcile_jobs<E: EventStore + ?Sized>(
+        &self,
+        jobs: Vec<ExecutionJobRecord>,
+        coordination: WorkerCoordinationMode,
+        events: &E,
+        action_groups: Option<&dyn ActionGroupStore>,
+        now: chrono::DateTime<chrono::Utc>,
+        cause: ReconcileCause,
+    ) -> ExecutionResult<RestartReconcileReport> {
+        let mut report = RestartReconcileReport::default();
 
         for job in jobs {
             let action_group_id = action_group_id_for_job(action_groups, &job).await?;
@@ -727,13 +845,24 @@ where
                     JobReceipt::NotFound { .. } => continue,
                 }
             }
-            let plan = startup_recovery_plan(&job, coordination, now);
+            let plan = recovery_plan(&job, coordination, now, cause);
             match &plan.action {
                 RestartAction::Preserve => report.preserved_job_ids.push(job.id),
                 RestartAction::Requeue { .. } => {
-                    report
-                        .requeue_receipts
-                        .push(self.requeue(&job.id, job.revision).await?);
+                    let receipt = self.requeue(&job.id, job.revision).await?;
+                    match &receipt {
+                        JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
+                            report.requeue_receipts.push(receipt);
+                        }
+                        JobReceipt::Conflict { current, .. }
+                        | JobReceipt::Rejected { current, .. } => {
+                            // A concurrent heartbeat or terminal commit won
+                            // the revision fence. Preserve that newer fact and
+                            // let a later cycle reassess it if still needed.
+                            report.preserved_job_ids.push(current.id.clone());
+                        }
+                        JobReceipt::NotFound { .. } => {}
+                    }
                 }
                 RestartAction::MarkLost { reason } => {
                     let wake_thread = direct_wake;
@@ -754,10 +883,19 @@ where
                             wake_thread,
                         )
                         .await?;
-                    report.lost_receipts.push(JobReceipt::from_mutation(
-                        JobOperation::ReconcileLost,
-                        mutation,
-                    ));
+                    let receipt = JobReceipt::from_mutation(JobOperation::ReconcileLost, mutation);
+                    match &receipt {
+                        JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
+                            report.lost_receipts.push(receipt);
+                        }
+                        JobReceipt::Conflict { current, .. }
+                        | JobReceipt::Rejected { current, .. } => {
+                            // In particular, a just-in-time Edge heartbeat
+                            // must beat a stale lease snapshot.
+                            report.preserved_job_ids.push(current.id.clone());
+                        }
+                        JobReceipt::NotFound { .. } => {}
+                    }
                 }
             }
         }
@@ -1320,6 +1458,78 @@ mod tests {
             execution_job_process_group_id(&job),
             Some(3131),
             "legacy timeout-detach requests remain readable"
+        );
+    }
+
+    #[test]
+    fn edge_process_checkpoint_is_typed_but_never_host_killable() {
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::ReconcileRequired,
+        );
+        job.request = json!({ "kind": "background_exec" });
+        job.progress_ref = Some(edge_background_process_progress_ref(
+            "edge-node-7",
+            4242,
+            "/edge/archive/output.log",
+        ));
+
+        let checkpoint: serde_json::Value =
+            serde_json::from_str(job.progress_ref.as_deref().unwrap()).unwrap();
+        assert_eq!(checkpoint["kind"], EDGE_BACKGROUND_PROCESS_PROGRESS_KIND);
+        assert_eq!(checkpoint["node_id"], "edge-node-7");
+        assert_eq!(checkpoint["process_group_id"], 4242);
+        assert_eq!(checkpoint["artifact_path"], "/edge/archive/output.log");
+        assert_eq!(
+            execution_job_process_group_id(&job),
+            None,
+            "a container-local Edge PGID must never be sent to host killpg"
+        );
+    }
+
+    #[test]
+    fn expired_edge_owner_requeues_only_before_the_side_effect_boundary() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 29, 1, 0, 0).single().unwrap();
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::ReconcileRequired,
+        );
+        job.lease_expires_at = Some(now - chrono::Duration::seconds(1));
+
+        assert!(matches!(
+            recovery_plan(
+                &job,
+                WorkerCoordinationMode::SharedLeases,
+                now,
+                ReconcileCause::ExpiredEdgeBackgroundLease,
+            )
+            .action,
+            RestartAction::Requeue { .. }
+        ));
+
+        job.side_effect_started_at = Some(now - chrono::Duration::seconds(5));
+        assert!(matches!(
+            recovery_plan(
+                &job,
+                WorkerCoordinationMode::SharedLeases,
+                now,
+                ReconcileCause::ExpiredEdgeBackgroundLease,
+            )
+            .action,
+            RestartAction::MarkLost { reason }
+                if reason.contains("owner lease expired")
+        ));
+
+        job.lease_expires_at = Some(now + chrono::Duration::seconds(1));
+        assert_eq!(
+            recovery_plan(
+                &job,
+                WorkerCoordinationMode::SharedLeases,
+                now,
+                ReconcileCause::ExpiredEdgeBackgroundLease,
+            )
+            .action,
+            RestartAction::Preserve
         );
     }
 

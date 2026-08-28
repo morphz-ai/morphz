@@ -5270,6 +5270,7 @@ fn terminate_local_background_process(task_id: &str) -> Result<Option<(i32, bool
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EdgeBackgroundTaskSnapshot {
     pub status: BackgroundTaskStatus,
+    pub process_group_id: i32,
     pub artifact_path: String,
     pub exit_code: Option<i32>,
     pub output_tail: String,
@@ -5280,6 +5281,7 @@ pub(crate) fn edge_background_task_snapshot(task_id: &str) -> Option<EdgeBackgro
         .get(task_id)
         .map(|task| EdgeBackgroundTaskSnapshot {
             status: task.status,
+            process_group_id: task.pgid,
             artifact_path: task.artifact_path.clone(),
             exit_code: task.exit_code,
             output_tail: task.output_tail.clone(),
@@ -15015,6 +15017,131 @@ Body
                 .await
                 .is_err(),
             "lost Job 的陈旧 wait timer 不得伪造仍在运行 observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn online_reconciliation_closes_an_expired_edge_background_owner() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let manager = scheduler.execution_jobs.as_ref().unwrap();
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-expired-edge-background",
+                "exec-call-expired-edge-background",
+            )
+            .unwrap(),
+            activation_id: "activation-expired-edge-background".to_string(),
+            thread_id: "thread-expired-edge-background".to_string(),
+            agent_id: "agent-expired-edge-background".to_string(),
+            context_id: "context-expired-edge-background".to_string(),
+            session_id: "session-expired-edge-background".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call-expired-edge-background".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-expired-edge-background",
+            "trigger-expired-edge-background",
+        )
+        .await;
+
+        let child_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_call_id).unwrap();
+        let claim_token = "expired-edge-background-claim";
+        let mut job = scheduler
+            .reserve_edge_execution(
+                &task_id,
+                &parent,
+                serde_json::json!({
+                    "kind": "background_exec",
+                    "parent_job_id": parent.parent_job_id,
+                    "task_id": task_id,
+                    "background_source": "explicit_parameter",
+                    "owner_kind": "edge_worker",
+                    "artifact_path": "edge://node-expired/task/output",
+                }),
+                "edge-worker-expired",
+                claim_token,
+                30,
+            )
+            .await
+            .unwrap();
+        let checkpoint = crate::execution::edge_background_process_progress_ref(
+            "node-expired",
+            4242,
+            "/edge/archive/expired.log",
+        );
+        job = applied_background_job(
+            scheduler
+                .heartbeat_edge_execution(
+                    &job.id,
+                    job.revision,
+                    claim_token,
+                    30,
+                    true,
+                    Some(&checkpoint),
+                )
+                .await
+                .unwrap(),
+            "Edge physical-owner checkpoint",
+        )
+        .unwrap();
+
+        let live = manager
+            .reconcile_expired_edge_background_jobs(
+                crate::memory::WorkerCoordinationMode::SharedHostLeases,
+                store.as_ref(),
+                None,
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(live, crate::execution::RestartReconcileReport::default());
+        assert_eq!(
+            store
+                .get_execution_job(&task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ExecutionJobStatus::Running
+        );
+
+        let after_lease = job.lease_expires_at.unwrap() + chrono::Duration::milliseconds(1);
+        let recovery = manager
+            .reconcile_expired_edge_background_jobs(
+                crate::memory::WorkerCoordinationMode::SharedHostLeases,
+                store.as_ref(),
+                None,
+                after_lease,
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovery.lost_receipts.len(), 1);
+        assert!(recovery.requeue_receipts.is_empty());
+        let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, ExecutionJobStatus::Lost);
+        assert!(terminal
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("owner lease expired")));
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            1,
+            "the online terminal fact must be delivered through the ordinary durable outbox"
         );
     }
 
