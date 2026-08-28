@@ -8,12 +8,10 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from benchmarks.harbor.harness_intervention_gate import evaluate_intervention
 from benchmarks.harbor.run_benchmark import LOCK_PATH, REPO_ROOT
 from benchmarks.harbor.summarize_four_arm_comparison import summarize
 
@@ -50,28 +48,10 @@ def load_task_set(path: Path) -> tuple[dict[str, Any], list[str]]:
 
 
 def require_harness_gates() -> dict[str, Any]:
-    checks = {
-        "morphz-v0.5": (
-            REPO_ROOT / "morphz-evals/harnesses/terminal-task.hns",
-            REPO_ROOT / "benchmarks/harbor/terminal_task_v0_5_intervention_review.json",
-        ),
-        "morphz-dialectical-practice": (
-            REPO_ROOT
-            / "morphz-evals/harnesses/terminal-task-dialectical-practice.hns",
-            REPO_ROOT
-            / "benchmarks/harbor/terminal_task_dialectical_practice_intervention_review.json",
-        ),
-    }
-    reports: dict[str, Any] = {}
-    for arm, (source_path, review_path) in checks.items():
-        report = evaluate_intervention(
-            source_path.read_text(encoding="utf-8"),
-            json.loads(review_path.read_text(encoding="utf-8")),
-        )
-        if not report["eligible_for_model_run"]:
-            raise RuntimeError(f"Harness intervention gate rejected {arm}: {report}")
-        reports[arm] = report
-    return reports
+    raise RuntimeError(
+        "terminal-task@0.5.0 was retired and deleted; the historical "
+        "four-arm launcher is intentionally disabled"
+    )
 
 
 def _common_task_args(tasks: list[str], concurrency: int) -> list[str]:
@@ -88,56 +68,11 @@ def arm_commands(
     jobs_root: Path,
     concurrency: int,
 ) -> dict[str, list[str]]:
-    python = sys.executable
-    morphz_common = _common_task_args(tasks, concurrency)
-    codex_common: list[str] = ["--concurrency", str(concurrency)]
-    for task in tasks:
-        codex_common.extend(["--task", task])
-    codex_common.extend(["--expect-trials", str(len(tasks))])
-    return {
-        "morphz-native": [
-            python,
-            "-m",
-            "benchmarks.harbor.run_benchmark",
-            "full",
-            "--jobs-dir",
-            str(jobs_root / "morphz-native"),
-            "--harness-mode",
-            "none",
-            *morphz_common,
-        ],
-        "morphz-v0.5": [
-            python,
-            "-m",
-            "benchmarks.harbor.run_benchmark",
-            "full",
-            "--jobs-dir",
-            str(jobs_root / "morphz-v0.5"),
-            "--harness-profile",
-            "minimal-v0.5",
-            *morphz_common,
-        ],
-        "morphz-dialectical-practice": [
-            python,
-            "-m",
-            "benchmarks.harbor.run_benchmark",
-            "full",
-            "--jobs-dir",
-            str(jobs_root / "morphz-dialectical-practice"),
-            "--harness-profile",
-            "dialectical-practice-v0.1",
-            *morphz_common,
-        ],
-        "official-codex": [
-            python,
-            "-m",
-            "benchmarks.harbor.run_codex_comparison",
-            "full",
-            "--jobs-dir",
-            str(jobs_root / "official-codex"),
-            *codex_common,
-        ],
-    }
+    del tasks, jobs_root, concurrency
+    raise RuntimeError(
+        "terminal-task@0.5.0 was retired and deleted; the historical "
+        "four-arm launcher is intentionally disabled"
+    )
 
 
 def _git_commit() -> str:

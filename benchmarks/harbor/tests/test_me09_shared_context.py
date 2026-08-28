@@ -10,6 +10,7 @@ from unittest import mock
 
 from benchmarks.harbor.run_me09_shared_context import (
     DEFAULT_MANIFEST,
+    _harness_binding_count,
     _sha256,
     _harbor_command,
     _write_runtime_config,
@@ -18,11 +19,40 @@ from benchmarks.harbor.run_me09_shared_context import (
 from benchmarks.harbor.summarize_me09_shared_context import event_root_turn_id
 from benchmarks.harbor.shared_context_agent import (
     SharedContextMorphzAgent,
+    _message_body,
     _turn_snapshot,
 )
 
 
 class Me09SharedContextTest(unittest.TestCase):
+    def test_message_request_is_explicitly_unharnessed(self) -> None:
+        body = _message_body(
+            instruction="solve the task",
+            client_message_id="me09-00-test",
+            target_id="me09-target-00",
+        )
+        self.assertNotIn("harness", body)
+        self.assertEqual(body["reasoning_effort"], "max")
+        self.assertEqual(body["target_id"], "me09-target-00")
+
+    def test_harness_binding_gate_requires_zero_events(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            db_path = Path(raw_dir) / "shared.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute("CREATE TABLE events (topic TEXT NOT NULL)")
+            connection.commit()
+            connection.close()
+            self.assertEqual(_harness_binding_count(db_path), 0)
+
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                "INSERT INTO events(topic) VALUES "
+                "('runtime/evaluation_harness_binding')"
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(_harness_binding_count(db_path), 1)
+
     def test_root_user_message_uses_its_event_id_as_root_turn(self) -> None:
         self.assertEqual(
             event_root_turn_id(

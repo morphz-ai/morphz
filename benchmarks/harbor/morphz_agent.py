@@ -25,13 +25,6 @@ from benchmarks.harbor.benchmark_integrity import (
 from benchmarks.harbor.morphz_atif import write_trajectory
 
 
-DEFAULT_HARNESS_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "morphz-evals"
-    / "harnesses"
-    / "terminal-task.hns"
-)
-DEFAULT_HARNESS_REF = "terminal-task@0.5.0"
 HARNESS_MODE_BOUND = "bound"
 HARNESS_MODE_NONE = "none"
 
@@ -90,7 +83,7 @@ class MorphzAgent(BaseAgent):
         ).expanduser().resolve()
         if not watcher.is_file():
             raise FileNotFoundError(f"MORPHZ_HARBOR_WATCHER does not exist: {watcher}")
-        harness_mode = self._setting("MORPHZ_HARNESS_MODE", HARNESS_MODE_BOUND)
+        harness_mode = self._setting("MORPHZ_HARNESS_MODE", HARNESS_MODE_NONE)
         if harness_mode not in {HARNESS_MODE_BOUND, HARNESS_MODE_NONE}:
             raise ValueError(
                 "MORPHZ_HARNESS_MODE must be `bound` or `none`, got "
@@ -99,7 +92,7 @@ class MorphzAgent(BaseAgent):
         harness: Path | None = None
         if harness_mode == HARNESS_MODE_BOUND:
             harness = Path(
-                self._setting("MORPHZ_HARBOR_HARNESS", str(DEFAULT_HARNESS_PATH))
+                self._setting("MORPHZ_HARBOR_HARNESS")
             ).expanduser().resolve()
             if not harness.is_file():
                 raise FileNotFoundError(
@@ -112,7 +105,7 @@ class MorphzAgent(BaseAgent):
                     "Terminal-Bench Harness source digest mismatch: "
                     f"expected {expected_harness_sha256}, got {actual_harness_sha256}"
                 )
-            harness_ref = self._setting("MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF)
+            harness_ref = self._setting("MORPHZ_HARNESS_REF")
             if "@" not in harness_ref:
                 raise ValueError(
                     "MORPHZ_HARNESS_REF must identify an exact installed package "
@@ -174,7 +167,7 @@ class MorphzAgent(BaseAgent):
         await environment.upload_file(binary, "/tmp/morphz")
         await environment.upload_file(watcher, "/tmp/morphz-harbor-wait")
         if harness is not None:
-            await environment.upload_file(harness, "/tmp/terminal-task.hns")
+            await environment.upload_file(harness, "/tmp/morphz-harness.hns")
         await environment.upload_file(config, "/tmp/morphz-harbor.toml")
         await environment.upload_file(runner, "/tmp/run-morphz-harbor.sh")
         result = await environment.exec(
@@ -211,16 +204,14 @@ class MorphzAgent(BaseAgent):
             "MORPHZ_CODING_EVAL_MODE": "true",
             "MORPHZ_PERMISSION_MODE": "full_access",
             "MORPHZ_HARNESS_MODE": self._setting(
-                "MORPHZ_HARNESS_MODE", HARNESS_MODE_BOUND
+                "MORPHZ_HARNESS_MODE", HARNESS_MODE_NONE
             ),
             "MORPHZ_HARBOR_TIMEOUT_SECS": self._setting(
                 "MORPHZ_HARBOR_TIMEOUT_SECS", "21600"
             ),
         }
         if env["MORPHZ_HARNESS_MODE"] == HARNESS_MODE_BOUND:
-            env["MORPHZ_HARNESS_REF"] = self._setting(
-                "MORPHZ_HARNESS_REF", DEFAULT_HARNESS_REF
-            )
+            env["MORPHZ_HARNESS_REF"] = self._setting("MORPHZ_HARNESS_REF")
         try:
             result = await environment.exec(
                 command="/tmp/run-morphz-harbor.sh",

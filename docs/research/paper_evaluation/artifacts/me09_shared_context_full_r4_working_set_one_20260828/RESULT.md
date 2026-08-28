@@ -1,12 +1,19 @@
 # ME-09 r4：共享 Context、八 Session 与单 Session 工作集
 
+> **解释状态更正（2026-08-28）：不可作为 ME-08 的单变量对照。** 冻结数据库显示
+> 89/89 个 Evaluation 均绑定了 `terminal-task@0.5.0`，而 ME-08 的 89/89 个
+> Evaluation 均为无 Harness。所以下述 70/89 是“共享 Context + Harness + r4 Runtime/
+> 配置”的历史事实，只能用于工程诊断；原文所有 ME-08 配对统计均不得解释为共享 Context
+> 的单独效应。原始结果和数字保留，不作删除或改写。
+
 ## 结论
 
 本次正式运行完整闭合 89 道 Terminal-Bench 2.1 任务，Morphz 官方 verifier 原始得分为
-**70/89（78.65%）**。冻结的 ME-08 隔离 Context 对照为 **72/89（80.90%）**；配对差为
+**70/89（78.65%）**。由于处理组额外绑定了 Harness，冻结的 ME-08 无 Harness 结果
+**72/89（80.90%）**不再构成单变量对照；历史配对差为
 **−2.25 个百分点**，任务级自助法 95% 区间为 **[−10.11,+5.62]** 个百分点，双侧精确
-配对检验 `p=0.774`。一次运行没有显示共享 Context 带来显著性能变化，也没有形成正向迁移
-证据。
+配对检验 `p=0.774`，但这些统计混合了 Harness 与共享 Context 差异，不能据此判断共享
+Context 的性能效应，也没有形成正向迁移证据。
 
 `max_sessions=1` 后，先前探索性运行观察到的大幅回退没有重现：正式 r4 与隔离 Context
 对照只差两题。但共享 Context 并发的工程成本仍然明显，输入 Token 为 ME-08 的 1.84 倍，
@@ -21,6 +28,7 @@
 - 模型：精确 `gpt-5.6-sol`，`max` reasoning，`full_access`，无 fallback
 - 拓扑：一个 Agent、一个共享 Context、八个稳定 Session、八个 Execution Target，并发 8
 - Session 工作集：`max_sessions=1`
+- Harness：`terminal-task@0.5.0`（误绑定；因此本轮不可与无 Harness 的 ME-08 作单变量比较）
 - 样本：89 题，每题一次，模型与任务均零重试
 - 主指标：官方 verifier `raw_reward`
 - 开始：`2026-08-27T22:30:19.842473Z`

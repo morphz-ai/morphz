@@ -54,25 +54,7 @@
     "listen_address": "172.17.0.1:8317",
     "public_ingress": false
   },
-  "harness": {
-    "id": "terminal-task",
-    "version": "0.5.0",
-    "path": "morphz-evals/harnesses/terminal-task.hns",
-    "source_sha256": "6ca246455f68e688843c07b4adcee62bff8fabd3ec3a7016dc65fa6082435ef6",
-    "artifact_hash": "sha256:19a17f0120a855c7848240546422287602e179c49092d065525521f65c71ad8f",
-    "evaluation_owner": "model",
-    "status": "frozen-development-comparison"
-  },
   "harness_profiles": {
-    "minimal-v0.5": {
-      "id": "terminal-task",
-      "version": "0.5.0",
-      "path": "morphz-evals/harnesses/terminal-task.hns",
-      "source_sha256": "6ca246455f68e688843c07b4adcee62bff8fabd3ec3a7016dc65fa6082435ef6",
-      "artifact_hash": "sha256:19a17f0120a855c7848240546422287602e179c49092d065525521f65c71ad8f",
-      "evaluation_owner": "model",
-      "status": "frozen-development-comparison"
-    },
     "dialectical-practice-v0.1": {
       "id": "terminal-task-dialectical-practice",
       "version": "0.1.0",

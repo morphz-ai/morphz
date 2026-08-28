@@ -44,7 +44,7 @@ ME-06 与原始 ME-08 仍保留其历史
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation；30 条盲化人工校准包已冻结 | `formal-complete / trace-audit-complete / human-packet-ready / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；[`human packet`](./artifacts/me07_evaluator_human_validation_packet_20260827/README.md) | 两名独立人工评分是可选增强项；不得把系统级效果全部归因于 Mind Frame |
 | ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题同期运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），官方 Codex 74/89（83.15%）；差 −2.25pp，95% CI [−11.24,+6.74]，精确配对 `p=0.804` | `external-complete / incorporated` | [`current full-89 pair`](./artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/RESULT.md) | 当前论文证据已闭合；只有研究题内采样方差时才需要重复运行 |
-| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r4 完整 89 题：共享 Context 70/89，ME-08 隔离 Context 72/89；差 −2.25pp，95% CI [−10.11,+5.62]，`p=0.774`；E1 可见性充分，但 E2/E3 均为 0，未观察到正向迁移 | `external-complete / supplemental / excluded-from-current-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`r4 result`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md)；[`historical stop audit`](./me_09_shared_context_interim_stop_audit_2026_08_27.md) | 当前批次关闭；后续并发研究优先降低重复投影、模型调用和超时，不从本轮宣称迁移收益 |
+| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r4 历史得分 70/89，但 89/89 Evaluation 误绑定 `terminal-task@0.5.0`；ME-08 为无 Harness，因此 r3/r4/r5 均不是预注册的单变量共享 Context 对照 | `invalid / harness-contaminated / diagnostic-only / excluded-from-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`invalidated protocol`](./me_09_shared_context_multisession_terminal_bench_protocol_v1.md)；[`r4 diagnostic result`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md) | 仅在启动器断言零 Harness 绑定、Runtime/模型/权限等重新冻结后才可新开正式批次；旧结果不得拼接或补算 |
 
 ## 依赖
 
@@ -54,7 +54,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
        ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
-       └─> ME-08 ─> ME-09 (补充实验已完整闭合；不进入当前论文)
+       └─> ME-08 ─> ME-09 (历史批次因 Harness 污染作废；不进入当前论文)
 ```
 
 ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-06 只有在核心状态机制及评分器稳定后才扩成长运行。
@@ -76,14 +76,25 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-28
 
-- ME-09 r4 在修订后的细粒度 Context transaction replace 与 `max_sessions=1` 下完整闭合
-  Terminal-Bench 2.1 的 89 题单次运行。一个 Agent/共享 Context、八 Session/八 Execution
+- ME-09 配置审计确认 r3、r4、r5 的消息入口均绑定了 `terminal-task@0.5.0`，与 Proposal v1
+  规定的“ME-08/ME-09 均无 Harness”相冲突。r4 的 70/89 继续保留为组合条件下的历史工程
+  事实，但不再作为共享 Context 单变量结论；r5 已中止，不补跑或拼接。当前源码已删除该
+  Harness 包、移除 ME-09 安装/绑定入口，并把通用 Harbor 默认改为 `harness_mode=none`；
+- ME-08 独立复核三轮完整 89 题原始 SQLite，共 267 份数据库，
+  `runtime/evaluation_harness_binding` 合计为 0；启动器、launcher manifest、strict result 与
+  public gate 也一致为 `harness_mode=none`。当前论文的 ME-08 72/89 结果未受该 Harness
+  配置错误污染。审计见
+  [`me_08_harness_binding_audit_20260828.md`](./me_08_harness_binding_audit_20260828.md)；
+
+- ME-09 r4 是现已判定存在 Harness 污染的历史工程运行；它在修订后的细粒度 Context
+  transaction replace 与 `max_sessions=1` 下完整闭合 Terminal-Bench 2.1 的 89 题单次运行。
+  一个 Agent/共享 Context、八 Session/八 Execution
   Target、并发 8、`gpt-5.6-sol`/max、零重试；官方 verifier 为 70/89（78.65%）。同 89 题
   ME-08 隔离 Context 对照为 72/89（80.90%），配对差 −2.25pp，自助法 95% CI
   `[-10.11,+5.62]`，双侧精确 `p=0.774414`。E1 记录 4,101 次跨 Session 可见暴露，但
-  E2 显式 Frame 使用和 E3 结果相关迁移均为 0，因此只支持“没有观察到显著退化”，不支持
-  正向迁移主张；
-- ME-09 r4 的 19 个失败中有 7 个 Harbor `AgentTimeoutError`、3 个模型安全拒绝和 9 个普通
+  E2 显式 Frame 使用和 E3 结果相关迁移均为 0；由于处理组额外绑定 Harness，配对统计不再
+  支持任何共享 Context 性能结论，仅保留为诊断；
+- 该历史 r4 的 19 个失败中有 7 个 Harbor `AgentTimeoutError`、3 个模型安全拒绝和 9 个普通
   任务/verifier 失败，全部按零保留。Provider 输入 Token 106,085,406，为 ME-08 的 1.844×；
   输入+输出为 1.829×，墙钟为 1.893×，说明单 Session 工作集修复了先前的大幅准确率回退，
   但没有消除共享 Context 并发的重复投影、缓存下降和超时成本。完整报告见

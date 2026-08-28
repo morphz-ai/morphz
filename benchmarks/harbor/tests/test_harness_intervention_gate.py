@@ -55,16 +55,9 @@ class HarnessInterventionGateTest(unittest.TestCase):
         self.assertIn("too_many_intervention_scopes", report["findings"])
         self.assertIn("natural_language_budget_exceeded", report["findings"])
 
-    def test_checked_in_v0_5_passes_the_minimal_intervention_gate(self) -> None:
+    def test_retired_v0_5_source_is_deleted(self) -> None:
         source_path = ROOT / "morphz-evals/harnesses/terminal-task.hns"
-        review_path = ROOT / "benchmarks/harbor/terminal_task_v0_5_intervention_review.json"
-
-        report = evaluate_intervention(
-            source_path.read_text(encoding="utf-8"),
-            json.loads(review_path.read_text(encoding="utf-8")),
-        )
-
-        self.assertTrue(report["eligible_for_model_run"])
+        self.assertFalse(source_path.exists())
 
     def test_dialectical_practice_arm_passes_the_same_intervention_gate(self) -> None:
         source_path = (

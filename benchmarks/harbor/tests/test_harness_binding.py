@@ -8,9 +8,7 @@ import unittest
 from pathlib import Path
 
 from benchmarks.harbor.morphz_agent import (
-    DEFAULT_HARNESS_PATH,
-    DEFAULT_HARNESS_REF,
-    HARNESS_MODE_NONE,
+    HARNESS_MODE_BOUND,
     MorphzAgent,
 )
 
@@ -85,24 +83,23 @@ class HarnessBindingSetupTest(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_checked_in_package_matches_the_frozen_source_digest(self) -> None:
+    def test_retired_terminal_task_package_is_not_selectable(self) -> None:
         lock_path = Path(__file__).parents[1] / "toolchain.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
-        self.assertEqual(lock["harness"]["id"], "terminal-task")
-        self.assertEqual(lock["harness"]["version"], "0.5.0")
+        self.assertNotIn("harness", lock)
         self.assertEqual(
-            set(lock["harness_profiles"]),
-            {"minimal-v0.5", "dialectical-practice-v0.1"},
+            set(lock["harness_profiles"]), {"dialectical-practice-v0.1"}
         )
-        self.assertEqual(
-            hashlib.sha256(DEFAULT_HARNESS_PATH.read_bytes()).hexdigest(),
-            lock["harness"]["source_sha256"],
+        self.assertFalse(
+            Path(__file__).parents[3]
+            .joinpath("morphz-evals/harnesses/terminal-task.hns")
+            .exists()
         )
 
     def test_runner_installs_before_binding_the_first_evaluation(self) -> None:
         runner = Path(__file__).parents[1] / "run_morphz_harbor.sh"
         source = runner.read_text(encoding="utf-8")
-        install = source.index("harness install /tmp/terminal-task.hns")
+        install = source.index("harness install /tmp/morphz-harness.hns")
         binding = source.index('harness_args+=("--harness=${MORPHZ_HARNESS_REF')
         send = source.index("cat /tmp/morphz-instruction.md")
         self.assertLess(install, binding)
@@ -111,7 +108,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
     def test_runner_has_an_explicit_no_harness_control_arm(self) -> None:
         runner = Path(__file__).parents[1] / "run_morphz_harbor.sh"
         source = runner.read_text(encoding="utf-8")
-        self.assertIn("harness_mode=${MORPHZ_HARNESS_MODE:-bound}", source)
+        self.assertIn("harness_mode=${MORPHZ_HARNESS_MODE:-none}", source)
         self.assertIn("none)", source)
         self.assertIn('"${harness_args[@]}"', source)
 
@@ -157,7 +154,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         self.assertIn("--expect-trials 1", section)
         self.assertIn("--harness-mode none", section)
 
-    def test_setup_uploads_the_digest_locked_terminal_task_harness(self) -> None:
+    def test_setup_uploads_an_explicit_digest_locked_harness(self) -> None:
         async def scenario(root: Path) -> None:
             (root / "logs").mkdir()
             binary = root / "morphz"
@@ -175,7 +172,8 @@ class HarnessBindingSetupTest(unittest.TestCase):
                     "MORPHZ_HARBOR_BINARY": str(binary),
                     "MORPHZ_HARBOR_WATCHER": str(watcher),
                     "MORPHZ_HARBOR_HARNESS": str(harness),
-                    "MORPHZ_HARNESS_REF": DEFAULT_HARNESS_REF,
+                    "MORPHZ_HARNESS_MODE": HARNESS_MODE_BOUND,
+                    "MORPHZ_HARNESS_REF": "custom-terminal-task@1.0.0",
                     "MORPHZ_HARNESS_SOURCE_SHA256": digest,
                     "MORPHZ_PROVIDER_BASE_URL": "http://127.0.0.1:8317/v1",
                 },
@@ -184,7 +182,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
             await agent.setup(environment)
 
             destinations = {destination for _, destination in environment.uploads}
-            self.assertIn("/tmp/terminal-task.hns", destinations)
+            self.assertIn("/tmp/morphz-harness.hns", destinations)
             self.assertIn("/tmp/run-morphz-harbor.sh", destinations)
             config = (root / "logs" / "morphz-harbor.toml").read_text(
                 encoding="utf-8"
@@ -217,7 +215,8 @@ class HarnessBindingSetupTest(unittest.TestCase):
                     "MORPHZ_HARBOR_BINARY": str(binary),
                     "MORPHZ_HARBOR_WATCHER": str(watcher),
                     "MORPHZ_HARBOR_HARNESS": str(harness),
-                    "MORPHZ_HARNESS_REF": DEFAULT_HARNESS_REF,
+                    "MORPHZ_HARNESS_MODE": HARNESS_MODE_BOUND,
+                    "MORPHZ_HARNESS_REF": "custom-terminal-task@1.0.0",
                     "MORPHZ_HARNESS_SOURCE_SHA256": "0" * 64,
                     "MORPHZ_PROVIDER_BASE_URL": "http://127.0.0.1:8317/v1",
                 },
@@ -243,7 +242,6 @@ class HarnessBindingSetupTest(unittest.TestCase):
                 extra_env={
                     "MORPHZ_HARBOR_BINARY": str(binary),
                     "MORPHZ_HARBOR_WATCHER": str(watcher),
-                    "MORPHZ_HARNESS_MODE": HARNESS_MODE_NONE,
                     "MORPHZ_PROVIDER_BASE_URL": "http://127.0.0.1:8317/v1",
                 },
             )
@@ -251,7 +249,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
             await agent.setup(environment)
 
             destinations = {destination for _, destination in environment.uploads}
-            self.assertNotIn("/tmp/terminal-task.hns", destinations)
+            self.assertNotIn("/tmp/morphz-harness.hns", destinations)
             self.assertIn("/tmp/run-morphz-harbor.sh", destinations)
 
         with tempfile.TemporaryDirectory() as raw_dir:

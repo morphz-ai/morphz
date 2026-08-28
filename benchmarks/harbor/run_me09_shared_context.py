@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -26,19 +27,15 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
-    from .run_benchmark import runtime_provider_config, selected_harness
+    from .run_benchmark import runtime_provider_config
     from .shared_context_agent import _request_json
 else:
-    from run_benchmark import runtime_provider_config, selected_harness
+    from run_benchmark import runtime_provider_config
     from shared_context_agent import _request_json
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LOCK_PATH = Path(__file__).with_name("toolchain.lock.json")
 DEFAULT_MANIFEST = Path(__file__).with_name("me09_task_manifest_v1.json")
-DEFAULT_HARNESS = (
-    REPO_ROOT / "morphz-evals" / "harnesses" / "terminal-task.hns"
-)
 
 
 def _sha256(path: Path) -> str:
@@ -117,6 +114,18 @@ def _provider_preflight(base_url: str, credential: str) -> None:
     }
     if "gpt-5.6-sol" not in model_ids:
         raise RuntimeError("Provider does not advertise exact model gpt-5.6-sol")
+
+
+def _harness_binding_count(database_path: Path) -> int:
+    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    try:
+        row = connection.execute(
+            "SELECT count(*) FROM events "
+            "WHERE topic = 'runtime/evaluation_harness_binding'"
+        ).fetchone()
+    finally:
+        connection.close()
+    return int(row[0]) if row is not None else 0
 
 
 def _write_runtime_config(
@@ -343,7 +352,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-commit", required=True)
     parser.add_argument("--expected-binary-sha256", required=True)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--harness", type=Path, default=DEFAULT_HARNESS)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--bind", default="0.0.0.0:8429")
     parser.add_argument("--host-url", default="http://127.0.0.1:8429")
@@ -361,7 +369,6 @@ def main() -> int:
     args = parse_args()
     binary = args.binary.expanduser().resolve()
     manifest_path = args.manifest.expanduser().resolve()
-    harness = args.harness.expanduser().resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise FileNotFoundError(f"ME-09 executable is missing: {binary}")
     if args.max_sessions < 1:
@@ -378,13 +385,7 @@ def main() -> int:
             "ME-09 Runtime binary differs from the frozen ME-08 binary: "
             f"expected {expected_binary_sha256}, got {binary_sha256}"
         )
-    if not harness.is_file():
-        raise FileNotFoundError(f"ME-09 Harness is missing: {harness}")
     manifest = load_and_validate_manifest(manifest_path)
-    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
-    harness_lock = selected_harness(lock, "minimal-v0.5")
-    if _sha256(harness) != str(harness_lock["source_sha256"]):
-        raise RuntimeError("ME-09 Harness source digest differs from minimal-v0.5 lock")
     base_url, protocol, credential = runtime_provider_config()
     if protocol != "openai-responses":
         raise RuntimeError(f"ME-09 requires openai-responses, got {protocol}")
@@ -405,6 +406,7 @@ def main() -> int:
     print("permission_mode=full_access")
     print("lane_count=8")
     print("shared_context=me09-shared-context")
+    print("harness_mode=none")
     print("max_sessions=" + str(args.max_sessions))
     if args.mode == "preflight":
         return 0
@@ -443,27 +445,6 @@ def main() -> int:
             "MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS": "32768",
         }
     )
-    install = subprocess.run(
-        [
-            str(binary),
-            "--config-file",
-            str(config_path),
-            "harness",
-            "install",
-            str(harness),
-        ],
-        cwd=run_root,
-        env=runtime_environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if install.returncode != 0:
-        raise RuntimeError(
-            "ME-09 Harness installation failed: "
-            + install.stderr.decode("utf-8", errors="replace")[-4000:]
-        )
     runtime_stdout = (runtime_root / "stdout.log").open("wb")
     runtime_stderr = (runtime_root / "stderr.log").open("wb")
     runtime_process = subprocess.Popen(
@@ -539,6 +520,13 @@ def main() -> int:
         runtime_stdout.close()
         runtime_stderr.close()
 
+    harness_binding_count = _harness_binding_count(database_path)
+    if harness_binding_count != 0:
+        raise RuntimeError(
+            "ME-09 native run persisted unexpected Harness bindings: "
+            f"{harness_binding_count}"
+        )
+
     expected_tasks = 89 if args.mode == "full" else 8
     task_results = [task for lane in lane_results for task in lane["tasks"]]
     launcher_result = {
@@ -553,6 +541,8 @@ def main() -> int:
         "model": "gpt-5.6-sol",
         "reasoning_effort": "max",
         "permission_mode": "full_access",
+        "harness_mode": "none",
+        "harness_binding_count": harness_binding_count,
         "shared_context_id": "me09-shared-context",
         "max_sessions": args.max_sessions,
         "lane_count": 8,

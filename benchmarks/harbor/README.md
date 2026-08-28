@@ -15,10 +15,12 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
 - Morphz `paper-eval-runtime-v4`;
-- exact model-owned Harness profiles are selected from the checked-in `.hns`
-  packages and bound to the first real Evaluation of every Harness-enabled
-  trial; the current profiles are `terminal-task@0.5.0` and the separate
-  exploratory `terminal-task-dialectical-practice@0.1.0`;
+- native Morphz (`harness_mode=none`) is the default for reportable runs;
+  Harness binding requires an explicit package and profile;
+- `terminal-task@0.5.0` has been retired and its source removed after it was
+  accidentally bound in ME-09; the separate exploratory
+  `terminal-task-dialectical-practice@0.1.0` remains available only when
+  selected explicitly;
 - Rust `1.97.1` on the pinned Bullseye builder image, with OpenSSL linked
   statically so the binary also runs on the dataset's oldest glibc base;
 - the frozen overseas artifact uses the official Rustup distribution endpoint
@@ -272,14 +274,11 @@ It did not demonstrate convergence improvement; v0.4 is closed and must not be
 retried or expanded. The result and public evidence are recorded in
 [`terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md`](../../docs/research/paper_evaluation/terminal_bench_2_1_harness_v0_4_raman_result_2026_08_24.md).
 
-`terminal-task@0.5.0` is a deliberately minimal successor. It removes the
-v0.4 task contract, mandatory ledgers, convergence/closure workflow,
-verification discipline and domain guards. It exposes only optional cognitive
-objects for deliverable, evidence, uncertainty, checkpoint and next-action
-value. The original v0.4 source remains checked in as historical evidence. A
-static intervention gate rejects strong directive language, unreviewed scopes,
-domain specialization and duplicated base-Agent responsibilities before a
-candidate can enter a model run.
+`terminal-task@0.5.0` was an experimental minimal successor. It is now retired:
+the active source, lock profile, default binding and executable four-arm entry
+point have been removed. Historical protocols and immutable run artifacts are
+retained for audit, while the original v0.4 source remains checked in as
+historical evidence.
 
 The separate exploratory profile
 `terminal-task-dialectical-practice@0.1.0` was synthesized after a complete

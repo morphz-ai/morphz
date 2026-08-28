@@ -57,7 +57,7 @@ if [[ -e "${MORPHZ_STORAGE_SQLITE_PATH}" ]]; then
   exit 2
 fi
 
-harness_mode=${MORPHZ_HARNESS_MODE:-bound}
+harness_mode=${MORPHZ_HARNESS_MODE:-none}
 harness_args=()
 case "$harness_mode" in
   bound)
@@ -66,7 +66,7 @@ case "$harness_mode" in
     # not activate the Harness or grant capabilities; the explicit binding
     # below governs only the first real Evaluation in this fresh trial.
     /tmp/morphz --config-file /tmp/morphz-harbor.toml \
-      harness install /tmp/terminal-task.hns \
+      harness install /tmp/morphz-harness.hns \
       > /logs/agent/harness-install.stdout.log \
       2> /logs/agent/harness-install.stderr.log
     harness_args+=("--harness=${MORPHZ_HARNESS_REF:?MORPHZ_HARNESS_REF is required}")

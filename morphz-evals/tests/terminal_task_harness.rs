@@ -1,10 +1,6 @@
 use morphz::harness_package::HarnessPackage;
 use morphz::sexpr_eval::EvaluationOwner;
 
-const TERMINAL_TASK_HARNESS_SOURCE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/harnesses/terminal-task.hns"
-));
 const DIALECTICAL_PRACTICE_HARNESS_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/harnesses/terminal-task-dialectical-practice.hns"
@@ -28,25 +24,6 @@ fn assert_terminal_tools(package: &HarnessPackage) {
             "context_tx",
         ]
     );
-}
-
-#[test]
-fn terminal_task_v0_5_is_a_minimal_model_owned_portable_package() {
-    let package =
-        HarnessPackage::from_source("terminal-task.hns", TERMINAL_TASK_HARNESS_SOURCE).unwrap();
-
-    assert_eq!(package.manifest.id, "terminal-task");
-    assert_eq!(package.manifest.version, "0.5.0");
-    assert_eq!(
-        package.artifact_hash,
-        "sha256:19a17f0120a855c7848240546422287602e179c49092d065525521f65c71ad8f"
-    );
-    assert_terminal_tools(&package);
-    let contract = package.contract.to_string();
-    assert!(contract.contains("optional-working-state"));
-    assert!(!contract.contains("closure-protocol"));
-    assert!(!contract.contains("domain-guards"));
-    assert!(package.mind.is_some());
 }
 
 #[test]

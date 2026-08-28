@@ -96,14 +96,10 @@ def runtime_version(lock: dict[str, object]) -> str:
     return f'{runtime["git_tag"]}@{runtime["git_commit"]}'
 
 
-def selected_harness(
-    lock: dict[str, object], profile: str = "minimal-v0.5"
-) -> dict[str, object]:
+def selected_harness(lock: dict[str, object], profile: str) -> dict[str, object]:
     profiles = lock.get("harness_profiles")
     if isinstance(profiles, dict) and profile in profiles:
         harness = profiles[profile]
-    elif profile == "minimal-v0.5" and isinstance(lock.get("harness"), dict):
-        harness = lock["harness"]
     else:
         raise RuntimeError(f"Unknown frozen Harness profile: {profile}")
     if not isinstance(harness, dict):
@@ -432,9 +428,13 @@ def frozen_run_identity(
     dataset = lock["terminal_bench"]
     model = lock["model"]
     permissions = lock["permissions"]
-    harness_profile = getattr(args, "harness_profile", "minimal-v0.5")
-    harness = selected_harness(lock, harness_profile)
-    harness_mode = getattr(args, "harness_mode", "bound")
+    harness_profile = getattr(args, "harness_profile", None)
+    harness_mode = getattr(args, "harness_mode", "none")
+    harness: dict[str, object] | None = None
+    if harness_mode == "bound":
+        if not isinstance(harness_profile, str) or not harness_profile:
+            raise RuntimeError("bound Harness mode requires --harness-profile")
+        harness = selected_harness(lock, harness_profile)
     identity.update(
         {
             "runtime_tag": runtime["git_tag"],
@@ -449,7 +449,7 @@ def frozen_run_identity(
             "fallback": model["fallback"],
             "permission_mode": permissions["mode"],
             "harness_mode": harness_mode,
-            "harness_profile": harness_profile if harness_mode == "bound" else None,
+            "harness_profile": harness_profile if harness is not None else None,
             "harness": (
                 {
                     "id": harness["id"],
@@ -457,7 +457,7 @@ def frozen_run_identity(
                     "artifact_hash": harness["artifact_hash"],
                     "source_sha256": harness["source_sha256"],
                 }
-                if harness_mode == "bound"
+                if harness is not None
                 else None
             ),
             "attempts": args.attempts,
@@ -497,14 +497,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--harness-mode",
         choices=("bound", "none"),
-        default="bound",
-        help="Bind the frozen Harness or run the native Morphz control arm.",
+        default="none",
+        help="Run native Morphz by default; bind only an explicitly selected Harness.",
     )
     parser.add_argument(
         "--harness-profile",
-        choices=("minimal-v0.5", "dialectical-practice-v0.1"),
-        default="minimal-v0.5",
-        help="Select one digest-locked Harness profile for the bound arm.",
+        choices=("dialectical-practice-v0.1",),
+        help="Required with --harness-mode bound; selects a digest-locked profile.",
     )
     parser.add_argument(
         "--expect-trials",
@@ -610,7 +609,11 @@ def main() -> int:
     if args.dataset_path is not None and not args.dataset_path.is_dir():
         raise RuntimeError(f"Local Terminal-Bench task directory is missing: {args.dataset_path}")
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
-    harness = selected_harness(lock, args.harness_profile)
+    harness: dict[str, object] | None = None
+    if args.harness_mode == "bound":
+        if args.harness_profile is None:
+            raise RuntimeError("--harness-mode bound requires --harness-profile")
+        harness = selected_harness(lock, args.harness_profile)
     command = harbor_command(args, lock)
     expected_trial_count, expected_tasks = expected_job_shape(args, lock)
     count_error = expected_trial_count_error(args, expected_trial_count)
@@ -639,15 +642,6 @@ def main() -> int:
             "MORPHZ_HARBOR_BINARY": str(args.binary.resolve()),
             "MORPHZ_HARBOR_WATCHER": str(args.watcher.resolve()),
             "MORPHZ_HARBOR_VERSION": runtime_identity,
-            "MORPHZ_HARBOR_HARNESS": str(
-                (REPO_ROOT / str(harness["path"])).resolve()
-            ),
-            "MORPHZ_HARNESS_REF": (
-                f"{harness['id']}@{harness['version']}"
-            ),
-            "MORPHZ_HARNESS_SOURCE_SHA256": str(
-                harness["source_sha256"]
-            ),
             "MORPHZ_PROVIDER_PROTOCOL": protocol,
             "MORPHZ_PROVIDER_BASE_URL": effective_base_url,
             "MORPHZ_PROVIDER_MODEL": "gpt-5.6-sol",
@@ -657,6 +651,16 @@ def main() -> int:
             "DOCKER_DEFAULT_PLATFORM": "linux/amd64",
         }
     )
+    if harness is not None:
+        environment.update(
+            {
+                "MORPHZ_HARBOR_HARNESS": str(
+                    (REPO_ROOT / str(harness["path"])).resolve()
+                ),
+                "MORPHZ_HARNESS_REF": f"{harness['id']}@{harness['version']}",
+                "MORPHZ_HARNESS_SOURCE_SHA256": str(harness["source_sha256"]),
+            }
+        )
     before = {
         path.resolve()
         for path in args.jobs_dir.iterdir()

@@ -211,6 +211,7 @@ class HarborCommandTest(unittest.TestCase):
             attempts=1,
             concurrency=5,
             harness_mode="bound",
+            harness_profile="dialectical-practice-v0.1",
             task=["db-wal-recovery", "git-multibranch"],
         )
         lock = {
@@ -231,11 +232,13 @@ class HarborCommandTest(unittest.TestCase):
                 "fallback": False,
             },
             "permissions": {"mode": "full_access"},
-            "harness": {
-                "id": "terminal-task",
-                "version": "0.1.0",
-                "artifact_hash": "sha256:harness",
-                "source_sha256": "sha256:source",
+            "harness_profiles": {
+                "dialectical-practice-v0.1": {
+                    "id": "terminal-task-dialectical-practice",
+                    "version": "0.1.0",
+                    "artifact_hash": "sha256:harness",
+                    "source_sha256": "sha256:source",
+                }
             },
         }
 
@@ -247,7 +250,9 @@ class HarborCommandTest(unittest.TestCase):
         self.assertEqual(identity["model"], "gpt-5.6-sol")
         self.assertEqual(identity["concurrency"], 5)
         self.assertEqual(identity["max_retries"], 0)
-        self.assertEqual(identity["harness"]["id"], "terminal-task")
+        self.assertEqual(
+            identity["harness"]["id"], "terminal-task-dialectical-practice"
+        )
         self.assertEqual(
             identity["harness"]["artifact_hash"], "sha256:harness"
         )
@@ -302,6 +307,33 @@ class HarborCommandTest(unittest.TestCase):
 
         self.assertEqual(identity["harness_mode"], "none")
         self.assertIsNone(identity["harness"])
+
+    @patch(
+        "benchmarks.harbor.run_benchmark.infrastructure_identity",
+        return_value={
+            "infrastructure_git_commit": "infra123",
+            "infrastructure_git_tags": [],
+            "infrastructure_tracked_clean": True,
+        },
+    )
+    def test_bound_identity_requires_an_explicit_profile(
+        self, _identity: object
+    ) -> None:
+        args = argparse.Namespace(
+            attempts=1,
+            concurrency=1,
+            harness_mode="bound",
+            harness_profile=None,
+            task=[],
+        )
+        lock = {
+            "runtime": {},
+            "terminal_bench": {},
+            "model": {},
+            "permissions": {},
+        }
+        with self.assertRaisesRegex(RuntimeError, "requires --harness-profile"):
+            frozen_run_identity(args, lock)
 
 
 if __name__ == "__main__":

@@ -259,10 +259,23 @@ def audit_database(
             "SELECT revision, state_json, state_hash, updated_at FROM mind_projections WHERE context_id = ?",
             (EXPECTED_CONTEXT,),
         ).fetchone()
+        harness_binding_count = int(
+            connection.execute(
+                "SELECT count(*) FROM events "
+                "WHERE topic = 'runtime/evaluation_harness_binding'"
+            ).fetchone()[0]
+        )
     finally:
         connection.close()
 
-    require(len(sessions) == 8, f"database has {len(sessions)} ME-09 sessions, expected eight")
+    require(
+        harness_binding_count == 0,
+        f"ME-09 native protocol has {harness_binding_count} unexpected Harness bindings",
+    )
+    require(
+        len(sessions) == 8,
+        f"database has {len(sessions)} ME-09 sessions, expected eight",
+    )
     expected_sessions = {str(lane_map[index]["session_id"]) for index in range(8)}
     expected_targets = {str(lane_map[index]["target_id"]) for index in range(8)}
     require({row["id"] for row in sessions} == expected_sessions, "database Session set differs from manifest")
@@ -407,6 +420,8 @@ def audit_database(
     return {
         "e0_topology": {
             "passed": True,
+            "harness_mode": "none",
+            "harness_binding_count": harness_binding_count,
             "agent_count": 1,
             "context_count": 1,
             "session_count": len(sessions),

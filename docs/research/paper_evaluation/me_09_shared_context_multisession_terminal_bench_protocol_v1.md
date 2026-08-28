@@ -1,6 +1,12 @@
 # ME-09：共享 Context、多 Session 与跨任务迁移协议 v1
 
-状态：`frozen-candidate / awaiting-real-smoke`
+> **作废通知（2026-08-28）：本文件不得再用于启动实验。** 本文件错误地把
+> `terminal-task@0.5.0` Harness 加入处理组，与已确认的
+> [`ME-09 Proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)
+> “ME-08 与 ME-09 均无 Harness”的单变量边界冲突。按本文件执行的 r3、r4、r5
+> 只能作为组合条件下的工程诊断，不得与 ME-08 做共享 Context 因果比较。
+
+状态：`invalidated / harness-contaminated / do-not-run`
 协议标识：`ME-09-TB2.1-shared-context-8-session-v1`
 
 ## 1. 研究问题

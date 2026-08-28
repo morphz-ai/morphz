@@ -30,9 +30,6 @@ from benchmarks.harbor.benchmark_integrity import (
 from benchmarks.harbor.morphz_atif import write_trajectory
 
 
-DEFAULT_HARNESS_REF = "terminal-task@0.5.0"
-
-
 def _request_json(
     base_url: str,
     dashboard_token: str,
@@ -102,6 +99,22 @@ def _turn_snapshot(
         if isinstance(payload, dict):
             snapshot["reply_text"] = str(payload.get("text") or "")
     return snapshot
+
+
+def _message_body(
+    *,
+    instruction: str,
+    client_message_id: str,
+    target_id: str,
+) -> dict[str, Any]:
+    """Build the native-Morphz ME-09 request without a Harness binding."""
+
+    return {
+        "text": instruction,
+        "client_message_id": client_message_id,
+        "reasoning_effort": "max",
+        "target_id": target_id,
+    }
 
 
 class SharedContextMorphzAgent(BaseAgent):
@@ -349,13 +362,11 @@ class SharedContextMorphzAgent(BaseAgent):
             self._api,
             "POST",
             f"/api/sessions/{session_id}/messages",
-            {
-                "text": self._instruction,
-                "client_message_id": f"me09-{lane_id:02d}-{task_digest}",
-                "harness": {"id": "terminal-task", "version": "0.5.0"},
-                "reasoning_effort": "max",
-                "target_id": target_id,
-            },
+            _message_body(
+                instruction=self._instruction,
+                client_message_id=f"me09-{lane_id:02d}-{task_digest}",
+                target_id=target_id,
+            ),
         )
         self._root_turn_id = str(receipt.get("event_id") or "")
         if not self._root_turn_id:

@@ -20,40 +20,18 @@ class FourArmComparisonTest(unittest.TestCase):
         self.assertIn("raman-fitting", tasks)
         self.assertIn("vulnerable-secret", tasks)
 
-    def test_commands_are_four_single_attempt_isolated_arms(self) -> None:
+    def test_historical_four_arm_commands_are_disabled(self) -> None:
         _, tasks = load_task_set(DEFAULT_TASK_SET)
-        commands = arm_commands(
-            tasks=tasks,
-            jobs_root=Path("suite/jobs"),
-            concurrency=1,
-        )
+        with self.assertRaisesRegex(RuntimeError, "retired and deleted"):
+            arm_commands(
+                tasks=tasks,
+                jobs_root=Path("suite/jobs"),
+                concurrency=1,
+            )
 
-        self.assertEqual(
-            set(commands),
-            {
-                "morphz-native",
-                "morphz-v0.5",
-                "morphz-dialectical-practice",
-                "official-codex",
-            },
-        )
-        self.assertIn("none", commands["morphz-native"])
-        self.assertIn("minimal-v0.5", commands["morphz-v0.5"])
-        self.assertIn(
-            "dialectical-practice-v0.1",
-            commands["morphz-dialectical-practice"],
-        )
-        for command in commands.values():
-            self.assertIn("--expect-trials", command)
-            self.assertEqual(command[command.index("--expect-trials") + 1], "40")
-            self.assertEqual(command.count("--task"), 40)
-
-    def test_both_candidate_harnesses_pass_the_static_gate(self) -> None:
-        reports = require_harness_gates()
-        self.assertTrue(reports["morphz-v0.5"]["eligible_for_model_run"])
-        self.assertTrue(
-            reports["morphz-dialectical-practice"]["eligible_for_model_run"]
-        )
+    def test_historical_four_arm_launcher_is_disabled(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "retired and deleted"):
+            require_harness_gates()
 
 
 if __name__ == "__main__":
