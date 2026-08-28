@@ -1,0 +1,160 @@
+{
+  "official_verifier_raw_reward_is_primary": true,
+  "diagnostics_never_override_official_reward": true,
+  "official_score": {
+    "passed": 70,
+    "total": 89,
+    "failed": 19
+  },
+  "exception_reconciliation": {
+    "harbor_agent_timeout_exceptions": 9,
+    "timeouts_with_official_reward_zero": 8,
+    "timeouts_with_official_reward_one": 1,
+    "officially_passing_timeout_task": "sanitize-git-repo",
+    "note": "sanitize-git-repo left a verifier-correct artifact before the outer Agent deadline; its timeout exception therefore does not reduce the official score."
+  },
+  "official_failure_categories": {
+    "timeout": {
+      "count": 8,
+      "tasks": [
+        "compile-compcert",
+        "extract-moves-from-video",
+        "make-doom-for-mips",
+        "model-extraction-relu-logits",
+        "password-recovery",
+        "qemu-startup",
+        "raman-fitting",
+        "train-fasttext"
+      ]
+    },
+    "provider_safety_refusal": {
+      "count": 3,
+      "tasks": [
+        "break-filter-js-from-html",
+        "feal-differential-cryptanalysis",
+        "vulnerable-secret"
+      ],
+      "note": "The Runtime performed its bounded refusal-recovery path and did not misclassify these refusals as Provider outages. feal-differential-cryptanalysis passed in the same-Runtime isolated ME-08 control, so this is stochastic model/provider behavior rather than evidence of a changed task or Runtime policy."
+    },
+    "ordinary_task_or_verifier_failure": {
+      "count": 8,
+      "tasks": [
+        "chess-best-move",
+        "dna-assembly",
+        "dna-insert",
+        "gcode-to-text",
+        "kv-store-grpc",
+        "rstan-to-pystan",
+        "torch-pipeline-parallelism",
+        "video-processing"
+      ]
+    }
+  },
+  "timeout_details": {
+    "compile-compcert": {
+      "official_reward": 0,
+      "me08_isolated_reward": 1,
+      "me09_wall_seconds": 2419.71,
+      "me08_wall_seconds": 1408.12,
+      "me09_first_exec_latency_seconds": 335.0,
+      "me08_first_exec_latency_seconds": 20.1,
+      "me09_context_tx_calls": 3,
+      "primary_diagnosis": "mixed Runtime/shared-Context overhead and model toolchain path",
+      "evidence": "The shared run spent about 315 extra seconds before its first exec, then pursued a Coq/opam path and never produced /tmp/CompCert/ccomp. One earlier Edge child exec/background Job remained Running in the database after its heartbeat stopped. The isolated control passed, so a regression is real, but the evidence does not justify attributing the entire miss to a single Runtime defect."
+    },
+    "extract-moves-from-video": {
+      "official_reward": 0,
+      "me08_isolated_reward": 0,
+      "me09_wall_seconds": 1819.53,
+      "me08_wall_seconds": 1819.75,
+      "me09_first_exec_latency_seconds": 13.7,
+      "me08_first_exec_latency_seconds": 13.5,
+      "me09_context_tx_calls": 2,
+      "primary_diagnosis": "task/model workflow complexity, with secondary shared-Context and tool-contract overhead",
+      "evidence": "Both arms exhausted the same 1800-second budget without /app/solution.txt. ME-09 reached real OCR and prompt-row evidence but repeatedly refined an expensive extraction strategy; it had 58 steps and 6.57M prompt tokens versus 44 steps and 2.74M in ME-08. No nonterminal child Job remained at the end."
+    },
+    "make-doom-for-mips": {
+      "official_reward": 0,
+      "me08_isolated_reward": 0,
+      "me09_wall_seconds": 951.84,
+      "me08_wall_seconds": 957.58,
+      "me09_first_exec_latency_seconds": 405.9,
+      "me08_first_exec_latency_seconds": 39.6,
+      "me09_context_tx_calls": 3,
+      "primary_diagnosis": "task/model complexity amplified by shared-Context maintenance",
+      "evidence": "Both arms timed out. ME-09 lost roughly six minutes before the first exec to Context work, but thereafter its jobs terminated normally and it was still at the initial compile/link phase when the deadline arrived."
+    },
+    "model-extraction-relu-logits": {
+      "official_reward": 0,
+      "me08_isolated_reward": 0,
+      "me09_wall_seconds": 919.52,
+      "me09_first_exec_latency_seconds": 27.1,
+      "me09_context_tx_calls": 0,
+      "primary_diagnosis": "model/reasoning path and finite task budget",
+      "evidence": "The task began promptly and used no Context transaction. It inferred breakpoints and attempted weight reconstruction but never created /app/steal.py or /app/stolen_A1.npy. There is no supporting Runtime ownership or wakeup failure."
+    },
+    "password-recovery": {
+      "official_reward": 0,
+      "me08_isolated_reward": 1,
+      "me09_wall_seconds": 918.76,
+      "me08_wall_seconds": 115.36,
+      "me09_first_exec_latency_seconds": 39.0,
+      "me08_first_exec_latency_seconds": 10.7,
+      "me09_context_tx_calls": 0,
+      "primary_diagnosis": "model search-strategy variance",
+      "evidence": "ME-09 spent most of the budget on an unsuccessful TrueCrypt/keyfile hypothesis and never created /app/recovered_passwords.txt; ME-08 found and wrote the password quickly. A complex Shell job-control probe was rejected once and two stale recall references failed, but the model recovered from those events and no child Job was left nonterminal."
+    },
+    "qemu-startup": {
+      "official_reward": 0,
+      "me08_isolated_reward": 1,
+      "me09_wall_seconds": 921.24,
+      "me08_wall_seconds": 157.67,
+      "me09_first_exec_latency_seconds": 410.7,
+      "me08_first_exec_latency_seconds": 9.4,
+      "me09_context_tx_calls": 2,
+      "primary_diagnosis": "strong Runtime/shared-Context contribution plus unfinished readiness logic",
+      "evidence": "The shared run spent about 401 extra seconds before its first exec. During the QEMU phase task_status reported a Running Job without a live owner or process-group checkpoint, and the model was still replacing the reconnect gateway when Harbor expired. The isolated control passed."
+    },
+    "raman-fitting": {
+      "official_reward": 0,
+      "me08_isolated_reward": 0,
+      "me09_wall_seconds": 919.69,
+      "me08_wall_seconds": 909.77,
+      "me09_first_exec_latency_seconds": 303.8,
+      "me08_first_exec_latency_seconds": 37.6,
+      "me09_context_tx_calls": 2,
+      "primary_diagnosis": "late model computation after shared-Context overhead; correctness unresolved",
+      "evidence": "ME-09 launched its expensive fit late and the outer deadline cancelled it before results.json existed. Finite no_reply wakeups operated as designed. ME-08 also failed near the same deadline, so more time might permit delivery but would not by itself prove a correct fit."
+    },
+    "train-fasttext": {
+      "official_reward": 0,
+      "me08_isolated_reward": 1,
+      "me09_wall_seconds": 3653.69,
+      "me08_wall_seconds": 833.15,
+      "me09_first_exec_latency_seconds": 357.1,
+      "me08_first_exec_latency_seconds": 13.8,
+      "me09_context_tx_calls": 3,
+      "primary_diagnosis": "shared-Context delay plus a model/default-wait boundary interaction, not a lost completion wake",
+      "evidence": "ME-09 first produced a valid 89.7MB model at 0.599 accuracy, then trained a stronger candidate. The stronger background Job succeeded at 17:20:31Z and immediately triggered a model activation that completed at 17:20:36Z, proving completion wakeup worked. The model nevertheless selected no_reply wait with the default 180 seconds; its next timer would have fired about five seconds after the 3600-second Harbor deadline. The verifier therefore saw the older 0.599 artifact. One unrelated earlier child Job also remained stale-Running in the database."
+    },
+    "sanitize-git-repo": {
+      "official_reward": 1,
+      "me08_isolated_reward": 1,
+      "me09_wall_seconds": 926.26,
+      "me08_wall_seconds": 835.46,
+      "me09_context_tx_calls": 2,
+      "primary_diagnosis": "post-deliverable overrun only",
+      "evidence": "The agent exceeded its 900-second outer budget while continuing verification, but all three official verifier tests passed. This is retained as a timeout exception and an official pass."
+    }
+  },
+  "ordinary_failure_details": {
+    "chess-best-move": "move.txt contained only e2e4; the verifier required both g2g4 and e2e4.",
+    "dna-assembly": "One primer pair exceeded the allowed 5-degree Tm gap by about 0.0023 degrees.",
+    "dna-insert": "The submitted primer pair had an 8.19-degree Tm gap, above the 5-degree limit.",
+    "gcode-to-text": "The transcribed flag contained several incorrect characters.",
+    "kv-store-grpc": "The service stayed alive and most checks passed, but the proto used val where the verifier required value.",
+    "rstan-to-pystan": "The run stopped after dependency setup and did not create the four required posterior-mean CSV files.",
+    "torch-pipeline-parallelism": "The distributed backward pass produced an lm_head gradient mismatch.",
+    "video-processing": "The analyzer passed the example checks but generalized incorrectly to the test video; takeoff 104 was outside the accepted 219-223 interval."
+  }
+}

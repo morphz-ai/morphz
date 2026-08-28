@@ -1,0 +1,969 @@
+{
+  "protocol_id": "ME-09-TB2.1-shared-context-8-session-v1",
+  "mode": "full",
+  "started_at": "2026-08-28T15:45:47.903553+00:00",
+  "finished_at": "2026-08-28T18:24:20.121734+00:00",
+  "runtime_commit": "d6e6d80053d95577811971e6048033374e4d6901",
+  "runtime_binary_sha256": "6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037",
+  "infrastructure_commit": "09477921ae35ac94823cb026bf5394a9445b6667",
+  "infrastructure_tracked_clean": true,
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "permission_mode": "full_access",
+  "harness_mode": "none",
+  "harness_binding_count": 0,
+  "shared_context_id": "me09-shared-context",
+  "max_sessions": 50,
+  "lane_count": 8,
+  "expected_task_count": 89,
+  "observed_task_count": 89,
+  "harbor_process_failures": 0,
+  "lanes": [
+    {
+      "lane_id": 0,
+      "session_id": "me09-session-00",
+      "target_id": "me09-target-00",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "write-compressor",
+          "started_at": "2026-08-28T15:45:48.439049+00:00",
+          "finished_at": "2026-08-28T15:51:49.226664+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/00-write-compressor/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "openssl-selfsigned-cert",
+          "started_at": "2026-08-28T15:51:49.226846+00:00",
+          "finished_at": "2026-08-28T15:56:16.193802+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/01-openssl-selfsigned-cert/jobs/2026-08-28__23-51-49"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "llm-inference-batching-scheduler",
+          "started_at": "2026-08-28T15:56:16.193984+00:00",
+          "finished_at": "2026-08-28T16:00:22.008053+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/02-llm-inference-batching-scheduler/jobs/2026-08-28__23-56-16"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "filter-js-from-html",
+          "started_at": "2026-08-28T16:00:22.008307+00:00",
+          "finished_at": "2026-08-28T16:08:59.592168+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/03-filter-js-from-html/jobs/2026-08-29__00-00-22"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "configure-git-webserver",
+          "started_at": "2026-08-28T16:08:59.592330+00:00",
+          "finished_at": "2026-08-28T16:11:19.949514+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/04-configure-git-webserver/jobs/2026-08-29__00-08-59"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "overfull-hbox",
+          "started_at": "2026-08-28T16:11:19.949704+00:00",
+          "finished_at": "2026-08-28T16:14:09.542744+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/05-overfull-hbox/jobs/2026-08-29__00-11-20"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "make-mips-interpreter",
+          "started_at": "2026-08-28T16:14:09.542950+00:00",
+          "finished_at": "2026-08-28T16:31:22.861125+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/06-make-mips-interpreter/jobs/2026-08-29__00-14-09"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "pytorch-model-cli",
+          "started_at": "2026-08-28T16:31:22.861303+00:00",
+          "finished_at": "2026-08-28T16:43:02.112878+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/07-pytorch-model-cli/jobs/2026-08-29__00-31-23"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "chess-best-move",
+          "started_at": "2026-08-28T16:43:02.113071+00:00",
+          "finished_at": "2026-08-28T16:50:41.008023+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/08-chess-best-move/jobs/2026-08-29__00-43-02"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "sparql-university",
+          "started_at": "2026-08-28T16:50:41.008277+00:00",
+          "finished_at": "2026-08-28T16:57:33.921713+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/09-sparql-university/jobs/2026-08-29__00-50-41"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "distribution-search",
+          "started_at": "2026-08-28T16:57:33.921919+00:00",
+          "finished_at": "2026-08-28T17:07:05.434616+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/10-distribution-search/jobs/2026-08-29__00-57-34"
+          ]
+        },
+        {
+          "ordinal": 11,
+          "task": "portfolio-optimization",
+          "started_at": "2026-08-28T17:07:05.434933+00:00",
+          "finished_at": "2026-08-28T17:14:42.472248+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-00/11-portfolio-optimization/jobs/2026-08-29__01-07-05"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 1,
+      "session_id": "me09-session-01",
+      "target_id": "me09-target-01",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "torch-tensor-parallelism",
+          "started_at": "2026-08-28T15:45:48.439028+00:00",
+          "finished_at": "2026-08-28T15:59:34.818786+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/00-torch-tensor-parallelism/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "regex-chess",
+          "started_at": "2026-08-28T15:59:34.818971+00:00",
+          "finished_at": "2026-08-28T16:16:14.502005+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/01-regex-chess/jobs/2026-08-28__23-59-35"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "pytorch-model-recovery",
+          "started_at": "2026-08-28T16:16:14.502210+00:00",
+          "finished_at": "2026-08-28T16:35:38.137190+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/02-pytorch-model-recovery/jobs/2026-08-29__00-16-14"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "sam-cell-seg",
+          "started_at": "2026-08-28T16:35:38.137441+00:00",
+          "finished_at": "2026-08-28T16:52:17.061209+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/03-sam-cell-seg/jobs/2026-08-29__00-35-38"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "build-cython-ext",
+          "started_at": "2026-08-28T16:52:17.061440+00:00",
+          "finished_at": "2026-08-28T17:07:16.376065+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/04-build-cython-ext/jobs/2026-08-29__00-52-17"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "video-processing",
+          "started_at": "2026-08-28T17:07:16.376272+00:00",
+          "finished_at": "2026-08-28T17:18:44.785142+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/05-video-processing/jobs/2026-08-29__01-07-16"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "password-recovery",
+          "started_at": "2026-08-28T17:18:44.785323+00:00",
+          "finished_at": "2026-08-28T17:34:07.049072+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/06-password-recovery/jobs/2026-08-29__01-18-45"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "db-wal-recovery",
+          "started_at": "2026-08-28T17:34:07.049289+00:00",
+          "finished_at": "2026-08-28T17:42:44.427860+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/07-db-wal-recovery/jobs/2026-08-29__01-34-07"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "prove-plus-comm",
+          "started_at": "2026-08-28T17:42:44.428156+00:00",
+          "finished_at": "2026-08-28T17:44:35.213625+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/08-prove-plus-comm/jobs/2026-08-29__01-42-44"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "protein-assembly",
+          "started_at": "2026-08-28T17:44:35.213842+00:00",
+          "finished_at": "2026-08-28T17:52:55.453701+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/09-protein-assembly/jobs/2026-08-29__01-44-35"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "build-pmars",
+          "started_at": "2026-08-28T17:52:55.453916+00:00",
+          "finished_at": "2026-08-28T18:04:48.434675+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-01/10-build-pmars/jobs/2026-08-29__01-52-55"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 2,
+      "session_id": "me09-session-02",
+      "target_id": "me09-target-02",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "schemelike-metacircular-eval",
+          "started_at": "2026-08-28T15:45:48.439286+00:00",
+          "finished_at": "2026-08-28T16:01:44.161545+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/00-schemelike-metacircular-eval/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "log-summary-date-ranges",
+          "started_at": "2026-08-28T16:01:44.161756+00:00",
+          "finished_at": "2026-08-28T16:03:55.853506+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/01-log-summary-date-ranges/jobs/2026-08-29__00-01-44"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "circuit-fibsqrt",
+          "started_at": "2026-08-28T16:03:55.853685+00:00",
+          "finished_at": "2026-08-28T16:12:35.470782+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/02-circuit-fibsqrt/jobs/2026-08-29__00-03-56"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "mteb-retrieve",
+          "started_at": "2026-08-28T16:12:35.470995+00:00",
+          "finished_at": "2026-08-28T16:23:31.367189+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/03-mteb-retrieve/jobs/2026-08-29__00-12-35"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "train-fasttext",
+          "started_at": "2026-08-28T16:23:31.367379+00:00",
+          "finished_at": "2026-08-28T17:24:29.337261+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/04-train-fasttext/jobs/2026-08-29__00-23-31"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "sanitize-git-repo",
+          "started_at": "2026-08-28T17:24:29.337494+00:00",
+          "finished_at": "2026-08-28T17:39:59.062785+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/05-sanitize-git-repo/jobs/2026-08-29__01-24-29"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "sqlite-db-truncate",
+          "started_at": "2026-08-28T17:39:59.063004+00:00",
+          "finished_at": "2026-08-28T17:47:50.173281+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/06-sqlite-db-truncate/jobs/2026-08-29__01-39-59"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "largest-eigenval",
+          "started_at": "2026-08-28T17:47:50.173500+00:00",
+          "finished_at": "2026-08-28T17:50:49.042950+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/07-largest-eigenval/jobs/2026-08-29__01-47-50"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "git-multibranch",
+          "started_at": "2026-08-28T17:50:49.043142+00:00",
+          "finished_at": "2026-08-28T17:58:54.595093+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/08-git-multibranch/jobs/2026-08-29__01-50-49"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "custom-memory-heap-crash",
+          "started_at": "2026-08-28T17:58:54.595311+00:00",
+          "finished_at": "2026-08-28T18:04:03.159741+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/09-custom-memory-heap-crash/jobs/2026-08-29__01-58-54"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "mailman",
+          "started_at": "2026-08-28T18:04:03.159946+00:00",
+          "finished_at": "2026-08-28T18:19:12.698692+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-02/10-mailman/jobs/2026-08-29__02-04-03"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 3,
+      "session_id": "me09-session-03",
+      "target_id": "me09-target-03",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "kv-store-grpc",
+          "started_at": "2026-08-28T15:45:48.439509+00:00",
+          "finished_at": "2026-08-28T15:47:41.021521+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/00-kv-store-grpc/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "model-extraction-relu-logits",
+          "started_at": "2026-08-28T15:47:41.021712+00:00",
+          "finished_at": "2026-08-28T16:03:04.031025+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/01-model-extraction-relu-logits/jobs/2026-08-28__23-47-41"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "merge-diff-arc-agi-task",
+          "started_at": "2026-08-28T16:03:04.031212+00:00",
+          "finished_at": "2026-08-28T16:07:29.562170+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/02-merge-diff-arc-agi-task/jobs/2026-08-29__00-03-04"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "adaptive-rejection-sampler",
+          "started_at": "2026-08-28T16:07:29.562377+00:00",
+          "finished_at": "2026-08-28T16:21:11.007719+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/03-adaptive-rejection-sampler/jobs/2026-08-29__00-07-29"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "compile-compcert",
+          "started_at": "2026-08-28T16:21:11.008032+00:00",
+          "finished_at": "2026-08-28T17:01:34.667937+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/04-compile-compcert/jobs/2026-08-29__00-21-11"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "qemu-startup",
+          "started_at": "2026-08-28T17:01:34.668167+00:00",
+          "finished_at": "2026-08-28T17:17:00.852116+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/05-qemu-startup/jobs/2026-08-29__01-01-35"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "query-optimize",
+          "started_at": "2026-08-28T17:17:00.852349+00:00",
+          "finished_at": "2026-08-28T17:32:50.434532+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/06-query-optimize/jobs/2026-08-29__01-17-01"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "large-scale-text-editing",
+          "started_at": "2026-08-28T17:32:50.434738+00:00",
+          "finished_at": "2026-08-28T17:40:08.553158+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/07-large-scale-text-editing/jobs/2026-08-29__01-32-50"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "multi-source-data-merger",
+          "started_at": "2026-08-28T17:40:08.553367+00:00",
+          "finished_at": "2026-08-28T17:45:14.514900+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/08-multi-source-data-merger/jobs/2026-08-29__01-40-08"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "code-from-image",
+          "started_at": "2026-08-28T17:45:14.515114+00:00",
+          "finished_at": "2026-08-28T17:46:21.804700+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/09-code-from-image/jobs/2026-08-29__01-45-14"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "headless-terminal",
+          "started_at": "2026-08-28T17:46:21.804919+00:00",
+          "finished_at": "2026-08-28T17:50:35.234305+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-03/10-headless-terminal/jobs/2026-08-29__01-46-22"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 4,
+      "session_id": "me09-session-04",
+      "target_id": "me09-target-04",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "pypi-server",
+          "started_at": "2026-08-28T15:45:48.439827+00:00",
+          "finished_at": "2026-08-28T15:48:05.026378+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/00-pypi-server/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "path-tracing",
+          "started_at": "2026-08-28T15:48:05.026607+00:00",
+          "finished_at": "2026-08-28T15:54:56.550576+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/01-path-tracing/jobs/2026-08-28__23-48-05"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "build-pov-ray",
+          "started_at": "2026-08-28T15:54:56.550790+00:00",
+          "finished_at": "2026-08-28T16:04:54.455071+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/02-build-pov-ray/jobs/2026-08-28__23-54-56"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "vulnerable-secret",
+          "started_at": "2026-08-28T16:04:54.455296+00:00",
+          "finished_at": "2026-08-28T16:09:55.146760+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/03-vulnerable-secret/jobs/2026-08-29__00-04-54"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "fix-ocaml-gc",
+          "started_at": "2026-08-28T16:09:55.146956+00:00",
+          "finished_at": "2026-08-28T16:58:17.196998+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/04-fix-ocaml-gc/jobs/2026-08-29__00-09-55"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "hf-model-inference",
+          "started_at": "2026-08-28T16:58:17.197202+00:00",
+          "finished_at": "2026-08-28T17:10:31.440065+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/05-hf-model-inference/jobs/2026-08-29__00-58-17"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "cancel-async-tasks",
+          "started_at": "2026-08-28T17:10:31.440285+00:00",
+          "finished_at": "2026-08-28T17:15:28.841956+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/06-cancel-async-tasks/jobs/2026-08-29__01-10-31"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "break-filter-js-from-html",
+          "started_at": "2026-08-28T17:15:28.842194+00:00",
+          "finished_at": "2026-08-28T17:16:41.643514+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/07-break-filter-js-from-html/jobs/2026-08-29__01-15-29"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "sqlite-with-gcov",
+          "started_at": "2026-08-28T17:16:41.643723+00:00",
+          "finished_at": "2026-08-28T17:20:37.846149+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/08-sqlite-with-gcov/jobs/2026-08-29__01-16-41"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "fix-git",
+          "started_at": "2026-08-28T17:20:37.846374+00:00",
+          "finished_at": "2026-08-28T17:25:13.424989+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/09-fix-git/jobs/2026-08-29__01-20-38"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "bn-fit-modify",
+          "started_at": "2026-08-28T17:25:13.425226+00:00",
+          "finished_at": "2026-08-28T17:31:12.670872+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-04/10-bn-fit-modify/jobs/2026-08-29__01-25-13"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 5,
+      "session_id": "me09-session-05",
+      "target_id": "me09-target-05",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "dna-assembly",
+          "started_at": "2026-08-28T15:45:48.440559+00:00",
+          "finished_at": "2026-08-28T15:54:17.864256+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/00-dna-assembly/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "regex-log",
+          "started_at": "2026-08-28T15:54:17.864444+00:00",
+          "finished_at": "2026-08-28T15:57:20.306360+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/01-regex-log/jobs/2026-08-28__23-54-18"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "cobol-modernization",
+          "started_at": "2026-08-28T15:57:20.306660+00:00",
+          "finished_at": "2026-08-28T16:06:32.430340+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/02-cobol-modernization/jobs/2026-08-28__23-57-20"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "extract-elf",
+          "started_at": "2026-08-28T16:06:32.430572+00:00",
+          "finished_at": "2026-08-28T16:14:09.747045+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/03-extract-elf/jobs/2026-08-29__00-06-32"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "gcode-to-text",
+          "started_at": "2026-08-28T16:14:09.747229+00:00",
+          "finished_at": "2026-08-28T16:19:56.091419+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/04-gcode-to-text/jobs/2026-08-29__00-14-10"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "reshard-c4-data",
+          "started_at": "2026-08-28T16:19:56.091655+00:00",
+          "finished_at": "2026-08-28T16:35:14.785524+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/05-reshard-c4-data/jobs/2026-08-29__00-19-56"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "financial-document-processor",
+          "started_at": "2026-08-28T16:35:14.785690+00:00",
+          "finished_at": "2026-08-28T16:44:46.596015+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/06-financial-document-processor/jobs/2026-08-29__00-35-15"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "count-dataset-tokens",
+          "started_at": "2026-08-28T16:44:46.596230+00:00",
+          "finished_at": "2026-08-28T16:56:56.126630+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/07-count-dataset-tokens/jobs/2026-08-29__00-44-46"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "polyglot-rust-c",
+          "started_at": "2026-08-28T16:56:56.126820+00:00",
+          "finished_at": "2026-08-28T17:08:30.671409+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/08-polyglot-rust-c/jobs/2026-08-29__00-56-56"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "winning-avg-corewars",
+          "started_at": "2026-08-28T17:08:30.671616+00:00",
+          "finished_at": "2026-08-28T17:33:30.093695+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/09-winning-avg-corewars/jobs/2026-08-29__01-08-31"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "constraints-scheduling",
+          "started_at": "2026-08-28T17:33:30.093907+00:00",
+          "finished_at": "2026-08-28T17:40:58.766188+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-05/10-constraints-scheduling/jobs/2026-08-29__01-33-30"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 6,
+      "session_id": "me09-session-06",
+      "target_id": "me09-target-06",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "torch-pipeline-parallelism",
+          "started_at": "2026-08-28T15:45:48.440701+00:00",
+          "finished_at": "2026-08-28T15:58:26.447974+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/00-torch-pipeline-parallelism/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "caffe-cifar-10",
+          "started_at": "2026-08-28T15:58:26.448156+00:00",
+          "finished_at": "2026-08-28T16:27:22.853273+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/01-caffe-cifar-10/jobs/2026-08-28__23-58-26"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "mcmc-sampling-stan",
+          "started_at": "2026-08-28T16:27:22.853495+00:00",
+          "finished_at": "2026-08-28T16:52:47.250879+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/02-mcmc-sampling-stan/jobs/2026-08-29__00-27-23"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "nginx-request-logging",
+          "started_at": "2026-08-28T16:52:47.251067+00:00",
+          "finished_at": "2026-08-28T16:56:21.368939+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/03-nginx-request-logging/jobs/2026-08-29__00-52-47"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "dna-insert",
+          "started_at": "2026-08-28T16:56:21.369159+00:00",
+          "finished_at": "2026-08-28T17:03:01.948638+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/04-dna-insert/jobs/2026-08-29__00-56-21"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "feal-differential-cryptanalysis",
+          "started_at": "2026-08-28T17:03:01.948852+00:00",
+          "finished_at": "2026-08-28T17:13:27.637983+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/05-feal-differential-cryptanalysis/jobs/2026-08-29__01-03-02"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "install-windows-3.11",
+          "started_at": "2026-08-28T17:13:27.638179+00:00",
+          "finished_at": "2026-08-28T17:38:27.271144+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/06-install-windows-3.11/jobs/2026-08-29__01-13-27"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "extract-moves-from-video",
+          "started_at": "2026-08-28T17:38:27.271356+00:00",
+          "finished_at": "2026-08-28T18:08:50.653577+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/07-extract-moves-from-video/jobs/2026-08-29__01-38-27"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "feal-linear-cryptanalysis",
+          "started_at": "2026-08-28T18:08:50.653763+00:00",
+          "finished_at": "2026-08-28T18:16:30.472502+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/08-feal-linear-cryptanalysis/jobs/2026-08-29__02-08-50"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "modernize-scientific-stack",
+          "started_at": "2026-08-28T18:16:30.472689+00:00",
+          "finished_at": "2026-08-28T18:18:30.077212+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/09-modernize-scientific-stack/jobs/2026-08-29__02-16-30"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "tune-mjcf",
+          "started_at": "2026-08-28T18:18:30.077385+00:00",
+          "finished_at": "2026-08-28T18:24:20.116374+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-06/10-tune-mjcf/jobs/2026-08-29__02-18-30"
+          ]
+        }
+      ]
+    },
+    {
+      "lane_id": 7,
+      "session_id": "me09-session-07",
+      "target_id": "me09-target-07",
+      "tasks": [
+        {
+          "ordinal": 0,
+          "task": "qemu-alpine-ssh",
+          "started_at": "2026-08-28T15:45:48.440908+00:00",
+          "finished_at": "2026-08-28T15:52:37.440568+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/00-qemu-alpine-ssh/jobs/2026-08-28__23-45-48"
+          ]
+        },
+        {
+          "ordinal": 1,
+          "task": "mteb-leaderboard",
+          "started_at": "2026-08-28T15:52:37.440789+00:00",
+          "finished_at": "2026-08-28T16:08:58.317946+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/01-mteb-leaderboard/jobs/2026-08-28__23-52-37"
+          ]
+        },
+        {
+          "ordinal": 2,
+          "task": "gpt2-codegolf",
+          "started_at": "2026-08-28T16:08:58.318150+00:00",
+          "finished_at": "2026-08-28T16:23:23.580891+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/02-gpt2-codegolf/jobs/2026-08-29__00-08-58"
+          ]
+        },
+        {
+          "ordinal": 3,
+          "task": "make-doom-for-mips",
+          "started_at": "2026-08-28T16:23:23.581104+00:00",
+          "finished_at": "2026-08-28T16:39:18.911224+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/03-make-doom-for-mips/jobs/2026-08-29__00-23-23"
+          ]
+        },
+        {
+          "ordinal": 4,
+          "task": "raman-fitting",
+          "started_at": "2026-08-28T16:39:18.911438+00:00",
+          "finished_at": "2026-08-28T16:54:42.504758+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/04-raman-fitting/jobs/2026-08-29__00-39-19"
+          ]
+        },
+        {
+          "ordinal": 5,
+          "task": "rstan-to-pystan",
+          "started_at": "2026-08-28T16:54:42.504981+00:00",
+          "finished_at": "2026-08-28T16:58:42.689059+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/05-rstan-to-pystan/jobs/2026-08-29__00-54-42"
+          ]
+        },
+        {
+          "ordinal": 6,
+          "task": "polyglot-c-py",
+          "started_at": "2026-08-28T16:58:42.689291+00:00",
+          "finished_at": "2026-08-28T17:11:21.540795+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/06-polyglot-c-py/jobs/2026-08-29__00-58-43"
+          ]
+        },
+        {
+          "ordinal": 7,
+          "task": "path-tracing-reverse",
+          "started_at": "2026-08-28T17:11:21.540991+00:00",
+          "finished_at": "2026-08-28T17:27:35.582184+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/07-path-tracing-reverse/jobs/2026-08-29__01-11-21"
+          ]
+        },
+        {
+          "ordinal": 8,
+          "task": "crack-7z-hash",
+          "started_at": "2026-08-28T17:27:35.582397+00:00",
+          "finished_at": "2026-08-28T17:42:41.254862+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/08-crack-7z-hash/jobs/2026-08-29__01-27-35"
+          ]
+        },
+        {
+          "ordinal": 9,
+          "task": "git-leak-recovery",
+          "started_at": "2026-08-28T17:42:41.255058+00:00",
+          "finished_at": "2026-08-28T17:49:01.904778+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/09-git-leak-recovery/jobs/2026-08-29__01-42-41"
+          ]
+        },
+        {
+          "ordinal": 10,
+          "task": "fix-code-vulnerability",
+          "started_at": "2026-08-28T17:49:01.904998+00:00",
+          "finished_at": "2026-08-28T17:52:46.227861+00:00",
+          "return_code": 0,
+          "job_dirs": [
+            "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828/jobs/lane-07/10-fix-code-vulnerability/jobs/2026-08-29__01-49-02"
+          ]
+        }
+      ]
+    }
+  ]
+}

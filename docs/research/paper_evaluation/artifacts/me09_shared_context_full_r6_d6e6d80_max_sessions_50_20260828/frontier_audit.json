@@ -1,0 +1,31 @@
+{
+  "activation_counts": {
+    "context_wide_broadcast_eligible_occurrences": 0,
+    "post_root_cross_session_directed_trigger_eligible_occurrences": 0,
+    "post_root_cross_session_ordinary_excluded_occurrences": 1451,
+    "post_root_own_causal_eligible_occurrences": 1461,
+    "post_root_same_session_sibling_excluded_occurrences": 1427,
+    "pre_root_cross_session_eligible_occurrences": 1236
+  },
+  "activations_with_snapshot_version": 1452,
+  "audit_kind": "deterministic_replay_of_d6e6d80_event_visible_at_causal_frontier",
+  "context_id": "me09-shared-context",
+  "context_wide_broadcast_eligible_occurrences": 0,
+  "context_wide_broadcast_event_count": 0,
+  "interpretation": {
+    "broadcast_route": "Sessionless chat/context_observation Events with context_wide=true remain eligible; absence of such Events means the route was not exercised in this run.",
+    "causal_route": "Post-root Events belonging to the Activation remain eligible.",
+    "post_root_ordinary_cross_session": "Excluded by the frozen Runtime predicate unless the Event belongs to the Activation causal route.",
+    "pre_root_history": "Eligible across Session boundaries when still active at the model call snapshot.",
+    "scope": "This is a database replay of the exact deterministic selection predicate; provider request bodies do not persist the complete Observation-ID list."
+  },
+  "observation_event_count": 3779,
+  "official_activation_count": 1461,
+  "official_root_turn_count": 89,
+  "post_root_cross_session_directed_trigger_eligible_occurrences": 0,
+  "post_root_cross_session_ordinary_excluded_occurrences": 2545928,
+  "post_root_own_causal_eligible_occurrences": 89200,
+  "post_root_same_session_sibling_excluded_occurrences": 310519,
+  "pre_root_cross_session_eligible_occurrences": 129448,
+  "runtime_commit": "d6e6d80053d95577811971e6048033374e4d6901"
+}

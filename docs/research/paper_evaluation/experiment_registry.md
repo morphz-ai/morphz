@@ -9,7 +9,8 @@
 精确源码 commit 与二进制 SHA-256：ME-07 使用组合 commit
 `2249878536ce5f7a8d7449add2f5c8743395b69b`；当前论文 ME-08 使用
 `d6e6d80053d95577811971e6048033374e4d6901`、二进制 SHA-256
-`6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037`；ME-09 r4 使用
+`6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037`；ME-09 r6 使用同一
+Runtime commit 与同一二进制，因此可与该轮 ME-08 作逐题隔离/共享 Context 配对。ME-09 r4 使用
 `dfd3307a494cf27bea62afd8f9b4822b18d33186`、实际部署二进制 SHA-256
 `27c85faf224bbdb3980f6433e205d5e120a06ccd5497cfbf7f69e7d56a7bc34c`。ME-08 当前
 Runtime 单臂补充刷新使用 `2b01310107f3d7819eedd5e07d2605ce46803ea8`、二进制 SHA-256
@@ -47,7 +48,7 @@ ME-06 与原始 ME-08 仍保留其历史
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation；30 条盲化人工校准包已冻结 | `formal-complete / trace-audit-complete / human-packet-ready / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；[`human packet`](./artifacts/me07_evaluator_human_validation_packet_20260827/README.md) | 两名独立人工评分是可选增强项；不得把系统级效果全部归因于 Mind Frame |
 | ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题相同条件运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），Codex 74/89（83.15%）；差 −2.25pp，95% CI [−10.11,+5.62]，精确配对 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7% | `external-complete / incorporated` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md) | 正确率、总逻辑词元和墙钟已进入论文；缓存与 API 成本受已确认的显式缓存封装缺陷影响，只作诊断，修复后需在相同工作负载重测 |
-| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r4 历史得分 70/89，但 89/89 Evaluation 误绑定 `terminal-task@0.5.0`；ME-08 为无 Harness，因此 r3/r4/r5 均不是预注册的单变量共享 Context 对照 | `invalid / harness-contaminated / diagnostic-only / excluded-from-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`invalidated protocol`](./me_09_shared_context_multisession_terminal_bench_protocol_v1.md)；[`r4 diagnostic result`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md) | 仅在启动器断言零 Harness 绑定、Runtime/模型/权限等重新冻结后才可新开正式批次；旧结果不得拼接或补算 |
+| ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r6 同 Runtime、无 Harness 完整 89 题：共享 Context 70/89，对隔离 Context 72/89；共同通过 65、共同失败 12、仅共享 5、仅隔离 7；差 −2.25pp，95% CI `[−10.11,+5.62]`，精确配对 `p=0.774414`。E3 为 0，总逻辑 Token 为隔离控制的 3.127×；9 个超时异常中 8 个计零。r3/r4/r5 仍因 Harness 污染无效 | `external-complete / supplemental / excluded-from-current-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`r6 result`](./artifacts/me09_shared_context_full_r6_d6e6d80_max_sessions_50_20260828/RESULT.md)；[`r4 historical diagnostic`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md) | r6 已闭合并保留为有效补充实验；当前论文不追改。未来如扩展，须保留零 Harness 与同 Runtime 隔离控制，旧批次不得拼接或补算 |
 
 ## 依赖
 
@@ -57,7 +58,7 @@ ME-00 ─┬─> ME-01 ─> ME-05 ─┬─> ME-06
        ├─> ME-03 ───────────┤
        ├─> ME-04 ───────────┘
        ├─> ME-07 (STATE-Bench；Letta 与更新评测器 Gate)
-       └─> ME-08 ─> ME-09 (历史批次因 Harness 污染作废；不进入当前论文)
+       └─> ME-08 ─> ME-09 (r6 无 Harness 补充实验已闭合；不进入当前论文)
 ```
 
 ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-06 只有在核心状态机制及评分器稳定后才扩成长运行。
@@ -78,6 +79,21 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 ## 状态更新记录
 
 ### 2026-08-29
+
+- ME-09 r6 无 Harness、同 Runtime 共享 Context 正式补充运行完整闭合：89 个唯一任务、每题
+  一次、零重试；一个 Agent、一个共享 Context、八个稳定 Session 与 Edge Target，并发 8，
+  `max_sessions=50`。官方 verifier 为 70/89（78.65%），同 Runtime 隔离 Context ME-08 为
+  72/89（80.90%）；共同通过 65、共同失败 12、仅共享 5、仅隔离 7，差 −2.25pp，任务级
+  bootstrap 95% CI `[−10.11,+5.62]`，双侧精确配对 `p=0.774414`。89/89 Harness 绑定为 0，
+  所有运行身份、拓扑、Trial、轨迹、receipt、资源样本与哈希 Gate 均通过；
+- 本轮有 9 个 Harbor 超时异常，其中 8 个官方计零，另一个 `sanitize-git-repo` 的官方 verifier
+  通过。115 个 Context transaction 形成 29,502 次跨 Session 可见暴露与 17 次显式跨 Session
+  Frame 引用，但 E3 结果相关正迁移为 0。Provider 输入加输出 Token 为隔离控制的 3.127×，
+  墙钟为 1.788×；主机资源没有持续饱和。超时归因同时包含 Context/Runtime 延迟、模型策略与
+  任务固有难度，不能解释成单一 Runtime bug，也不能断言单纯加时会使八题全部通过。完整证据见
+  [`artifacts/me09_shared_context_full_r6_d6e6d80_max_sessions_50_20260828/RESULT.md`](./artifacts/me09_shared_context_full_r6_d6e6d80_max_sessions_50_20260828/RESULT.md)。
+  本轮作为有效补充实验登记，不追改已闭合的中英文论文；历史 r3/r4/r5 仍保持 Harness 污染无效
+  状态，未与 r6 拼接；
 
 - ME-08 当前论文结果已刷新到 Runtime `d6e6d80053d95577811971e6048033374e4d6901`：Morphz
   72/89，冻结 Codex 对照 74/89；共同通过 66、共同失败 9、仅 Morphz 通过 6、仅 Codex

@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "protocol_id": "ME-09-TB2.1-shared-context-8-session-v1",
+  "dataset": "terminal-bench/terminal-bench-2-1",
+  "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+  "task_count": 89,
+  "lane_count": 8,
+  "assignment": "round_robin_over_frozen_harbor_lock_order",
+  "frozen_task_order_sha256": "7689aff6fc2cf2df1831848203d5db840738b7b236c67bebf832ff783426735d",
+  "lanes": [
+    {
+      "lane_id": 0,
+      "session_id": "me09-session-00",
+      "target_id": "me09-target-00",
+      "tasks": [
+        "write-compressor",
+        "openssl-selfsigned-cert",
+        "llm-inference-batching-scheduler",
+        "filter-js-from-html",
+        "configure-git-webserver",
+        "overfull-hbox",
+        "make-mips-interpreter",
+        "pytorch-model-cli",
+        "chess-best-move",
+        "sparql-university",
+        "distribution-search",
+        "portfolio-optimization"
+      ]
+    },
+    {
+      "lane_id": 1,
+      "session_id": "me09-session-01",
+      "target_id": "me09-target-01",
+      "tasks": [
+        "torch-tensor-parallelism",
+        "regex-chess",
+        "pytorch-model-recovery",
+        "sam-cell-seg",
+        "build-cython-ext",
+        "video-processing",
+        "password-recovery",
+        "db-wal-recovery",
+        "prove-plus-comm",
+        "protein-assembly",
+        "build-pmars"
+      ]
+    },
+    {
+      "lane_id": 2,
+      "session_id": "me09-session-02",
+      "target_id": "me09-target-02",
+      "tasks": [
+        "schemelike-metacircular-eval",
+        "log-summary-date-ranges",
+        "circuit-fibsqrt",
+        "mteb-retrieve",
+        "train-fasttext",
+        "sanitize-git-repo",
+        "sqlite-db-truncate",
+        "largest-eigenval",
+        "git-multibranch",
+        "custom-memory-heap-crash",
+        "mailman"
+      ]
+    },
+    {
+      "lane_id": 3,
+      "session_id": "me09-session-03",
+      "target_id": "me09-target-03",
+      "tasks": [
+        "kv-store-grpc",
+        "model-extraction-relu-logits",
+        "merge-diff-arc-agi-task",
+        "adaptive-rejection-sampler",
+        "compile-compcert",
+        "qemu-startup",
+        "query-optimize",
+        "large-scale-text-editing",
+        "multi-source-data-merger",
+        "code-from-image",
+        "headless-terminal"
+      ]
+    },
+    {
+      "lane_id": 4,
+      "session_id": "me09-session-04",
+      "target_id": "me09-target-04",
+      "tasks": [
+        "pypi-server",
+        "path-tracing",
+        "build-pov-ray",
+        "vulnerable-secret",
+        "fix-ocaml-gc",
+        "hf-model-inference",
+        "cancel-async-tasks",
+        "break-filter-js-from-html",
+        "sqlite-with-gcov",
+        "fix-git",
+        "bn-fit-modify"
+      ]
+    },
+    {
+      "lane_id": 5,
+      "session_id": "me09-session-05",
+      "target_id": "me09-target-05",
+      "tasks": [
+        "dna-assembly",
+        "regex-log",
+        "cobol-modernization",
+        "extract-elf",
+        "gcode-to-text",
+        "reshard-c4-data",
+        "financial-document-processor",
+        "count-dataset-tokens",
+        "polyglot-rust-c",
+        "winning-avg-corewars",
+        "constraints-scheduling"
+      ]
+    },
+    {
+      "lane_id": 6,
+      "session_id": "me09-session-06",
+      "target_id": "me09-target-06",
+      "tasks": [
+        "torch-pipeline-parallelism",
+        "caffe-cifar-10",
+        "mcmc-sampling-stan",
+        "nginx-request-logging",
+        "dna-insert",
+        "feal-differential-cryptanalysis",
+        "install-windows-3.11",
+        "extract-moves-from-video",
+        "feal-linear-cryptanalysis",
+        "modernize-scientific-stack",
+        "tune-mjcf"
+      ]
+    },
+    {
+      "lane_id": 7,
+      "session_id": "me09-session-07",
+      "target_id": "me09-target-07",
+      "tasks": [
+        "qemu-alpine-ssh",
+        "mteb-leaderboard",
+        "gpt2-codegolf",
+        "make-doom-for-mips",
+        "raman-fitting",
+        "rstan-to-pystan",
+        "polyglot-c-py",
+        "path-tracing-reverse",
+        "crack-7z-hash",
+        "git-leak-recovery",
+        "fix-code-vulnerability"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+{
+  "all_checks_passed": true,
+  "audit_kind": "me09_r6_post_run_integrity_audit",
+  "checks": {
+    "all_trial_evidence_present": true,
+    "all_trial_hashes_match_summary": true,
+    "binary_exact": true,
+    "eight_shared_sessions": true,
+    "eight_stable_edge_targets_plus_default": true,
+    "launcher_all_return_codes_zero": true,
+    "launcher_eight_lanes": true,
+    "launcher_expected_observed_89": true,
+    "launcher_identity_matches": true,
+    "launcher_unique_tasks_89": true,
+    "launcher_zero_harness": true,
+    "leaf_trials_exactly_89": true,
+    "max_sessions_50": true,
+    "official_thread_topology_89": true,
+    "one_agent_one_context": true,
+    "one_transient_edge_node_per_trial": true,
+    "resource_samples_valid": true,
+    "runtime_identity_all_trials": true,
+    "source_clean_and_exact": true,
+    "summary_formal_complete_89": true,
+    "summary_official_score_70": true,
+    "summary_unique_tasks_roots_89": true,
+    "zero_harness_binding_events": true
+  },
+  "generated_at": "2026-08-28T18:42:40.069672+00:00",
+  "identity": {
+    "binary_path": "/opt/morphz-benchmark/builds/me08-d6e6d80/morphz",
+    "binary_sha256_expected": "6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037",
+    "binary_sha256_observed": "6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037",
+    "runtime_commit": "d6e6d80053d95577811971e6048033374e4d6901",
+    "source_expected": "09477921ae35ac94823cb026bf5394a9445b6667",
+    "source_observed": "09477921ae35ac94823cb026bf5394a9445b6667",
+    "source_status_porcelain": "",
+    "trial_agent_versions": [
+      "d6e6d80053d95577811971e6048033374e4d6901@6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037"
+    ]
+  },
+  "launcher": {
+    "finished_at": "2026-08-28T18:24:20.121734+00:00",
+    "harbor_process_failures": 0,
+    "harness_binding_count": 0,
+    "harness_mode": "none",
+    "lane_count": 8,
+    "max_sessions": 50,
+    "model": "gpt-5.6-sol",
+    "permission_mode": "full_access",
+    "protocol_id": "ME-09-TB2.1-shared-context-8-session-v1",
+    "reasoning_effort": "max",
+    "started_at": "2026-08-28T15:45:47.903553+00:00",
+    "wall_seconds": 9512.218181
+  },
+  "official_result": {
+    "completed": 89,
+    "diagnostics_never_override_official_reward": true,
+    "exception_types": {
+      "AgentTimeoutError": 9
+    },
+    "failed": 19,
+    "official_verifier_raw_reward_is_primary": true,
+    "passed": 70,
+    "timeout_tasks": [
+      "compile-compcert",
+      "extract-moves-from-video",
+      "make-doom-for-mips",
+      "model-extraction-relu-logits",
+      "password-recovery",
+      "qemu-startup",
+      "raman-fitting",
+      "sanitize-git-repo",
+      "train-fasttext"
+    ]
+  },
+  "resource_summary": {
+    "coverage_seconds": 9453.148421,
+    "cpu_count": [
+      16
+    ],
+    "docker_running_containers_max": 10,
+    "docker_running_containers_min": 3,
+    "docker_running_containers_mode": 10,
+    "first_captured_at": "2026-08-28T15:46:27.025210+00:00",
+    "last_captured_at": "2026-08-28T18:24:00.173631+00:00",
+    "load_1m_max": 19.0322265625,
+    "load_1m_mean": 1.449274376977848,
+    "load_1m_p95": 4.3489990234375,
+    "memory_used_gib_max": 8.876571655273438,
+    "memory_used_gib_mean": 4.092996959444843,
+    "memory_used_gib_p95": 5.8075456619262695,
+    "sample_count": 316
+  },
+  "run_root": "/opt/morphz-benchmark/me09-runs/shared-context-full-r6-d6e6d80-max-sessions-50-20260828",
+  "server_artifact_sha256": {
+    "launcher_result.json": "75cf8947ae7dce65722a42ac7e86a6adbb4203668504ad2ff9e26341c14377bc",
+    "me09_summary.json": "5b882e341c0fd1be1f4d441a04211ecf9a080bf8fc1ee563b2b07c78a042c79b",
+    "resource_samples_v2.jsonl": "b1e16fe91e76676e0ba69e72c5d5d6300fffeacc283befe33ab7dbc61b2f639b",
+    "runtime/morphz.db": "61817f9574fd01c7fc126d9dc059828e067101371d0eeddf038a746304173ca5"
+  },
+  "topology": {
+    "agent_ids": [
+      "me09-agent"
+    ],
+    "context_ids": [
+      "me09-shared-context"
+    ],
+    "execution_targets": [
+      {
+        "id": "me09-target-00",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-01",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-02",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-03",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-04",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-05",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-06",
+        "kind": "edge_node"
+      },
+      {
+        "id": "me09-target-07",
+        "kind": "edge_node"
+      },
+      {
+        "id": "target-default",
+        "kind": "in_process_local"
+      }
+    ],
+    "harness_binding_event_count": 0,
+    "historical_execution_node_count": 89,
+    "historical_execution_nodes_by_lane": {
+      "ME-09 lane 0": 12,
+      "ME-09 lane 1": 11,
+      "ME-09 lane 2": 11,
+      "ME-09 lane 3": 11,
+      "ME-09 lane 4": 11,
+      "ME-09 lane 5": 11,
+      "ME-09 lane 6": 11,
+      "ME-09 lane 7": 11
+    },
+    "node_lifecycle_note": "Each Harbor task container registered one transient Edge Node; the eight target IDs remained stable across all 89 trials.",
+    "official_thread_count": 89,
+    "plan_execution_count": 0,
+    "session_ids": [
+      "me09-session-00",
+      "me09-session-01",
+      "me09-session-02",
+      "me09-session-03",
+      "me09-session-04",
+      "me09-session-05",
+      "me09-session-06",
+      "me09-session-07"
+    ]
+  },
+  "trial_evidence": {
+    "hash_mismatches": [],
+    "integrity_record_count": 89,
+    "leaf_result_count": 89,
+    "runtime_receipt_count": 89,
+    "trajectory_count": 89
+  }
+}
