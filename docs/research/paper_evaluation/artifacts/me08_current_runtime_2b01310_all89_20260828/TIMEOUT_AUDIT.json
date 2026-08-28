@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "timeout_count": 7,
+  "runner_phase_boundary_defect": {
+    "confirmed": true,
+    "mechanism": "The Harbor cancellation hook preserves the Runtime for keep_running service ownership but does not durably cancel the active Thread/Activation before verifier handoff.",
+    "affected_trials_with_post_deadline_jobs": 4,
+    "positive_score_inflation_detected": false,
+    "required_order": [
+      "cancel active Thread durably",
+      "await Activation and transient child-job terminal state",
+      "prepare verifier while preserving only declared durable services"
+    ]
+  },
+  "trials": [
+    {
+      "task": "make-doom-for-mips",
+      "agent_timeout_seconds": 900,
+      "primary_cause": "model/task non-convergence",
+      "evidence": "After extensive build and VM work, a model Activation was still active at the deadline and the required frame.bmp was absent. No lease, database, or execution-job loss was present.",
+      "reference_run_outcome": 0
+    },
+    {
+      "task": "password-recovery",
+      "agent_timeout_seconds": 900,
+      "primary_cause": "late exhaustive search",
+      "evidence": "The model launched a brute-force search across 31 non-empty VeraCrypt keyfile subsets late in the turn. It was still computing after roughly five minutes and no recovered_passwords.txt was produced.",
+      "reference_run_outcome": 1
+    },
+    {
+      "task": "query-optimize",
+      "agent_timeout_seconds": 900,
+      "primary_cause": "over-optimization without finalization",
+      "evidence": "The model had already found a byte-identical plan around 0.17 seconds but continued exploring and never delivered a terminal reply before the deadline. Nine new tool jobs were admitted after Harbor declared the Agent timeout, exposing the separate phase-boundary defect.",
+      "reference_run_outcome": 1
+    },
+    {
+      "task": "train-fasttext",
+      "agent_timeout_seconds": 3600,
+      "primary_cause": "repeated training and tuning; independently invalid artifact",
+      "evidence": "Dependency compilation, repeated training, normalization, and autotuning consumed the hour. The submitted 63 MiB model passed the size check but scored 0.528 against the required 0.62, so its official zero remains valid even without the timeout label. Four jobs were admitted after Harbor's deadline.",
+      "reference_run_outcome": 0
+    },
+    {
+      "task": "extract-moves-from-video",
+      "agent_timeout_seconds": 1800,
+      "primary_cause": "over-expensive full-video OCR",
+      "evidence": "The model launched 4-fps frame extraction and OCR. At cancellation it had 760 frames but only 112 OCR files and had not created solution.txt. One diagnostic job was admitted after Harbor's deadline.",
+      "reference_run_outcome": 0
+    },
+    {
+      "task": "feal-linear-cryptanalysis",
+      "agent_timeout_seconds": 1800,
+      "primary_cause": "computationally ineffective attack",
+      "evidence": "The generated attack built a 2^20 K0 signature table and spent the remaining interval scanning K3 candidates. It never produced plaintexts.txt. The background process remained healthy until deadline cancellation; no lease loss occurred.",
+      "reference_run_outcome": 1
+    },
+    {
+      "task": "headless-terminal",
+      "agent_timeout_seconds": 900,
+      "primary_cause": "initial implementation self-test hang plus runner phase leak",
+      "evidence": "The first PTY cleanup implementation hung in the model's self-test until the Agent deadline. Harbor timed out the Agent, but the in-container Runtime continued, revised the implementation, passed two bounded self-tests, and committed a reply 132.8 seconds after the deadline while the verifier was already active. The verifier passed one of seven tests and then timed out, producing no reward; strict scoring assigns zero.",
+      "reference_run_outcome": 1
+    }
+  ]
+}

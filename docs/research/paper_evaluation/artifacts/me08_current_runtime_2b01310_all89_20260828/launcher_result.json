@@ -1,0 +1,16 @@
+{
+  "protocol": "me08-terminal-bench-current-runtime-all89-morphz-v5",
+  "completed_at": "2026-08-28T12:10:52.549125+00:00",
+  "return_codes": {
+    "morphz-native": 0
+  },
+  "arm_runs": {
+    "morphz-native": {
+      "started_at": "2026-08-28T10:16:28.356325+00:00",
+      "completed_at": "2026-08-28T12:10:52.548900+00:00",
+      "return_code": 0
+    }
+  },
+  "complete_official_results": true,
+  "summary": "/opt/morphz-benchmark/repeat-runs/me08-current-runtime-2b01310-r1-20260828/all_89_morphz_summary.json"
+}

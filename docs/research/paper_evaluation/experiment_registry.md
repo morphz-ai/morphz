@@ -11,7 +11,10 @@
 `4bbc3d63f4bda09947dc79dc5656edc71f8c02fa`、二进制 SHA-256
 `31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`；ME-09 r4 使用
 `dfd3307a494cf27bea62afd8f9b4822b18d33186`、实际部署二进制 SHA-256
-`27c85faf224bbdb3980f6433e205d5e120a06ccd5497cfbf7f69e7d56a7bc34c`。已完成的
+`27c85faf224bbdb3980f6433e205d5e120a06ccd5497cfbf7f69e7d56a7bc34c`。ME-08 当前
+Runtime 单臂补充刷新使用 `2b01310107f3d7819eedd5e07d2605ce46803ea8`、二进制 SHA-256
+`e4a500e4ba7f2fae3284728bcdd338f4504884349da975886a8b78fc56ade77d`；该刷新不替换论文
+冻结基线。已完成的
 ME-06 与原始 ME-08 仍保留其历史
 [`paper-eval-runtime-v4`](./runtime_baseline_v4.md) 基线
 `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；历史 v3 继续对应
@@ -76,6 +79,22 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 
 ### 2026-08-28
 
+- ME-08 当前 Runtime 无 Harness 单臂补充刷新完整结束：89 个独立数据库/Context/Session、
+  并发 8、每题一次、零重试，严格官方结果 69/89（77.53%，Wilson 95% CI
+  `[67.82%,84.96%]`）。相对冻结 Morphz-only 72/89，共同通过 63、共同失败 11、当前独有
+  通过 6、旧轮独有通过 9，双侧精确 McNemar `p=0.607239`；没有同期 Codex arm，且 Runtime
+  变化较大，不能解释为纯补丁因果差异。`qemu-alpine-ssh`、`pypi-server`、`kv-store-grpc`
+  均通过，89 题没有 shell `&` 误判、lease expired、数据库锁或 Harness 绑定；
+- 同一刷新记录 7 个 `AgentTimeoutError`、4 个 Provider 安全拒绝和 9 个普通实现/答案失败。
+  超时审计另发现 Harbor 外层 Agent deadline 未同步终止容器内 Runtime：`query-optimize`、
+  `train-fasttext`、`extract-moves-from-video` 与 `headless-terminal` 在 deadline 后仍接纳新工具，
+  其中 `headless-terminal` 在 verifier 已运行时才完成修复并提交回复。七题最终均为官方 0，
+  没有正向分数膨胀。源码审计进一步确认取消分支为了保留 `keep_running` owner 而保住 Runtime，
+  却未先取消和等待活跃 Thread/Activation；这是精确的相位隔离缺口。所谓“新增一例”安全拒绝
+  来自 `model-extraction-relu-logits`：冻结轮同样出现过间歇 `cyber_policy` 但恢复并通过，本轮则在
+  首次工具前持续拒绝；任务与 agent 配置逐字节一致，无法据此证明服务端接口升级。该缺陷使
+  本轮只能作为工程补充，不追改双语论文。详见
+  [`artifacts/me08_current_runtime_2b01310_all89_20260828/RESULT.md`](./artifacts/me08_current_runtime_2b01310_all89_20260828/RESULT.md)；
 - ME-09 配置审计确认 r3、r4、r5 的消息入口均绑定了 `terminal-task@0.5.0`，与 Proposal v1
   规定的“ME-08/ME-09 均无 Harness”相冲突。r4 的 70/89 继续保留为组合条件下的历史工程
   事实，但不再作为共享 Context 单变量结论；r5 已中止，不补跑或拼接。当前源码已删除该

@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-08-28",
+  "run_id": "me08-current-runtime-2b01310-r1-20260828",
+  "protocol": "me08-terminal-bench-current-runtime-all89-morphz-v5",
+  "run_complete": true,
+  "official_result": {
+    "passed": 69,
+    "trials": 89,
+    "score": 0.7752808988764045,
+    "wilson_95_ci": [
+      0.6782264081966249,
+      0.8495550444261124
+    ],
+    "raw_equals_strict": true
+  },
+  "identity": {
+    "infrastructure_commit": "77432951b77c25e812af28de76ff849b5b4ff739",
+    "runtime_commit": "2b01310107f3d7819eedd5e07d2605ce46803ea8",
+    "runtime_binary_sha256": "e4a500e4ba7f2fae3284728bcdd338f4504884349da975886a8b78fc56ade77d",
+    "watcher_sha256": "70b33e20d661574543a478cd2bf9781355be8b2031c6e2124c8aa509d444c97d",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "permission_mode": "full_access",
+    "fallback": false,
+    "harness_mode": "none",
+    "attempts_per_task": 1,
+    "max_retries": 0,
+    "concurrency": 8
+  },
+  "integrity": {
+    "launcher_exit_code": 0,
+    "complete_official_results": true,
+    "strict_integrity_gate_passed": true,
+    "public_run_gate_passed": true,
+    "trial_count": 89,
+    "unique_task_count": 89,
+    "database_count": 89,
+    "unique_context_count": 89,
+    "unique_session_count": 89,
+    "trajectory_count": 89,
+    "integrity_receipt_count": 89,
+    "harness_binding_event_count": 0,
+    "sqlite_quick_check_failures": 0,
+    "disqualified_trials": 0,
+    "credential_hits": 0
+  },
+  "runtime_regression_checks": {
+    "shell_background_false_positive_trials": 0,
+    "lease_expired_trials": 0,
+    "database_locked_trials": 0,
+    "qemu_alpine_ssh_reward": 1,
+    "pypi_server_reward": 1,
+    "kv_store_grpc_reward": 1
+  },
+  "failure_counts": {
+    "official_zero_rewards": 20,
+    "agent_timeout_labels": 7,
+    "provider_safety_refusals": 4,
+    "ordinary_implementation_or_answer_failures": 9,
+    "missing_verifier_results": 1
+  },
+  "timeout_phase_boundary": {
+    "post_deadline_runtime_activity_detected": true,
+    "trials_with_new_jobs_after_harbor_agent_deadline": [
+      "query-optimize",
+      "train-fasttext",
+      "extract-moves-from-video",
+      "headless-terminal"
+    ],
+    "post_deadline_reply_trials": [
+      "headless-terminal"
+    ],
+    "positive_score_inflation_detected": false,
+    "source_level_mechanism": "Harbor asyncio.wait_for cancels Agent.run; the custom --cancel path performs verifier preparation and preserves the Runtime for keep_running ownership, but does not first cancel and join the active Thread/Activation.",
+    "required_fix_boundary": "Durably cancel the active Thread, await Activation and transient-job terminal state, then preserve only declared durable services through verifier handoff.",
+    "reporting_consequence": "All seven AgentTimeoutError trials remained official zeros. The phase leak is still a real runner correctness defect and prevents treating this refresh as a clean replacement for the frozen paper result."
+  },
+  "safety_refusal_audit": {
+    "current_primary_failure_count": 4,
+    "current_primary_failure_tasks": [
+      "model-extraction-relu-logits",
+      "vulnerable-secret",
+      "break-filter-js-from-html",
+      "feal-differential-cryptanalysis"
+    ],
+    "current_tasks_with_any_cyber_policy_event": [
+      "break-filter-js-from-html",
+      "feal-differential-cryptanalysis",
+      "feal-linear-cryptanalysis",
+      "model-extraction-relu-logits",
+      "vulnerable-secret"
+    ],
+    "frozen_tasks_with_any_cyber_policy_event": [
+      "break-filter-js-from-html",
+      "feal-differential-cryptanalysis",
+      "model-extraction-relu-logits",
+      "vulnerable-secret"
+    ],
+    "model_extraction_instruction_sha256": "bc3d44048f2b2a6675e0f75bea6cbacf7a08bb0c5a3bfb522711505c596e6eac",
+    "model_extraction_agent_config_sha256": "8ce8a55b2091b33d737d2a9dcf545c767f0aa874349adec11960d447b87217f9",
+    "conclusion": "The frozen model-extraction trial had intermittent cyber_policy refusals but recovered and passed; the current byte-identical task was refused before tools and did not recover. This supports refusal timing/persistence variability or possible backend policy drift, not a proven service-interface update."
+  },
+  "usage": {
+    "input_tokens": 49756789,
+    "cached_input_tokens": 8739328,
+    "output_tokens": 1190371,
+    "logical_input_plus_output": 50947160,
+    "cached_input_fraction": 0.17564177045409606
+  },
+  "resources": {
+    "sample_count": 229,
+    "cpu_count": 16,
+    "memory_total_kib": 64508056,
+    "memory_used_kib_mean": 4201981.292576419,
+    "memory_used_kib_p95": 6409646.4,
+    "memory_used_kib_max": 7656572,
+    "load_1m_mean": 2.427391085562227,
+    "load_1m_p95": 8.238183593749993,
+    "load_1m_max": 14.1376953125,
+    "docker_running_containers_mean": 8.707423580786026,
+    "docker_running_containers_max": 10
+  },
+  "wall_clock": {
+    "started_at": "2026-08-28T10:16:28.356325+00:00",
+    "completed_at": "2026-08-28T12:10:52.548900+00:00",
+    "seconds": 6864.192575
+  }
+}

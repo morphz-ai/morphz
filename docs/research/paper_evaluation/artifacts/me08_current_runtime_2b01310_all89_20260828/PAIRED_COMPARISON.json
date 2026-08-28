@@ -1,0 +1,34 @@
+{
+  "comparison": "current Runtime refresh versus frozen ME-08 Morphz-only 72/89 run",
+  "current_run": "me08-current-runtime-2b01310-r1-20260828",
+  "reference_run": "me08-terminal-bench-finalfix-all89-morphz-v3",
+  "task_count": 89,
+  "current_passes": 69,
+  "reference_passes": 72,
+  "difference_percentage_points": -3.3707865168539324,
+  "both_pass": 63,
+  "both_fail": 11,
+  "current_only_pass": [
+    "build-pov-ray",
+    "cancel-async-tasks",
+    "chess-best-move",
+    "dna-assembly",
+    "mteb-leaderboard",
+    "video-processing"
+  ],
+  "reference_only_pass": [
+    "extract-elf",
+    "feal-linear-cryptanalysis",
+    "headless-terminal",
+    "make-mips-interpreter",
+    "model-extraction-relu-logits",
+    "password-recovery",
+    "pytorch-model-cli",
+    "query-optimize",
+    "sanitize-git-repo"
+  ],
+  "discordant_current_only": 6,
+  "discordant_reference_only": 9,
+  "mcnemar_exact_two_sided_p": 0.60723876953125,
+  "causal_limit": "Runtime, Edge/background handling, Harbor watcher behavior, and model sampling differ. This is not a pure Runtime or max-sessions causal estimate and has no contemporaneous Codex arm."
+}

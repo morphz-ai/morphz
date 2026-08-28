@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-08-28",
+  "comparison": {
+    "frozen_run": "me08-4bbc3d6-r1-20260827",
+    "current_run": "me08-current-runtime-2b01310-r1-20260828",
+    "model": "gpt-5.6-sol",
+    "provider_protocol": "openai-responses"
+  },
+  "final_primary_refusal_failures": {
+    "frozen_count": 3,
+    "current_count": 4,
+    "current_tasks": [
+      "model-extraction-relu-logits",
+      "vulnerable-secret",
+      "break-filter-js-from-html",
+      "feal-differential-cryptanalysis"
+    ]
+  },
+  "tasks_with_any_cyber_policy_event": {
+    "frozen": [
+      "break-filter-js-from-html",
+      "feal-differential-cryptanalysis",
+      "model-extraction-relu-logits",
+      "vulnerable-secret"
+    ],
+    "current": [
+      "break-filter-js-from-html",
+      "feal-differential-cryptanalysis",
+      "feal-linear-cryptanalysis",
+      "model-extraction-relu-logits",
+      "vulnerable-secret"
+    ]
+  },
+  "model_extraction_control": {
+    "instruction_sha256_both_runs": "bc3d44048f2b2a6675e0f75bea6cbacf7a08bb0c5a3bfb522711505c596e6eac",
+    "agent_config_sha256_both_runs": "8ce8a55b2091b33d737d2a9dcf545c767f0aa874349adec11960d447b87217f9",
+    "frozen_behavior": "Tool execution began; intermittent cyber_policy refusals occurred later; bounded recovery succeeded and the official verifier passed.",
+    "current_behavior": "cyber_policy occurred before the first tool call and persisted through every bounded recovery attempt; the official verifier failed.",
+    "initial_estimated_prompt_token_delta_current_minus_frozen": 495
+  },
+  "runtime_prompt_diff": {
+    "changed": true,
+    "summary": "The current Runtime adds explicit Function-Call/Yao execution rules and fine-grained Context-transaction language, but no security, model-extraction, or credential semantics."
+  },
+  "conclusion": {
+    "supported": "The extra official failure is a change in refusal timing and persistence on an already-sensitive task; Provider classifier nondeterminism or backend policy drift is plausible.",
+    "not_proven": "The evidence does not prove a service-interface or policy-version update because the retained Provider responses expose no such version identifier."
+  }
+}
