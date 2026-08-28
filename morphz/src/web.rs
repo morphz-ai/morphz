@@ -11969,6 +11969,7 @@ account = "xai-account"
                 dispatch_mode: None,
                 model_alias: None,
                 reasoning_effort: None,
+                target_id: None,
             }),
         )
         .await
