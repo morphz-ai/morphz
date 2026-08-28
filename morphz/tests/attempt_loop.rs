@@ -7330,7 +7330,7 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
 }
 
 #[tokio::test]
-async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
+async fn test_distinct_sessions_evaluate_concurrently_with_session_local_working_sets() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("shared-context-concurrency.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -7391,7 +7391,7 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
         .frames
         .iter()
         .any(|frame| frame.id == "shared-fact"));
-    assert!(encoding_b
+    assert!(!encoding_b
         .observations
         .iter()
         .any(|observation| observation.session_id.as_deref() == Some("session-a")));
