@@ -1,0 +1,594 @@
+{
+  "arms": {
+    "morphz": {
+      "execution": {
+        "errored_trials": 2,
+        "exception_counts": {
+          "AgentTimeoutError": 2
+        },
+        "finished_at": "2026-08-28T23:37:02.406813",
+        "harbor_estimated_cost_usd": null,
+        "provider_reported_cache_tokens": 13879296,
+        "provider_reported_input_tokens": 55933502,
+        "provider_reported_output_tokens": 1171816,
+        "retries": 0,
+        "started_at": "2026-08-28T22:08:22.223313",
+        "wall_time_seconds": 5320.1835
+      },
+      "official_score": 0.8089887640449438,
+      "passed": 72,
+      "secondary_local_integrity_audit": {
+        "disqualified_tasks": [
+          "gpt2-codegolf"
+        ],
+        "disqualified_trial_count": 1,
+        "does_not_override_official_raw_reward": true,
+        "integrity_gate_passed": false
+      },
+      "sources": {
+        "job_result": "docs/research/paper_evaluation/artifacts/me08_current_runtime_d6e6d80_all89_20260828/job_audit/result.json",
+        "job_result_sha256": "6ee9666a9a8831e08ed4a782b667251495db3631818c33c00a68d4ec110d3fdb",
+        "strict_result": "docs/research/paper_evaluation/artifacts/me08_current_runtime_d6e6d80_all89_20260828/job_audit/strict_result.json",
+        "strict_result_sha256": "1b9344e7e19205bc93dbc4e9a91932397a57ae13afa94bf9440c2e767a821785"
+      },
+      "wilson_95_ci": [
+        0.715227317828824,
+        0.8771804351150649
+      ]
+    },
+    "official_codex": {
+      "execution": {
+        "errored_trials": 6,
+        "exception_counts": {
+          "AgentSafetyRefusalError": 3,
+          "AgentTimeoutError": 3
+        },
+        "finished_at": "2026-08-27T02:29:55.575888",
+        "harbor_estimated_cost_usd": 77.370108,
+        "provider_reported_cache_tokens": 76503680,
+        "provider_reported_input_tokens": 82153524,
+        "provider_reported_output_tokens": 1208463,
+        "retries": 0,
+        "started_at": "2026-08-27T00:32:10.417818",
+        "wall_time_seconds": 7065.15807
+      },
+      "official_score": 0.8314606741573034,
+      "passed": 74,
+      "secondary_local_integrity_audit": {
+        "disqualified_tasks": [
+          "install-windows-3.11",
+          "password-recovery"
+        ],
+        "disqualified_trial_count": 2,
+        "does_not_override_official_raw_reward": true,
+        "integrity_gate_passed": false
+      },
+      "sources": {
+        "job_result": "docs/research/paper_evaluation/artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/codex/result.json",
+        "job_result_sha256": "07803114ca128e846d9e84369e6c98fd201a84f7599d188edfbbbe2fe31fe274",
+        "strict_result": "docs/research/paper_evaluation/artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/codex/strict_result.json",
+        "strict_result_sha256": "fda28c4f188f7786f53f7c5909be3056c8d8a140c8394f0e9dcfe6d545fe24ed"
+      },
+      "wilson_95_ci": [
+        0.7403744938895832,
+        0.8951174592684067
+      ]
+    }
+  },
+  "attempts_per_task_per_arm": 1,
+  "bootstrap": {
+    "repetitions": 10000,
+    "seed": 20260827
+  },
+  "host_resources": {
+    "codex_window": {
+      "cpu_count": 16,
+      "docker_running_containers": {
+        "max": 18,
+        "mean": 15.300429184549357
+      },
+      "first_captured_at": "2026-08-27T00:33:36+08:00",
+      "last_captured_at": "2026-08-27T02:29:42+08:00",
+      "load_1m": {
+        "max": 34.53,
+        "mean": 5.918197424892704,
+        "p95": 12.743999999999996
+      },
+      "memory_total_kib": 64508056,
+      "memory_used_kib": {
+        "max": 11072480,
+        "mean": 6321066.832618026,
+        "p95": 9026471.199999996
+      },
+      "sample_count": 233,
+      "source": "docs/research/paper_evaluation/artifacts/me08_terminal_bench_full89_contemporaneous_pair_20260827/codex/host-resource-samples.jsonl",
+      "source_sha256": "41c1e21ebc3441d7576cb474f6bc95c178d5db2043a3a88f52e4d0ac9319b0bf"
+    },
+    "morphz_window": {
+      "cpu_count": 16,
+      "docker_running_containers": {
+        "max": 10,
+        "mean": 9.219101123595506
+      },
+      "first_captured_at": "2026-08-28T14:08:18.110992+00:00",
+      "last_captured_at": "2026-08-28T15:36:49.899371+00:00",
+      "load_1m": {
+        "max": 27.03369140625,
+        "mean": 2.44336211815309,
+        "p95": 7.4281982421875
+      },
+      "memory_total_kib": 64508052,
+      "memory_used_kib": {
+        "max": 7616776,
+        "mean": 4048122.7640449437,
+        "p95": 5737494.2
+      },
+      "sample_count": 178,
+      "source": "docs/research/paper_evaluation/artifacts/me08_current_runtime_d6e6d80_all89_20260828/resource_samples.jsonl",
+      "source_sha256": "324bdb1a1fc83823327931cce11eb546bb77ac83a1b99b4f464efb8736942c79"
+    }
+  },
+  "official_verifier_raw_reward_is_primary": true,
+  "paired": {
+    "both_fail": 9,
+    "both_pass": 66,
+    "codex_wins": 8,
+    "difference": -0.02247191011235955,
+    "discordant_pairs": 14,
+    "exact_two_sided_p": 0.79052734375,
+    "morphz_wins": 6,
+    "paired_bootstrap_95_ci": [
+      -0.10112359550561797,
+      0.056179775280898875
+    ]
+  },
+  "per_task": [
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "adaptive-rejection-sampler"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "bn-fit-modify"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "break-filter-js-from-html"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "build-cython-ext"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "build-pmars"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "build-pov-ray"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "caffe-cifar-10"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "cancel-async-tasks"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "chess-best-move"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "circuit-fibsqrt"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "cobol-modernization"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "code-from-image"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "compile-compcert"
+    },
+    {
+      "codex": 0,
+      "morphz": 1,
+      "task": "configure-git-webserver"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "constraints-scheduling"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "count-dataset-tokens"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "crack-7z-hash"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "custom-memory-heap-crash"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "db-wal-recovery"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "distribution-search"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "dna-assembly"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "dna-insert"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "extract-elf"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "extract-moves-from-video"
+    },
+    {
+      "codex": 0,
+      "morphz": 1,
+      "task": "feal-differential-cryptanalysis"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "feal-linear-cryptanalysis"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "filter-js-from-html"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "financial-document-processor"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "fix-code-vulnerability"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "fix-git"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "fix-ocaml-gc"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "gcode-to-text"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "git-leak-recovery"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "git-multibranch"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "gpt2-codegolf"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "headless-terminal"
+    },
+    {
+      "codex": 0,
+      "morphz": 1,
+      "task": "hf-model-inference"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "install-windows-3.11"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "kv-store-grpc"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "large-scale-text-editing"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "largest-eigenval"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "llm-inference-batching-scheduler"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "log-summary-date-ranges"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "mailman"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "make-doom-for-mips"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "make-mips-interpreter"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "mcmc-sampling-stan"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "merge-diff-arc-agi-task"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "model-extraction-relu-logits"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "modernize-scientific-stack"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "mteb-leaderboard"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "mteb-retrieve"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "multi-source-data-merger"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "nginx-request-logging"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "openssl-selfsigned-cert"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "overfull-hbox"
+    },
+    {
+      "codex": 0,
+      "morphz": 1,
+      "task": "password-recovery"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "path-tracing"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "path-tracing-reverse"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "polyglot-c-py"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "polyglot-rust-c"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "portfolio-optimization"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "protein-assembly"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "prove-plus-comm"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "pypi-server"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "pytorch-model-cli"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "pytorch-model-recovery"
+    },
+    {
+      "codex": 0,
+      "morphz": 1,
+      "task": "qemu-alpine-ssh"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "qemu-startup"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "query-optimize"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "raman-fitting"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "regex-chess"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "regex-log"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "reshard-c4-data"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "rstan-to-pystan"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "sam-cell-seg"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "sanitize-git-repo"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "schemelike-metacircular-eval"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "sparql-university"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "sqlite-db-truncate"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "sqlite-with-gcov"
+    },
+    {
+      "codex": 0,
+      "morphz": 1,
+      "task": "torch-pipeline-parallelism"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "torch-tensor-parallelism"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "train-fasttext"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "tune-mjcf"
+    },
+    {
+      "codex": 1,
+      "morphz": 0,
+      "task": "video-processing"
+    },
+    {
+      "codex": 0,
+      "morphz": 0,
+      "task": "vulnerable-secret"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "winning-avg-corewars"
+    },
+    {
+      "codex": 1,
+      "morphz": 1,
+      "task": "write-compressor"
+    }
+  ],
+  "protocol": "ME-08-terminal-bench-2.1-full-89-contemporaneous-pair-v2",
+  "task_count": 89
+}

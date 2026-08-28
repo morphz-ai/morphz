@@ -1,0 +1,48 @@
+{
+  "calculated_at": "2026-08-29",
+  "currency": "USD",
+  "pricing_source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+  "pricing_per_million_tokens": {
+    "uncached_input": 4.0,
+    "cached_input": 0.4,
+    "output": 20.0
+  },
+  "paper_comparison": {
+    "morphz": {
+      "input_tokens": 55933502,
+      "cached_input_tokens": 13879296,
+      "uncached_input_tokens": 42054206,
+      "output_tokens": 1171816,
+      "logical_total_tokens": 57105318,
+      "input_cache_rate": 0.2481392278995869,
+      "api_equivalent_cost_usd": 197.2048624
+    },
+    "codex_cli_0_149_1": {
+      "input_tokens": 82153524,
+      "cached_input_tokens": 76503680,
+      "uncached_input_tokens": 5649844,
+      "output_tokens": 1208463,
+      "logical_total_tokens": 83361987,
+      "input_cache_rate": 0.9312282209586043,
+      "api_equivalent_cost_usd": 77.370108
+    },
+    "morphz_logical_token_reduction": 0.314971726861549,
+    "morphz_cost_ratio": 2.5488508094107867
+  },
+  "morphz_runtime_usage_reconciliation": {
+    "event_count": 1187,
+    "input_tokens": 56250302,
+    "cached_input_tokens": 13902848,
+    "cache_write_input_tokens": 0,
+    "uncached_input_tokens": 42347454,
+    "output_tokens": 1173805,
+    "logical_total_tokens": 57424107,
+    "api_equivalent_cost_usd": 198.4270552,
+    "cost_above_harbor_aggregate_usd": 1.2221928
+  },
+  "previous_morphz_run": {
+    "input_cache_rate": 0.16317990715591936,
+    "api_equivalent_cost_usd": 221.2975632,
+    "new_run_cost_reduction": 0.1088701585847377
+  }
+}
