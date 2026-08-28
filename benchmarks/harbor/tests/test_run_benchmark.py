@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,12 +14,58 @@ from benchmarks.harbor.run_benchmark import (
     frozen_run_identity,
     harbor_command,
     parse_args,
+    require_docker_network_capacity,
     runtime_provider_config,
     runtime_version,
 )
 
 
 class HarborCommandTest(unittest.TestCase):
+    def test_docker_network_capacity_probe_creates_and_removes_every_slot(self) -> None:
+        commands: list[list[str]] = []
+
+        def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="network-id\n", stderr="")
+
+        with patch(
+            "benchmarks.harbor.run_benchmark.subprocess.run", side_effect=run
+        ):
+            require_docker_network_capacity(8)
+
+        creates = [command for command in commands if command[1:3] == ["network", "create"]]
+        removes = [command for command in commands if command[1:3] == ["network", "rm"]]
+        self.assertEqual(len(creates), 8)
+        self.assertEqual(len(removes), 8)
+        self.assertEqual(
+            {command[-1] for command in creates},
+            {command[-1] for command in removes},
+        )
+
+    def test_docker_network_capacity_probe_fails_closed_and_cleans_partial_set(self) -> None:
+        commands: list[list[str]] = []
+        create_count = 0
+
+        def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            nonlocal create_count
+            commands.append(command)
+            if command[1:3] == ["network", "create"]:
+                create_count += 1
+                if create_count == 4:
+                    return subprocess.CompletedProcess(
+                        command, 1, stdout="", stderr="address pool exhausted"
+                    )
+            return subprocess.CompletedProcess(command, 0, stdout="network-id\n", stderr="")
+
+        with patch(
+            "benchmarks.harbor.run_benchmark.subprocess.run", side_effect=run
+        ):
+            with self.assertRaisesRegex(RuntimeError, "only 3 of 8"):
+                require_docker_network_capacity(8)
+
+        removes = [command for command in commands if command[1:3] == ["network", "rm"]]
+        self.assertEqual(len(removes), 3)
+
     def test_model_run_requires_acknowledged_trial_count(self) -> None:
         args = argparse.Namespace(mode="full", expect_trials=None)
         self.assertIn(

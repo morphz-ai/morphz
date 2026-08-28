@@ -21,6 +21,7 @@ import sys
 import tomllib
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -36,6 +37,64 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = Path(__file__).with_name("toolchain.lock.json")
 DEFAULT_BINARY = REPO_ROOT / ".codex-work" / "harbor-runtime" / "morphz"
 DEFAULT_WATCHER = REPO_ROOT / ".codex-work" / "harbor-runtime" / "morphz-harbor-wait"
+DOCKER_NETWORK_CAPACITY_PROBE = 8
+
+
+def require_docker_network_capacity(required: int) -> None:
+    """Prove Docker can allocate every concurrent trial network before launch."""
+
+    if required <= 0:
+        raise ValueError("required Docker network capacity must be positive")
+    prefix = f"morphz-network-preflight-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    created: list[str] = []
+    failure: str | None = None
+    cleanup_failures: list[str] = []
+    try:
+        for index in range(required):
+            name = f"{prefix}-{index}"
+            result = subprocess.run(
+                [
+                    "docker",
+                    "network",
+                    "create",
+                    "--label",
+                    "morphz.preflight=network-capacity",
+                    name,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "unknown Docker error").strip()
+                failure = (
+                    f"Docker can allocate only {len(created)} of {required} required "
+                    f"concurrent trial networks: {detail}"
+                )
+                break
+            created.append(name)
+    finally:
+        for name in reversed(created):
+            result = subprocess.run(
+                ["docker", "network", "rm", name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "unknown Docker error").strip()
+                cleanup_failures.append(f"{name}: {detail}")
+    if failure is not None:
+        if cleanup_failures:
+            failure += "; capacity-probe cleanup also failed: " + "; ".join(
+                cleanup_failures
+            )
+        raise RuntimeError(failure)
+    if cleanup_failures:
+        raise RuntimeError(
+            "Docker network capacity probe passed, but temporary-network cleanup failed: "
+            + "; ".join(cleanup_failures)
+        )
 
 
 def morphz_home() -> Path:
@@ -274,6 +333,7 @@ def preflight(
         stderr=subprocess.DEVNULL,
         check=True,
     )
+    require_docker_network_capacity(DOCKER_NETWORK_CAPACITY_PROBE)
     if not binary.is_file():
         raise RuntimeError(f"Pinned Linux Morphz binary is missing: {binary}")
     file_result = subprocess.run(
@@ -321,6 +381,7 @@ def preflight(
     print("provider_ipv4=" + provider_address)
     print("permission_mode=full_access")
     print("container_platform=linux/amd64")
+    print(f"docker_network_capacity={DOCKER_NETWORK_CAPACITY_PROBE}")
     print("runtime_sha256=" + actual_sha)
     print("watcher_sha256=" + watcher_actual)
 
