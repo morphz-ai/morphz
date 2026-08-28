@@ -3,10 +3,10 @@ use crate::config::{
     ProviderModelConfig,
 };
 use crate::llm::{
-    model_attachments, provider_continuation, Client, Message, ModelAttachment,
-    ModelAttemptBinding, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
-    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ReasoningEffort,
-    Response, ToolCallRepr, ToolDefinition,
+    model_attachments, model_visible_message_text, provider_continuation, segmented_model_text,
+    Client, Message, ModelAttachment, ModelAttemptBinding, ModelFailure, ModelFailureKind,
+    ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
+    ProviderContinuation, ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -714,15 +714,24 @@ impl ProtocolClient {
         });
         let reasoning_effort =
             normalize_reasoning_effort_for_model(self.adapter.as_str(), model, reasoning_effort);
-        let request = build_request(
+        let request = build_request_with_prompt_cache(
             self.protocol_for_model(model),
             model,
             self.max_output_tokens,
             reasoning_effort,
             messages,
             tools,
+            self.explicit_prompt_cache_enabled(model),
         );
         self.adapt_request(model, request)
+    }
+
+    fn explicit_prompt_cache_enabled(&self, model: &str) -> bool {
+        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
+            return false;
+        }
+        let normalized = model.trim().to_ascii_lowercase();
+        normalized == "gpt-5.6" || normalized.starts_with("gpt-5.6-")
     }
 
     fn request_for_model(
@@ -2095,18 +2104,24 @@ impl StreamAccumulator {
         let cached_input_tokens = usage
             .pointer("/input_tokens_details/cached_tokens")
             .and_then(Value::as_u64);
+        let cache_write_input_tokens = usage
+            .pointer("/input_tokens_details/cache_write_tokens")
+            .and_then(Value::as_u64);
         self.usage(
             ModelUsage {
                 input_tokens,
-                uncached_input_tokens: subtract_optional(input_tokens, cached_input_tokens),
+                uncached_input_tokens: subtract_optional(
+                    subtract_optional(input_tokens, cached_input_tokens),
+                    cache_write_input_tokens,
+                ),
                 cached_input_tokens,
+                cache_write_input_tokens,
                 output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
                 reasoning_tokens: usage
                     .pointer("/output_tokens_details/reasoning_tokens")
                     .and_then(Value::as_u64),
                 total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
                 raw: vec![usage.clone()],
-                ..ModelUsage::default()
             },
             stream,
         );
@@ -2701,6 +2716,26 @@ fn build_request(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
+    build_request_with_prompt_cache(
+        protocol,
+        model,
+        max_output_tokens,
+        reasoning_effort,
+        messages,
+        tools,
+        false,
+    )
+}
+
+fn build_request_with_prompt_cache(
+    protocol: ModelProtocol,
+    model: &str,
+    max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    explicit_prompt_cache: bool,
+) -> Value {
     match protocol {
         ModelProtocol::OpenaiChat => {
             build_openai_chat_request(model, max_output_tokens, reasoning_effort, messages, tools)
@@ -2711,6 +2746,7 @@ fn build_request(
             reasoning_effort,
             messages,
             tools,
+            explicit_prompt_cache,
         ),
         ModelProtocol::AnthropicMessages => {
             build_anthropic_request(model, max_output_tokens, reasoning_effort, messages, tools)
@@ -2741,6 +2777,13 @@ fn build_openai_chat_request(
                 .map(openai_chat_attachment_block)
                 .collect::<Vec<_>>();
             converted.push(json!({"role": "user", "content": content}));
+            continue;
+        }
+        if segmented_model_text(message).is_some() {
+            converted.push(json!({
+                "role": message.role,
+                "content": model_visible_message_text(message),
+            }));
             continue;
         }
         let mut converted_message = serde_json::to_value(message).unwrap_or_else(|_| json!({}));
@@ -2786,8 +2829,11 @@ fn build_openai_responses_request(
     reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
+    explicit_prompt_cache: bool,
 ) -> Value {
     let mut input = Vec::new();
+    let mut prompt_cache_key = None;
+    let mut has_explicit_breakpoint = false;
     for message in messages {
         if let Some(continuation) = provider_continuation(message) {
             if let ProviderContinuation::OpenaiResponses { reasoning_items } = continuation {
@@ -2800,6 +2846,33 @@ fn build_openai_responses_request(
                 "role": "user",
                 "content": attachments.iter().map(openai_responses_attachment_block).collect::<Vec<_>>(),
             }));
+            continue;
+        }
+        if let Some(segmented) = segmented_model_text(message) {
+            if explicit_prompt_cache {
+                let content = segmented
+                    .parts
+                    .iter()
+                    .map(|part| {
+                        let mut block = json!({
+                            "type": "input_text",
+                            "text": part.text,
+                        });
+                        if part.cache_boundary_after {
+                            block["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                            has_explicit_breakpoint = true;
+                        }
+                        block
+                    })
+                    .collect::<Vec<_>>();
+                input.push(json!({"role": message.role, "content": content}));
+                prompt_cache_key = segmented.prompt_cache_key;
+            } else {
+                input.push(json!({
+                    "role": message.role,
+                    "content": segmented.visible_text(),
+                }));
+            }
             continue;
         }
         if message.role == "tool" {
@@ -2823,6 +2896,12 @@ fn build_openai_responses_request(
         }
     }
     let mut request = json!({"model": model, "input": input});
+    if has_explicit_breakpoint {
+        request["prompt_cache_options"] = json!({"mode": "explicit", "ttl": "30m"});
+        if let Some(prompt_cache_key) = prompt_cache_key {
+            request["prompt_cache_key"] = json!(prompt_cache_key);
+        }
+    }
     if let Some(max_tokens) = max_output_tokens {
         request["max_output_tokens"] = json!(max_tokens);
     }
@@ -2919,7 +2998,7 @@ fn build_anthropic_request(
     let system = messages
         .iter()
         .filter(|message| message.role == "system" && model_attachments(message).is_none())
-        .map(|message| message.content.as_str())
+        .map(model_visible_message_text)
         .collect::<Vec<_>>()
         .join("\n\n");
     let mut converted: Vec<Value> = Vec::new();
@@ -2935,6 +3014,14 @@ fn build_anthropic_request(
                 .collect::<Vec<_>>();
             if !content.is_empty() {
                 converted.push(json!({"role": "user", "content": content}));
+            }
+            continue;
+        }
+        if segmented_model_text(message).is_some() {
+            let text = model_visible_message_text(message);
+            if !text.is_empty() {
+                converted
+                    .push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
             }
             continue;
         }
@@ -3038,7 +3125,7 @@ fn build_gemini_request(
     let system = messages
         .iter()
         .filter(|message| message.role == "system" && model_attachments(message).is_none())
-        .map(|message| message.content.as_str())
+        .map(model_visible_message_text)
         .collect::<Vec<_>>()
         .join("\n\n");
     let mut contents: Vec<Value> = Vec::new();
@@ -3057,6 +3144,13 @@ fn build_gemini_request(
                 .collect::<Vec<_>>();
             if !parts.is_empty() {
                 contents.push(json!({"role": "user", "parts": parts}));
+            }
+            continue;
+        }
+        if segmented_model_text(message).is_some() {
+            let text = model_visible_message_text(message);
+            if !text.is_empty() {
+                contents.push(json!({"role": "user", "parts": [{"text": text}]}));
             }
             continue;
         }
@@ -3547,7 +3641,10 @@ pub fn builtin_provider_catalog() -> BTreeMap<String, ProviderConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{attachment_message, FunctionCall, ToolCall};
+    use crate::llm::{
+        attachment_message, segmented_text_message, FunctionCall, ModelTextPart,
+        SegmentedModelText, ToolCall,
+    };
     use axum::{
         body::Body,
         http::StatusCode,
@@ -4790,6 +4887,171 @@ mod tests {
             let models = client.list_models().await.unwrap();
             assert_eq!(models, ["model-a", "model-b"]);
         }
+    }
+
+    #[test]
+    fn gpt_5_6_responses_maps_segmented_context_to_explicit_cache_boundaries() {
+        let context = segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts: vec![
+                    ModelTextPart {
+                        text: "stable".to_string(),
+                        cache_boundary_after: true,
+                    },
+                    ModelTextPart {
+                        text: "dynamic".to_string(),
+                        cache_boundary_after: false,
+                    },
+                ],
+                prompt_cache_key: Some("morphz-context-test".to_string()),
+            },
+        )
+        .unwrap();
+        let provider = ProviderConfig {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://provider.invalid/v1".to_string(),
+            ..ProviderConfig::default()
+        };
+        let client = ProtocolClient::new_with_adapter(
+            &provider,
+            "openai-codex",
+            "gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        let request = client.request_for_model("gpt-5.6-sol", &[context.clone()], &[]);
+        assert_eq!(
+            request.pointer("/prompt_cache_options"),
+            Some(&json!({"mode": "explicit", "ttl": "30m"}))
+        );
+        assert_eq!(
+            request.get("prompt_cache_key"),
+            Some(&json!("morphz-context-test"))
+        );
+        assert_eq!(
+            request.pointer("/input/0/content/0"),
+            Some(&json!({
+                "type": "input_text",
+                "text": "stable",
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }))
+        );
+        assert_eq!(
+            request.pointer("/input/0/content/1"),
+            Some(&json!({"type": "input_text", "text": "dynamic"}))
+        );
+
+        let generic = ProtocolClient::new(
+            &provider,
+            "gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let generic_request = generic.request_for_model("gpt-5.6-sol", &[context.clone()], &[]);
+        assert_eq!(
+            generic_request.pointer("/input/0/content/0/prompt_cache_breakpoint"),
+            Some(&json!({"mode": "explicit"}))
+        );
+        assert_eq!(
+            generic_request.get("prompt_cache_options"),
+            Some(&json!({"mode": "explicit", "ttl": "30m"}))
+        );
+
+        let older = client.request_for_model("gpt-5.5", &[context], &[]);
+        assert_eq!(
+            older.pointer("/input/0/content"),
+            Some(&json!("stabledynamic"))
+        );
+        assert!(older.get("prompt_cache_options").is_none());
+    }
+
+    #[test]
+    fn providers_without_explicit_breakpoint_support_receive_canonical_text() {
+        let message = segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts: vec![
+                    ModelTextPart {
+                        text: "alpha".to_string(),
+                        cache_boundary_after: true,
+                    },
+                    ModelTextPart {
+                        text: " beta".to_string(),
+                        cache_boundary_after: false,
+                    },
+                ],
+                prompt_cache_key: Some("ignored".to_string()),
+            },
+        )
+        .unwrap();
+
+        let chat = build_request(
+            ModelProtocol::OpenaiChat,
+            "test",
+            None,
+            None,
+            &[message.clone()],
+            &[],
+        );
+        assert_eq!(
+            chat.pointer("/messages/0/content"),
+            Some(&json!("alpha beta"))
+        );
+        assert!(chat.pointer("/messages/0/name").is_none());
+
+        let anthropic = build_request(
+            ModelProtocol::AnthropicMessages,
+            "test",
+            None,
+            None,
+            &[message.clone()],
+            &[],
+        );
+        assert_eq!(
+            anthropic.pointer("/messages/0/content/0/text"),
+            Some(&json!("alpha beta"))
+        );
+
+        let gemini = build_request(
+            ModelProtocol::GeminiContent,
+            "test",
+            None,
+            None,
+            &[message],
+            &[],
+        );
+        assert_eq!(
+            gemini.pointer("/contents/0/parts/0/text"),
+            Some(&json!("alpha beta"))
+        );
+    }
+
+    #[test]
+    fn responses_usage_preserves_cache_reads_and_cache_writes() {
+        let mut accumulator = StreamAccumulator::default();
+        let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        accumulator.apply_openai_responses_usage(
+            &json!({
+                "input_tokens": 100,
+                "input_tokens_details": {
+                    "cached_tokens": 70,
+                    "cache_write_tokens": 20
+                },
+                "output_tokens": 5,
+                "total_tokens": 105
+            }),
+            &stream,
+        );
+
+        assert_eq!(accumulator.usage.input_tokens, Some(100));
+        assert_eq!(accumulator.usage.uncached_input_tokens, Some(10));
+        assert_eq!(accumulator.usage.cached_input_tokens, Some(70));
+        assert_eq!(accumulator.usage.cache_write_input_tokens, Some(20));
+        assert_eq!(accumulator.usage.output_tokens, Some(5));
     }
 
     #[test]

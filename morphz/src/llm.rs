@@ -424,6 +424,58 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
+/// Ephemeral provider-envelope marker for one logical text message whose
+/// canonical text is split into transport-only content parts. The marker is
+/// assembled immediately before a model request and is never persisted as
+/// conversational text. Providers without explicit content-boundary support
+/// concatenate the parts and observe exactly the original message.
+pub const MODEL_SEGMENTED_TEXT_MESSAGE_NAME: &str = "__morphz_segmented_text__";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelTextPart {
+    pub text: String,
+    #[serde(default)]
+    pub cache_boundary_after: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SegmentedModelText {
+    pub parts: Vec<ModelTextPart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+}
+
+impl SegmentedModelText {
+    pub fn visible_text(&self) -> String {
+        self.parts.iter().map(|part| part.text.as_str()).collect()
+    }
+}
+
+pub fn segmented_text_message(
+    role: impl Into<String>,
+    content: SegmentedModelText,
+) -> Result<Message, serde_json::Error> {
+    Ok(Message {
+        role: role.into(),
+        content: serde_json::to_string(&content)?,
+        name: Some(MODEL_SEGMENTED_TEXT_MESSAGE_NAME.to_string()),
+        tool_call_id: None,
+        tool_calls: None,
+    })
+}
+
+pub fn segmented_model_text(message: &Message) -> Option<SegmentedModelText> {
+    (message.name.as_deref() == Some(MODEL_SEGMENTED_TEXT_MESSAGE_NAME))
+        .then(|| serde_json::from_str(&message.content).ok())
+        .flatten()
+}
+
+pub fn model_visible_message_text(message: &Message) -> String {
+    segmented_model_text(message)
+        .map(|content| content.visible_text())
+        .unwrap_or_else(|| message.content.clone())
+}
+
 /// Ephemeral provider-envelope marker. This message is assembled from
 /// Event-backed attachment metadata immediately before a model request and is
 /// never persisted as conversational text.
@@ -525,7 +577,8 @@ pub struct ModelUsage {
     /// All input tokens counted by the Provider, including cache hits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
-    /// Input tokens not read from the Provider cache, when the protocol distinguishes them.
+    /// Ordinary input tokens that were neither read from nor written to the Provider cache,
+    /// when the protocol reports those categories separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncached_input_tokens: Option<u64>,
     /// Input tokens read from the Provider cache, when the protocol distinguishes them.

@@ -23,10 +23,10 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, model_attachments, provider_continuation_message, Client, Message,
-    ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
-    ModelRequestContext, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation,
-    ToolDefinition,
+    attachment_message, model_attachments, provider_continuation_message, segmented_text_message,
+    Client, Message, ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
+    ModelRequestContext, ModelTextPart, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
+    ProviderContinuation, SegmentedModelText, ToolDefinition,
 };
 use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
@@ -933,10 +933,18 @@ struct EvaluationContextOverlay<'a> {
 /// stable System Prompt. The immutable Harness profile is placed immediately
 /// after `protocol`; request-local bindings and directives are placed in the
 /// dynamic tail immediately before the authoritative `evaluate` entry.
+#[cfg(test)]
 fn compose_context_encoding(
     base: &str,
     overlay: EvaluationContextOverlay<'_>,
 ) -> Result<String, DynError> {
+    Ok(compose_context_sexpr(base, overlay)?.to_string())
+}
+
+fn compose_context_sexpr(
+    base: &str,
+    overlay: EvaluationContextOverlay<'_>,
+) -> Result<SExpr, DynError> {
     let mut composed = crate::sexpr::parse(base)
         .map_err(|error| format!("Base Context Encoding is not a valid S-expression: {error}"))?;
     let SExpr::List(context) = &composed else {
@@ -1012,18 +1020,86 @@ fn compose_context_encoding(
         }
         environment.push(parsed);
     }
-    Ok(composed.to_string())
+    Ok(composed)
 }
 
-fn compose_context_message(
+fn stable_context_prompt_cache_key(context_id: &str) -> String {
+    let digest = Sha256::digest(context_id.as_bytes());
+    format!("morphz-context-{:x}", digest)[..64].to_string()
+}
+
+fn compose_segmented_context_message(
+    context_id: &str,
     prefix: &str,
     base: &str,
     overlay: EvaluationContextOverlay<'_>,
-) -> Result<String, DynError> {
-    Ok(format!(
-        "{prefix}\n{}",
-        compose_context_encoding(base, overlay)?
-    ))
+) -> Result<Message, DynError> {
+    let composed = compose_context_sexpr(base, overlay)?;
+    let canonical = format!("{prefix}\n{composed}");
+    let SExpr::List(context) = &composed else {
+        return Err("Composed Context Encoding is not a context List".into());
+    };
+
+    let profile_index = context
+        .iter()
+        .position(|item| {
+            matches!(item, SExpr::List(values) if matches!(values.first(), Some(SExpr::Atom(name)) if name == "evaluation-profile"))
+        })
+        .ok_or("Composed Context Encoding is missing evaluation-profile")?;
+    let inbox_index = context
+        .iter()
+        .position(|item| {
+            matches!(item, SExpr::List(values) if matches!(values.first(), Some(SExpr::Atom(name)) if name == "inbox"))
+        })
+        .ok_or("Composed Context Encoding is missing inbox")?;
+    if profile_index == 0 || inbox_index <= profile_index {
+        return Err("Composed Context Encoding has an invalid stable-prefix order".into());
+    }
+
+    let mut stable = format!("{prefix}\n(");
+    stable.push_str(
+        &context[..=profile_index]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+
+    let mut inbox = String::new();
+    for item in &context[profile_index + 1..=inbox_index] {
+        inbox.push(' ');
+        inbox.push_str(&item.to_string());
+    }
+
+    let mut dynamic = String::new();
+    for item in &context[inbox_index + 1..] {
+        dynamic.push(' ');
+        dynamic.push_str(&item.to_string());
+    }
+    dynamic.push(')');
+
+    let parts = vec![
+        ModelTextPart {
+            text: stable,
+            cache_boundary_after: true,
+        },
+        ModelTextPart {
+            text: inbox,
+            cache_boundary_after: true,
+        },
+        ModelTextPart {
+            text: dynamic,
+            cache_boundary_after: false,
+        },
+    ];
+    let segmented = SegmentedModelText {
+        parts,
+        prompt_cache_key: Some(stable_context_prompt_cache_key(context_id)),
+    };
+    if segmented.visible_text() != canonical {
+        return Err("Segmented Context Message differs from canonical serialization".into());
+    }
+    Ok(segmented_text_message("user", segmented)?)
 }
 
 fn stable_harness_entry_call_id(binding: &HarnessBinding, evaluation_id: &str) -> String {
@@ -9166,7 +9242,8 @@ impl Orchestrator {
                     },
                 );
                 if let Some(context_message) = messages.get_mut(1) {
-                    context_message.content = compose_context_message(
+                    *context_message = compose_segmented_context_message(
+                        &context.context_id,
                         context_message_prefix,
                         &context.sexpr,
                         context_overlay,
@@ -10261,17 +10338,12 @@ impl Orchestrator {
                 tool_call_id: None,
                 tool_calls: None,
             },
-            Message {
-                role: "user".to_string(),
-                content: compose_context_message(
-                    context_message_prefix,
-                    &context.sexpr,
-                    measurement_overlay,
-                )?,
-                name: None,
-                tool_call_id: None,
-                tool_calls: None,
-            },
+            compose_segmented_context_message(
+                &context.context_id,
+                context_message_prefix,
+                &context.sexpr,
+                measurement_overlay,
+            )?,
         ];
         measurement_messages.extend(continuation.messages.clone());
         if let Some(message) = attachment_message.clone() {
@@ -10394,17 +10466,12 @@ impl Orchestrator {
                 tool_call_id: None,
                 tool_calls: None,
             },
-            Message {
-                role: "user".to_string(),
-                content: compose_context_message(
-                    context_message_prefix,
-                    &context.sexpr,
-                    request_overlay,
-                )?,
-                name: None,
-                tool_call_id: None,
-                tool_calls: None,
-            },
+            compose_segmented_context_message(
+                &context.context_id,
+                context_message_prefix,
+                &context.sexpr,
+                request_overlay,
+            )?,
         ];
         messages.extend(continuation_messages_for_projection(
             &continuation_messages,
@@ -10650,7 +10717,8 @@ impl Orchestrator {
                     CRITICAL_MAINTENANCE_PREVIEW_CHARS,
                 );
                 let mut candidate_messages = messages.clone();
-                candidate_messages[1].content = compose_context_message(
+                candidate_messages[1] = compose_segmented_context_message(
+                    &candidate.context_id,
                     context_message_prefix,
                     &candidate.sexpr,
                     request_overlay,
@@ -11067,17 +11135,12 @@ impl Orchestrator {
                             tool_call_id: None,
                             tool_calls: None,
                         },
-                        Message {
-                            role: "user".to_string(),
-                            content: compose_context_message(
-                                context_message_prefix,
-                                &context.sexpr,
-                                recovery_overlay,
-                            )?,
-                            name: None,
-                            tool_call_id: None,
-                            tool_calls: None,
-                        },
+                        compose_segmented_context_message(
+                            &context.context_id,
+                            context_message_prefix,
+                            &context.sexpr,
+                            recovery_overlay,
+                        )?,
                     ];
                     protocol_messages = base_protocol_messages.clone();
                     tools = self.tool_definitions.clone();
@@ -11357,7 +11420,8 @@ impl Orchestrator {
                             SAFETY_REFUSAL_RECOVERY_PROMPT,
                         )),
                     };
-                    base_protocol_messages[1].content = compose_context_message(
+                    base_protocol_messages[1] = compose_segmented_context_message(
+                        &context.context_id,
                         context_message_prefix,
                         &context.sexpr,
                         recovery_overlay,
@@ -19884,10 +19948,10 @@ mod tests {
         action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
         attached_delegation_return_route, baseline_system_prompt, classify_terminal_response,
         cognitive_sexpr_vm_system_prompt, completed_objective_update_call,
-        compose_context_encoding, continuation_messages_for_projection,
-        critical_maintenance_transaction_available, decide_provider_circuit_admission,
-        derived_thread_kind, durable_activation_revocation_reason,
-        durable_activation_revocation_reason_for_record,
+        compose_context_encoding, compose_segmented_context_message,
+        continuation_messages_for_projection, critical_maintenance_transaction_available,
+        decide_provider_circuit_admission, derived_thread_kind,
+        durable_activation_revocation_reason, durable_activation_revocation_reason_for_record,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
         harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
         model_binding_completion_error, model_harness_tool_scope,
@@ -19917,9 +19981,10 @@ mod tests {
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
-        attachment_message, model_attachments, FunctionCall, Message, ModelAttemptBinding,
-        ModelAttemptBindingError, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
-        PromptTokenCount, ProviderContinuation, ToolCall, ToolDefinition,
+        attachment_message, model_attachments, model_visible_message_text, segmented_model_text,
+        FunctionCall, Message, ModelAttemptBinding, ModelAttemptBindingError, ModelFailureKind,
+        ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolCall,
+        ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -21175,6 +21240,54 @@ mod tests {
         assert!(context.contains("(runtime-directive (kind work)"));
         assert!(context.find("(local-time").unwrap() < context.find("(runtime-directive").unwrap());
         assert!(context.find("(runtime-directive").unwrap() < context.find("(evaluate ").unwrap());
+    }
+
+    #[test]
+    fn segmented_context_message_is_byte_identical_and_marks_only_structural_boundaries() {
+        let prefix = "Runtime Context Encoding:";
+        let base = "(context (protocol (version 26)) (evaluation-profile none) (inbox (observation (ref @e1) (seq 1)) (observation (ref @e2) (seq 2))) (observation-state) (mind (frame (id current))) (session-directory) (kernel) (evaluation-environment) (evaluate (root-input test)))";
+        let overlay = EvaluationContextOverlay {
+            runtime_directive: Some(("work", "continue")),
+            ..EvaluationContextOverlay::default()
+        };
+        let canonical = format!(
+            "{prefix}\n{}",
+            compose_context_encoding(base, overlay).unwrap()
+        );
+        let message =
+            compose_segmented_context_message("context-a", prefix, base, overlay).unwrap();
+        let segmented = segmented_model_text(&message).expect("segmented Context envelope");
+
+        assert_eq!(model_visible_message_text(&message), canonical);
+        assert_eq!(segmented.parts.len(), 3);
+        assert!(segmented.parts[0].cache_boundary_after);
+        assert!(segmented.parts[0]
+            .text
+            .ends_with("(evaluation-profile none)"));
+        assert!(segmented.parts[1].cache_boundary_after);
+        assert!(segmented.parts[1].text.starts_with(" (inbox "));
+        assert!(segmented.parts[1].text.ends_with(')'));
+        assert!(!segmented.parts[2].cache_boundary_after);
+        assert!(segmented.parts[2].text.starts_with(" (observation-state)"));
+        assert!(segmented.parts[2]
+            .text
+            .contains("(runtime-directive (kind work) (description continue))"));
+        assert!(segmented.parts[2].text.ends_with(')'));
+        assert_eq!(
+            segmented.prompt_cache_key.as_deref(),
+            compose_segmented_context_message("context-a", prefix, base, overlay)
+                .ok()
+                .and_then(|message| segmented_model_text(&message))
+                .and_then(|content| content.prompt_cache_key)
+                .as_deref()
+        );
+        assert_ne!(
+            segmented.prompt_cache_key,
+            compose_segmented_context_message("context-b", prefix, base, overlay)
+                .ok()
+                .and_then(|message| segmented_model_text(&message))
+                .and_then(|content| content.prompt_cache_key)
+        );
     }
 
     #[test]

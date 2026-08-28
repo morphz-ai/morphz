@@ -5,6 +5,12 @@
 > 适用范围：LLM 请求封装、Context Encoding、Agent-Owned Context、Harness 挂载、工具配置、Token Usage 与成本可观测性
 > 上位设计：[Agent-Owned Context](morphz_agent_owned_context_design.md)、[共享 Context 与多会话架构](morphz_shared_context_multisession_architecture.md)
 > 配套设计：[Domain Harness](morphz_domain_harness_architecture_v1.md)、[Yao Harness `.hns`](morphz_yao_harness_file.md)
+> Provider 显式缓存边界补充设计：[Provider 可移植 Prompt Cache 边界设计 v1](morphz_provider_portable_prompt_cache_boundaries_v1.md)
+
+> 2026-08-28 补充：本文的真实 A/B 来自支持自动前缀识别的 Qwen 路线，结论继续有效；
+> 对需要内容块断点才能复用内部稳定前缀的 GPT-5.6 Responses 路线，第一阶段 Provider
+> 映射已经完成，并通过 CLIProxyAPI 生产路径观察到实际缓存命中。该补充不改变 Context
+> Protocol v26 的语义或物理顺序；正式成本结论仍以重新运行的配对 Benchmark 为准。
 
 ## 1. 决策摘要
 

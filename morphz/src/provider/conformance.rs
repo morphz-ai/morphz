@@ -149,7 +149,8 @@ fn openai_responses_replays_the_exact_reasoning_item_before_tool_protocol_items(
         },
     ];
 
-    let request = build_openai_responses_request("gateway-model", None, None, &messages, &[]);
+    let request =
+        build_openai_responses_request("gateway-model", None, None, &messages, &[], false);
     let input = request["input"].as_array().unwrap();
 
     assert_eq!(input[0], reasoning_item);

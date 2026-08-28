@@ -3,7 +3,7 @@ use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_RUNTIME_WAKE,
     TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
-use crate::llm::ModelAttemptBinding;
+use crate::llm::{model_visible_message_text, ModelAttemptBinding};
 use crate::memory::{
     CognitiveClockStore, ContextCapabilityBindingRecord, ContextCapabilityBindingStore,
     ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore, ExecutionJobFilter,
@@ -10830,7 +10830,7 @@ pub fn attribute_prompt_components(
     }
     let encoded_context_weight = messages
         .get(1)
-        .map(|message| text_weight_units(&message.content))
+        .map(|message| text_weight_units(&model_visible_message_text(message)))
         .unwrap_or(0);
     let context_partition_weight = encoded_context_weight.max(context_children_weight);
     components.push(Weighted {
