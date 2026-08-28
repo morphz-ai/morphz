@@ -1090,6 +1090,19 @@ fn build_managed_ssh_exec_arguments(
         .get("wait_ms")
         .cloned()
         .unwrap_or(serde_json::json!(10_000));
+    let background = object
+        .get("background")
+        .cloned()
+        .unwrap_or(serde_json::json!(false));
+    let managed_wait_ms = if background.as_bool().unwrap_or(false) {
+        serde_json::Value::Null
+    } else {
+        wait_ms
+    };
+    let keep_running = object
+        .get("keep_running")
+        .cloned()
+        .unwrap_or(serde_json::json!(false));
     let read_paths = endpoint
         .destination
         .is_none()
@@ -1100,7 +1113,9 @@ fn build_managed_ssh_exec_arguments(
     Ok(serde_json::to_string(&serde_json::json!({
         "command": ssh,
         "cwd": ".",
-        "wait_ms": wait_ms,
+        "wait_ms": managed_wait_ms,
+        "background": background,
+        "keep_running": keep_running,
         "sandbox_permissions": "require_escalated",
         "requested_permissions": {
             "network": true,

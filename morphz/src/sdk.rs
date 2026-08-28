@@ -523,6 +523,46 @@ pub struct AppendEdgeOutputCommand {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReserveEdgeBackgroundExecutionCommand {
+    pub expected_parent_revision: u64,
+    pub parent_claim_token: String,
+    pub worker_id: String,
+    pub child_claim_token: String,
+    pub lease_seconds: u64,
+    pub background_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EdgeBackgroundExecutionLease {
+    pub job: ExecutionJobRecord,
+    pub claim_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeartbeatEdgeBackgroundExecutionCommand {
+    pub expected_revision: u64,
+    pub claim_token: String,
+    pub lease_seconds: u64,
+    pub side_effect_started: bool,
+    pub progress_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FinishEdgeBackgroundExecutionCommand {
+    pub claim_token: String,
+    pub exit_code: i32,
+    pub output: String,
+    pub residual_note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CancelEdgeBackgroundExecutionCommand {
+    pub expected_revision: u64,
+    pub claim_token: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionJobQuery {
     pub context_id: Option<String>,
@@ -3075,6 +3115,16 @@ impl MorphzSdk {
             .map_err(SdkError::internal)?
         {
             EdgeCommandMutation::Updated(command) => Ok(command),
+            EdgeCommandMutation::Conflict { current }
+                if current.status == EdgeCommandStatus::CancelRequested
+                    && current.claim_token.as_deref() == Some(command.claim_token.as_str()) =>
+            {
+                // Cancellation advances the durable revision. Returning that
+                // authoritative record lets the still-owning Worker stop the
+                // local process and submit Cancelled exactly once instead of
+                // treating the expected revision change as a lost connection.
+                Ok(current)
+            }
             EdgeCommandMutation::Conflict { current } => Err(SdkError::new(
                 SdkErrorCode::Conflict,
                 format!(
@@ -3170,6 +3220,160 @@ impl MorphzSdk {
             EdgeCommandMutation::NotFound => Err(SdkError::new(
                 SdkErrorCode::NotFound,
                 "Edge Command does not exist",
+            )),
+        }
+    }
+
+    pub async fn reserve_edge_background_execution(
+        &self,
+        node_id: &str,
+        device_token: &str,
+        parent_job_id: &str,
+        command: ReserveEdgeBackgroundExecutionCommand,
+    ) -> SdkResult<EdgeBackgroundExecutionLease> {
+        let parent = self
+            .authorize_node_command(node_id, device_token, parent_job_id)
+            .await?;
+        if parent.status != EdgeCommandStatus::Claimed
+            || parent.revision != command.expected_parent_revision
+            || parent.claim_token.as_deref() != Some(command.parent_claim_token.as_str())
+            || parent.claimed_by.as_deref() != Some(command.worker_id.as_str())
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                "the parent Edge Command revision, worker, or claim token no longer owns this background spawn",
+            ));
+        }
+        if command.background_source.trim().is_empty()
+            || command.child_claim_token.trim().is_empty()
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "background_source and child_claim_token cannot be empty",
+            ));
+        }
+        let job = self
+            .runtime
+            .reserve_edge_background_execution(
+                node_id,
+                parent_job_id,
+                &command.worker_id,
+                &command.child_claim_token,
+                command.lease_seconds,
+                &command.background_source,
+            )
+            .await
+            .map_err(SdkError::internal)?;
+        Ok(EdgeBackgroundExecutionLease {
+            job,
+            claim_token: command.child_claim_token,
+        })
+    }
+
+    pub async fn heartbeat_edge_background_execution(
+        &self,
+        node_id: &str,
+        device_token: &str,
+        parent_job_id: &str,
+        task_id: &str,
+        command: HeartbeatEdgeBackgroundExecutionCommand,
+    ) -> SdkResult<ExecutionJobRecord> {
+        self.authorize_node_command(node_id, device_token, parent_job_id)
+            .await?;
+        match self
+            .runtime
+            .heartbeat_edge_background_execution(
+                task_id,
+                command.expected_revision,
+                &command.claim_token,
+                command.lease_seconds,
+                command.side_effect_started,
+                command.progress_ref.as_deref(),
+            )
+            .await
+            .map_err(SdkError::internal)?
+        {
+            JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
+            JobReceipt::Conflict { current, .. }
+                if current.claim_token.as_deref() == Some(command.claim_token.as_str())
+                    && current.cancel_requested_at.is_some() =>
+            {
+                Ok(current)
+            }
+            JobReceipt::Conflict { current, .. } => Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                format!(
+                    "background ExecutionJob revision or claim conflict; current revision is {}",
+                    current.revision
+                ),
+            )),
+            JobReceipt::Rejected { reason, .. } => {
+                Err(SdkError::new(SdkErrorCode::Conflict, reason))
+            }
+            JobReceipt::NotFound { .. } => Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                "background ExecutionJob does not exist",
+            )),
+        }
+    }
+
+    pub async fn finish_edge_background_execution(
+        &self,
+        node_id: &str,
+        device_token: &str,
+        parent_job_id: &str,
+        task_id: &str,
+        command: FinishEdgeBackgroundExecutionCommand,
+    ) -> SdkResult<bool> {
+        self.authorize_node_command(node_id, device_token, parent_job_id)
+            .await?;
+        self.runtime
+            .finish_edge_background_execution(
+                task_id,
+                &command.claim_token,
+                command.exit_code,
+                &command.output,
+                &command.residual_note,
+            )
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn cancel_edge_background_execution(
+        &self,
+        node_id: &str,
+        device_token: &str,
+        parent_job_id: &str,
+        task_id: &str,
+        command: CancelEdgeBackgroundExecutionCommand,
+    ) -> SdkResult<ExecutionJobRecord> {
+        self.authorize_node_command(node_id, device_token, parent_job_id)
+            .await?;
+        match self
+            .runtime
+            .cancel_edge_background_execution(
+                task_id,
+                command.expected_revision,
+                &command.claim_token,
+                &command.reason,
+            )
+            .await
+            .map_err(SdkError::internal)?
+        {
+            JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
+            JobReceipt::Conflict { current, .. } => Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                format!(
+                    "background ExecutionJob cancel conflict; current revision is {}",
+                    current.revision
+                ),
+            )),
+            JobReceipt::Rejected { reason, .. } => {
+                Err(SdkError::new(SdkErrorCode::Conflict, reason))
+            }
+            JobReceipt::NotFound { .. } => Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                "background ExecutionJob does not exist",
             )),
         }
     }

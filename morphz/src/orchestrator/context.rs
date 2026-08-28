@@ -9008,7 +9008,8 @@ fn render_protocol() -> SExpr {
                         "reply",
                         vec![
                             pair("when", atom("the current user task is complete or a blocker must be explained")),
-                            pair("form", atom("return non-empty ordinary assistant text with no tool calls")),
+                            pair("form", atom("return non-empty ordinary assistant text with no tool calls; the Runtime delivers this content verbatim, so bare (eval ...) or (infer ...) text is a reply and is never admitted or executed")),
+                            pair("execution", atom("execute every Tool or Yao program only through the explicit Function Call offered for that action")),
                             pair("routing", atom("content is delivered automatically to kernel.active-session")),
                             pair("stream", atom("when the Provider supplies text deltas, the Runtime forwards them immediately to the active Session and persists terminal state only after the complete response succeeds")),
                             list(
@@ -13804,6 +13805,11 @@ mod tests {
         assert!(rendered.contains("(root-input 先回答我)"));
         assert!(rendered.rfind("(evaluate").unwrap() > rendered.rfind("(inbox").unwrap());
         assert!(rendered.contains("(response-contract"));
+        assert!(rendered.contains(
+            "bare (eval ...) or (infer ...) text is a reply and is never admitted or executed"
+        ));
+        assert!(rendered
+            .contains("execute every Tool or Yao program only through the explicit Function Call"));
         assert!(rendered.contains("(skill-discovery-contract"));
         assert!(rendered.contains("(fallback"));
         assert!(rendered.contains("without binding to a platform, domain, or specific Skill name"));

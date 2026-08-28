@@ -36,15 +36,17 @@ use crate::execution_target::{
     DEFAULT_EXECUTION_TARGET_ID, EDGE_EXECUTION_SCOPE_KEY,
 };
 use crate::memory::{
-    EdgeCommandRecord, EdgeCommandStatus, ExecutionNodeRecord, ExecutionTargetKind,
-    ExecutionTargetRegistration,
+    EdgeCommandRecord, EdgeCommandStatus, ExecutionJobRecord, ExecutionNodeRecord,
+    ExecutionTargetKind, ExecutionTargetRegistration,
 };
 use crate::runtime::MorphzRuntime;
 use crate::sdk::{
-    execution_node_connection_proof_message, AppendEdgeOutputCommand, ClaimEdgeCommand,
-    ConnectExecutionNodeCommand, ExecutionNodeConnection, ExecutionNodeHeartbeatCommand,
-    ExecutionNodeIdentityChallenge, FinishEdgeCommand, HeartbeatEdgeCommand,
-    PairExecutionNodeCommand, PairedExecutionNode, RotateExecutionNodeKeyCommand,
+    execution_node_connection_proof_message, AppendEdgeOutputCommand,
+    CancelEdgeBackgroundExecutionCommand, ClaimEdgeCommand, ConnectExecutionNodeCommand,
+    EdgeBackgroundExecutionLease, ExecutionNodeConnection, ExecutionNodeHeartbeatCommand,
+    ExecutionNodeIdentityChallenge, FinishEdgeBackgroundExecutionCommand, FinishEdgeCommand,
+    HeartbeatEdgeBackgroundExecutionCommand, HeartbeatEdgeCommand, PairExecutionNodeCommand,
+    PairedExecutionNode, ReserveEdgeBackgroundExecutionCommand, RotateExecutionNodeKeyCommand,
 };
 
 pub type EdgeNodeError = Box<dyn Error + Send + Sync>;
@@ -445,6 +447,132 @@ impl EdgeGatewayClient {
                 status,
                 output,
                 error,
+            }),
+        )
+        .await
+    }
+
+    pub async fn reserve_background_execution(
+        &self,
+        credentials: &EdgeNodeCredentials,
+        command: &EdgeCommandRecord,
+        worker_id: &str,
+        background_source: &str,
+        lease_seconds: u64,
+    ) -> Result<EdgeBackgroundExecutionLease, EdgeNodeError> {
+        let parent_claim_token = command
+            .claim_token
+            .as_deref()
+            .ok_or("claimed Edge Command is missing claim_token")?;
+        let mut digest = Sha256::new();
+        digest.update(b"morphz.edge-background-claim.v1\0");
+        digest.update(parent_claim_token.as_bytes());
+        digest.update(command.job_id.as_bytes());
+        let child_claim_token = format!("edge-background-{:x}", digest.finalize());
+        self.send_json(
+            self.authorized(
+                self.http.post(self.url(&format!(
+                    "/api/edge/nodes/{}/jobs/{}/background/reserve",
+                    credentials.node_id, command.job_id
+                ))),
+                credentials,
+            )
+            .await?
+            .json(&ReserveEdgeBackgroundExecutionCommand {
+                expected_parent_revision: command.revision,
+                parent_claim_token: parent_claim_token.to_string(),
+                worker_id: worker_id.to_string(),
+                child_claim_token,
+                lease_seconds,
+                background_source: background_source.to_string(),
+            }),
+        )
+        .await
+    }
+
+    pub async fn heartbeat_background_execution(
+        &self,
+        credentials: &EdgeNodeCredentials,
+        parent_job_id: &str,
+        lease: &EdgeBackgroundExecutionLease,
+        side_effect_started: bool,
+        progress_ref: Option<String>,
+        lease_seconds: u64,
+    ) -> Result<ExecutionJobRecord, EdgeNodeError> {
+        self.send_json(
+            self.authorized(
+                self.http.post(self.url(&format!(
+                    "/api/edge/nodes/{}/jobs/{}/background/{}/heartbeat",
+                    credentials.node_id, parent_job_id, lease.job.id
+                ))),
+                credentials,
+            )
+            .await?
+            .json(&HeartbeatEdgeBackgroundExecutionCommand {
+                expected_revision: lease.job.revision,
+                claim_token: lease.claim_token.clone(),
+                lease_seconds,
+                side_effect_started,
+                progress_ref,
+            }),
+        )
+        .await
+    }
+
+    pub async fn finish_background_execution(
+        &self,
+        credentials: &EdgeNodeCredentials,
+        parent_job_id: &str,
+        lease: &EdgeBackgroundExecutionLease,
+        exit_code: i32,
+        output: String,
+        residual_note: String,
+    ) -> Result<bool, EdgeNodeError> {
+        #[derive(Deserialize)]
+        struct FinishReceipt {
+            committed: bool,
+        }
+        let receipt: FinishReceipt = self
+            .send_json(
+                self.authorized(
+                    self.http.post(self.url(&format!(
+                        "/api/edge/nodes/{}/jobs/{}/background/{}/finish",
+                        credentials.node_id, parent_job_id, lease.job.id
+                    ))),
+                    credentials,
+                )
+                .await?
+                .json(&FinishEdgeBackgroundExecutionCommand {
+                    claim_token: lease.claim_token.clone(),
+                    exit_code,
+                    output,
+                    residual_note,
+                }),
+            )
+            .await?;
+        Ok(receipt.committed)
+    }
+
+    pub async fn cancel_background_execution(
+        &self,
+        credentials: &EdgeNodeCredentials,
+        parent_job_id: &str,
+        lease: &EdgeBackgroundExecutionLease,
+        reason: &str,
+    ) -> Result<ExecutionJobRecord, EdgeNodeError> {
+        self.send_json(
+            self.authorized(
+                self.http.post(self.url(&format!(
+                    "/api/edge/nodes/{}/jobs/{}/background/{}/cancel",
+                    credentials.node_id, parent_job_id, lease.job.id
+                ))),
+                credentials,
+            )
+            .await?
+            .json(&CancelEdgeBackgroundExecutionCommand {
+                expected_revision: lease.job.revision,
+                claim_token: lease.claim_token.clone(),
+                reason: reason.to_string(),
             }),
         )
         .await
@@ -937,6 +1065,9 @@ async fn cleanup_edge_artifact_stages(stage: &Path) {
     }
 }
 
+const EDGE_OUTPUT_CHUNK_BYTES: usize = 60 * 1024;
+
+#[cfg(test)]
 async fn close_and_drain_buffered_tool_output(
     output_rx: &mut tokio::sync::mpsc::Receiver<crate::tool::ToolOutputChunk>,
 ) -> Vec<crate::tool::ToolOutputChunk> {
@@ -946,6 +1077,199 @@ async fn close_and_drain_buffered_tool_output(
         buffered.push(chunk);
     }
     buffered
+}
+
+fn bounded_edge_output_chunks(
+    chunk: crate::tool::ToolOutputChunk,
+) -> Vec<crate::tool::ToolOutputChunk> {
+    if chunk.text.len() <= EDGE_OUTPUT_CHUNK_BYTES {
+        return vec![chunk];
+    }
+    let mut chunks = Vec::new();
+    let mut remaining = chunk.text.as_str();
+    while !remaining.is_empty() {
+        let mut split = remaining.len().min(EDGE_OUTPUT_CHUNK_BYTES);
+        while split > 0 && !remaining.is_char_boundary(split) {
+            split -= 1;
+        }
+        let (text, rest) = remaining.split_at(split.max(1));
+        chunks.push(crate::tool::ToolOutputChunk {
+            stream: chunk.stream,
+            text: text.to_string(),
+        });
+        remaining = rest;
+    }
+    chunks
+}
+
+async fn forward_edge_tool_output(
+    gateway: EdgeGatewayClient,
+    credentials: EdgeNodeCredentials,
+    command: EdgeCommandRecord,
+    mut output_rx: tokio::sync::mpsc::Receiver<crate::tool::ToolOutputChunk>,
+    mut close_rx: tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), EdgeNodeError> {
+    let mut closing = false;
+    loop {
+        tokio::select! {
+            _ = &mut close_rx, if !closing => {
+                closing = true;
+                // Preserve chunks already accepted by the bounded channel,
+                // but stop making the parent command wait for a detached
+                // child's pipe monitors to reach EOF.
+                output_rx.close();
+            }
+            chunk = output_rx.recv() => {
+                let Some(chunk) = chunk else {
+                    return Ok(());
+                };
+                for chunk in bounded_edge_output_chunks(chunk) {
+                    gateway.append_output(&credentials, &command, chunk).await?;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EdgeBackgroundReceipt {
+    local_task_id: String,
+    background_source: String,
+}
+
+fn edge_background_receipt(output: &str) -> Option<EdgeBackgroundReceipt> {
+    let value: serde_json::Value = serde_json::from_str(output).ok()?;
+    (value.get("execution").and_then(serde_json::Value::as_str) == Some("background"))
+        .then(|| EdgeBackgroundReceipt {
+            local_task_id: value
+                .get("task_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            background_source: value
+                .get("background_source")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("wait_timeout")
+                .to_string(),
+        })
+        .filter(|receipt| !receipt.local_task_id.is_empty())
+}
+
+fn rewrite_edge_background_receipt(
+    output: &str,
+    central_task_id: &str,
+) -> Result<String, EdgeNodeError> {
+    let mut value: serde_json::Value = serde_json::from_str(output)?;
+    let object = value
+        .as_object_mut()
+        .ok_or("managed background receipt must be a JSON object")?;
+    object.insert("task_id".to_string(), serde_json::json!(central_task_id));
+    object.insert("owner".to_string(), serde_json::json!("edge_worker"));
+    Ok(serde_json::to_string(&value)?)
+}
+
+async fn supervise_edge_background_task(
+    gateway: EdgeGatewayClient,
+    credentials: EdgeNodeCredentials,
+    parent_job_id: String,
+    mut lease: EdgeBackgroundExecutionLease,
+    local_task_id: String,
+    lease_seconds: u64,
+    heartbeat_interval: Duration,
+) {
+    let mut heartbeat = tokio::time::interval(heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        heartbeat.tick().await;
+        let Some(snapshot) = crate::tool::edge_background_task_snapshot(&local_task_id) else {
+            tracing::error!(
+                parent_execution_job_id = %parent_job_id,
+                execution_job_id = %lease.job.id,
+                local_task_id = %local_task_id,
+                event_code = "edge.background.local_owner_missing",
+                "Edge background supervisor lost its local process handle"
+            );
+            return;
+        };
+        if snapshot.status.is_terminal() {
+            let residual_note = format!(
+                "\n[full Edge stdout/stderr archive remains on node '{}' at '{}']",
+                credentials.node_id, snapshot.artifact_path
+            );
+            match gateway
+                .finish_background_execution(
+                    &credentials,
+                    &parent_job_id,
+                    &lease,
+                    snapshot.exit_code.unwrap_or(-1),
+                    snapshot.output_tail,
+                    residual_note,
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => {
+                    // The process has already reached a local terminal state,
+                    // but the durable owner is still this Worker. Keep retrying
+                    // the idempotent terminal commit instead of abandoning a
+                    // Running ExecutionJob after a transient transport or
+                    // database failure. A later ownership conflict fences this
+                    // Worker through the same endpoint.
+                    tracing::error!(
+                        parent_execution_job_id = %parent_job_id,
+                        execution_job_id = %lease.job.id,
+                        %error,
+                        event_code = "edge.background.terminal_commit_failed",
+                        "Edge background terminal result could not be committed; retrying while ownership remains valid"
+                    );
+                    continue;
+                }
+            }
+        }
+        match gateway
+            .heartbeat_background_execution(
+                &credentials,
+                &parent_job_id,
+                &lease,
+                true,
+                Some(format!(
+                    "edge://{}/{}/output",
+                    credentials.node_id, lease.job.id
+                )),
+                lease_seconds,
+            )
+            .await
+        {
+            Ok(job) => {
+                let cancelled = job.cancel_requested_at.is_some();
+                lease.job = job;
+                if cancelled {
+                    if let Err(error) = crate::tool::cancel_edge_background_task(&local_task_id) {
+                        tracing::error!(
+                            execution_job_id = %lease.job.id,
+                            %error,
+                            event_code = "edge.background.cancel_failed",
+                            "Edge Worker could not terminate the cancelled background process group"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                // Lost ownership is a fence, not a reason to continue an
+                // unowned process. The new owner/reconciliation path decides
+                // the durable terminal state.
+                let _ = crate::tool::cancel_edge_background_task(&local_task_id);
+                tracing::warn!(
+                    parent_execution_job_id = %parent_job_id,
+                    execution_job_id = %lease.job.id,
+                    %error,
+                    event_code = "edge.background.ownership_lost",
+                    "Edge background heartbeat lost ownership; terminated the local process"
+                );
+                return;
+            }
+        }
+    }
 }
 
 impl EdgeNodeWorker {
@@ -985,103 +1309,349 @@ impl EdgeNodeWorker {
         // Transfer is different: it publishes through deterministic staging,
         // validates content, and is explicitly reconcile-safe after a crash.
         let reconcile_safe_transfer = command.tool_name == ARTIFACT_TRANSFER_TOOL_NAME;
+        let exec_defers_side_effect_until_spawn = command.tool_name == "exec";
         command = self
             .gateway
             .heartbeat_command(
                 &self.credentials,
                 &command,
-                !reconcile_safe_transfer,
-                Some("local sandbox and tool execution started".to_string()),
+                !reconcile_safe_transfer && !exec_defers_side_effect_until_spawn,
+                Some(if exec_defers_side_effect_until_spawn {
+                    "local exec preflight started".to_string()
+                } else {
+                    "local sandbox and tool execution started".to_string()
+                }),
                 self.config.lease_seconds,
             )
             .await?;
+        if command.status == EdgeCommandStatus::CancelRequested {
+            self.finish_cancelled_command(&command).await?;
+            return Ok(true);
+        }
 
         let (execution_command, provider_local_preauthorized, artifact_channel) =
-            self.prepare_execution_command(&command).await?;
-        let local_authority_approved = self
+            match self.prepare_execution_command(&command).await {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.finish_preflight_failure(&command, &error).await?;
+                    return Ok(true);
+                }
+            };
+        let local_authority_approved = match self
             .authorize_local_capability(&execution_command, provider_local_preauthorized)
-            .await?;
-        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(64);
+            .await
+        {
+            Ok(approved) => approved,
+            Err(error) => {
+                self.finish_preflight_failure(&command, &error).await?;
+                return Ok(true);
+            }
+        };
+        let requested_background = if execution_command.tool_name == "exec" {
+            match crate::tool::managed_exec_background_request(&execution_command.arguments) {
+                Ok(request) => request,
+                Err(error) => {
+                    let error: EdgeNodeError = error;
+                    self.finish_preflight_failure(&command, &error).await?;
+                    return Ok(true);
+                }
+            }
+        } else {
+            None
+        };
+        let mut background_lease = if let Some(request) = requested_background.as_ref() {
+            match self
+                .gateway
+                .reserve_background_execution(
+                    &self.credentials,
+                    &command,
+                    &self.config.worker_id,
+                    &request.background_source,
+                    self.config.lease_seconds,
+                )
+                .await
+            {
+                Ok(lease) => Some(lease),
+                Err(error) => {
+                    self.finish_preflight_failure(&command, &error).await?;
+                    return Ok(true);
+                }
+            }
+        } else {
+            None
+        };
+        let edge_background_context = (execution_command.tool_name == "exec").then(|| {
+            crate::tool::EdgeBackgroundTaskContext {
+                task_id: background_lease.as_ref().map_or_else(
+                    || format!("edge-local-background-{}", command.job_id),
+                    |lease| lease.job.id.clone(),
+                ),
+            }
+        });
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel(64);
+        let (output_close_tx, output_close_rx) = tokio::sync::oneshot::channel();
+        let output_forwarder = forward_edge_tool_output(
+            self.gateway.clone(),
+            self.credentials.clone(),
+            command.clone(),
+            output_rx,
+            output_close_rx,
+        );
+        tokio::pin!(output_forwarder);
         let (side_effect_tx, mut side_effect_rx) = tokio::sync::mpsc::unbounded_channel();
-        let execution = crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT.scope(
-            side_effect_tx,
-            self.runtime.execute_edge_tool_streaming(
-                &execution_command,
-                local_authority_approved,
-                Some(output_tx),
+        let execution = crate::tool::CURRENT_EDGE_BACKGROUND_TASK.scope(
+            edge_background_context,
+            crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT.scope(
+                side_effect_tx.clone(),
+                crate::tool::CURRENT_PHYSICAL_SIDE_EFFECT.scope(
+                    side_effect_tx,
+                    self.runtime.execute_edge_tool_streaming(
+                        &execution_command,
+                        local_authority_approved,
+                        Some(output_tx),
+                    ),
+                ),
             ),
         );
         tokio::pin!(execution);
         let mut heartbeat = tokio::time::interval(self.config.heartbeat_interval);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut output_open = true;
         let mut side_effect_open = true;
         let mut side_effect_recorded = command.side_effect_started_at.is_some();
+        let mut execution_result = None;
+        let mut output_forwarded = false;
+        let mut output_close_tx = Some(output_close_tx);
         loop {
             tokio::select! {
-                result = &mut execution => {
-                    // Stop accepting new stream chunks before draining the
-                    // bounded buffer. A Runtime-managed background process
-                    // deliberately keeps its pipe monitors alive after the
-                    // Tool future has returned its receipt, so waiting for
-                    // sender EOF here would make the parent Edge Command own
-                    // the child process lifetime and eventually lose its
-                    // lease. Closing the receiver preserves every chunk that
-                    // was accepted before the receipt while making this drain
-                    // finite even when background monitors still hold senders.
-                    for chunk in close_and_drain_buffered_tool_output(&mut output_rx).await {
-                        self.gateway.append_output(&self.credentials, &command, chunk).await?;
+                result = &mut execution, if execution_result.is_none() => {
+                    execution_result = Some(result);
+                    if let Some(close) = output_close_tx.take() {
+                        let _ = close.send(());
                     }
+                }
+                output_result = &mut output_forwarder, if !output_forwarded => {
+                    if let Err(error) = output_result {
+                        tracing::warn!(
+                            execution_job_id = %command.job_id,
+                            %error,
+                            event_code = "edge.output.forwarding_failed",
+                            "Edge output forwarding failed; preserving command ownership and terminal delivery"
+                        );
+                    }
+                    output_forwarded = true;
+                }
+                side_effect = side_effect_rx.recv(), if side_effect_open => {
+                    let Some(acknowledge) = side_effect else {
+                        side_effect_open = false;
+                        continue;
+                    };
+                    // The Artifact backend is blocked on this acknowledgement
+                    // immediately before it makes the destination visible.
+                    // Persist the remote side-effect boundary first so a
+                    // cancelled or crashed Worker can never be replayed as if
+                    // publication had not started.
+                    if let Some(lease) = background_lease.as_mut() {
+                        lease.job = self.gateway.heartbeat_background_execution(
+                            &self.credentials,
+                            &command.job_id,
+                            lease,
+                            true,
+                            Some(format!(
+                                "edge://{}/{}/output",
+                                self.credentials.node_id, lease.job.id
+                            )),
+                            self.config.lease_seconds,
+                        ).await?;
+                    }
+                    command = self.gateway.heartbeat_command(
+                        &self.credentials,
+                        &command,
+                        true,
+                        Some("artifact destination publication started".to_string()),
+                        self.config.lease_seconds,
+                    ).await?;
+                    side_effect_recorded = true;
+                    let _ = acknowledge.send(());
+                }
+                _ = heartbeat.tick() => {
+                    if let Some(lease) = background_lease.as_mut() {
+                        lease.job = self.gateway.heartbeat_background_execution(
+                            &self.credentials,
+                            &command.job_id,
+                            lease,
+                            side_effect_recorded,
+                            Some(format!(
+                                "edge://{}/{}/output",
+                                self.credentials.node_id, lease.job.id
+                            )),
+                            self.config.lease_seconds,
+                        ).await?;
+                    }
+                    command = self.gateway.heartbeat_command(
+                        &self.credentials,
+                        &command,
+                        (!reconcile_safe_transfer && !exec_defers_side_effect_until_spawn)
+                            || side_effect_recorded,
+                        Some("tool execution in progress".to_string()),
+                        self.config.lease_seconds,
+                    ).await?;
+                    if command.status == EdgeCommandStatus::CancelRequested {
+                        // Dropping the Tool future requests cancellation. OS process
+                        // tools remain responsible for terminating their managed
+                        // process group before their future is released.
+                        if let Some(mut lease) = background_lease.take() {
+                            lease.job = self.gateway.cancel_background_execution(
+                                &self.credentials,
+                                &command.job_id,
+                                &lease,
+                                "parent Edge Command was cancelled before its background receipt was delivered",
+                            ).await?;
+                            let _ = crate::tool::cancel_edge_background_task(&lease.job.id);
+                            let _ = self.gateway.finish_background_execution(
+                                &self.credentials,
+                                &command.job_id,
+                                &lease,
+                                -9,
+                                String::new(),
+                                "\n[Edge background launch was cancelled before receipt delivery]".to_string(),
+                            ).await;
+                        }
+                        self.finish_cancelled_command(&command).await?;
+                        return Ok(true);
+                    }
+                    self.advertise().await?;
+                }
+            }
+            if output_forwarded {
+                if let Some(result) = execution_result.take() {
                     let mut succeeded = false;
                     match result {
-                        Ok(output) => {
-                            let upload_error = if let Some(PreparedEdgeArtifactChannel::EdgeToRuntime {
-                                channel,
-                                stage,
-                            }) = artifact_channel.as_ref()
-                            {
-                                match prepare_edge_artifact_upload(stage, &output, channel).await {
-                                    Ok((upload_path, upload_channel)) => self.gateway
-                                        .upload_artifact(
+                        Ok(mut output) => {
+                            let mut background_supervisor = None;
+                            if let Some(receipt) = edge_background_receipt(&output) {
+                                if background_lease.is_none() {
+                                    let mut lease = self
+                                        .gateway
+                                        .reserve_background_execution(
                                             &self.credentials,
                                             &command,
-                                            &upload_path,
-                                            &upload_channel,
+                                            &self.config.worker_id,
+                                            &receipt.background_source,
+                                            self.config.lease_seconds,
                                         )
-                                        .await
-                                        .err(),
-                                    Err(error) => Some(error),
+                                        .await?;
+                                    lease.job = self
+                                        .gateway
+                                        .heartbeat_background_execution(
+                                            &self.credentials,
+                                            &command.job_id,
+                                            &lease,
+                                            true,
+                                            Some(format!(
+                                                "edge://{}/{}/output",
+                                                self.credentials.node_id, lease.job.id
+                                            )),
+                                            self.config.lease_seconds,
+                                        )
+                                        .await?;
+                                    background_lease = Some(lease);
                                 }
-                            } else {
-                                None
-                            };
+                                let lease = background_lease
+                                    .take()
+                                    .ok_or("Edge background receipt has no durable child lease")?;
+                                if requested_background.is_some()
+                                    && receipt.local_task_id != lease.job.id
+                                {
+                                    return Err(format!(
+                                        "Edge explicit background receipt task '{}' does not match reserved child '{}'",
+                                        receipt.local_task_id, lease.job.id
+                                    )
+                                    .into());
+                                }
+                                output = rewrite_edge_background_receipt(&output, &lease.job.id)?;
+                                background_supervisor = Some((lease, receipt.local_task_id));
+                            }
+                            let upload_error =
+                                if let Some(PreparedEdgeArtifactChannel::EdgeToRuntime {
+                                    channel,
+                                    stage,
+                                }) = artifact_channel.as_ref()
+                                {
+                                    match prepare_edge_artifact_upload(stage, &output, channel)
+                                        .await
+                                    {
+                                        Ok((upload_path, upload_channel)) => self
+                                            .gateway
+                                            .upload_artifact(
+                                                &self.credentials,
+                                                &command,
+                                                &upload_path,
+                                                &upload_channel,
+                                            )
+                                            .await
+                                            .err(),
+                                        Err(error) => Some(error),
+                                    }
+                                } else {
+                                    None
+                                };
                             if let Some(error) = upload_error {
-                                self.gateway.finish_command(
+                                self.gateway
+                                    .finish_command(
+                                        &self.credentials,
+                                        &command,
+                                        EdgeCommandStatus::Failed,
+                                        None,
+                                        Some(format!("Artifact upload failed: {error}")),
+                                    )
+                                    .await?;
+                            } else {
+                                succeeded = true;
+                                self.gateway
+                                    .finish_command(
+                                        &self.credentials,
+                                        &command,
+                                        EdgeCommandStatus::Succeeded,
+                                        Some(output),
+                                        None,
+                                    )
+                                    .await?;
+                                if let Some((lease, local_task_id)) = background_supervisor {
+                                    tokio::spawn(supervise_edge_background_task(
+                                        self.gateway.clone(),
+                                        self.credentials.clone(),
+                                        command.job_id.clone(),
+                                        lease,
+                                        local_task_id,
+                                        self.config.lease_seconds,
+                                        self.config.heartbeat_interval,
+                                    ));
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(lease) = background_lease.take() {
+                                let _ = self
+                                    .gateway
+                                    .finish_background_execution(
+                                        &self.credentials,
+                                        &command.job_id,
+                                        &lease,
+                                        -1,
+                                        String::new(),
+                                        format!("\n[Edge background spawn failed: {error}]"),
+                                    )
+                                    .await;
+                            }
+                            self.gateway
+                                .finish_command(
                                     &self.credentials,
                                     &command,
                                     EdgeCommandStatus::Failed,
                                     None,
-                                    Some(format!("Artifact upload failed: {error}")),
-                                ).await?;
-                            } else {
-                                succeeded = true;
-                                self.gateway.finish_command(
-                                    &self.credentials,
-                                    &command,
-                                    EdgeCommandStatus::Succeeded,
-                                    Some(output),
-                                    None,
-                                ).await?;
-                            }
-                        }
-                        Err(error) => {
-                            self.gateway.finish_command(
-                                &self.credentials,
-                                &command,
-                                EdgeCommandStatus::Failed,
-                                None,
-                                Some(error.to_string()),
-                            ).await?;
+                                    Some(error.to_string()),
+                                )
+                                .await?;
                         }
                     }
                     // Preserve partial stages after a transport failure so a
@@ -1094,59 +1664,41 @@ impl EdgeNodeWorker {
                     }
                     return Ok(true);
                 }
-                chunk = output_rx.recv(), if output_open => {
-                    match chunk {
-                        Some(chunk) => {
-                            self.gateway.append_output(&self.credentials, &command, chunk).await?;
-                        }
-                        None => output_open = false,
-                    }
-                }
-                side_effect = side_effect_rx.recv(), if side_effect_open => {
-                    let Some(acknowledge) = side_effect else {
-                        side_effect_open = false;
-                        continue;
-                    };
-                    // The Artifact backend is blocked on this acknowledgement
-                    // immediately before it makes the destination visible.
-                    // Persist the remote side-effect boundary first so a
-                    // cancelled or crashed Worker can never be replayed as if
-                    // publication had not started.
-                    command = self.gateway.heartbeat_command(
-                        &self.credentials,
-                        &command,
-                        true,
-                        Some("artifact destination publication started".to_string()),
-                        self.config.lease_seconds,
-                    ).await?;
-                    side_effect_recorded = true;
-                    let _ = acknowledge.send(());
-                }
-                _ = heartbeat.tick() => {
-                    self.advertise().await?;
-                    command = self.gateway.heartbeat_command(
-                        &self.credentials,
-                        &command,
-                        !reconcile_safe_transfer || side_effect_recorded,
-                        Some("tool execution in progress".to_string()),
-                        self.config.lease_seconds,
-                    ).await?;
-                    if command.status == EdgeCommandStatus::CancelRequested {
-                        // Dropping the Tool future requests cancellation. OS process
-                        // tools remain responsible for terminating their managed
-                        // process group before their future is released.
-                        self.gateway.finish_command(
-                            &self.credentials,
-                            &command,
-                            EdgeCommandStatus::Cancelled,
-                            None,
-                            Some("cancelled by cloud control plane".to_string()),
-                        ).await?;
-                        return Ok(true);
-                    }
-                }
             }
         }
+    }
+
+    async fn finish_preflight_failure(
+        &self,
+        command: &EdgeCommandRecord,
+        error: &EdgeNodeError,
+    ) -> Result<(), EdgeNodeError> {
+        self.gateway
+            .finish_command(
+                &self.credentials,
+                command,
+                EdgeCommandStatus::Failed,
+                None,
+                Some(format!("Edge local preflight failed: {error}")),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn finish_cancelled_command(
+        &self,
+        command: &EdgeCommandRecord,
+    ) -> Result<(), EdgeNodeError> {
+        self.gateway
+            .finish_command(
+                &self.credentials,
+                command,
+                EdgeCommandStatus::Cancelled,
+                None,
+                Some("cancelled by cloud control plane".to_string()),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn prepare_execution_command(
@@ -1641,6 +2193,8 @@ mod tests {
         finished: Arc<tokio::sync::Mutex<Vec<EdgeCommandRecord>>>,
         output_sequence: Arc<AtomicUsize>,
         command_heartbeats: Arc<AtomicUsize>,
+        background_jobs: Arc<tokio::sync::Mutex<HashMap<String, ExecutionJobRecord>>>,
+        background_finished: Arc<tokio::sync::Mutex<Vec<ExecutionJobRecord>>>,
     }
 
     async fn test_worker_node_heartbeat(
@@ -1690,6 +2244,10 @@ mod tests {
         AxumPath((_node_id, job_id)): AxumPath<(String, String)>,
         Json(command): Json<AppendEdgeOutputCommand>,
     ) -> Json<crate::memory::EdgeCommandOutputChunk> {
+        // Model a slow central consumer so a chatty foreground process can
+        // fill the bounded local channel. Command heartbeats must remain
+        // independent of this forwarding backpressure.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let sequence = state.output_sequence.fetch_add(1, Ordering::SeqCst) as u64 + 1;
         Json(crate::memory::EdgeCommandOutputChunk {
             job_id,
@@ -1717,6 +2275,107 @@ mod tests {
         drop(active);
         state.finished.lock().await.push(command.clone());
         Json(command)
+    }
+
+    async fn test_worker_reserve_background(
+        State(state): State<EdgeWorkerGatewayState>,
+        AxumPath((_node_id, parent_job_id)): AxumPath<(String, String)>,
+        Json(reserve): Json<ReserveEdgeBackgroundExecutionCommand>,
+    ) -> Json<EdgeBackgroundExecutionLease> {
+        let now = Utc::now();
+        let task_id = format!("background-{parent_job_id}");
+        let job = ExecutionJobRecord {
+            id: task_id.clone(),
+            revision: 2,
+            activation_id: format!("activation-{parent_job_id}"),
+            thread_id: "thread-a".to_string(),
+            agent_id: "agent-a".to_string(),
+            context_id: "context-a".to_string(),
+            session_id: "session-a".to_string(),
+            initiating_principal_id: Some("principal-a".to_string()),
+            target_id: "target-edge-background".to_string(),
+            tool_call_id: format!("{parent_job_id}:background"),
+            tool_name: "exec/background".to_string(),
+            request: serde_json::json!({
+                "background_source": reserve.background_source,
+            }),
+            status: crate::memory::ExecutionJobStatus::Running,
+            retry_safety: crate::memory::ExecutionRetrySafety::ReconcileRequired,
+            claimed_by: Some(reserve.worker_id),
+            claim_token: Some(reserve.child_claim_token.clone()),
+            lease_expires_at: Some(now + chrono::Duration::seconds(30)),
+            heartbeat_at: Some(now),
+            approval_ref: None,
+            side_effect_started_at: None,
+            cancel_requested_at: None,
+            cancel_reason: None,
+            progress_ref: None,
+            checkpoint_generation: None,
+            checkpoint_due_at: None,
+            result_event_id: None,
+            result_refs: Vec::new(),
+            error: None,
+            exit_code: None,
+            created_at: now,
+            started_at: Some(now),
+            updated_at: now,
+            finished_at: None,
+        };
+        state
+            .background_jobs
+            .lock()
+            .await
+            .insert(task_id, job.clone());
+        Json(EdgeBackgroundExecutionLease {
+            job,
+            claim_token: reserve.child_claim_token,
+        })
+    }
+
+    async fn test_worker_heartbeat_background(
+        State(state): State<EdgeWorkerGatewayState>,
+        AxumPath((_node_id, _parent_job_id, task_id)): AxumPath<(String, String, String)>,
+        Json(heartbeat): Json<HeartbeatEdgeBackgroundExecutionCommand>,
+    ) -> Json<ExecutionJobRecord> {
+        let mut jobs = state.background_jobs.lock().await;
+        let job = jobs.get_mut(&task_id).unwrap();
+        assert_eq!(job.revision, heartbeat.expected_revision);
+        assert_eq!(
+            job.claim_token.as_deref(),
+            Some(heartbeat.claim_token.as_str())
+        );
+        job.revision += 1;
+        job.heartbeat_at = Some(Utc::now());
+        job.lease_expires_at = Some(Utc::now() + chrono::Duration::seconds(30));
+        if heartbeat.side_effect_started && job.side_effect_started_at.is_none() {
+            job.side_effect_started_at = Some(Utc::now());
+        }
+        job.progress_ref = heartbeat.progress_ref;
+        Json(job.clone())
+    }
+
+    async fn test_worker_finish_background(
+        State(state): State<EdgeWorkerGatewayState>,
+        AxumPath((_node_id, _parent_job_id, task_id)): AxumPath<(String, String, String)>,
+        Json(finish): Json<FinishEdgeBackgroundExecutionCommand>,
+    ) -> Json<serde_json::Value> {
+        let mut jobs = state.background_jobs.lock().await;
+        let job = jobs.get_mut(&task_id).unwrap();
+        assert_eq!(
+            job.claim_token.as_deref(),
+            Some(finish.claim_token.as_str())
+        );
+        job.revision += 1;
+        job.status = if finish.exit_code == 0 {
+            crate::memory::ExecutionJobStatus::Succeeded
+        } else {
+            crate::memory::ExecutionJobStatus::Failed
+        };
+        job.exit_code = Some(finish.exit_code);
+        job.finished_at = Some(Utc::now());
+        job.updated_at = job.finished_at.unwrap();
+        state.background_finished.lock().await.push(job.clone());
+        Json(serde_json::json!({ "committed": true }))
     }
 
     fn edge_worker_test_command(
@@ -1872,9 +2531,32 @@ mod tests {
         let first_completed = workspace.path().join("first-service-completed");
         let second_completed = workspace.path().join("second-service-completed");
         let sibling_completed = workspace.path().join("sibling-completed");
+        let foreground_completed = workspace.path().join("foreground-completed");
         let node_id = "node-edge-background";
         let target_id = "target-edge-background";
         let commands = VecDeque::from([
+            edge_worker_test_command(
+                "edge-preflight-failure",
+                node_id,
+                target_id,
+                serde_json::json!({
+                    "command": "sleep 1 & echo unsafe-sibling",
+                    "cwd": workspace.path()
+                }),
+            ),
+            edge_worker_test_command(
+                "edge-long-foreground",
+                node_id,
+                target_id,
+                serde_json::json!({
+                    "command": format!(
+                        "dd if=/dev/zero bs=16384 count=96 2>/dev/null; sleep 0.15; printf foreground; touch '{}'",
+                        foreground_completed.display()
+                    ),
+                    "cwd": workspace.path(),
+                    "wait_ms": 1_000
+                }),
+            ),
             edge_worker_test_command(
                 "edge-background-parent-1",
                 node_id,
@@ -1901,7 +2583,7 @@ mod tests {
                         second_completed.display()
                     ),
                     "cwd": workspace.path(),
-                    "wait_ms": 10,
+                    "background": true,
                     "keep_running": true
                 }),
             ),
@@ -1939,6 +2621,8 @@ mod tests {
             finished: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             output_sequence: Arc::new(AtomicUsize::new(0)),
             command_heartbeats: Arc::new(AtomicUsize::new(0)),
+            background_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            background_finished: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         };
         let app = Router::new()
             .route(
@@ -1960,6 +2644,18 @@ mod tests {
             .route(
                 "/api/edge/nodes/:node_id/jobs/:job_id/finish",
                 post(test_worker_finish),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/reserve",
+                post(test_worker_reserve_background),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/:task_id/heartbeat",
+                post(test_worker_heartbeat_background),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/:task_id/finish",
+                post(test_worker_finish_background),
             )
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2028,6 +2724,8 @@ mod tests {
         );
 
         for expected_job in [
+            "edge-preflight-failure",
+            "edge-long-foreground",
             "edge-background-parent-1",
             "edge-background-parent-2",
             "edge-quick-sibling",
@@ -2040,6 +2738,7 @@ mod tests {
                 .unwrap();
         }
         assert!(sibling_completed.exists());
+        assert!(foreground_completed.exists());
         assert!(
             !first_completed.exists() && !second_completed.exists(),
             "background services ended before the sibling command proved worker availability"
@@ -2048,8 +2747,16 @@ mod tests {
         tokio::fs::write(&release_second, b"release").await.unwrap();
 
         let finished = state.finished.lock().await.clone();
-        assert_eq!(finished.len(), 3);
+        assert_eq!(finished.len(), 5);
+        assert_eq!(finished[0].job_id, "edge-preflight-failure");
+        assert_eq!(finished[0].status, EdgeCommandStatus::Failed);
+        assert!(finished[0].side_effect_started_at.is_none());
+        assert!(finished[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cannot safely normalize")));
         for (index, expected_job) in [
+            "edge-long-foreground",
             "edge-background-parent-1",
             "edge-background-parent-2",
             "edge-quick-sibling",
@@ -2057,13 +2764,13 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            assert_eq!(finished[index].job_id, expected_job);
-            assert_eq!(finished[index].status, EdgeCommandStatus::Succeeded);
+            assert_eq!(finished[index + 1].job_id, expected_job);
+            assert_eq!(finished[index + 1].status, EdgeCommandStatus::Succeeded);
         }
         let first_receipt: serde_json::Value =
-            serde_json::from_str(finished[0].output.as_deref().unwrap()).unwrap();
+            serde_json::from_str(finished[2].output.as_deref().unwrap()).unwrap();
         let second_receipt: serde_json::Value =
-            serde_json::from_str(finished[1].output.as_deref().unwrap()).unwrap();
+            serde_json::from_str(finished[3].output.as_deref().unwrap()).unwrap();
         assert_eq!(first_receipt["execution"], "background");
         assert_eq!(second_receipt["execution"], "background");
         let task_ids = [
@@ -2078,25 +2785,9 @@ mod tests {
         })
         .await
         .expect("Edge background services did not continue after their parent receipts");
-        let terminal_events = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let terminal_jobs = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                let events = runtime
-                    .query_events(crate::memory::QueryFilter {
-                        topic: Some("chat/tool_output".to_string()),
-                        ..Default::default()
-                    })
-                    .await
-                    .unwrap();
-                let terminals = events
-                    .into_iter()
-                    .filter(|event| {
-                        event
-                            .payload
-                            .get("task_id")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|task_id| task_ids.iter().any(|value| value == task_id))
-                    })
-                    .collect::<Vec<_>>();
+                let terminals = state.background_finished.lock().await.clone();
                 if terminals.len() == task_ids.len() {
                     break terminals;
                 }
@@ -2104,22 +2795,37 @@ mod tests {
             }
         })
         .await
-        .expect("Edge background terminal facts were not durably recorded");
-        assert_eq!(terminal_events.len(), 2);
+        .expect("Edge background terminal Jobs were not durably recorded");
+        assert_eq!(terminal_jobs.len(), 2);
         for task_id in &task_ids {
             assert_eq!(
-                terminal_events
+                terminal_jobs
                     .iter()
-                    .filter(|event| event.payload["task_id"] == task_id.as_str())
+                    .filter(|job| job.id == *task_id)
                     .count(),
                 1,
-                "one Edge background exit must have exactly one terminal fact"
+                "one Edge background exit must have exactly one central terminal Job"
             );
             assert!(runtime.get_execution_job(task_id).await.unwrap().is_none());
         }
+        let local_terminal_events = runtime
+            .query_events(crate::memory::QueryFilter {
+                topic: Some("chat/tool_output".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert!(
-            state.command_heartbeats.load(Ordering::SeqCst) >= 3,
-            "each parent command must cross at least one fenced heartbeat"
+            local_terminal_events.iter().all(|event| event
+                .payload
+                .get("task_id")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|task_id| !task_ids.iter().any(|value| value == task_id))),
+            "Edge-local Runtime must not duplicate central background terminal facts"
+        );
+        assert!(
+            state.command_heartbeats.load(Ordering::SeqCst) >= 8,
+            "long foreground execution and sibling commands must keep renewing their Edge leases"
         );
         server.abort();
     }

@@ -553,7 +553,7 @@ Each Session has a durable Dialogue Lane that orders initial evaluation of ordin
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
-- reply: when the Evaluation reaches a deliverable boundary, return non-empty ordinary assistant text with no tool calls. The Runtime streams it to kernel.active-session and persists it as the terminal reply only after the complete response succeeds. With an active Objective, this ends only the current Evaluation and does not replace objective_update(completed).
+- reply: when the Evaluation reaches a deliverable boundary, return non-empty ordinary assistant text with no tool calls. The Runtime streams that content verbatim to kernel.active-session and persists it as the terminal reply only after the complete response succeeds. Bare `(eval ...)` or `(infer ...)` text is still ordinary reply content: it is never admitted or executed. Execute a Yao program or any Tool only through the explicit Function Call offered for that action. With an active Objective, this ends only the current Evaluation and does not replace objective_update(completed).
 - no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event; the current Execution yields and resumes on the physical event. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily hides context_tx. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
@@ -863,7 +863,7 @@ fn render_harness_context(
             ),
             crate::sexpr_eval::EvaluationOwner::Model => (
                 "model",
-                "This is the active entry program for the current Evaluation. Interpret it under the Contract, current Context, and physical Runtime constraints rather than restating it as reference material.",
+                "This is the active entry program for the current Evaluation. Interpret it under the Contract, current Context, and physical Runtime constraints rather than restating it as reference material. Perform every Tool or program action through an explicit Function Call offered for this Evaluation. Final content without a Function Call is delivered verbatim as the user-visible reply; do not return a new bare (eval ...) or (infer ...) Program as a substitute for executing the entry or completing the requested work.",
             ),
         };
         let mut entry = vec![
@@ -21212,6 +21212,12 @@ mod tests {
         assert!(rendered
             .profile
             .contains("active entry program for the current Evaluation"));
+        assert!(rendered
+            .profile
+            .contains("through an explicit Function Call offered for this Evaluation"));
+        assert!(rendered
+            .profile
+            .contains("do not return a new bare (eval ...) or (infer ...) Program"));
     }
 
     #[test]
@@ -21703,6 +21709,18 @@ mod tests {
             classify_terminal_response(&plain),
             Ok(Some(TerminalDecision::Deliver("done".to_string())))
         );
+
+        for source in ["(eval 42)", "(infer (returns String) \"done\")"] {
+            let bare_program = crate::llm::Response {
+                content: source.to_string(),
+                tool_calls: Vec::new(),
+            };
+            assert_eq!(
+                classify_terminal_response(&bare_program),
+                Ok(Some(TerminalDecision::Deliver(source.to_string()))),
+                "bare Yao text must not be reinterpreted as an executable action"
+            );
+        }
 
         let no_reply = crate::llm::Response {
             content: String::new(),

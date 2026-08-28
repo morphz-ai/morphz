@@ -54,6 +54,8 @@ vt100 = "0.16.2"
 clap = "4.5"
 clap_complete = "4.5"
 tempfile = "3.8"
+tree-sitter = "0.25.10"
+tree-sitter-bash = "0.25.1"
 yao-lang = { path = "../yao" }
 morphz-cognitive-coordination = { path = "../experiments/morphz-cognitive-coordination", optional = true, default-features = false }
 

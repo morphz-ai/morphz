@@ -14,10 +14,10 @@ use morphz::memory::{
     ActionGroupFilter, ActionGroupStatus, ActionGroupStore as _, ActivationStore as _,
     DelegationFilter, DelegationStatus, DelegationStore as _, EventStore, ExecutionJobStore as _,
     ExecutionRetrySafety, NewAgent, NewCognitiveContext, NewDelegation, NewExecutionJob,
-    NewSession, NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore as _,
-    SessionMountKind, SessionProjectionStore, SessionStore, SessionUpdate,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
-    ThreadSignalStatus, ThreadStore as _, ThreadSupervision, TimerStore,
+    NewSession, NewThread, NewThreadActivation, PlanExecutionFilter, PlanExecutionStore as _,
+    QueryFilter, SessionDirectoryStore as _, SessionMountKind, SessionProjectionStore,
+    SessionStore, SessionUpdate, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadSignalStatus, ThreadStore as _, ThreadSupervision, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -1674,6 +1674,61 @@ async fn test_attempt_loop_plain_text_reply_delivers() {
         replies[0].payload.get("text").and_then(|v| v.as_str()),
         Some("hello user")
     );
+}
+
+#[tokio::test]
+async fn bare_top_level_yao_is_reply_text_without_tool_or_plan_side_effects() {
+    let session_id = "attempt_bare_yao_reply";
+    let source = r#"(eval (seq (bind total (add 20 22)) total))"#;
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("bare-yao-reply.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(MockClient::new(vec![text_reply_response(source)]));
+    let config = morphz::config::OrchestratorConfig::default();
+    let context_engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(morphz::sexpr_eval::EvalTool::with_default_tools(
+        Arc::clone(&registry),
+    )));
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        client,
+        registry,
+        config,
+        context_engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "Return the requested source as text").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].payload.get("text"), Some(&json!(source)));
+
+    let tool_outputs = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("chat/tool_output".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(tool_outputs.is_empty(), "bare reply text executed a Tool");
+
+    let plans = store
+        .list_plan_executions(PlanExecutionFilter {
+            session_id: Some(session_id.to_string()),
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(plans.is_empty(), "bare reply text created a PlanExecution");
 }
 
 #[tokio::test]

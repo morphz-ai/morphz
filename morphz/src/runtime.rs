@@ -4316,6 +4316,105 @@ impl MorphzRuntime {
             .await
     }
 
+    pub(crate) async fn reserve_edge_background_execution(
+        &self,
+        node_id: &str,
+        parent_job_id: &str,
+        worker_id: &str,
+        claim_token: &str,
+        lease_seconds: u64,
+        background_source: &str,
+    ) -> Result<ExecutionJobRecord, RuntimeError> {
+        let parent_job = self
+            .inner
+            .store
+            .get_execution_job(parent_job_id)
+            .await?
+            .ok_or_else(|| format!("Parent ExecutionJob '{parent_job_id}' does not exist"))?;
+        let parent = crate::tool::ToolExecutionJobContext {
+            parent_job_id: parent_job.id.clone(),
+            activation_id: parent_job.activation_id.clone(),
+            thread_id: parent_job.thread_id.clone(),
+            agent_id: parent_job.agent_id.clone(),
+            context_id: parent_job.context_id.clone(),
+            session_id: parent_job.session_id.clone(),
+            initiating_principal_id: parent_job.initiating_principal_id.clone(),
+            target_id: parent_job.target_id.clone(),
+            tool_call_id: parent_job.tool_call_id.clone(),
+        };
+        let (task_id, _) = self
+            .inner
+            .background_scheduler
+            .durable_task_identity(&parent)?;
+        self.inner
+            .background_scheduler
+            .reserve_edge_execution(
+                &task_id,
+                &parent,
+                serde_json::json!({
+                    "kind": "background_exec",
+                    "parent_job_id": parent_job.id,
+                    "task_id": task_id,
+                    "background_source": background_source,
+                    "owner_kind": "edge_worker",
+                    "artifact_path": format!("edge://{node_id}/{task_id}/output"),
+                }),
+                worker_id,
+                claim_token,
+                lease_seconds,
+            )
+            .await
+    }
+
+    pub(crate) async fn heartbeat_edge_background_execution(
+        &self,
+        task_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_seconds: u64,
+        side_effect_started: bool,
+        progress_ref: Option<&str>,
+    ) -> Result<JobReceipt, RuntimeError> {
+        self.inner
+            .background_scheduler
+            .heartbeat_edge_execution(
+                task_id,
+                expected_revision,
+                claim_token,
+                lease_seconds,
+                side_effect_started,
+                progress_ref,
+            )
+            .await
+    }
+
+    pub(crate) async fn cancel_edge_background_execution(
+        &self,
+        task_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        reason: &str,
+    ) -> Result<JobReceipt, RuntimeError> {
+        self.inner
+            .background_scheduler
+            .cancel_edge_execution(task_id, expected_revision, claim_token, reason)
+            .await
+    }
+
+    pub(crate) async fn finish_edge_background_execution(
+        &self,
+        task_id: &str,
+        claim_token: &str,
+        exit_code: i32,
+        output: &str,
+        residual_note: &str,
+    ) -> Result<bool, RuntimeError> {
+        self.inner
+            .background_scheduler
+            .finish_edge_execution(task_id, claim_token, exit_code, output, residual_note)
+            .await
+    }
+
     pub async fn append_edge_command_output(
         &self,
         job_id: &str,

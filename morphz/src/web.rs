@@ -25,13 +25,14 @@ use crate::runtime::{
     MorphzRuntime, RuntimeOverviewQuery, SchedulerQuery,
 };
 use crate::sdk::{
-    AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
-    ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
-    ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
-    HeartbeatEdgeCommand, MessageAttachmentInput, MorphzSdk, OAuthProviderSetup,
-    ObjectiveRequestOrigin, PairExecutionNodeCommand, RetryDialogueTurnCommand,
-    RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
-    SubmitArtifactTransferCommand,
+    AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, CancelEdgeBackgroundExecutionCommand,
+    ClaimEdgeCommand, ConnectExecutionNodeCommand, CreateNodePairingCodeCommand,
+    CreateObjectiveCommand, ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand,
+    FinishEdgeBackgroundExecutionCommand, FinishEdgeCommand,
+    HeartbeatEdgeBackgroundExecutionCommand, HeartbeatEdgeCommand, MessageAttachmentInput,
+    MorphzSdk, OAuthProviderSetup, ObjectiveRequestOrigin, PairExecutionNodeCommand,
+    ReserveEdgeBackgroundExecutionCommand, RetryDialogueTurnCommand, RotateExecutionNodeKeyCommand,
+    SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery, SubmitArtifactTransferCommand,
 };
 use axum::{
     body::Body,
@@ -1136,6 +1137,22 @@ impl Server {
             .route(
                 "/api/edge/nodes/:node_id/jobs/:job_id/finish",
                 post(handle_finish_edge_command),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/reserve",
+                post(handle_reserve_edge_background_execution),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/:task_id/heartbeat",
+                post(handle_heartbeat_edge_background_execution),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/:task_id/finish",
+                post(handle_finish_edge_background_execution),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/background/:task_id/cancel",
+                post(handle_cancel_edge_background_execution),
             )
             .route(
                 "/api/edge/nodes/:node_id/jobs/:job_id/artifact/download",
@@ -4091,6 +4108,86 @@ async fn handle_finish_edge_command(
     match state
         .sdk
         .finish_edge_command(&node_id, device_token, &job_id, command)
+        .await
+    {
+        Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_reserve_edge_background_execution(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<ReserveEdgeBackgroundExecutionCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .reserve_edge_background_execution(&node_id, device_token, &job_id, command)
+        .await
+    {
+        Ok(lease) => Json(lease).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_heartbeat_edge_background_execution(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id, task_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<HeartbeatEdgeBackgroundExecutionCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .heartbeat_edge_background_execution(&node_id, device_token, &job_id, &task_id, command)
+        .await
+    {
+        Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_finish_edge_background_execution(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id, task_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<FinishEdgeBackgroundExecutionCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .finish_edge_background_execution(&node_id, device_token, &job_id, &task_id, command)
+        .await
+    {
+        Ok(committed) => Json(json!({ "committed": committed })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_cancel_edge_background_execution(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id, task_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<CancelEdgeBackgroundExecutionCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .cancel_edge_background_execution(&node_id, device_token, &job_id, &task_id, command)
         .await
     {
         Ok(job) => Json(job).into_response(),

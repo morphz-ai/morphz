@@ -123,10 +123,49 @@ tokio::task_local! {
     pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
     pub static CURRENT_EXECUTION_JOB: Option<ToolExecutionJobContext>;
     pub static CURRENT_TOOL_OUTPUT_SINK: Option<tokio::sync::mpsc::Sender<ToolOutputChunk>>;
+    /// A central Runtime reserves this durable child identity before an Edge
+    /// worker may spawn an explicitly backgrounded exec process. The Edge
+    /// process owns only the physical handle; the central ExecutionJob remains
+    /// the authoritative lifecycle and cancellation boundary.
+    pub static CURRENT_EDGE_BACKGROUND_TASK: Option<EdgeBackgroundTaskContext>;
+    /// Edge workers install this acknowledged boundary around physical tool
+    /// execution. A tool sends immediately before its first irreversible OS
+    /// action; the worker persists ownership and side-effect state before
+    /// allowing that action to proceed.
+    pub static CURRENT_PHYSICAL_SIDE_EFFECT:
+        tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>;
     /// Set only by the Runtime Managed SSH backend after Target authorization.
     /// It lets the host-owned OpenSSH client read the user's SSH configuration
     /// without making that configuration available to model-authored Shell.
     pub static CURRENT_RUNTIME_MANAGED_SSH: bool;
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EdgeBackgroundTaskContext {
+    pub task_id: String,
+}
+
+async fn mark_physical_side_effect() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let acknowledgement = match CURRENT_PHYSICAL_SIDE_EFFECT.try_with(|sender| {
+        let (acknowledge, acknowledged) = tokio::sync::oneshot::channel();
+        sender
+            .send(acknowledge)
+            .map(|_| acknowledged)
+            .map_err(|_| "Physical side-effect coordinator is closed")
+    }) {
+        Ok(Ok(acknowledged)) => Some(acknowledged),
+        Ok(Err(error)) => return Err(error.into()),
+        // In-process execution already crossed the durable ExecutionJob
+        // boundary before invoking the Tool. Only Edge needs this additional
+        // transport acknowledgement.
+        Err(_) => None,
+    };
+    if let Some(acknowledged) = acknowledgement {
+        acknowledged
+            .await
+            .map_err(|_| "Physical side-effect boundary was not persisted")?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1072,6 +1111,11 @@ pub struct BackgroundTaskScheduler {
     sessions: Option<Arc<dyn SessionStore>>,
 }
 
+struct ReservedBackgroundExecution {
+    job: ExecutionJobRecord,
+    claim_token: String,
+}
+
 impl BackgroundTaskScheduler {
     pub fn new(
         bus: Arc<InMemoryEventBus>,
@@ -1109,7 +1153,7 @@ impl BackgroundTaskScheduler {
         self
     }
 
-    fn durable_task_identity(
+    pub(crate) fn durable_task_identity(
         &self,
         parent: &ToolExecutionJobContext,
     ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
@@ -1152,11 +1196,6 @@ impl BackgroundTaskScheduler {
         task_id: &str,
         parent: &ToolExecutionJobContext,
     ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
-        let Some(manager) = &self.execution_jobs else {
-            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
-        };
-        self.ensure_parent_accepts_background_child(parent).await?;
-        let (_, child_tool_call_id) = self.durable_task_identity(parent)?;
         let request = {
             let task = get_tasks_map().get(task_id).ok_or_else(|| {
                 format!("Live handle for background process '{task_id}' does not exist")
@@ -1170,6 +1209,7 @@ impl BackgroundTaskScheduler {
                 "started_at": task.started_at,
                 "artifact_path": task.artifact_path,
                 "keep_running": task.keep_running,
+                "background_source": task.background_source,
                 "effective_boundary": {
                     "network_enabled": task.effective_network,
                     "permission_request_available": task.permission_request_available,
@@ -1179,6 +1219,31 @@ impl BackgroundTaskScheduler {
                 }
             })
         };
+        let reserved = self.reserve_execution_job(task_id, parent, request).await?;
+        self.activate_reserved_execution(
+            reserved,
+            get_tasks_map()
+                .get(task_id)
+                .map(|task| task.started_at)
+                .unwrap_or_else(chrono::Utc::now),
+            get_tasks_map()
+                .get(task_id)
+                .map(|task| task.artifact_path.clone()),
+        )
+        .await
+    }
+
+    async fn reserve_execution_job(
+        &self,
+        task_id: &str,
+        parent: &ToolExecutionJobContext,
+        request: serde_json::Value,
+    ) -> Result<ReservedBackgroundExecution, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        self.ensure_parent_accepts_background_child(parent).await?;
+        let (_, child_tool_call_id) = self.durable_task_identity(parent)?;
         let mut job = manager
             .ensure(ExecutionJobSpec {
                 activation_id: parent.activation_id.clone(),
@@ -1233,26 +1298,6 @@ impl BackgroundTaskScheduler {
                 .await?,
             "claim",
         )?;
-        job = applied_background_job(
-            manager
-                .heartbeat(
-                    &job.id,
-                    job.revision,
-                    JobHeartbeat {
-                        claim_token: &claim_token,
-                        lease_expires_at,
-                        side_effect_started_at: Some(
-                            job.started_at.unwrap_or_else(chrono::Utc::now),
-                        ),
-                        progress_ref: job
-                            .request
-                            .get("artifact_path")
-                            .and_then(serde_json::Value::as_str),
-                    },
-                )
-                .await?,
-            "side-effect boundary",
-        )?;
         if let Err(error) = self.ensure_parent_accepts_background_child(parent).await {
             for _ in 0..8 {
                 match manager
@@ -1270,8 +1315,222 @@ impl BackgroundTaskScheduler {
             }
             return Err(error);
         }
-        self.spawn_execution_heartbeat(job.id.clone(), claim_token);
+        Ok(ReservedBackgroundExecution { job, claim_token })
+    }
+
+    pub(crate) async fn reserve_edge_execution(
+        &self,
+        task_id: &str,
+        parent: &ToolExecutionJobContext,
+        request: serde_json::Value,
+        worker_id: &str,
+        claim_token: &str,
+        lease_seconds: u64,
+    ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        self.ensure_parent_accepts_background_child(parent).await?;
+        let (_, child_tool_call_id) = self.durable_task_identity(parent)?;
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: parent.initiating_principal_id.clone(),
+                target_id: parent.target_id.clone(),
+                tool_call_id: child_tool_call_id,
+                tool_name: "exec/background".to_string(),
+                request,
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await?;
+        if job.id != task_id {
+            return Err(format!(
+                "background task ID '{}' does not match derived ExecutionJob '{}'",
+                task_id, job.id
+            )
+            .into());
+        }
+        if job.status == ExecutionJobStatus::Running
+            && job.claim_token.as_deref() == Some(claim_token)
+            && job.claimed_by.as_deref() == Some(worker_id)
+            && job.side_effect_started_at.is_none()
+        {
+            return Ok(job);
+        }
+        if job.status != ExecutionJobStatus::Queued {
+            return Err(format!(
+                "background ExecutionJob '{}' is currently {} and cannot adopt a new Edge process",
+                job.id,
+                job.status.as_str()
+            )
+            .into());
+        }
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id,
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now()
+                            + chrono::Duration::seconds(
+                                i64::try_from(lease_seconds.clamp(5, 300)).unwrap_or(30),
+                            ),
+                        approval_ref: None,
+                    },
+                )
+                .await?,
+            "Edge background claim",
+        )?;
+        if let Err(error) = self.ensure_parent_accepts_background_child(parent).await {
+            let _ = manager
+                .request_cancel(&job.id, job.revision, Some(&error.to_string()))
+                .await;
+            return Err(error);
+        }
         Ok(job)
+    }
+
+    pub(crate) async fn heartbeat_edge_execution(
+        &self,
+        task_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_seconds: u64,
+        side_effect_started: bool,
+        progress_ref: Option<&str>,
+    ) -> Result<JobReceipt, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        manager
+            .heartbeat(
+                task_id,
+                expected_revision,
+                JobHeartbeat {
+                    claim_token,
+                    lease_expires_at: chrono::Utc::now()
+                        + chrono::Duration::seconds(
+                            i64::try_from(lease_seconds.clamp(5, 300)).unwrap_or(30),
+                        ),
+                    side_effect_started_at: side_effect_started.then(chrono::Utc::now),
+                    progress_ref,
+                },
+            )
+            .await
+    }
+
+    pub(crate) async fn cancel_edge_execution(
+        &self,
+        task_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        reason: &str,
+    ) -> Result<JobReceipt, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        let job = manager
+            .store()
+            .get_execution_job(task_id)
+            .await?
+            .ok_or_else(|| format!("Background ExecutionJob '{task_id}' does not exist"))?;
+        if job.claim_token.as_deref() != Some(claim_token) {
+            return Err(format!(
+                "Background ExecutionJob '{task_id}' is owned by a different worker"
+            )
+            .into());
+        }
+        manager
+            .request_cancel(task_id, expected_revision, Some(reason))
+            .await
+    }
+
+    pub(crate) async fn finish_edge_execution(
+        &self,
+        task_id: &str,
+        claim_token: &str,
+        exit_code: i32,
+        output: &str,
+        residual_note: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        let job = manager
+            .store()
+            .get_execution_job(task_id)
+            .await?
+            .ok_or_else(|| format!("Background ExecutionJob '{task_id}' does not exist"))?;
+        if job.claim_token.as_deref() != Some(claim_token) {
+            return Err(format!(
+                "Background ExecutionJob '{task_id}' is owned by a different worker"
+            )
+            .into());
+        }
+        self.finish_background_execution(task_id, exit_code, output, residual_note)
+            .await
+    }
+
+    async fn activate_reserved_execution(
+        &self,
+        mut reserved: ReservedBackgroundExecution,
+        started_at: chrono::DateTime<chrono::Utc>,
+        progress_ref: Option<String>,
+    ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        reserved.job = applied_background_job(
+            manager
+                .heartbeat(
+                    &reserved.job.id,
+                    reserved.job.revision,
+                    JobHeartbeat {
+                        claim_token: &reserved.claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(started_at),
+                        progress_ref: progress_ref.as_deref(),
+                    },
+                )
+                .await?,
+            "side-effect boundary",
+        )?;
+        self.spawn_execution_heartbeat(reserved.job.id.clone(), reserved.claim_token.clone());
+        Ok(reserved.job)
+    }
+
+    async fn fail_reserved_execution(
+        &self,
+        reserved: ReservedBackgroundExecution,
+        error: impl Into<String>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("Background-task Scheduler has no ExecutionJob Store configured".into());
+        };
+        applied_background_job(
+            manager
+                .finish(
+                    &reserved.job.id,
+                    reserved.job.revision,
+                    Some(&reserved.claim_token),
+                    JobOutcome::Failed {
+                        result_event_id: None,
+                        result_refs: Vec::new(),
+                        error: error.into(),
+                        exit_code: None,
+                    },
+                )
+                .await?,
+            "pre-spawn failure",
+        )?;
+        Ok(())
     }
 
     fn spawn_execution_heartbeat(&self, job_id: String, claim_token: String) {
@@ -4942,6 +5201,13 @@ pub struct BackgroundTask {
     /// leave running rather than work this turn is waiting on. The distinction
     /// belongs to whoever launched it, so the Runtime does not guess it.
     pub keep_running: bool,
+    /// Why this command entered the managed background lifecycle. This is
+    /// audit metadata, not a completion signal.
+    pub background_source: Option<String>,
+    /// Edge-owned processes report their terminal fact through the central
+    /// child ExecutionJob protocol. They must not publish a second local
+    /// completion Event into the Edge Runtime's synthetic Session.
+    pub externally_managed_terminal: bool,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
@@ -4987,6 +5253,29 @@ fn terminate_local_background_process(task_id: &str) -> Result<Option<(i32, bool
             "force-killing process group {process_group_id} encountered a system error: {error:?}; the cancellation request remains persisted"
         )),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EdgeBackgroundTaskSnapshot {
+    pub status: BackgroundTaskStatus,
+    pub artifact_path: String,
+    pub exit_code: Option<i32>,
+    pub output_tail: String,
+}
+
+pub(crate) fn edge_background_task_snapshot(task_id: &str) -> Option<EdgeBackgroundTaskSnapshot> {
+    get_tasks_map()
+        .get(task_id)
+        .map(|task| EdgeBackgroundTaskSnapshot {
+            status: task.status,
+            artifact_path: task.artifact_path.clone(),
+            exit_code: task.exit_code,
+            output_tail: task.output_tail.clone(),
+        })
+}
+
+pub(crate) fn cancel_edge_background_task(task_id: &str) -> Result<bool, String> {
+    terminate_local_background_process(task_id).map(|result| result.is_some())
 }
 
 const MAX_RETAINED_BACKGROUND_TASKS: usize = 256;
@@ -7305,84 +7594,233 @@ fn apply_capability_delta(policy: &mut SandboxPolicy, delta: &CapabilityDelta) {
     }
 }
 
-fn contains_unquoted_background_operator(command: &str) -> bool {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Quote {
-        None,
-        Single,
-        Double,
-    }
-
-    let chars = command.chars().collect::<Vec<_>>();
-    let mut quote = Quote::None;
-    let mut index = 0;
-    while index < chars.len() {
-        let current = chars[index];
-        match quote {
-            Quote::Single => {
-                if current == '\'' {
-                    quote = Quote::None;
-                }
-                index += 1;
-            }
-            Quote::Double => {
-                if current == '\\' {
-                    index = (index + 2).min(chars.len());
-                } else {
-                    if current == '"' {
-                        quote = Quote::None;
-                    }
-                    index += 1;
-                }
-            }
-            Quote::None => match current {
-                '\\' => index = (index + 2).min(chars.len()),
-                '\'' => {
-                    quote = Quote::Single;
-                    index += 1;
-                }
-                '"' => {
-                    quote = Quote::Double;
-                    index += 1;
-                }
-                '#' if index == 0
-                    || chars[index - 1].is_whitespace()
-                    || matches!(chars[index - 1], ';' | '|' | '&' | '(' | ')') =>
-                {
-                    while index < chars.len() && chars[index] != '\n' {
-                        index += 1;
-                    }
-                }
-                '&' => {
-                    let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
-                    let next = chars.get(index + 1).copied();
-                    if next == Some('&') {
-                        index += 2;
-                    } else if matches!(previous, Some('>') | Some('<')) || next == Some('>') {
-                        // File-descriptor duplication (`2>&1`, `<&0`) and `&>` redirection
-                        // are not process detachment.
-                        index += 1;
-                    } else {
-                        return true;
-                    }
-                }
-                _ => index += 1,
-            },
-        }
-    }
-    false
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellAsyncOperator {
+    byte_start: usize,
+    nesting_depth: usize,
 }
 
-fn validate_managed_shell_command(
-    command: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if contains_unquoted_background_operator(command) {
-        return Err(
-            "exec prohibits using shell '&' to create an unmanaged background process. Run the command in the foreground; after wait_ms the Runtime will move it to the background automatically and return a task_id."
-                .into(),
-        );
+#[derive(Debug, Default)]
+struct ShellSyntaxAnalysis {
+    async_operators: Vec<ShellAsyncOperator>,
+    incompatible_ampersand_redirect: Option<usize>,
+    depends_on_shell_job_control: bool,
+    error_nodes: usize,
+    heredoc_async_operator: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedShellCommand {
+    command: String,
+    background: bool,
+    background_source: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedExecBackgroundRequest {
+    pub background_source: String,
+}
+
+fn inspect_shell_syntax(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    command_depth: usize,
+    analysis: &mut ShellSyntaxAnalysis,
+) {
+    let kind = node.kind();
+    if kind == "ERROR" {
+        analysis.error_nodes += 1;
     }
-    Ok(())
+    let nested_depth = command_depth
+        + usize::from(matches!(
+            kind,
+            "command_substitution" | "process_substitution" | "subshell" | "compound_statement"
+        ));
+    if kind == "&"
+        && node
+            .parent()
+            .is_some_and(|parent| parent.kind() != "binary_expression")
+    {
+        if node.parent().is_some_and(|parent| {
+            parent.kind() == "ERROR"
+                && parent.child_count() == 1
+                && parent
+                    .parent()
+                    .is_some_and(|grandparent| grandparent.kind() == "heredoc_redirect")
+        }) {
+            // tree-sitter-bash 0.25 represents the valid `command <<EOF &`
+            // terminator as a one-token ERROR inside heredoc_redirect. This
+            // is the grammar's only known error shape we accept, and only the
+            // complete-program check below may normalize it.
+            analysis.heredoc_async_operator = Some(node.start_byte());
+        }
+        analysis.async_operators.push(ShellAsyncOperator {
+            byte_start: node.start_byte(),
+            nesting_depth: command_depth,
+        });
+    } else if matches!(kind, "&>" | "&>>") {
+        // The Runtime executes `/bin/sh`, where these Bash redirections are
+        // parsed as an asynchronous list on systems such as Debian/dash.
+        analysis.incompatible_ampersand_redirect = Some(node.start_byte());
+    } else if kind == "special_variable_name"
+        && node
+            .utf8_text(source)
+            .is_ok_and(|text| text.trim_start_matches('$') == "!")
+    {
+        analysis.depends_on_shell_job_control = true;
+    } else if kind == "command_name" {
+        let command = node.utf8_text(source).unwrap_or_default();
+        if matches!(command, "wait" | "jobs" | "fg" | "bg" | "disown" | "trap") {
+            analysis.depends_on_shell_job_control = true;
+        }
+    }
+
+    let mut cursor = node.walk();
+    if cursor.goto_first_child() {
+        loop {
+            inspect_shell_syntax(cursor.node(), source, nested_depth, analysis);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+}
+
+fn top_level_async_is_complete_program(
+    root: tree_sitter::Node<'_>,
+    operator: &ShellAsyncOperator,
+    analysis: &ShellSyntaxAnalysis,
+) -> bool {
+    if operator.nesting_depth != 0 {
+        return false;
+    }
+    let mut statement_count = 0usize;
+    let mut found_operator = false;
+    let mut cursor = root.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            if child.kind() == "&" && child.start_byte() == operator.byte_start {
+                found_operator = true;
+            } else if child.kind() != "comment" {
+                if found_operator {
+                    return false;
+                }
+                if child.is_named() {
+                    statement_count += 1;
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    if found_operator && statement_count == 1 {
+        return true;
+    }
+    if analysis.heredoc_async_operator != Some(operator.byte_start) || analysis.error_nodes != 1 {
+        return false;
+    }
+    // The grammar nests the valid heredoc terminator beneath the sole
+    // redirected_statement rather than exposing it as a direct program child.
+    // Requiring that exact one-statement/one-error shape keeps this exception
+    // narrower than a source-level heuristic.
+    let mut named_statements = 0usize;
+    let mut cursor = root.walk();
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            if child.is_named() && child.kind() != "comment" {
+                named_statements += 1;
+                if child.kind() != "redirected_statement" {
+                    return false;
+                }
+            } else if child.kind() != "comment" {
+                return false;
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    named_statements == 1
+}
+
+fn prepare_managed_shell_command(
+    command: &str,
+    explicitly_backgrounded: bool,
+) -> Result<ManagedShellCommand, Box<dyn std::error::Error + Send + Sync>> {
+    if command.trim().is_empty() {
+        return Err("exec.command must not be empty".into());
+    }
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_bash::LANGUAGE.into())
+        .map_err(|error| format!("failed to initialize the Shell syntax parser: {error}"))?;
+    let tree = parser
+        .parse(command, None)
+        .ok_or("Shell syntax parser did not produce a syntax tree")?;
+    let root = tree.root_node();
+    let mut analysis = ShellSyntaxAnalysis::default();
+    inspect_shell_syntax(root, command.as_bytes(), 0, &mut analysis);
+    if analysis.incompatible_ampersand_redirect.is_some() {
+        return Err("exec cannot safely run Bash-only '&>' or '&>>' through the portable /bin/sh boundary. Use portable redirections such as '>file 2>&1'.".into());
+    }
+    let supported_heredoc_async_error = analysis.error_nodes == 1
+        && analysis.heredoc_async_operator.is_some()
+        && analysis
+            .async_operators
+            .first()
+            .is_some_and(|operator| top_level_async_is_complete_program(root, operator, &analysis));
+    if root.has_error() && command.contains('&') && !supported_heredoc_async_error {
+        return Err("exec found ambiguous Shell syntax containing '&' and will not guess whether it is job control. Use a valid portable /bin/sh command and background=true for managed background execution.".into());
+    }
+    match analysis.async_operators.as_slice() {
+        [] => Ok(ManagedShellCommand {
+            command: command.to_string(),
+            background: explicitly_backgrounded,
+            background_source: explicitly_backgrounded.then_some("explicit_parameter"),
+        }),
+        [operator]
+            if !analysis.depends_on_shell_job_control
+                && top_level_async_is_complete_program(root, operator, &analysis) =>
+        {
+            let mut normalized = command.to_string();
+            normalized.remove(operator.byte_start);
+            Ok(ManagedShellCommand {
+                command: normalized,
+                background: true,
+                background_source: Some(if explicitly_backgrounded {
+                    "explicit_parameter"
+                } else {
+                    "normalized_shell_async"
+                }),
+            })
+        }
+        _ => Err(
+            "exec cannot safely normalize this Shell job-control program. Split it into exec(background=true) for the one background command, then perform readiness checks or dependent commands separately. Constructs with sibling commands, nested or multiple '&', $!, wait/jobs/fg/bg/disown, or other Shell job-control dependencies are not rewritten."
+                .into(),
+        ),
+    }
+}
+
+/// Pure Edge preflight used to reserve the central child ExecutionJob before
+/// the local process crosses its spawn boundary. `None` means the command may
+/// still be automatically handed off after `wait_ms`, but was not explicitly
+/// requested as background work before spawn.
+pub(crate) fn managed_exec_background_request(
+    arguments: &str,
+) -> Result<Option<ManagedExecBackgroundRequest>, Box<dyn std::error::Error + Send + Sync>> {
+    let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+    if args.background && args.wait_ms.is_some() {
+        return Err("exec.background=true cannot be combined with wait_ms; remove wait_ms because explicit managed background execution returns immediately after spawn".into());
+    }
+    let command = prepare_managed_shell_command(&args.command, args.background)?;
+    Ok(command
+        .background_source
+        .map(|source| ManagedExecBackgroundRequest {
+            background_source: source.to_string(),
+        }))
 }
 
 fn terminate_residual_process_group(
@@ -7476,6 +7914,8 @@ struct ExecuteCommandArgs {
     cwd: Option<String>,
     wait_ms: Option<u64>,
     #[serde(default)]
+    background: bool,
+    #[serde(default)]
     keep_running: bool,
     #[serde(default)]
     sandbox_permissions: SandboxPermissionMode,
@@ -7519,6 +7959,10 @@ impl Tool for ExecuteCommandTool {
                 "wait_ms": {
                     "type": "integer",
                     "description": "Maximum milliseconds to wait synchronously for output. Default 10000; a longer test or build automatically transitions to managed background execution."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Default false. Set true to launch a known long task or service directly as a Runtime-managed background process and receive a task_id immediately. Do not also set wait_ms. The receipt proves only that managed spawn succeeded, not that the task or service is ready or complete; verify readiness, task status, or final artifacts before reporting completion."
                 },
                 "keep_running": {
                     "type": "boolean",
@@ -7565,7 +8009,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "Run a Shell command in the operating system's native sandbox, which by default permits configured workspace paths and denies network. Suitable for tests, builds, and formatting. Prefer list_files/search for discovery and edit/write for changes. Do not call ssh/scp/sftp directly on a local Target; resolve a managed_ssh Target and pass its ID as target so the Runtime manages the connection. Bind Managed SSH password aliases through resolve_target rather than requesting them as exec environment variables. When other network, path, or secret environment capabilities are truly needed, request the minimum through require_escalated for independent review. A boundary rejection receipt explains how to request it. After the wait timeout the Runtime manages the command in the background. Never create an unmanaged background process with '&'.".to_string(),
+            description: "Run a Shell command in the operating system's native sandbox, which by default permits configured workspace paths and denies network. Suitable for tests, builds, and formatting. Prefer list_files/search for discovery and edit/write for changes. Do not call ssh/scp/sftp directly on a local Target; resolve a managed_ssh Target and pass its ID as target so the Runtime manages the connection. Bind Managed SSH password aliases through resolve_target rather than requesting them as exec environment variables. When other network, path, or secret environment capabilities are truly needed, request the minimum through require_escalated for independent review. A boundary rejection receipt explains how to request it. Set background=true for a known long task or service that should be managed immediately; otherwise a foreground command automatically transitions after wait_ms. A background receipt is not task completion, so verify readiness or final output before reporting success. Never create an unmanaged background process with shell '&'; remove '&' and use background=true.".to_string(),
             parameters: params_json,
         }
     }
@@ -7575,9 +8019,12 @@ impl Tool for ExecuteCommandTool {
         arguments: &str,
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+        if args.background && args.wait_ms.is_some() {
+            return Err("exec.background=true cannot be combined with wait_ms; remove wait_ms because explicit managed background execution returns immediately after spawn".into());
+        }
         self.validate_secret_aliases(&args.requested_permissions.secret_env)?;
-        let command = args.command.trim();
-        validate_managed_shell_command(command)?;
+        let managed_command = prepare_managed_shell_command(&args.command, args.background)?;
+        let command = managed_command.command.as_str();
         let profile = self.permissions.profile();
         if profile.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Ok(None);
@@ -7656,9 +8103,12 @@ impl Tool for ExecuteCommandTool {
         // child is still in `Starting`, before its background watcher has been installed.
         let sync_budget_started_at = tokio::time::Instant::now();
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+        if args.background && args.wait_ms.is_some() {
+            return Err("exec.background=true cannot be combined with wait_ms; remove wait_ms because explicit managed background execution returns immediately after spawn".into());
+        }
         self.validate_secret_aliases(&args.requested_permissions.secret_env)?;
-        let cmd_trimmed = args.command.trim();
-        validate_managed_shell_command(cmd_trimmed)?;
+        let managed_command = prepare_managed_shell_command(&args.command, args.background)?;
+        let cmd_trimmed = managed_command.command.as_str();
 
         let mut request_context = approval_context();
         let mut session_id = request_context.session_id.clone();
@@ -7898,23 +8348,107 @@ impl Tool for ExecuteCommandTool {
             }
         }
 
-        let mut child = cmd.spawn()?;
+        let edge_background_task = CURRENT_EDGE_BACKGROUND_TASK
+            .try_with(Clone::clone)
+            .ok()
+            .flatten();
+        let durable_task_id = if let Some(edge) = edge_background_task.as_ref() {
+            Some(edge.task_id.clone())
+        } else {
+            match (
+                self.background_scheduler.as_ref(),
+                execution_job_context.as_ref(),
+            ) {
+                (Some(scheduler), Some(parent)) if scheduler.execution_jobs.is_some() => {
+                    Some(scheduler.durable_task_identity(parent)?.0)
+                }
+                _ => None,
+            }
+        };
+        let explicit_background_source = managed_command.background_source.map(str::to_string);
+        let reserved_background = if managed_command.background {
+            match (
+                self.background_scheduler.as_ref(),
+                execution_job_context.as_ref(),
+                durable_task_id.as_ref(),
+            ) {
+                (Some(scheduler), Some(parent), Some(task_id))
+                    if scheduler.execution_jobs.is_some() =>
+                {
+                    let archive_path = artifact_dir.join(format!("{task_id}.log"));
+                    Some((
+                        Arc::clone(scheduler),
+                        scheduler
+                            .reserve_execution_job(
+                                task_id,
+                                parent,
+                                serde_json::json!({
+                                    "kind": "background_exec",
+                                    "parent_job_id": parent.parent_job_id,
+                                    "task_id": task_id,
+                                    "command": cmd_trimmed,
+                                    "started_at": serde_json::Value::Null,
+                                    "artifact_path": archive_path,
+                                    "keep_running": args.keep_running,
+                                    "background_source": explicit_background_source,
+                                    "effective_boundary": {
+                                        "network_enabled": effective_network,
+                                        "permission_request_available": permission_request_available,
+                                        "secret_env": effective_secret_env,
+                                        "sandbox_backend": sandbox_backend,
+                                        "sandbox_status": sandbox_status,
+                                    }
+                                }),
+                            )
+                            .await?,
+                    ))
+                }
+                // Edge Commands already have a durable central owner before
+                // local spawn. Their background child handoff is transported
+                // by the parent command receipt rather than a fabricated Job
+                // in the Edge-local Runtime database.
+                _ if CURRENT_TOOL_OUTPUT_SINK
+                    .try_with(|sink| sink.is_some())
+                    .unwrap_or(false) =>
+                {
+                    None
+                }
+                _ => {
+                    return Err("exec.background=true requires a durable Runtime ExecutionJob owner before process spawn".into());
+                }
+            }
+        } else {
+            None
+        };
+
+        // On Edge, claim alone is not evidence that a process exists. Persist
+        // the real spawn boundary before crossing it so preflight failures can
+        // remain safely terminal without masquerading as side-effect loss.
+        mark_physical_side_effect().await?;
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some((scheduler, reserved)) = reserved_background {
+                    scheduler
+                        .fail_reserved_execution(
+                            reserved,
+                            format!("Managed background process failed to spawn: {error}"),
+                        )
+                        .await?;
+                }
+                return Err(error.into());
+            }
+        };
         let pid = child.id().ok_or("Failed to obtain process ID")? as i32;
         let mut process_group_guard = ProcessGroupGuard::new(pid);
 
-        let task_id = match (
-            self.background_scheduler.as_ref(),
-            execution_job_context.as_ref(),
-        ) {
-            (Some(scheduler), Some(parent)) if scheduler.execution_jobs.is_some() => {
-                scheduler.durable_task_identity(parent)?.0
-            }
-            _ => format!(
+        let task_id = durable_task_id.unwrap_or_else(|| {
+            format!(
                 "task_{}_{}",
                 chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
                 pid
-            ),
-        };
+            )
+        });
         let archive_path = artifact_dir.join(format!("{}.log", task_id));
         process_group_guard.track_task(&task_id);
         // Publish the live PGID immediately after spawn. Objective cancellation
@@ -7933,6 +8467,8 @@ impl Tool for ExecuteCommandTool {
                 initiating_principal_id: initiating_principal_id.clone(),
                 causal_route: causal_route.clone(),
                 keep_running: args.keep_running,
+                background_source: explicit_background_source.clone(),
+                externally_managed_terminal: edge_background_task.is_some(),
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 0,
@@ -7950,6 +8486,29 @@ impl Tool for ExecuteCommandTool {
                 exit_code: None,
             },
         );
+        let mut durable_background_attached = false;
+        if let Some((scheduler, reserved)) = reserved_background {
+            if let Err(error) = scheduler
+                .activate_reserved_execution(
+                    reserved,
+                    now,
+                    Some(archive_path.to_string_lossy().into_owned()),
+                )
+                .await
+            {
+                if let Some(mut task) = tasks.get_mut(&task_id) {
+                    task.status = BackgroundTaskStatus::KillRequested;
+                }
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+                let _ = child.wait().await;
+                tasks.remove(&task_id);
+                return Err(error);
+            }
+            durable_background_attached = true;
+        }
         if let (Some(scheduler), Some(parent)) =
             (&self.background_scheduler, execution_job_context.as_ref())
         {
@@ -8058,10 +8617,14 @@ impl Tool for ExecuteCommandTool {
             .max_sync_wait
             .saturating_sub(sync_budget_started_at.elapsed());
         let wait_duration = requested_wait.min(remaining_sync_budget);
-        let wait_result = tokio::time::timeout(wait_duration, child.wait()).await;
+        let wait_result = if managed_command.background {
+            None
+        } else {
+            Some(tokio::time::timeout(wait_duration, child.wait()).await)
+        };
 
         match wait_result {
-            Ok(exit_status_res) => {
+            Some(Ok(exit_status_res)) => {
                 // The command completed within the synchronous interval.
                 tasks.remove(&task_id);
                 process_group_guard.disarm();
@@ -8115,32 +8678,40 @@ impl Tool for ExecuteCommandTool {
                 })
                 .to_string())
             }
-            Err(_) => {
+            Some(Err(_)) | None => {
                 // The synchronous interval elapsed; detach as a background long-running task.
-                let mut durable_background_attached = false;
-                if let (Some(scheduler), Some(parent)) =
-                    (&self.background_scheduler, execution_job_context.as_ref())
-                {
-                    if scheduler.execution_jobs.is_some() {
-                        if let Err(error) = scheduler.attach_execution_job(&task_id, parent).await {
-                            let _ = nix::sys::signal::killpg(
-                                nix::unistd::Pid::from_raw(pid),
-                                nix::sys::signal::Signal::SIGKILL,
-                            );
-                            let _ = child.wait().await;
-                            let _ = drain_exec_output_monitors(
-                                &mut stdout_task,
-                                &mut stderr_task,
-                                EXEC_OUTPUT_DRAIN_TIMEOUT,
-                            )
-                            .await;
-                            tasks.remove(&task_id);
-                            return Err(format!(
-                                "background process could not be handed off to a persistent ExecutionJob, so its process group was terminated: {error}"
-                            )
-                            .into());
+                if let Some(mut task) = tasks.get_mut(&task_id) {
+                    if task.background_source.is_none() {
+                        task.background_source = Some("wait_timeout".to_string());
+                    }
+                }
+                if !durable_background_attached {
+                    if let (Some(scheduler), Some(parent)) =
+                        (&self.background_scheduler, execution_job_context.as_ref())
+                    {
+                        if scheduler.execution_jobs.is_some() {
+                            if let Err(error) =
+                                scheduler.attach_execution_job(&task_id, parent).await
+                            {
+                                let _ = nix::sys::signal::killpg(
+                                    nix::unistd::Pid::from_raw(pid),
+                                    nix::sys::signal::Signal::SIGKILL,
+                                );
+                                let _ = child.wait().await;
+                                let _ = drain_exec_output_monitors(
+                                    &mut stdout_task,
+                                    &mut stderr_task,
+                                    EXEC_OUTPUT_DRAIN_TIMEOUT,
+                                )
+                                .await;
+                                tasks.remove(&task_id);
+                                return Err(format!(
+                                    "background process could not be handed off to a persistent ExecutionJob, so its process group was terminated: {error}"
+                                )
+                                .into());
+                            }
+                            durable_background_attached = true;
                         }
-                        durable_background_attached = true;
                     }
                 }
                 publish_flag.store(true, Ordering::SeqCst);
@@ -8232,6 +8803,18 @@ impl Tool for ExecuteCommandTool {
                             return;
                         }
                     }
+                    let externally_managed_terminal = tasks_cleanup
+                        .get(&task_id_cleanup)
+                        .is_some_and(|task| task.externally_managed_terminal);
+                    if externally_managed_terminal {
+                        // The Edge supervisor owns the central ExecutionJob
+                        // commit and wake. Keep the terminal snapshot/artifact
+                        // available for that supervisor, but never emit a
+                        // duplicate local synthetic-session result.
+                        mark_background_task_terminal(&task_id_cleanup, code);
+                        prune_background_task_history();
+                        return;
+                    }
                     if let Some(scheduler) = &background_scheduler_cleanup {
                         scheduler.cancel(&task_id_cleanup).await;
                     }
@@ -8322,7 +8905,11 @@ impl Tool for ExecuteCommandTool {
                     prune_background_task_history();
                 });
 
-                let elapsed_str = format!("{} ms", wait_duration.as_millis());
+                let elapsed_str = if managed_command.background {
+                    "0 ms (explicit managed background)".to_string()
+                } else {
+                    format!("{} ms", wait_duration.as_millis())
+                };
 
                 let output_str = buffer.get_all();
                 Ok(serde_json::json!({
@@ -8330,6 +8917,8 @@ impl Tool for ExecuteCommandTool {
                     "execution": "background",
                     "task_status": "running",
                     "task_id": task_id,
+                    "background_source": explicit_background_source.as_deref().unwrap_or("wait_timeout"),
+                    "completion_pending": true,
                     "waited": elapsed_str,
                     "effective_boundary": {
                         "network_enabled": effective_network,
@@ -8341,7 +8930,7 @@ impl Tool for ExecuteCommandTool {
                     "artifact_path": buffer.archive_path,
                     "output_empty": output_str.is_empty(),
                     "output": output_str,
-                    "guidance": "Task completion wakes the Runtime through Inbox. For ordinary waiting, call no_reply instead of a waiting tool. Use check_task_after for one checkpoint only when there is a real deadline or stall-monitoring need; call kill_task when work should not continue. Do not poll with sleep, ps, or repeated empty-log reads.",
+                    "guidance": "This receipt proves only that the Runtime owns a successfully spawned process; it is not task completion or service readiness. Task completion wakes the Runtime through Inbox. Before reporting success, verify the relevant readiness condition, terminal task status, or final artifact. For ordinary waiting, call no_reply instead of a waiting tool. Use check_task_after for one checkpoint only when there is a real deadline or stall-monitoring need; call kill_task when work should not continue. Do not poll with sleep, ps, or repeated empty-log reads.",
                 })
                 .to_string())
             }
@@ -12544,22 +13133,67 @@ Body
     }
 
     #[test]
-    fn exec_background_operator_detection_respects_shell_quoting_and_redirection() {
-        assert!(contains_unquoted_background_operator("sleep 10 &"));
-        assert!(contains_unquoted_background_operator(
-            "python job.py > job.log 2>&1 &"
-        ));
-        assert!(!contains_unquoted_background_operator(
-            "cargo test && echo done"
-        ));
-        assert!(!contains_unquoted_background_operator("printf 'R&D' 2>&1"));
-        assert!(!contains_unquoted_background_operator(
-            "printf \"R&D\" # background & is only a comment"
-        ));
+    fn exec_shell_parser_normalizes_only_one_complete_top_level_async_list() {
+        for command in [
+            "sleep 10 &",
+            "python job.py > job.log 2>&1 & # managed",
+            "producer | consumer &",
+            "prepare && serve &",
+            "  printf 你好 &  ",
+            "cat <<'EOF' &\nR&D\nEOF",
+        ] {
+            let prepared = prepare_managed_shell_command(command, false).unwrap();
+            assert!(prepared.background, "{command}");
+            assert_eq!(prepared.background_source, Some("normalized_shell_async"));
+            assert_eq!(
+                prepared.command.as_bytes().len() + 1,
+                command.as_bytes().len()
+            );
+        }
+
+        for command in [
+            "sleep 10 & echo sibling",
+            "sleep 10 &\necho sibling",
+            "(sleep 10 &)",
+            "echo \"$(sleep 10 &)\"",
+            "echo `sleep 10 &`",
+            "sleep 10 & wait",
+            "a & b &",
+            "printf child &>/dev/null",
+        ] {
+            assert!(
+                prepare_managed_shell_command(command, false).is_err(),
+                "unsafe job-control program was accepted: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_shell_parser_distinguishes_heredoc_and_expansion_ampersands() {
+        for command in [
+            "cargo test && echo done",
+            "printf 'R&D' 2>&1",
+            "printf R\\&D",
+            "value=${x%&}; bits=$((1 & 3)); printf '%s' \"$value$bits\"",
+            "python3 <<'PY'\nflags = 3\nassert flags&2\nall_ok &= True\nPY",
+            "cat <<'HTML'\n&lt;body&gt;R&amp;D&lt;/body&gt;\nHTML",
+            "cat <<-EOF\n\tR&D\n\tEOF",
+            "cat <<'EOF'\n$(sleep 10 &)\nEOF",
+        ] {
+            let prepared = prepare_managed_shell_command(command, false).unwrap();
+            assert!(!prepared.background, "{command}");
+            assert_eq!(prepared.command, command);
+        }
+
+        assert!(prepare_managed_shell_command("cat <<EOF\n$(sleep 10 &)\nEOF", false).is_err());
+        assert!(managed_exec_background_request(
+            r#"{"command":"sleep 1","background":true,"wait_ms":10}"#
+        )
+        .is_err());
     }
 
     #[tokio::test]
-    async fn exec_rejects_explicit_unmanaged_background_processes() {
+    async fn exec_rejects_non_equivalent_shell_job_control_programs() {
         let workspace = TempDir::new().unwrap();
         let tool = ExecuteCommandTool::new_with_configs(
             Arc::new(crate::event::InMemoryEventBus::new()),
@@ -12576,11 +13210,13 @@ Body
         );
 
         let error = tool
-            .execute(&serde_json::json!({ "command": "sleep 100 &" }).to_string())
+            .execute(
+                &serde_json::json!({ "command": "sleep 100 & echo unsafe-sibling" }).to_string(),
+            )
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("prohibits using shell '&'"));
+        assert!(error.to_string().contains("cannot safely normalize"));
     }
 
     #[tokio::test]
@@ -12990,6 +13626,103 @@ Body
             .execute(&serde_json::json!({ "task_id": task_id }).to_string())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_background_reserves_child_before_spawn_and_returns_started_receipt() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let workspace = TempDir::new().unwrap();
+        let release = workspace.path().join("release");
+        let completed = workspace.path().join("completed");
+        let tool = ExecuteCommandTool::new_with_permissions_and_scheduler(
+            bus,
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: workspace
+                    .path()
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .into_owned(),
+                timeout_notify_enabled: false,
+                ..BackgroundTaskConfig::default()
+            }),
+            broker_from_config(permissive_security()),
+            30,
+            Some(scheduler),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id("activation-explicit-background", "exec-call")
+                .unwrap(),
+            activation_id: "activation-explicit-background".to_string(),
+            thread_id: "thread-explicit-background".to_string(),
+            agent_id: "agent-explicit-background".to_string(),
+            context_id: "context-explicit-background".to_string(),
+            session_id: "session-explicit-background".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "exec-call".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-explicit-background",
+            "trigger-explicit-background",
+        )
+        .await;
+        let started = tokio::time::Instant::now();
+        let result = CURRENT_EXECUTION_JOB
+            .scope(
+                Some(parent.clone()),
+                CURRENT_SESSION_ID.scope(
+                    parent.session_id.clone(),
+                    CURRENT_CONTEXT_ID.scope(
+                        parent.context_id.clone(),
+                        CURRENT_ATTEMPT_ID.scope(
+                            parent.activation_id.clone(),
+                            tool.execute(
+                                &serde_json::json!({
+                                    "command": format!(
+                                        "while [ ! -f '{}' ]; do sleep 0.02; done; touch '{}'",
+                                        release.display(), completed.display()
+                                    ),
+                                    "background": true
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let receipt: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(receipt["execution"], "background");
+        assert_eq!(receipt["background_source"], "explicit_parameter");
+        assert_eq!(receipt["completion_pending"], true);
+        assert!(
+            !completed.exists(),
+            "spawn receipt was confused with completion"
+        );
+        let task_id = receipt["task_id"].as_str().unwrap();
+        let running = store.get_execution_job(task_id).await.unwrap().unwrap();
+        assert_eq!(running.status, ExecutionJobStatus::Running);
+        assert!(running.side_effect_started_at.is_some());
+        tokio::fs::write(&release, b"release").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !completed.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -14724,6 +15457,8 @@ Body
                 initiating_principal_id: None,
                 causal_route: None,
                 keep_running: false,
+                background_source: Some("test".to_string()),
+                externally_managed_terminal: false,
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 8,
