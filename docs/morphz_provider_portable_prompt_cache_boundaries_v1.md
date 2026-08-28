@@ -138,12 +138,13 @@ Anthropic、DeepSeek、Qwen 和 Gemini 的缓存接口不同。Morphz 内部只�
 Provider 不支持缓存、缓存过期、缓存未命中或命中率为零时，模型看到的语义内容必须完全
 相同。缓存只能影响成本和延迟，不能成为任务正确执行的前置条件。
 
-### 3.4 第一阶段采用精确协议和模型门控
+### 3.4 按协议字段与模型能力分别处理
 
-第一阶段只在请求协议明确为 OpenAI Responses、物理模型精确属于 GPT-5.6 家族时发送显式
-断点；Provider 可以是官方端点，也可以是已经通过探针的 CLIProxyAPI。实现不依赖
-`openai-codex` Adapter，也不从 `gpt`、`claude`、`deepseek` 或 `qwen` 等模糊名称推断
-Provider 身份。未来扩展到其他物理模型或协议时，应先增加显式能力配置和端点探测。
+`prompt_cache_key` 是 OpenAI Responses 的通用请求字段，因此所有 Responses 路线都会发送
+稳定的 Cache Cohort；GPT-5.5 等使用自动前缀缓存的模型也能利用该字段。内容块上的
+`prompt_cache_breakpoint` 和 `prompt_cache_options` 则是 GPT-5.6 及后续模型新增的显式缓存
+能力，只有满足这一官方能力边界时才发送。Provider 可以是官方端点，也可以是已经通过探针
+的 CLIProxyAPI；实现不依赖 `openai-codex` Adapter。其他协议不会收到 OpenAI 字段。
 
 ## 4. 建议的内部结构
 
@@ -412,9 +413,9 @@ Context 投影和 Provider 账户隔离负责。
 
 ## 7. Provider 能力模型
 
-当前第一阶段使用“OpenAI Responses 协议 + GPT-5.6 物理模型家族”的精确门控。后续扩展时，
-应在 `ProviderModelConfig` 增加可选 Prompt Cache 能力配置，而不是复用模型路由的业务能力
-列表：
+当前第一阶段把 Responses 通用字段与版本化能力分开：`prompt_cache_key` 按协议发送，显式
+断点按 OpenAI 公布的 GPT-5.6 及后续模型能力发送。后续扩展到其他 Provider 时，应在
+`ProviderModelConfig` 增加可选 Prompt Cache 能力配置，而不是复用模型路由的业务能力列表：
 
 ```text
 prompt_cache.strategy:
@@ -429,13 +430,13 @@ prompt_cache.usage_reporting
 ```
 
 这里的配置描述物理端点能力，不要求上层任务必须具备缓存。在能力配置实现以前，其他协议
-和模型默认不发送任何 Provider-specific 字段，只保留稳定的字节布局。
+默认不发送任何 Provider-specific 字段，只保留稳定的字节布局。
 
 建议的 Provider 映射如下：
 
 | Provider / 协议 | 第一阶段行为 | 说明 |
 | --- | --- | --- |
-| OpenAI Responses | 内容块上的 `prompt_cache_breakpoint`，并发送支持的 cache options / key | 已在 GPT-5.6 Sol 路线完成真实可行性验证 |
+| OpenAI Responses | 所有模型发送 `prompt_cache_key`；GPT-5.6 及后续模型再发送内容块断点和 cache options | 显式断点已在 GPT-5.6 Sol 路线完成真实可行性验证 |
 | OpenAI Chat Compatible | 默认不启用；只有精确端点声明且探测通过后才映射 | 不能因“OpenAI compatible”就假定支持 Responses 字段 |
 | Anthropic Messages | 把内部边界映射为内容块 `cache_control` | 字段、TTL 和计费方式与 OpenAI 不同 |
 | DeepSeek / Qwen 自动缓存端点 | 不发送显式断点，继续保持稳定字节前缀 | DeepSeek 官方说明为自动前缀缓存；实际兼容端点仍以配置和 Usage 为准 |
@@ -543,10 +544,10 @@ Context 数据，比较：
 - 保证现有字符串请求仍是无缓存能力时的默认路径；
 - 完成逐字节等价、Context Inspect 和所有 Provider 的结构回归。
 
-### Phase 2：OpenAI Responses 显式边界（第一轮已完成）
+### Phase 2：OpenAI Responses 缓存字段（第一轮已完成）
 
-- 在精确配置的 GPT-5.6 Sol 物理路线启用；
-- 增加 `prompt_cache_key` / Cohort；
+- 所有 Responses 模型使用 `prompt_cache_key` / Cohort；
+- GPT-5.6 及后续物理模型启用显式内容块断点；
 - 已完成独立字段 A/B 和 Morphz 正常生产路径烟测；
 - 正式多场景成本 A/B 留到下一次 Benchmark 前执行并冻结。
 

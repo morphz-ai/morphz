@@ -727,11 +727,8 @@ impl ProtocolClient {
     }
 
     fn explicit_prompt_cache_enabled(&self, model: &str) -> bool {
-        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
-            return false;
-        }
-        let normalized = model.trim().to_ascii_lowercase();
-        normalized == "gpt-5.6" || normalized.starts_with("gpt-5.6-")
+        self.protocol_for_model(model) == ModelProtocol::OpenaiResponses
+            && openai_model_supports_explicit_prompt_cache(model)
     }
 
     fn request_for_model(
@@ -1225,6 +1222,22 @@ impl ProtocolClient {
             .map(|model| model.id)
             .collect())
     }
+}
+
+fn openai_model_supports_explicit_prompt_cache(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    let Some(version) = normalized.strip_prefix("gpt-") else {
+        return false;
+    };
+    let mut components = version.split(['.', '-']);
+    let Some(major) = components.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    let minor = components
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or_default();
+    (major, minor) >= (5, 6)
 }
 
 pub async fn list_provider_models(
@@ -2849,6 +2862,7 @@ fn build_openai_responses_request(
             continue;
         }
         if let Some(segmented) = segmented_model_text(message) {
+            prompt_cache_key = segmented.prompt_cache_key.clone();
             if explicit_prompt_cache {
                 let content = segmented
                     .parts
@@ -2866,7 +2880,6 @@ fn build_openai_responses_request(
                     })
                     .collect::<Vec<_>>();
                 input.push(json!({"role": message.role, "content": content}));
-                prompt_cache_key = segmented.prompt_cache_key;
             } else {
                 input.push(json!({
                     "role": message.role,
@@ -2898,9 +2911,9 @@ fn build_openai_responses_request(
     let mut request = json!({"model": model, "input": input});
     if has_explicit_breakpoint {
         request["prompt_cache_options"] = json!({"mode": "explicit", "ttl": "30m"});
-        if let Some(prompt_cache_key) = prompt_cache_key {
-            request["prompt_cache_key"] = json!(prompt_cache_key);
-        }
+    }
+    if let Some(prompt_cache_key) = prompt_cache_key {
+        request["prompt_cache_key"] = json!(prompt_cache_key);
     }
     if let Some(max_tokens) = max_output_tokens {
         request["max_output_tokens"] = json!(max_tokens);
@@ -4961,12 +4974,39 @@ mod tests {
             Some(&json!({"mode": "explicit", "ttl": "30m"}))
         );
 
-        let older = client.request_for_model("gpt-5.5", &[context], &[]);
+        let older = client.request_for_model("gpt-5.5", &[context.clone()], &[]);
         assert_eq!(
             older.pointer("/input/0/content"),
             Some(&json!("stabledynamic"))
         );
         assert!(older.get("prompt_cache_options").is_none());
+        assert_eq!(
+            older.get("prompt_cache_key"),
+            Some(&json!("morphz-context-test"))
+        );
+
+        let future = client.request_for_model("gpt-5.7-sol", &[context], &[]);
+        assert_eq!(
+            future.pointer("/input/0/content/0/prompt_cache_breakpoint"),
+            Some(&json!({"mode": "explicit"}))
+        );
+        assert_eq!(
+            future.get("prompt_cache_options"),
+            Some(&json!({"mode": "explicit", "ttl": "30m"}))
+        );
+    }
+
+    #[test]
+    fn explicit_prompt_cache_capability_follows_openai_version_boundary() {
+        assert!(!openai_model_supports_explicit_prompt_cache("gpt-5.5"));
+        assert!(!openai_model_supports_explicit_prompt_cache(
+            "gpt-5.5-2026-04-23"
+        ));
+        assert!(openai_model_supports_explicit_prompt_cache("gpt-5.6"));
+        assert!(openai_model_supports_explicit_prompt_cache("gpt-5.6-sol"));
+        assert!(openai_model_supports_explicit_prompt_cache("gpt-5.7"));
+        assert!(openai_model_supports_explicit_prompt_cache("gpt-6"));
+        assert!(!openai_model_supports_explicit_prompt_cache("grok-5.6"));
     }
 
     #[test]
