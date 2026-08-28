@@ -1,0 +1,930 @@
+{
+  "policy_version": "terminal-bench-integrity-v2",
+  "job_dir": "/opt/morphz-benchmark/repeat-runs/me08-current-runtime-d6e6d80-r1-20260828/jobs/morphz-native/2026-08-28__22-08-20",
+  "run_identity": {
+    "infrastructure_git_commit": "09477921ae35ac94823cb026bf5394a9445b6667",
+    "infrastructure_git_tags": [],
+    "infrastructure_tracked_clean": true,
+    "runtime_tag": "me08-runtime-d6e6d80-20260828",
+    "runtime_git_commit": "d6e6d80053d95577811971e6048033374e4d6901",
+    "runtime_binary_sha256": "6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037",
+    "runtime_watcher_sha256": "70b33e20d661574543a478cd2bf9781355be8b2031c6e2124c8aa509d444c97d",
+    "dataset": "terminal-bench/terminal-bench-2-1",
+    "dataset_registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+    "dataset_source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "fallback": false,
+    "permission_mode": "full_access",
+    "harness_mode": "none",
+    "harness_profile": null,
+    "harness": null,
+    "attempts": 1,
+    "concurrency": 8,
+    "max_retries": 0,
+    "task_filters": [
+      "adaptive-rejection-sampler",
+      "bn-fit-modify",
+      "break-filter-js-from-html",
+      "build-cython-ext",
+      "build-pmars",
+      "build-pov-ray",
+      "caffe-cifar-10",
+      "cancel-async-tasks",
+      "chess-best-move",
+      "circuit-fibsqrt",
+      "cobol-modernization",
+      "code-from-image",
+      "compile-compcert",
+      "configure-git-webserver",
+      "constraints-scheduling",
+      "count-dataset-tokens",
+      "crack-7z-hash",
+      "custom-memory-heap-crash",
+      "db-wal-recovery",
+      "distribution-search",
+      "dna-assembly",
+      "dna-insert",
+      "extract-elf",
+      "extract-moves-from-video",
+      "feal-differential-cryptanalysis",
+      "feal-linear-cryptanalysis",
+      "filter-js-from-html",
+      "financial-document-processor",
+      "fix-code-vulnerability",
+      "fix-git",
+      "fix-ocaml-gc",
+      "gcode-to-text",
+      "git-leak-recovery",
+      "git-multibranch",
+      "gpt2-codegolf",
+      "headless-terminal",
+      "hf-model-inference",
+      "install-windows-3.11",
+      "kv-store-grpc",
+      "large-scale-text-editing",
+      "largest-eigenval",
+      "llm-inference-batching-scheduler",
+      "log-summary-date-ranges",
+      "mailman",
+      "make-doom-for-mips",
+      "make-mips-interpreter",
+      "mcmc-sampling-stan",
+      "merge-diff-arc-agi-task",
+      "model-extraction-relu-logits",
+      "modernize-scientific-stack",
+      "mteb-leaderboard",
+      "mteb-retrieve",
+      "multi-source-data-merger",
+      "nginx-request-logging",
+      "openssl-selfsigned-cert",
+      "overfull-hbox",
+      "password-recovery",
+      "path-tracing",
+      "path-tracing-reverse",
+      "polyglot-c-py",
+      "polyglot-rust-c",
+      "portfolio-optimization",
+      "protein-assembly",
+      "prove-plus-comm",
+      "pypi-server",
+      "pytorch-model-cli",
+      "pytorch-model-recovery",
+      "qemu-alpine-ssh",
+      "qemu-startup",
+      "query-optimize",
+      "raman-fitting",
+      "regex-chess",
+      "regex-log",
+      "reshard-c4-data",
+      "rstan-to-pystan",
+      "sam-cell-seg",
+      "sanitize-git-repo",
+      "schemelike-metacircular-eval",
+      "sparql-university",
+      "sqlite-db-truncate",
+      "sqlite-with-gcov",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "train-fasttext",
+      "tune-mjcf",
+      "video-processing",
+      "vulnerable-secret",
+      "winning-avg-corewars",
+      "write-compressor"
+    ]
+  },
+  "trial_count": 89,
+  "expected_trial_count": 89,
+  "trial_count_matches": true,
+  "missing_expected_tasks": {},
+  "unexpected_tasks": [],
+  "audit_complete": true,
+  "disqualified_trials": 1,
+  "integrity_gate_passed": false,
+  "raw_mean_reward": 0.8089887640449438,
+  "strict_mean_reward": 0.797752808988764,
+  "trials": [
+    {
+      "trial": "adaptive-rejection-sampler__8LB5Vv8",
+      "task_name": "terminal-bench/adaptive-rejection-sampler",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "bn-fit-modify__DqseUZj",
+      "task_name": "terminal-bench/bn-fit-modify",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "break-filter-js-from-html__JcgfUp7",
+      "task_name": "terminal-bench/break-filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-cython-ext__PkxGC5n",
+      "task_name": "terminal-bench/build-cython-ext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-pmars__yXf8WVJ",
+      "task_name": "terminal-bench/build-pmars",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "build-pov-ray__5sb6Yh8",
+      "task_name": "terminal-bench/build-pov-ray",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "caffe-cifar-10__sPPzwuL",
+      "task_name": "terminal-bench/caffe-cifar-10",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "cancel-async-tasks__NPeQWHd",
+      "task_name": "terminal-bench/cancel-async-tasks",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "chess-best-move__zKejU5F",
+      "task_name": "terminal-bench/chess-best-move",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "circuit-fibsqrt__aWvwNJP",
+      "task_name": "terminal-bench/circuit-fibsqrt",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "cobol-modernization__Dy8JWoV",
+      "task_name": "terminal-bench/cobol-modernization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "code-from-image__KMXwNoP",
+      "task_name": "terminal-bench/code-from-image",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "compile-compcert__CRQ9qLX",
+      "task_name": "terminal-bench/compile-compcert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "configure-git-webserver__k5qErzD",
+      "task_name": "terminal-bench/configure-git-webserver",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "constraints-scheduling__cWa3QPb",
+      "task_name": "terminal-bench/constraints-scheduling",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "count-dataset-tokens__oNXA22Q",
+      "task_name": "terminal-bench/count-dataset-tokens",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "crack-7z-hash__2FkTmsG",
+      "task_name": "terminal-bench/crack-7z-hash",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "custom-memory-heap-crash__VXcHD9X",
+      "task_name": "terminal-bench/custom-memory-heap-crash",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "db-wal-recovery__hf6A3eg",
+      "task_name": "terminal-bench/db-wal-recovery",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "distribution-search__hPW2JjX",
+      "task_name": "terminal-bench/distribution-search",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "dna-assembly__wWofPKw",
+      "task_name": "terminal-bench/dna-assembly",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "dna-insert__3VZWk8W",
+      "task_name": "terminal-bench/dna-insert",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-elf__hijSq9X",
+      "task_name": "terminal-bench/extract-elf",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "extract-moves-from-video__CnQbB8z",
+      "task_name": "terminal-bench/extract-moves-from-video",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "feal-differential-cryptanalysis__YWKnoax",
+      "task_name": "terminal-bench/feal-differential-cryptanalysis",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "feal-linear-cryptanalysis__dxFKUhx",
+      "task_name": "terminal-bench/feal-linear-cryptanalysis",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "filter-js-from-html__6GZewW6",
+      "task_name": "terminal-bench/filter-js-from-html",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "financial-document-processor__NHZNcuV",
+      "task_name": "terminal-bench/financial-document-processor",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-code-vulnerability__AjDzDc8",
+      "task_name": "terminal-bench/fix-code-vulnerability",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-git__smwYjyX",
+      "task_name": "terminal-bench/fix-git",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "fix-ocaml-gc__z2NgXYu",
+      "task_name": "terminal-bench/fix-ocaml-gc",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gcode-to-text__GatQuBn",
+      "task_name": "terminal-bench/gcode-to-text",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "git-leak-recovery__7FHmceW",
+      "task_name": "terminal-bench/git-leak-recovery",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "git-multibranch__qBGqAig",
+      "task_name": "terminal-bench/git-multibranch",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "gpt2-codegolf__uVtBDnW",
+      "task_name": "terminal-bench/gpt2-codegolf",
+      "raw_reward": 1.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": true,
+      "finding_count": 1
+    },
+    {
+      "trial": "headless-terminal__5cMxWAM",
+      "task_name": "terminal-bench/headless-terminal",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "hf-model-inference__94oekMM",
+      "task_name": "terminal-bench/hf-model-inference",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "install-windows-3.11__uWzz9CB",
+      "task_name": "terminal-bench/install-windows-3.11",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "kv-store-grpc__XUKEBno",
+      "task_name": "terminal-bench/kv-store-grpc",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "large-scale-text-editing__3KajLN6",
+      "task_name": "terminal-bench/large-scale-text-editing",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "largest-eigenval__HAqAVSz",
+      "task_name": "terminal-bench/largest-eigenval",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "llm-inference-batching-scheduler__kD4SfbW",
+      "task_name": "terminal-bench/llm-inference-batching-scheduler",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "log-summary-date-ranges__cgLPuuY",
+      "task_name": "terminal-bench/log-summary-date-ranges",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mailman__MwKmWvK",
+      "task_name": "terminal-bench/mailman",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "make-doom-for-mips__C99TpzJ",
+      "task_name": "terminal-bench/make-doom-for-mips",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "make-mips-interpreter__ZW5Ffpn",
+      "task_name": "terminal-bench/make-mips-interpreter",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mcmc-sampling-stan__dfPUHez",
+      "task_name": "terminal-bench/mcmc-sampling-stan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "merge-diff-arc-agi-task__zk4Cvbz",
+      "task_name": "terminal-bench/merge-diff-arc-agi-task",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "model-extraction-relu-logits__aDR9tkn",
+      "task_name": "terminal-bench/model-extraction-relu-logits",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "modernize-scientific-stack__EPQG6jn",
+      "task_name": "terminal-bench/modernize-scientific-stack",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mteb-leaderboard__dEwSV9A",
+      "task_name": "terminal-bench/mteb-leaderboard",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "mteb-retrieve__Vj7ccqB",
+      "task_name": "terminal-bench/mteb-retrieve",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "multi-source-data-merger__2VXZVoT",
+      "task_name": "terminal-bench/multi-source-data-merger",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "nginx-request-logging__TNdkrof",
+      "task_name": "terminal-bench/nginx-request-logging",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "openssl-selfsigned-cert__GJcdxgG",
+      "task_name": "terminal-bench/openssl-selfsigned-cert",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "overfull-hbox__H3iX9PQ",
+      "task_name": "terminal-bench/overfull-hbox",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "password-recovery__Kru5iL3",
+      "task_name": "terminal-bench/password-recovery",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "path-tracing-reverse__cmK5ZdB",
+      "task_name": "terminal-bench/path-tracing-reverse",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "path-tracing__pPdg86h",
+      "task_name": "terminal-bench/path-tracing",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "polyglot-c-py__R3VPVJD",
+      "task_name": "terminal-bench/polyglot-c-py",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "polyglot-rust-c__8pAuvYn",
+      "task_name": "terminal-bench/polyglot-rust-c",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "portfolio-optimization__u7MBfxz",
+      "task_name": "terminal-bench/portfolio-optimization",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "protein-assembly__oi8RqGr",
+      "task_name": "terminal-bench/protein-assembly",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "prove-plus-comm__mYkpSfY",
+      "task_name": "terminal-bench/prove-plus-comm",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pypi-server__K64SUuD",
+      "task_name": "terminal-bench/pypi-server",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pytorch-model-cli__E8JP9ys",
+      "task_name": "terminal-bench/pytorch-model-cli",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "pytorch-model-recovery__tN8ZB6H",
+      "task_name": "terminal-bench/pytorch-model-recovery",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "qemu-alpine-ssh__4eyFueF",
+      "task_name": "terminal-bench/qemu-alpine-ssh",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "qemu-startup__8xouKt7",
+      "task_name": "terminal-bench/qemu-startup",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "query-optimize__m5oVJFD",
+      "task_name": "terminal-bench/query-optimize",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "raman-fitting__GZrYWWn",
+      "task_name": "terminal-bench/raman-fitting",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "regex-chess__SvKTr77",
+      "task_name": "terminal-bench/regex-chess",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "regex-log__xXgp6Tw",
+      "task_name": "terminal-bench/regex-log",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "reshard-c4-data__h5TCSfR",
+      "task_name": "terminal-bench/reshard-c4-data",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "rstan-to-pystan__8r7MHGf",
+      "task_name": "terminal-bench/rstan-to-pystan",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sam-cell-seg__pFP9KPc",
+      "task_name": "terminal-bench/sam-cell-seg",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sanitize-git-repo__uoBhSEv",
+      "task_name": "terminal-bench/sanitize-git-repo",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "schemelike-metacircular-eval__S8y2KNi",
+      "task_name": "terminal-bench/schemelike-metacircular-eval",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sparql-university__UE3Aojy",
+      "task_name": "terminal-bench/sparql-university",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sqlite-db-truncate__eRiP9Yp",
+      "task_name": "terminal-bench/sqlite-db-truncate",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "sqlite-with-gcov__eYdbibN",
+      "task_name": "terminal-bench/sqlite-with-gcov",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "torch-pipeline-parallelism__GaFhV5F",
+      "task_name": "terminal-bench/torch-pipeline-parallelism",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "torch-tensor-parallelism__Khbbuwg",
+      "task_name": "terminal-bench/torch-tensor-parallelism",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "train-fasttext__FV8ZoMS",
+      "task_name": "terminal-bench/train-fasttext",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "tune-mjcf__CSs2DCh",
+      "task_name": "terminal-bench/tune-mjcf",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "video-processing__UV2vVe9",
+      "task_name": "terminal-bench/video-processing",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "vulnerable-secret__eM5zd95",
+      "task_name": "terminal-bench/vulnerable-secret",
+      "raw_reward": 0.0,
+      "strict_reward": 0.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "winning-avg-corewars__Am59xxc",
+      "task_name": "terminal-bench/winning-avg-corewars",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    },
+    {
+      "trial": "write-compressor__WyJhUjF",
+      "task_name": "terminal-bench/write-compressor",
+      "raw_reward": 1.0,
+      "strict_reward": 1.0,
+      "audit_complete": true,
+      "disqualified": false,
+      "finding_count": 0
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "preserved_at": "2026-08-28T15:36:59Z",
+  "server_run_root": "/opt/morphz-benchmark/repeat-runs/me08-current-runtime-d6e6d80-r1-20260828",
+  "server_run_root_retained": true,
+  "protocol": "me08-terminal-bench-current-runtime-all89-morphz-v6",
+  "infrastructure_commit": "09477921ae35ac94823cb026bf5394a9445b6667",
+  "runtime_commit": "d6e6d80053d95577811971e6048033374e4d6901",
+  "runtime_binary_sha256": "6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037",
+  "watcher_sha256": "70b33e20d661574543a478cd2bf9781355be8b2031c6e2124c8aa509d444c97d",
+  "official_raw_reward": {
+    "passed": 72,
+    "total": 89,
+    "score": 0.8089887640449438
+  },
+  "trial_count": 89,
+  "unique_task_count": 89,
+  "attempts_per_task": 1,
+  "concurrency": 8,
+  "database_count": 89,
+  "trajectory_count": 89,
+  "integrity_receipt_count": 89,
+  "official_reward_file_count": 89,
+  "one_session_per_database": true,
+  "one_context_per_database": true,
+  "unique_session_ids": true,
+  "unique_context_ids": true,
+  "valid_session_context_links": true,
+  "evaluation_harness_binding_events": 0,
+  "harness_mode": "none",
+  "provider_credential_scan_complete": true,
+  "provider_credential_not_persisted": true,
+  "strict_integrity_note": {
+    "official_raw_score_remains_primary": true,
+    "strict_gate_passed": false,
+    "disqualified_trial_count": 1,
+    "disqualified_task": "gpt2-codegolf",
+    "strict_score": 0.797752808988764
+  }
+}
