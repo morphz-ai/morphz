@@ -4,10 +4,11 @@ use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use morphz::llm::{
-    provider_continuation, Client, Message, ModelAttemptBinding, ModelAttemptBindingError,
-    ModelFailure, ModelFailureKind, ModelRequestContext, ModelStreamEvent, ModelStreamSender,
-    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, Response, ToolCallRepr,
-    ToolDefinition, PROVIDER_CONTINUATION_MESSAGE_NAME,
+    model_visible_message_text, provider_continuation, Client, Message, ModelAttemptBinding,
+    ModelAttemptBindingError, ModelFailure, ModelFailureKind, ModelRequestContext,
+    ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
+    ProviderContinuation, Response, ToolCallRepr, ToolDefinition,
+    PROVIDER_CONTINUATION_MESSAGE_NAME,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -7241,9 +7242,10 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         .into_iter()
         .find(|messages| {
             messages.iter().any(|message| {
+                let content = model_visible_message_text(message);
                 message.role == "user"
-                    && message.content.contains("message-b while tool runs")
-                    && message.content.contains("(current-activation")
+                    && content.contains("message-b while tool runs")
+                    && content.contains("(current-activation")
             })
         })
         .expect("message B must receive its own responsibility-scoped Context Encoding");
@@ -7251,26 +7253,16 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         .iter()
         .find(|message| message.role == "user")
         .unwrap();
-    assert!(message_b_encoding.content.contains("message-a starts tool"));
-    assert!(message_b_encoding
-        .content
-        .contains("(pending-tools route_probe)"));
-    assert!(message_b_encoding
-        .content
-        .contains("do not repeat them from this Activation"));
-    assert!(message_b_encoding.content.contains("(evaluate"));
-    assert!(message_b_encoding
-        .content
-        .contains("(thread (kind dialogue-turn) (id same-session-tool)"));
-    assert!(message_b_encoding
-        .content
-        .contains("(root-input \"message-b while tool runs\")"));
-    assert!(message_b_encoding
-        .content
-        .contains("(objective-binding none)"));
+    let message_b_visible = model_visible_message_text(message_b_encoding);
+    assert!(message_b_visible.contains("message-a starts tool"));
+    assert!(message_b_visible.contains("(pending-tools route_probe)"));
+    assert!(message_b_visible.contains("do not repeat them from this Activation"));
+    assert!(message_b_visible.contains("(evaluate"));
+    assert!(message_b_visible.contains("(thread (kind dialogue-turn) (id same-session-tool)"));
+    assert!(message_b_visible.contains("(root-input \"message-b while tool runs\")"));
+    assert!(message_b_visible.contains("(objective-binding none)"));
     assert!(
-        message_b_encoding.content.rfind("(evaluate").unwrap()
-            > message_b_encoding.content.rfind("(inbox").unwrap()
+        message_b_visible.rfind("(evaluate").unwrap() > message_b_visible.rfind("(inbox").unwrap()
     );
     assert!(!message_b_request
         .iter()
