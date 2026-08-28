@@ -65,17 +65,18 @@ class Me09SharedContextTest(unittest.TestCase):
         tasks = [task for lane in manifest["lanes"] for task in lane["tasks"]]
         self.assertEqual(len(set(tasks)), 89)
 
-    def test_runtime_config_freezes_current_session_working_set(self) -> None:
+    def test_runtime_config_supports_explicit_session_working_set_limit(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             config_path = Path(raw_dir) / "morphz.toml"
             _write_runtime_config(
                 config_path,
                 protocol="openai-responses",
                 base_url="http://127.0.0.1:8317/v1",
+                max_sessions=50,
             )
             config = config_path.read_text(encoding="utf-8")
             self.assertIn(
-                '[orchestrator.session_working_set]\nactive_window = "24h"\nmax_sessions = 1',
+                '[orchestrator.session_working_set]\nactive_window = "24h"\nmax_sessions = 50',
                 config,
             )
 

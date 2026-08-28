@@ -124,6 +124,7 @@ def _write_runtime_config(
     *,
     protocol: str,
     base_url: str,
+    max_sessions: int,
 ) -> None:
     path.write_text(
         "\n".join(
@@ -150,7 +151,7 @@ def _write_runtime_config(
                 "",
                 "[orchestrator.session_working_set]",
                 'active_window = "24h"',
-                "max_sessions = 1",
+                f"max_sessions = {max_sessions}",
                 "",
                 "[orchestrator.activation_admission]",
                 "max_in_flight = 16",
@@ -347,6 +348,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bind", default="0.0.0.0:8429")
     parser.add_argument("--host-url", default="http://127.0.0.1:8429")
     parser.add_argument("--edge-url", default="http://172.17.0.1:8429")
+    parser.add_argument(
+        "--max-sessions",
+        type=int,
+        default=1,
+        help="maximum number of full-projection Sessions in the shared Context",
+    )
     return parser.parse_args()
 
 
@@ -357,6 +364,8 @@ def main() -> int:
     harness = args.harness.expanduser().resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise FileNotFoundError(f"ME-09 executable is missing: {binary}")
+    if args.max_sessions < 1:
+        raise ValueError("ME-09 max_sessions must be at least 1")
     runtime_commit = args.runtime_commit.strip()
     if len(runtime_commit) != 40 or any(
         character not in "0123456789abcdef" for character in runtime_commit
@@ -396,6 +405,7 @@ def main() -> int:
     print("permission_mode=full_access")
     print("lane_count=8")
     print("shared_context=me09-shared-context")
+    print("max_sessions=" + str(args.max_sessions))
     if args.mode == "preflight":
         return 0
 
@@ -406,7 +416,12 @@ def main() -> int:
     runtime_root = run_root / "runtime"
     runtime_root.mkdir()
     config_path = runtime_root / "morphz.toml"
-    _write_runtime_config(config_path, protocol=protocol, base_url=base_url)
+    _write_runtime_config(
+        config_path,
+        protocol=protocol,
+        base_url=base_url,
+        max_sessions=args.max_sessions,
+    )
     database_path = runtime_root / "morphz.db"
     artifact_dir = runtime_root / "artifacts"
     artifact_dir.mkdir()
@@ -539,6 +554,7 @@ def main() -> int:
         "reasoning_effort": "max",
         "permission_mode": "full_access",
         "shared_context_id": "me09-shared-context",
+        "max_sessions": args.max_sessions,
         "lane_count": 8,
         "expected_task_count": expected_tasks,
         "observed_task_count": len(task_results),
