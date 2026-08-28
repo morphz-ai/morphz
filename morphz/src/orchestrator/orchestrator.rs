@@ -554,7 +554,7 @@ You decide what the current objective warrants retaining, summarizing, revising,
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
 - reply: when the Evaluation reaches a deliverable boundary, return non-empty ordinary assistant text with no tool calls. The Runtime streams that content verbatim to kernel.active-session and persists it as the terminal reply only after the complete response succeeds. Bare `(eval ...)` or `(infer ...)` text is still ordinary reply content: it is never admitted or executed. Execute a Yao program or any Tool only through the explicit Function Call offered for that action. With an active Objective, this ends only the current Evaluation and does not replace objective_update(completed).
-- no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event; the current Execution yields and resumes on the physical event. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
+- no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily hides context_tx. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
 - schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. inspect reads state and revision. pause/resume/reschedule/cancel are expected_revision CAS controls; on conflict, inspect again and decide from current facts rather than retrying blindly. One control call contains one op. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
@@ -577,7 +577,7 @@ Important rules:
 11. kernel.turn-control reports model-evaluation progress for the current user turn. phase=soft-checkpoint is a periodic review, not an Attempt limit. Normal tools remain available. Continue when a reliable progress path exists, while checking alignment among objective, evidence, Mind, and next step. Parallel calls in one model response count as one Attempt.
 12. kernel.wake explains why this evaluation ran. A successful standalone context_tx produces context-transaction-result cooldown: unless pressure remains critical, context_tx is hidden and you must reply, call no_reply, or perform necessary physical work.
 13. For code tasks, prefer list_files/search to discover, read for content and sha256, and edit for version-guarded local changes. write is mainly for mode=create; do not bypass existing-file or expected_sha256 protections. Use exec for testing, compiling, and formatting rather than replacing constrained file tools with shell operations. file_change is auditable evidence of committed changes. Parallelize independent reads in one response and do not reread Inbox content whose sha256 has not changed. Modify and verify after locating enough evidence instead of repeatedly scanning.
-14. execution, process_status, exit_code, task_status, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait); completion wakes the Runtime. Process terminal success/failed/cancelled/timeout rather than waiting again. Use check_task_after only for a real deadline or stall checkpoint, then inspect task_status, schedule another meaningful check, or kill_task. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or persisted Events. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
+14. execution, process_status, exit_code, task_status, background_source, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait, wait_secs=...). Choose a finite interval appropriate to the work; omitting wait_secs uses 60 seconds. Completion wakes the Runtime earlier and cancels the remaining interval. A wait_timeout task was requested as foreground work and merely crossed exec.wait_ms; inspect it when awakened and wait again only if continued execution is intentional. Explicitly backgrounded services remain completion-driven unless you request a real deadline or stall checkpoint with check_task_after. Process terminal success/failed/cancelled/timeout rather than waiting again. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or persisted Events. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
 15. kernel.objectives and evaluate.objective-context expose physical Objective state, but visibility is not binding. Only evaluate.objective-binding makes this an Objective Evaluation that may advance the Objective through the current Execution Thread. With binding=none, use Objective state only for understanding or progress replies and never act for it. When a bound Objective still has work and is not waiting, report current progress normally; the Supervisor continues or restores its main Execution Thread. Register exact waits with objective_update(status=active, wait_condition=...). Use blocked only when neither an automatic wait nor a reliable path exists. Submit completed only after auditing every part of the stated objective against persisted Event evidence. A completed receipt opens a final-delivery Attempt in the same Activation; produce a complete ordinary report rather than a terse tool acknowledgement. The final reply and Objective, Activation, and Thread terminal states commit atomically.
 16. Use objective_create to upgrade work that genuinely must span multiple Evaluations, asynchronous waits, or Runtime restart recovery. It is not a normal todo or a way to think longer. Do not create one for work this Evaluation can reliably finish. Preserve the user's full scope and completion criteria and explain why persistence is needed. The Runtime creates the ID and binds current Agent/Context/Session. Do not duplicate an existing or newly created Objective. parent_objective_id, when given, must be the Objective currently being evaluated. Continue after creation; ordinary text or no_reply ends only the adopted Evaluation while the Supervisor continues an unfinished Objective.
 17. You own scheduling decisions; the Runtime provides concurrency and timing mechanisms. Consecutive physical actions in the current Thread call tools directly and return to the same mailbox. Use schedule_tx.spawn for parallel work and schedule_tx.enqueue/after for work that waits on the current or named Thread. Inspect existing schedule state first and use only its latest revision for pause/resume/reschedule/cancel. A conflict means facts changed and must be re-observed. Multiple independent physical tool calls do not imply new Threads. Do not mix schedule_tx with context_tx or physical tools. A due schedule is a new observation, not a precomputed conclusion; decide from then-current Context.
@@ -1356,6 +1356,7 @@ const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime hides context_tx for this request to stop consecutive housekeeping. End the Evaluation with ordinary text, call no_reply exclusively, or perform only physical actions truly required by the current task. context_tx returns after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
+const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
 const SAFETY_REFUSAL_RECOVERY_OBSERVATIONS: usize = 8;
 const SAFETY_REFUSAL_RECOVERY_TOPIC: &str = "runtime/safety_refusal_recovery";
@@ -2287,8 +2288,21 @@ enum TerminalDecision {
 enum NoReplyMode {
     /// The Agent intentionally chooses not to send a Session message.
     Silent,
-    /// The current Execution yields until a durable Runtime event wakes it.
-    Wait,
+    /// The current Execution yields until a durable Runtime event wakes it or
+    /// the finite fallback timer expires, whichever happens first.
+    Wait {
+        wait_secs: u64,
+        explicitly_requested: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThreadYieldState {
+    active_background_tasks: usize,
+    pending_schedules: usize,
+    pending_routed_inputs: usize,
+    wait_secs: u64,
+    wait_explicitly_requested: bool,
 }
 
 impl TerminalDecision {
@@ -2296,7 +2310,17 @@ impl TerminalDecision {
         match self {
             Self::Deliver(_) => "deliver",
             Self::NoReply(NoReplyMode::Silent) => "no_reply",
-            Self::NoReply(NoReplyMode::Wait) => "wait",
+            Self::NoReply(NoReplyMode::Wait { .. }) => "wait",
+        }
+    }
+
+    fn wait_spec(&self) -> Option<(u64, bool)> {
+        match self {
+            Self::NoReply(NoReplyMode::Wait {
+                wait_secs,
+                explicitly_requested,
+            }) => Some((*wait_secs, *explicitly_requested)),
+            _ => None,
         }
     }
 }
@@ -2304,7 +2328,7 @@ impl TerminalDecision {
 fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
         name: NO_REPLY_TOOL_NAME.to_string(),
-        description: "Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, or pending event still exists. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only tool call and cannot accompany content.".to_string(),
+        description: format!("Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only tool call and cannot accompany content."),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -2312,6 +2336,11 @@ fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
                     "type": "string",
                     "enum": ["silent", "wait"],
                     "description": "silent intentionally sends no message; wait yields for a nonterminal event known to the Runtime"
+                },
+                "wait_secs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": format!("Finite fallback wake in seconds for mode=wait. Omit for {DEFAULT_NO_REPLY_WAIT_SECS} seconds. Ignored values are not accepted with mode=silent.")
                 }
             },
             "required": ["mode"],
@@ -2351,15 +2380,35 @@ fn classify_terminal_response(
     let object = arguments
         .as_object()
         .ok_or_else(|| "no_reply arguments must be a JSON object".to_string())?;
-    if object.len() != 1 {
-        return Err(
-            "no_reply requires mode=\"silent\" or mode=\"wait\" and accepts no other arguments"
-                .to_string(),
-        );
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "mode" | "wait_secs"))
+    {
+        return Err("no_reply accepts only mode and optional wait_secs".to_string());
     }
     let mode = match object.get("mode").and_then(|value| value.as_str()) {
-        Some("silent") => NoReplyMode::Silent,
-        Some("wait") => NoReplyMode::Wait,
+        Some("silent") => {
+            if object.contains_key("wait_secs") {
+                return Err("no_reply.wait_secs is valid only with mode=\"wait\"".to_string());
+            }
+            NoReplyMode::Silent
+        }
+        Some("wait") => {
+            let explicitly_requested = object.contains_key("wait_secs");
+            let wait_secs = match object.get("wait_secs") {
+                Some(value) => value.as_u64().ok_or_else(|| {
+                    "no_reply.wait_secs must be a positive integer number of seconds".to_string()
+                })?,
+                None => DEFAULT_NO_REPLY_WAIT_SECS,
+            };
+            if wait_secs == 0 {
+                return Err("no_reply.wait_secs must be at least 1 second".to_string());
+            }
+            NoReplyMode::Wait {
+                wait_secs,
+                explicitly_requested,
+            }
+        }
         _ => return Err("no_reply.mode supports only silent or wait".to_string()),
     };
     Ok(Some(TerminalDecision::NoReply(mode)))
@@ -2386,7 +2435,7 @@ fn validate_final_reply_response(
         return match decision {
             Some(TerminalDecision::Deliver(_))
             | Some(TerminalDecision::NoReply(NoReplyMode::Silent)) => Ok(decision),
-            Some(TerminalDecision::NoReply(NoReplyMode::Wait)) => Err(
+            Some(TerminalDecision::NoReply(NoReplyMode::Wait { .. })) => Err(
                 "Objective finalization cannot enter a waiting state; submit the complete final report, or call no_reply(mode=silent) only when no message is needed"
                     .to_string(),
             ),
@@ -2983,7 +3032,7 @@ fn response_protocol_correction_prompt(
         "No independently replayable Provider-native reasoning continuation is available for this retry."
     };
     format!(
-        "The previous model output was rejected by the Runtime response protocol. None of its tool calls was executed and none of its ordinary content was delivered to the Session.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid form:\n1. To reply: return non-empty ordinary assistant text and no tool calls.\n2. To act: call the required tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and no ordinary text.\nNever combine no_reply with ordinary text or another tool."
+        "The previous model output was rejected by the Runtime response protocol. None of its tool calls was executed and none of its ordinary content was delivered to the Session.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid form:\n1. To reply: return non-empty ordinary assistant text and no tool calls.\n2. To act: call the required tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no ordinary text.\nNever combine no_reply with ordinary text or another tool; an unbounded wait is not supported."
     )
 }
 
@@ -3741,7 +3790,126 @@ impl Orchestrator {
                 };
                 orchestrator.dispatch_delivery_flush(timer).await
             }
+        })?;
+        let orchestrator = Arc::downgrade(self);
+        timers.register_handler(RuntimeTimerKind::ThreadWait, move |timer| {
+            let orchestrator = orchestrator.clone();
+            async move {
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    return Ok(TimerDisposition::Complete);
+                };
+                orchestrator.dispatch_thread_wait(timer).await
+            }
         })
+    }
+
+    async fn arm_thread_wait(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        activation_id: &str,
+        wait_secs: u64,
+        explicitly_requested: bool,
+    ) -> Result<RuntimeTimerRecord, DynError> {
+        let now = Utc::now();
+        let wait_duration_secs = i64::try_from(wait_secs)
+            .map_err(|_| "no_reply.wait_secs exceeds the Runtime clock range")?;
+        let duration = chrono::Duration::try_seconds(wait_duration_secs)
+            .ok_or("no_reply.wait_secs exceeds the Runtime clock range")?;
+        let due_at = now
+            .checked_add_signed(duration)
+            .ok_or("no_reply.wait_secs exceeds the Runtime clock range")?;
+        let generation = next_thread_wait_generation();
+        self.timer_engine
+            .schedule(NewRuntimeTimer {
+                id: thread_wait_timer_id(thread_id),
+                generation,
+                kind: RuntimeTimerKind::ThreadWait,
+                owner_id: thread_id.to_string(),
+                due_at,
+                payload: json!({
+                    "context_id": context_id,
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                    "activation_id": activation_id,
+                    "wait_secs": wait_secs,
+                    "wait_source": if explicitly_requested { "model" } else { "runtime_default" },
+                    "armed_at": now,
+                }),
+            })
+            .await
+    }
+
+    async fn cancel_thread_wait(&self, thread_id: &str) -> Result<(), DynError> {
+        self.timer_engine
+            .cancel(&thread_wait_timer_id(thread_id))
+            .await?;
+        Ok(())
+    }
+
+    async fn dispatch_thread_wait(
+        self: Arc<Self>,
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Thread Wait requires a persistent SessionStore")?;
+        let Some(thread) = session_store.get_thread(&timer.owner_id).await? else {
+            return Ok(TimerDisposition::Complete);
+        };
+        if thread.lifecycle.is_terminal()
+            || thread.control_state != crate::memory::ThreadControlState::Active
+        {
+            return Ok(TimerDisposition::Complete);
+        }
+        let wait_secs = timer
+            .payload
+            .get("wait_secs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(DEFAULT_NO_REPLY_WAIT_SECS);
+        let activation_id = timer
+            .payload
+            .get("activation_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let event = Event::new(
+            format!("thread_wait_due_{}_g{}", timer.owner_id, timer.generation),
+            "System-ThreadWait".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(thread.context_id)),
+                ("session_id".to_string(), json!(thread.session_id)),
+                ("thread_id".to_string(), json!(thread.id)),
+                ("root_turn_id".to_string(), json!(thread.root_turn_id)),
+                ("activation_id".to_string(), json!(activation_id)),
+                ("tool_name".to_string(), json!(NO_REPLY_TOOL_NAME)),
+                ("event".to_string(), json!("thread_wait_elapsed")),
+                ("wake_kind".to_string(), json!("thread_wait_timeout")),
+                ("wait_secs".to_string(), json!(wait_secs)),
+                (
+                    "wait_source".to_string(),
+                    timer
+                        .payload
+                        .get("wait_source")
+                        .cloned()
+                        .unwrap_or_else(|| json!("runtime_default")),
+                ),
+                (
+                    "text".to_string(),
+                    json!(format!(
+                        "The finite wait of {wait_secs} seconds ended before another awaited event arrived. Reassess the current task and its durable Runtime state now. Continue acting, reply, or choose another finite no_reply(mode=wait, wait_secs=...) interval; an unbounded wait is not supported."
+                    )),
+                ),
+            ]),
+        );
+        self.store
+            .append_to_thread(event.clone(), &thread.id)
+            .await?;
+        self.bus.dispatch_persisted(event).await?;
+        Ok(TimerDisposition::Complete)
     }
 
     async fn arm_activation_lease(
@@ -7808,6 +7976,28 @@ impl Orchestrator {
                 supervision,
             })
             .await?;
+        // A real signal wins the race with the Thread's fallback clock as
+        // soon as it is routed, even if another Activation currently owns the
+        // Thread and this signal must remain queued. Cancelling before claim
+        // prevents the old timer from manufacturing a second wake while that
+        // legitimate signal waits for admission. The timeout Event itself is
+        // already owned by the claimed Timer and must not cancel itself.
+        if event
+            .payload
+            .get("wake_kind")
+            .and_then(serde_json::Value::as_str)
+            != Some("thread_wait_timeout")
+        {
+            if let Err(error) = self.cancel_thread_wait(&thread.id).await {
+                tracing::warn!(
+                    thread_id = %thread.id,
+                    event_id = %event.id,
+                    %error,
+                    event_code = "orchestrator.thread_wait.cancel_failed",
+                    "A real Thread signal arrived but its fallback wait Timer could not be cancelled"
+                );
+            }
+        }
         let activation_id = stable_thread_activation_id(&event.id);
         let signal_id = crate::memory::stable_thread_signal_id(&event.id);
         let Some(activation) = session_store
@@ -11615,7 +11805,7 @@ impl Orchestrator {
                     base_protocol_messages = protocol_messages.clone();
                     continue;
                 }
-                Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait))) => {
+                Ok(Some(decision @ TerminalDecision::NoReply(NoReplyMode::Wait { .. }))) => {
                     let active_root_tasks = self
                         .owed_background_jobs_for_thread(
                             session_id,
@@ -11668,7 +11858,7 @@ impl Orchestrator {
                     }
                     break (
                         response,
-                        Some(TerminalDecision::NoReply(NoReplyMode::Wait)),
+                        Some(decision),
                         model_attempt_id,
                         provider_continuation,
                     );
@@ -11733,7 +11923,10 @@ impl Orchestrator {
                 .await?
                 .len();
             let pending_routed_inputs = self.pending_routed_inputs(activation).await?;
-            let explicit_wait = matches!(&decision, TerminalDecision::NoReply(NoReplyMode::Wait));
+            let explicit_wait = decision.wait_spec().is_some();
+            let (wait_secs, wait_explicitly_requested) = decision
+                .wait_spec()
+                .unwrap_or((DEFAULT_NO_REPLY_WAIT_SECS, false));
             if !completion_prepared
                 && (explicit_wait
                     || (thread_kind != "dialogue_turn"
@@ -11778,10 +11971,14 @@ impl Orchestrator {
                 self.yield_thread(
                     session_id,
                     &attempt_id,
-                    active_root_tasks,
-                    pending_schedules,
-                    pending_routed_inputs,
                     decision.disposition(),
+                    ThreadYieldState {
+                        active_background_tasks: active_root_tasks,
+                        pending_schedules,
+                        pending_routed_inputs,
+                        wait_secs,
+                        wait_explicitly_requested,
+                    },
                 )
                 .await?;
                 if let Some(lease) = dialogue_lease.as_mut() {
@@ -13493,10 +13690,8 @@ impl Orchestrator {
         &self,
         session_id: &str,
         attempt_id: &str,
-        active_background_tasks: usize,
-        pending_schedules: usize,
-        pending_routed_inputs: usize,
         model_disposition: &str,
+        state: ThreadYieldState,
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
@@ -13512,20 +13707,48 @@ impl Orchestrator {
             return Ok(());
         }
         let context_id = self.context_id_for_session(session_id)?;
+        let wait_timer = self
+            .arm_thread_wait(
+                &context_id,
+                session_id,
+                &route.thread_id,
+                attempt_id,
+                state.wait_secs,
+                state.wait_explicitly_requested,
+            )
+            .await?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
             (
                 "active_background_tasks".to_string(),
-                json!(active_background_tasks),
+                json!(state.active_background_tasks),
             ),
-            ("pending_schedules".to_string(), json!(pending_schedules)),
+            (
+                "pending_schedules".to_string(),
+                json!(state.pending_schedules),
+            ),
             (
                 "pending_routed_inputs".to_string(),
-                json!(pending_routed_inputs),
+                json!(state.pending_routed_inputs),
             ),
             ("model_disposition".to_string(), json!(model_disposition)),
+            ("wait_secs".to_string(), json!(state.wait_secs)),
+            (
+                "wait_source".to_string(),
+                json!(if state.wait_explicitly_requested {
+                    "model"
+                } else {
+                    "runtime_default"
+                }),
+            ),
+            ("wait_until".to_string(), json!(wait_timer.due_at)),
+            ("wait_timer_id".to_string(), json!(wait_timer.id)),
+            (
+                "wait_timer_generation".to_string(),
+                json!(wait_timer.generation),
+            ),
         ];
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
@@ -18355,6 +18578,31 @@ fn activation_lease_timer_id(activation_id: &str) -> String {
     format!("activation-lease:{activation_id}")
 }
 
+fn thread_wait_timer_id(thread_id: &str) -> String {
+    format!("thread-wait:{thread_id}")
+}
+
+fn next_thread_wait_generation() -> u64 {
+    static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
+    let wall_clock = Utc::now()
+        .timestamp_nanos_opt()
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(1);
+    let mut current = NEXT_GENERATION.load(Ordering::Relaxed);
+    loop {
+        let next = wall_clock.max(current.saturating_add(1));
+        match NEXT_GENERATION.compare_exchange_weak(
+            current,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return next,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
     let Some(raw_claimant) = claimed_by.and_then(|value| value.strip_prefix("runtime:")) else {
         return false;
@@ -19970,8 +20218,8 @@ mod tests {
         validate_objective_completion_call, ContextEngine, DialogueThreadGate, DialogueThreadLease,
         DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
         ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        ModelVisibleAttachmentReference, NoReplyMode, ProviderCircuitAdmission,
-        ProviderCircuitPhase, ProviderCircuitState, TerminalDecision,
+        ModelVisibleAttachmentReference, NoReplyMode, Orchestrator, ProviderCircuitAdmission,
+        ProviderCircuitPhase, ProviderCircuitState, Registry, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -19992,10 +20240,11 @@ mod tests {
         AttentionAcknowledgementRecord, ContextCapabilityBindingRecord, EventAppend, EventStore,
         NewActionGroup, NewActionGroupMember, NewAgent, NewCognitiveContext, NewObjective,
         NewSession, NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveStatus,
-        ObjectiveStore, ObjectiveWaitCondition, QueryFilter, SessionDirectoryStore,
-        SessionMountKind, ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadStore,
-        WorkerCoordinationMode,
+        ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerStatus,
+        SessionDirectoryStore, SessionMountKind, ThreadActivationRecord, ThreadActivationStatus,
+        ThreadKind, ThreadStore, TimerStore, WorkerCoordinationMode,
     };
+    use crate::timer::{TimerDisposition, TimerEngine};
 
     #[test]
     fn model_binding_failures_keep_provider_and_runtime_boundaries_distinct() {
@@ -20023,6 +20272,19 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::{Barrier, Mutex};
+
+    struct NeverCalledClient;
+
+    #[async_trait::async_trait]
+    impl crate::llm::Client for NeverCalledClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<crate::llm::Message>,
+            _tools: Vec<crate::llm::ToolDefinition>,
+        ) -> Result<crate::llm::Response, Box<dyn std::error::Error + Send + Sync>> {
+            Err("test client must not be called".into())
+        }
+    }
 
     #[test]
     fn attached_delegation_preserves_the_exact_causal_return_route() {
@@ -21857,6 +22119,181 @@ mod tests {
     }
 
     #[test]
+    fn response_classifier_makes_every_wait_finite() {
+        let wait = |arguments: serde_json::Value| crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: "no-reply-wait".to_string(),
+                r#type: "function".to_string(),
+                func_name: "no_reply".to_string(),
+                arguments: arguments.to_string(),
+            }],
+        };
+
+        assert_eq!(
+            classify_terminal_response(&wait(json!({"mode":"wait"}))),
+            Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait {
+                wait_secs: 60,
+                explicitly_requested: false,
+            })))
+        );
+        assert_eq!(
+            classify_terminal_response(&wait(json!({
+                "mode":"wait",
+                "wait_secs": 86_400
+            }))),
+            Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait {
+                wait_secs: 86_400,
+                explicitly_requested: true,
+            })))
+        );
+        assert!(classify_terminal_response(&wait(json!({
+            "mode":"wait",
+            "wait_secs": 0
+        })))
+        .is_err());
+        assert!(classify_terminal_response(&wait(json!({
+            "mode":"silent",
+            "wait_secs": 60
+        })))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn thread_wait_timer_persists_long_wait_cancels_and_emits_fallback_wake() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("thread-wait.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let context_id = "context-thread-wait";
+        let session_id = "session-thread-wait";
+        let thread_id = "thread-thread-wait";
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-thread-wait".to_string(),
+                    title: "Thread Wait Agent".to_string(),
+                    root_context_id: context_id.to_string(),
+                },
+                NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "agent-thread-wait".to_string(),
+                    title: "Thread Wait Context".to_string(),
+                },
+                NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "agent-thread-wait".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: "Thread Wait Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: thread_id.to_string(),
+                agent_id: "agent-thread-wait".to_string(),
+                context_id: context_id.to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-thread-wait".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let config = crate::config::OrchestratorConfig::default();
+        let context_engine = Arc::new(
+            ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+                .with_session_store(Arc::clone(&store) as Arc<dyn crate::memory::SessionStore>),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let orchestrator = Orchestrator::new_test_with_context_engine(
+            bus,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            None,
+            Arc::clone(&store) as Arc<dyn crate::memory::ActionGroupStore>,
+            Arc::new(NeverCalledClient),
+            Arc::new(Registry::new()),
+            config,
+            context_engine,
+            timers,
+            None,
+        )
+        .unwrap();
+
+        let long_wait = orchestrator
+            .arm_thread_wait(
+                context_id,
+                session_id,
+                thread_id,
+                "activation-long-wait",
+                86_400,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(long_wait.kind, crate::memory::RuntimeTimerKind::ThreadWait);
+        assert_eq!(long_wait.payload["wait_secs"], 86_400);
+        assert_eq!(long_wait.payload["wait_source"], "model");
+        assert!(long_wait.due_at >= chrono::Utc::now() + chrono::Duration::hours(23));
+
+        orchestrator.cancel_thread_wait(thread_id).await.unwrap();
+        assert_eq!(
+            store
+                .get_runtime_timer(&long_wait.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            RuntimeTimerStatus::Cancelled
+        );
+
+        let fallback = orchestrator
+            .arm_thread_wait(
+                context_id,
+                session_id,
+                thread_id,
+                "activation-default-wait",
+                60,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(fallback.generation > long_wait.generation);
+        assert_eq!(fallback.payload["wait_source"], "runtime_default");
+        assert_eq!(
+            Arc::clone(&orchestrator)
+                .dispatch_thread_wait(fallback.clone())
+                .await
+                .unwrap(),
+            TimerDisposition::Complete
+        );
+        let wake = store
+            .query(QueryFilter {
+                event_id: Some(format!(
+                    "thread_wait_due_{thread_id}_g{}",
+                    fallback.generation
+                )),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(wake.len(), 1);
+        assert_eq!(wake[0].payload["wake_kind"], "thread_wait_timeout");
+        assert_eq!(wake[0].payload["wait_secs"], 60);
+    }
+
+    #[test]
     fn closure_review_requires_a_durable_state_or_action_commit() {
         let plain = Some(TerminalDecision::Deliver("看起来已经完成".to_string()));
         let error = validate_objective_closure_review_response(true, plain)
@@ -21953,7 +22390,10 @@ mod tests {
                 content: String::new(),
                 tool_calls: Vec::new(),
             },
-            Some(TerminalDecision::NoReply(NoReplyMode::Wait)),
+            Some(TerminalDecision::NoReply(NoReplyMode::Wait {
+                wait_secs: 60,
+                explicitly_requested: false,
+            })),
         )
         .is_err());
     }

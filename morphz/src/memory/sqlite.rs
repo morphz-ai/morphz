@@ -434,7 +434,7 @@ impl SqliteStore {
         CREATE TABLE IF NOT EXISTS runtime_timers (
             id TEXT PRIMARY KEY,
             generation INTEGER NOT NULL CHECK(generation >= 0),
-            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease', 'delivery_flush')),
+            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'thread_wait', 'activation_lease', 'delivery_flush')),
             owner_id TEXT NOT NULL,
             due_at TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'fired', 'cancelled')),
@@ -1610,7 +1610,7 @@ impl SqliteStore {
         )
         .execute(&pool)
         .await?;
-        migrate_runtime_timer_delivery_flush_kind(&pool).await?;
+        migrate_runtime_timer_bounded_wait_kinds(&pool).await?;
         migrate_plan_execution_program_wait_kind(&pool).await?;
         migrate_schedule_paused_status(&pool).await?;
         migrate_schedule_dependency_index(&pool).await?;
@@ -4526,10 +4526,10 @@ async fn migrate_thread_group_member_history(
 }
 
 /// SQLite cannot widen a CHECK constraint in place. Preserve every Timer row
-/// while adding the Runtime-owned Delivery Flush kind used by completion
-/// coalescing. Runtime timers have no inbound foreign keys, so rebuilding only
-/// this table is sufficient and remains transactional.
-async fn migrate_runtime_timer_delivery_flush_kind(
+/// while adding Runtime-owned Delivery Flush and bounded Thread Wait kinds.
+/// Runtime timers have no inbound foreign keys, so rebuilding only this table
+/// is sufficient and remains transactional.
+async fn migrate_runtime_timer_bounded_wait_kinds(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let table_sql = sqlx::query_scalar::<_, Option<String>>(
@@ -4538,7 +4538,7 @@ async fn migrate_runtime_timer_delivery_flush_kind(
     .fetch_one(pool)
     .await?
     .unwrap_or_default();
-    if table_sql.contains("'delivery_flush'") {
+    if table_sql.contains("'delivery_flush'") && table_sql.contains("'thread_wait'") {
         return Ok(());
     }
 
@@ -4550,7 +4550,7 @@ async fn migrate_runtime_timer_delivery_flush_kind(
         r#"CREATE TABLE runtime_timers (
             id TEXT PRIMARY KEY,
             generation INTEGER NOT NULL CHECK(generation >= 0),
-            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease', 'delivery_flush')),
+            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'thread_wait', 'activation_lease', 'delivery_flush')),
             owner_id TEXT NOT NULL,
             due_at TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'fired', 'cancelled')),
@@ -5931,6 +5931,7 @@ fn runtime_timer_from_row(
         "objective_wait" => RuntimeTimerKind::ObjectiveWait,
         "objective_lease" => RuntimeTimerKind::ObjectiveLease,
         "background_wake" => RuntimeTimerKind::BackgroundWake,
+        "thread_wait" => RuntimeTimerKind::ThreadWait,
         "activation_lease" => RuntimeTimerKind::ActivationLease,
         "delivery_flush" => RuntimeTimerKind::DeliveryFlush,
         value => return Err(format!("未知 Runtime Timer kind: {value}").into()),
@@ -29412,7 +29413,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migrates_runtime_timer_check_to_delivery_flush_without_losing_rows() {
+    async fn migrates_runtime_timer_check_to_bounded_wait_kinds_without_losing_rows() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let pool = SqlitePoolOptions::new()
@@ -29476,6 +29477,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(delivery.kind, RuntimeTimerKind::DeliveryFlush);
+        let thread_wait = store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "new-thread-wait-timer".to_string(),
+                generation: 2,
+                kind: RuntimeTimerKind::ThreadWait,
+                owner_id: "waiting-thread".to_string(),
+                due_at: Utc::now(),
+                payload: serde_json::json!({"wait_secs": 60}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(thread_wait.kind, RuntimeTimerKind::ThreadWait);
     }
 
     #[tokio::test]

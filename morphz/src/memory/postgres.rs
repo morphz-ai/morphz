@@ -1680,7 +1680,7 @@ impl PostgresStore {
             (
                 "runtime_timers",
                 "runtime_timers_kind_domain",
-                "kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease', 'delivery_flush')",
+                "kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'thread_wait', 'activation_lease', 'delivery_flush')",
             ),
             (
                 "runtime_timers",
@@ -2840,6 +2840,7 @@ fn timer_from_row(row: &PgRow) -> Result<RuntimeTimerRecord, StoreError> {
         "objective_wait" => RuntimeTimerKind::ObjectiveWait,
         "objective_lease" => RuntimeTimerKind::ObjectiveLease,
         "background_wake" => RuntimeTimerKind::BackgroundWake,
+        "thread_wait" => RuntimeTimerKind::ThreadWait,
         "activation_lease" => RuntimeTimerKind::ActivationLease,
         "delivery_flush" => RuntimeTimerKind::DeliveryFlush,
         other => return Err(format!("未知 Runtime Timer kind: {other}").into()),

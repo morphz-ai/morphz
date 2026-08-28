@@ -1613,6 +1613,10 @@ pub enum RuntimeTimerKind {
     ObjectiveWait,
     ObjectiveLease,
     BackgroundWake,
+    /// Bounded fallback wake for `no_reply(mode=wait)`. Physical events may
+    /// wake the Thread earlier; this timer makes an unbounded silent block
+    /// unrepresentable even when the awaited resource never settles.
+    ThreadWait,
     ActivationLease,
     DeliveryFlush,
 }
@@ -1624,6 +1628,7 @@ impl RuntimeTimerKind {
             Self::ObjectiveWait => "objective_wait",
             Self::ObjectiveLease => "objective_lease",
             Self::BackgroundWake => "background_wake",
+            Self::ThreadWait => "thread_wait",
             Self::ActivationLease => "activation_lease",
             Self::DeliveryFlush => "delivery_flush",
         }
