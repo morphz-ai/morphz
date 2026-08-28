@@ -3534,17 +3534,31 @@ impl ContextEngine {
             .iter()
             .filter(|frame| !state.retired.contains(&frame.id))
             .collect::<Vec<_>>();
-        let causal_frontiers = activation_record
-            .into_iter()
-            .map(|activation| {
-                let root_sequence = events
-                    .iter()
-                    .find(|event| event.id == activation.root_turn_id)
-                    .and_then(|event| event.sequence)
-                    .unwrap_or(activation.trigger_sequence);
-                (activation.session_id.as_str(), (activation, root_sequence))
-            })
-            .collect::<HashMap<_, _>>();
+        let causal_frontier = if let Some(activation) = activation_record {
+            let persisted_root_sequence = events
+                .iter()
+                .find(|event| event.id == activation.root_turn_id)
+                .and_then(|event| event.sequence);
+            let first_activation_sequence = if persisted_root_sequence.is_none() {
+                match &self.session_store {
+                    Some(store) => store
+                        .get_first_thread_activation_by_root(context_id, &activation.root_turn_id)
+                        .await?
+                        .map(|first| first.trigger_sequence),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            Some((
+                activation,
+                persisted_root_sequence
+                    .or(first_activation_sequence)
+                    .unwrap_or(activation.trigger_sequence),
+            ))
+        } else {
+            None
+        };
         let ready_set = current_session_ids.iter().cloned().collect::<HashSet<_>>();
         let (observations, estimated_tokens) = loop {
             let full_set = sessions
@@ -3561,19 +3575,19 @@ impl ContextEngine {
                     Some(session_id) => full_set.contains(session_id),
                     None => context_wide_observation_allowed(event),
                 })
-                // An Activation evaluates a causal snapshot of its active Session. A newer
-                // user turn may run concurrently, but must not appear retroactively in an
-                // older turn's Inbox. Events from the same causal root remain visible even
-                // when they are appended after the root event; other Sessions continue to
-                // follow the configured shared Working Set policy.
+                // An Activation evaluates one causal snapshot of the whole shared Context,
+                // not a live merge of every Session. Session-bound Observations that existed
+                // when the root was accepted remain visible; later Observations are admitted
+                // only when they belong to this Activation's causal route. Context-wide
+                // Observations remain live broadcast signals by explicit contract.
                 .filter(|event| {
-                    let Some(session_id) = event_session(event) else {
+                    if event_session(event).is_none() {
+                        return true;
+                    }
+                    let Some((activation, root_sequence)) = causal_frontier else {
                         return true;
                     };
-                    let Some((activation, root_sequence)) = causal_frontiers.get(session_id) else {
-                        return true;
-                    };
-                    event_visible_at_causal_frontier(event, activation, *root_sequence)
+                    event_visible_at_causal_frontier(event, activation, root_sequence)
                 })
                 .map(|event| {
                     self.to_observation(
@@ -10547,15 +10561,7 @@ fn event_visible_at_causal_frontier(
     activation: &ThreadActivationRecord,
     root_sequence: u64,
 ) -> bool {
-    if event.id == activation.root_turn_id || event.id == activation.trigger_event_id {
-        return true;
-    }
-    if event
-        .payload
-        .get("root_turn_id")
-        .and_then(|value| value.as_str())
-        == Some(activation.root_turn_id.as_str())
-    {
+    if event_belongs_to_activation(event, activation) {
         return true;
     }
     event
@@ -11883,6 +11889,328 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activation_frontier_is_context_wide_but_preserves_causal_and_broadcast_routes() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                tmp.path()
+                    .join("context-wide-frontier.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        let context_id = "frontier-context";
+        let agent_id = "frontier-agent";
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: agent_id.to_string(),
+                    title: "Frontier Agent".to_string(),
+                    root_context_id: context_id.to_string(),
+                },
+                NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    title: "Frontier Context".to_string(),
+                },
+                NewSession {
+                    id: "frontier-session-a".to_string(),
+                    agent_id: agent_id.to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: "A".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        for (session_id, title) in [("frontier-session-b", "B"), ("frontier-session-c", "C")] {
+            store
+                .create_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: title.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+
+        async fn append_observation(
+            store: &SqliteStore,
+            context_id: &str,
+            id: &str,
+            session_id: Option<&str>,
+            event_type: &str,
+            topic: &str,
+            text: &str,
+            root_turn_id: Option<&str>,
+            context_wide: bool,
+        ) -> u64 {
+            let mut payload = serde_json::json!({
+                "context_id": context_id,
+                "text": text
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            if let Some(session_id) = session_id {
+                payload.insert("session_id".to_string(), serde_json::json!(session_id));
+            }
+            if let Some(root_turn_id) = root_turn_id {
+                payload.insert("root_turn_id".to_string(), serde_json::json!(root_turn_id));
+            }
+            if context_wide {
+                payload.insert("context_wide".to_string(), serde_json::json!(true));
+            }
+            store
+                .append(Event::new(
+                    id.to_string(),
+                    "test".to_string(),
+                    event_type.to_string(),
+                    topic.to_string(),
+                    payload,
+                ))
+                .await
+                .unwrap();
+            store
+                .query(QueryFilter {
+                    event_id: Some(id.to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()[0]
+                .sequence
+                .unwrap()
+        }
+
+        append_observation(
+            &store,
+            context_id,
+            "frontier-before-a",
+            Some("frontier-session-b"),
+            TYPE_USER_MESSAGE,
+            "chat/user_message",
+            "visible before A starts",
+            None,
+            false,
+        )
+        .await;
+        let root_a_sequence = append_observation(
+            &store,
+            context_id,
+            "frontier-root-a",
+            Some("frontier-session-a"),
+            TYPE_USER_MESSAGE,
+            "chat/user_message",
+            "start A",
+            Some("frontier-root-a"),
+            false,
+        )
+        .await;
+        append_observation(
+            &store,
+            context_id,
+            "frontier-own-result-a",
+            Some("frontier-session-a"),
+            TYPE_TOOL_OUTPUT,
+            "chat/tool_output",
+            "A result",
+            Some("frontier-root-a"),
+            false,
+        )
+        .await;
+        append_observation(
+            &store,
+            context_id,
+            "frontier-late-b",
+            Some("frontier-session-b"),
+            TYPE_USER_MESSAGE,
+            "chat/user_message",
+            "B changed after A started",
+            Some("frontier-root-b"),
+            false,
+        )
+        .await;
+        append_observation(
+            &store,
+            context_id,
+            "frontier-late-a-sibling",
+            Some("frontier-session-a"),
+            TYPE_USER_MESSAGE,
+            "chat/user_message",
+            "a sibling in the same Session changed after A started",
+            Some("frontier-root-a-sibling"),
+            false,
+        )
+        .await;
+        append_observation(
+            &store,
+            context_id,
+            "frontier-broadcast",
+            None,
+            TYPE_USER_MESSAGE,
+            "chat/context_observation",
+            "Context-wide interrupt",
+            None,
+            true,
+        )
+        .await;
+        let directed_sequence = append_observation(
+            &store,
+            context_id,
+            "frontier-directed-trigger",
+            Some("frontier-session-b"),
+            crate::event::TYPE_SESSION_SIGNAL,
+            "chat/session_signal",
+            "explicitly wake A",
+            None,
+            false,
+        )
+        .await;
+        let root_c_sequence = append_observation(
+            &store,
+            context_id,
+            "frontier-root-c",
+            Some("frontier-session-c"),
+            TYPE_USER_MESSAGE,
+            "chat/user_message",
+            "start C after all prior work",
+            Some("frontier-root-c"),
+            false,
+        )
+        .await;
+
+        for (thread_id, session_id, root_turn_id) in [
+            ("frontier-thread-a", "frontier-session-a", "frontier-root-a"),
+            ("frontier-thread-c", "frontier-session-c", "frontier-root-c"),
+        ] {
+            store
+                .ensure_thread(NewThread {
+                    id: thread_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    context_id: context_id.to_string(),
+                    session_id: session_id.to_string(),
+                    initiating_principal_id: None,
+                    root_turn_id: root_turn_id.to_string(),
+                    kind: ThreadKind::DialogueTurn,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: ThreadSupervision::legacy(),
+                })
+                .await
+                .unwrap();
+        }
+        let activation_a = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "frontier-activation-a".to_string(),
+                agent_id: agent_id.to_string(),
+                context_id: context_id.to_string(),
+                session_id: "frontier-session-a".to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: "frontier-root-a".to_string(),
+                trigger_sequence: root_a_sequence,
+                trigger_kind: "chat/user_message".to_string(),
+                parent_activation_id: None,
+                root_turn_id: "frontier-root-a".to_string(),
+            })
+            .await
+            .unwrap();
+        let activation_a_directed = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "frontier-activation-a-directed".to_string(),
+                agent_id: agent_id.to_string(),
+                context_id: context_id.to_string(),
+                session_id: "frontier-session-a".to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: "frontier-directed-trigger".to_string(),
+                trigger_sequence: directed_sequence,
+                trigger_kind: "chat/session_signal".to_string(),
+                parent_activation_id: Some(activation_a.id.clone()),
+                root_turn_id: "frontier-root-a".to_string(),
+            })
+            .await
+            .unwrap();
+        let activation_c = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "frontier-activation-c".to_string(),
+                agent_id: agent_id.to_string(),
+                context_id: context_id.to_string(),
+                session_id: "frontier-session-c".to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: "frontier-root-c".to_string(),
+                trigger_sequence: root_c_sequence,
+                trigger_kind: "chat/user_message".to_string(),
+                parent_activation_id: None,
+                root_turn_id: "frontier-root-c".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mut config = OrchestratorConfig::default();
+        config.session_working_set.max_sessions = 3;
+        let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        let observation_ids = |view: &ContextView| {
+            view.observations
+                .iter()
+                .map(|observation| observation.id.clone())
+                .collect::<HashSet<_>>()
+        };
+
+        let view_a = engine
+            .build_context_encoding_for_activation(context_id, &activation_a, &HashSet::new())
+            .await
+            .unwrap();
+        let ids_a = observation_ids(&view_a);
+        assert!(ids_a.contains("frontier-before-a"));
+        assert!(ids_a.contains("frontier-root-a"));
+        assert!(ids_a.contains("frontier-own-result-a"));
+        assert!(ids_a.contains("frontier-broadcast"));
+        assert!(!ids_a.contains("frontier-late-b"));
+        assert!(!ids_a.contains("frontier-late-a-sibling"));
+        assert!(!ids_a.contains("frontier-directed-trigger"));
+        assert!(!ids_a.contains("frontier-root-c"));
+
+        let view_a_directed = engine
+            .build_context_encoding_for_activation(
+                context_id,
+                &activation_a_directed,
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        let ids_a_directed = observation_ids(&view_a_directed);
+        assert!(ids_a_directed.contains("frontier-directed-trigger"));
+        assert!(!ids_a_directed.contains("frontier-late-b"));
+        assert!(!ids_a_directed.contains("frontier-late-a-sibling"));
+        assert!(!ids_a_directed.contains("frontier-root-c"));
+
+        let view_c = engine
+            .build_context_encoding_for_activation(context_id, &activation_c, &HashSet::new())
+            .await
+            .unwrap();
+        let ids_c = observation_ids(&view_c);
+        for id in [
+            "frontier-before-a",
+            "frontier-root-a",
+            "frontier-own-result-a",
+            "frontier-late-b",
+            "frontier-late-a-sibling",
+            "frontier-broadcast",
+            "frontier-directed-trigger",
+            "frontier-root-c",
+        ] {
+            assert!(ids_c.contains(id), "new Thread must inherit prior {id}");
+        }
+    }
+
+    #[tokio::test]
     async fn scheduled_continuation_recovers_retired_task_and_critical_trigger_from_causal_route() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(
@@ -11921,6 +12249,17 @@ mod tests {
                     mount_kind: SessionMountKind::NewBlankContext,
                 },
             )
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "scheduled-causal-sibling".to_string(),
+                agent_id: "scheduled-causal-agent".to_string(),
+                context_id: context_id.to_string(),
+                parent_session_id: None,
+                title: "Scheduled Causal Sibling".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
             .await
             .unwrap();
         let task = Event::new(
@@ -12012,6 +12351,25 @@ mod tests {
             .await
             .unwrap();
 
+        store
+            .append(Event::new(
+                "scheduled-late-sibling".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": context_id,
+                    "session_id": "scheduled-causal-sibling",
+                    "root_turn_id": "scheduled-sibling-root",
+                    "text": "arrived after the scheduled Thread started"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+
         let trigger = Event::new(
             trigger_event_id.to_string(),
             "System-Executor".to_string(),
@@ -12063,6 +12421,10 @@ mod tests {
             .observations
             .iter()
             .any(|observation| observation.id == task_event_id));
+        assert!(!view
+            .observations
+            .iter()
+            .any(|observation| observation.id == "scheduled-late-sibling"));
         let focus = view.activation.as_ref().unwrap();
         assert_eq!(focus.root_turn_id, root_turn_id);
         assert_eq!(focus.root_event_id, task_event_id);

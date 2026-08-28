@@ -94,7 +94,7 @@ Session 不能用一个枚举同时表达 IO、执行、注意力和投影。
 ```toml
 [orchestrator.session_working_set]
 active_window = "24h"
-max_sessions = 1
+max_sessions = 50
 ```
 
 Rust 逻辑类型：
@@ -109,13 +109,14 @@ pub struct SessionWorkingSetConfig {
 v1 规则：
 
 1. `active_window` 必须大于 0；默认 `24h`；
-2. `max_sessions` 必须大于等于 1；默认 `1`；
+2. `max_sessions` 必须大于等于 1；默认 `50`；
 3. `max_sessions` 包含当前 Session；
-4. `max_sessions=1` 表示 Inbox 只完整投影当前 Session 的历史；共享 Mind、Frame、Context 级 Recall 和其他活跃 Session 的必要元数据仍然共享；
+4. `max_sessions=1` 是显式容量安全阀，表示 Inbox 只完整投影当前 Session 的历史；共享 Mind、Frame、Context 级 Recall 和其他活跃 Session 的必要元数据仍然共享；
 5. 现有 `context_soft_token_limit/context_hard_token_limit` 继续作为最终物理容量边界；
 6. 每次 Evaluation 只有一个 active Session；Working Set 只控制该请求还能看到哪些共享 Session 证据，不改变响应路由；
 7. 配置重载后只影响后续 Encoding，不修改 Session 持久状态；
-8. 显式配置 `max_sessions>1` 是对跨 Session 原始 Observation 自动投影的选择加入；并发 Session 越多，越可能放大请求 Token、降低稳定前缀复用，并增加 Context 维护频率。
+8. 进入 Working Set 的跨 Session Observation 受当前 Activation 的 Context-wide 因果前沿约束：根事件之前已经存在的历史可见，根事件之后只有属于当前因果路线的增量自动可见；
+9. 因此并发 Session 不会在一个已经启动的 Thread 中持续互相追加普通 Observation。初始快照仍会随纳入的历史增长，`active_window`、`max_sessions` 和 Token Budget 继续负责容量控制。
 
 ## 5. Session Working Set 选择算法
 
@@ -161,7 +162,25 @@ then session_id ASC
 
 从排序结果截取前 `max_sessions` 个。当前 Session 永不被截掉。
 
-### 5.5 Token Budget 限制
+### 5.5 Context-wide 因果前沿
+
+在应用 Token Budget 之前，Runtime 先按 Activation 的根事件 sequence 建立整个 Context
+的因果前沿；没有同名持久根事件的 Objective、定时任务等合成根使用第一次 Activation
+的 trigger sequence，后续唤醒不能把前沿向前移动：
+
+1. 所有纳入 Working Set、且在根事件之前已经提交的 Session Observation 可见；
+2. 根事件之后，只有与当前 `root_turn_id` / `activation_id` 相同的结果，或本次
+   Activation 的显式 `trigger_event_id` 可见；
+3. 其他 Session 和同 Session 兄弟 Thread 的后续普通 Observation 不会追溯性进入
+   当前 Thread；
+4. 明确标记为 Context-wide 的 Observation 是广播信号，仍按其独立契约实时可见；
+5. 新启动的 Thread 会以自己的根事件建立新前沿，因此能继承此前已经提交的跨 Session
+   历史。
+
+这一规则只冻结自动 Observation 增量，不冻结 Shared Mind；已提交的 Frame 与 Context
+Transaction 仍按最新版本读取。
+
+### 5.6 Token Budget 限制
 
 完成初始 Encoding 后，如果超过 Context 的物理可用预算：
 
@@ -173,7 +192,7 @@ then session_id ASC
 
 Runtime 只执行物理投影裁剪，不替 Agent 摘要或删除语义内容。
 
-### 5.6 输出自描述
+### 5.7 输出自描述
 
 Context Kernel 新增：
 
@@ -658,7 +677,7 @@ context_snapshot_version
 | --- | --- |
 | Work Item | SQLite 持久化、`trigger_event_id` 唯一、revision/CAS、claim lease、终态和启动恢复 |
 | 崩溃边界 | `assistant_call` 先持久化为工具执行计划；重启后复用同一 call ID，已持久化 Tool Result 不重做 |
-| 因果隔离 | Tool Transcript 按 root 重建；当前 Session Observation 受根事件 sequence 前沿约束 |
+| 因果隔离 | Tool Transcript 按 root 重建；整个 Context 的 Session-bound Observation 受当前 Activation 根事件 sequence 前沿约束 |
 | 回复 | `(session_id, root_turn_id)` 唯一提交，重复事件不会产生第二次 Reply |
 | 并发 | 普通 single evaluation 不再跨 LLM/Tool 持有 Session Mutex；同 Session 与跨 Session Work Item 均可并发 |
 | Shared Mind | 读取最新 committed version；`context_tx` 继续 Context 级串行并检查 `base-version` |
@@ -684,14 +703,17 @@ context_snapshot_version
 
 ### 17.2 Working Set
 
-1. 默认 `max_sessions=1` 时，Inbox 只包含当前 Session，Shared Mind 仍完整；
-2. 显式配置上限 50 时，一天内 37 个活跃 Session 全部进入 Full Projection；
-3. 显式配置上限 50 时，一天内 70 个活跃 Session 只选择当前加最近 49 个；
+1. 默认上限 50 时，一天内 37 个活跃 Session 全部进入 Full Projection；
+2. 一天内 70 个活跃 Session 只选择当前加最近 49 个；
+3. 显式 `max_sessions=1` 时，Inbox 只包含当前 Session，Shared Mind 仍完整；
 4. 时间相同的 Session 使用 ID 稳定排序；
 5. Token 超限时最旧非当前 Session 依次退出，当前 Session 不退出；
 6. 一万个 Registry Session、只有一个近期活跃时，Prompt 大小不随总数线性增长；
 7. running task 超出窗口时仍以 metadata-only 可见；
-8. `ctx` 展示的 included/excluded 原因与真实 ContextView 一致。
+8. 已启动 Thread 不接收其他 Session 或兄弟 Thread 在其根事件之后产生的普通 Observation；
+9. 同根结果、显式 trigger 与 Context-wide 广播仍可越过前沿；
+10. 后启动 Thread 能继承前一个 Thread 启动前已经提交的跨 Session Observation；
+11. `ctx` 展示的 included/excluded 原因与真实 ContextView 一致。
 
 ### 17.3 retire / restore
 
@@ -766,7 +788,7 @@ B 没有等待 A；A 的 continuation 保持 A 的 `root_turn_id`，其 Context 
 2. 不同 Session 可以在同一个 Agent/Context 上真实并发调用模型；
 3. Tool Result、Reply 和 Context Tx 在并发下不串线、不静默覆盖；
 4. 单次 Context Encoding 只包含有界 Session Working Set；
-5. `max_sessions=1` 能稳定提供共享 Mind 下的 Session 历史隔离；
+5. 跨 Session Observation 以每个 Activation 的 Context-wide 因果前沿隔离，`max_sessions` 仅作为容量安全阀；
 6. Agent 能在压力下 retire Session，并保留 Shared Mind 与 Event History；
 7. 新定向事件能自动 restore 并继续原 Session；
 8. 所有关键状态在重启后可恢复；

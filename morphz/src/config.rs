@@ -621,7 +621,7 @@ impl Default for SessionWorkingSetConfig {
     fn default() -> Self {
         Self {
             active_window: HumanDuration::from_secs(24 * 60 * 60),
-            max_sessions: 1,
+            max_sessions: 50,
         }
     }
 }
@@ -3847,7 +3847,7 @@ mod tests {
     fn session_working_set_config_accepts_human_duration_and_rejects_zero_limit() {
         let defaults = SessionWorkingSetConfig::default();
         assert_eq!(defaults.active_window.as_secs(), 86_400);
-        assert_eq!(defaults.max_sessions, 1);
+        assert_eq!(defaults.max_sessions, 50);
 
         let parsed: SessionWorkingSetConfig =
             toml::from_str("active_window = '24h'\nmax_sessions = 50\n").unwrap();
