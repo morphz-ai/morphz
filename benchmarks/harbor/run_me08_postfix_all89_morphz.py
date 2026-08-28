@@ -19,12 +19,12 @@ from typing import Any
 from benchmarks.harbor.run_benchmark import LOCK_PATH, REPO_ROOT
 
 
-PROTOCOL = "me08-terminal-bench-current-runtime-all89-morphz-v5"
+PROTOCOL = "me08-terminal-bench-current-runtime-all89-morphz-v6"
 FIRST_40_PATH = Path(__file__).with_name("first_40_tasks_v1.json")
 REMAINING_49_PATH = Path(__file__).with_name("remaining_49_tasks_v1.json")
-EXPECTED_RUNTIME_COMMIT = "2b01310107f3d7819eedd5e07d2605ce46803ea8"
+EXPECTED_RUNTIME_COMMIT = "d6e6d80053d95577811971e6048033374e4d6901"
 EXPECTED_RUNTIME_BINARY_SHA256 = (
-    "e4a500e4ba7f2fae3284728bcdd338f4504884349da975886a8b78fc56ade77d"
+    "6e7df6e0491947e21f1ca39492c0d7a3732c7950736ba853568ac4dbbcd43037"
 )
 CONCURRENCY_PER_ARM = 8
 RUN_ARMS = ("morphz-native",)
