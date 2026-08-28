@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen final-fix ME-08 all-89 Morphz official-score refresh."""
+"""Run the frozen current-Runtime ME-08 all-89 Morphz score refresh."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from typing import Any
 from benchmarks.harbor.run_benchmark import LOCK_PATH, REPO_ROOT
 
 
-PROTOCOL = "me08-terminal-bench-finalfix-all89-morphz-v3"
+PROTOCOL = "me08-terminal-bench-current-runtime-all89-morphz-v4"
 FIRST_40_PATH = Path(__file__).with_name("first_40_tasks_v1.json")
 REMAINING_49_PATH = Path(__file__).with_name("remaining_49_tasks_v1.json")
-EXPECTED_RUNTIME_COMMIT = "4bbc3d63f4bda09947dc79dc5656edc71f8c02fa"
+EXPECTED_RUNTIME_COMMIT = "3289fe42056c45c357c4b21b7dfd9390b1d4f1a0"
 EXPECTED_RUNTIME_BINARY_SHA256 = (
-    "31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575"
+    "4ac3668d219cd25529c287b4dc4f4292f7a77b15f565fea718771ac61dfcd19b"
 )
 CONCURRENCY_PER_ARM = 8
 RUN_ARMS = ("morphz-native",)

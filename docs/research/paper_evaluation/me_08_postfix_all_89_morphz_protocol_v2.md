@@ -1,7 +1,7 @@
-# ME-08：新 Runtime 下 Terminal-Bench 2.1 完整 89 题 Morphz 协议 v2
+# ME-08：当前 Runtime 下 Terminal-Bench 2.1 完整 89 题 Morphz 协议 v4
 
-> 协议：`me08-terminal-bench-finalfix-all89-morphz-v3`
-> 状态：冻结；按最终 Runtime 基线执行
+> 协议：`me08-terminal-bench-current-runtime-all89-morphz-v4`
+> 状态：冻结；按 `3289fe4` Runtime 基线执行
 > 主结果：Terminal-Bench 官方 verifier `raw_reward`
 
 ## 1. 目的
@@ -13,8 +13,10 @@
 ## 2. 正式 Arm 与历史参考
 
 正式运行只有原生 Morphz：Runtime commit
-`4bbc3d63f4bda09947dc79dc5656edc71f8c02fa`，二进制 SHA-256 为
-`31f6cdd3de8ddf4a76e190eb4c0863ff9de7c9159c7acbf7ac2765b474ec0575`，关闭 Harness。
+`3289fe42056c45c357c4b21b7dfd9390b1d4f1a0`，二进制 SHA-256 为
+`4ac3668d219cd25529c287b4dc4f4292f7a77b15f565fea718771ac61dfcd19b`，关闭 Harness。
+本轮用于验证统一 Edge/exec 后台执行修复后的完整系统表现；在 89 题全部闭合并完成失败审计前，
+不替换论文采用的 `4bbc3d63` 历史同期配对结果。
 
 模型为 `gpt-5.6-sol`、reasoning `max`、fallback `false`、full-access 权限；沿用同一
 CLIProxyAPI 订阅路由、云节点和 Terminal-Bench 2.1 digest。
