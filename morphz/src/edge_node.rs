@@ -937,6 +937,17 @@ async fn cleanup_edge_artifact_stages(stage: &Path) {
     }
 }
 
+async fn close_and_drain_buffered_tool_output(
+    output_rx: &mut tokio::sync::mpsc::Receiver<crate::tool::ToolOutputChunk>,
+) -> Vec<crate::tool::ToolOutputChunk> {
+    output_rx.close();
+    let mut buffered = Vec::new();
+    while let Some(chunk) = output_rx.recv().await {
+        buffered.push(chunk);
+    }
+    buffered
+}
+
 impl EdgeNodeWorker {
     pub fn new(
         gateway: EdgeGatewayClient,
@@ -1009,10 +1020,16 @@ impl EdgeNodeWorker {
         loop {
             tokio::select! {
                 result = &mut execution => {
-                    // The Tool future waits for both pipe readers before it
-                    // completes, so sender closure now proves this drain is
-                    // finite and preserves chunk-before-terminal ordering.
-                    while let Some(chunk) = output_rx.recv().await {
+                    // Stop accepting new stream chunks before draining the
+                    // bounded buffer. A Runtime-managed background process
+                    // deliberately keeps its pipe monitors alive after the
+                    // Tool future has returned its receipt, so waiting for
+                    // sender EOF here would make the parent Edge Command own
+                    // the child process lifetime and eventually lose its
+                    // lease. Closing the receiver preserves every chunk that
+                    // was accepted before the receipt while making this drain
+                    // finite even when background monitors still hold senders.
+                    for chunk in close_and_drain_buffered_tool_output(&mut output_rx).await {
                         self.gateway.append_output(&self.credentials, &command, chunk).await?;
                     }
                     let mut succeeded = false;
@@ -1594,13 +1611,157 @@ mod tests {
     use crate::artifact::{ArtifactLocation, ArtifactOverwritePolicy, ArtifactTransferRequest};
     use axum::{
         body::{to_bytes, Body},
-        extract::State,
+        extract::{Path as AxumPath, State},
         http::{HeaderMap, StatusCode},
         response::{IntoResponse, Response},
-        routing::get,
+        routing::{get, post},
         Json, Router,
     };
+    use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct EdgeWorkerTestClient;
+
+    #[async_trait::async_trait]
+    impl crate::llm::Client for EdgeWorkerTestClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<crate::llm::Message>,
+            _tools: Vec<crate::llm::ToolDefinition>,
+        ) -> Result<crate::llm::Response, Box<dyn std::error::Error + Send + Sync>> {
+            Err("Edge worker execution test does not evaluate a model".into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct EdgeWorkerGatewayState {
+        node: ExecutionNodeRecord,
+        queued: Arc<tokio::sync::Mutex<VecDeque<EdgeCommandRecord>>>,
+        active: Arc<tokio::sync::Mutex<HashMap<String, EdgeCommandRecord>>>,
+        finished: Arc<tokio::sync::Mutex<Vec<EdgeCommandRecord>>>,
+        output_sequence: Arc<AtomicUsize>,
+        command_heartbeats: Arc<AtomicUsize>,
+    }
+
+    async fn test_worker_node_heartbeat(
+        State(state): State<EdgeWorkerGatewayState>,
+        Json(_command): Json<ExecutionNodeHeartbeatCommand>,
+    ) -> Json<ExecutionNodeRecord> {
+        Json(state.node)
+    }
+
+    async fn test_worker_claim(
+        State(state): State<EdgeWorkerGatewayState>,
+        Json(_claim): Json<ClaimEdgeCommand>,
+    ) -> Response {
+        let Some(command) = state.queued.lock().await.pop_front() else {
+            return StatusCode::NO_CONTENT.into_response();
+        };
+        state
+            .active
+            .lock()
+            .await
+            .insert(command.job_id.clone(), command.clone());
+        Json(serde_json::json!({ "job": command })).into_response()
+    }
+
+    async fn test_worker_command_heartbeat(
+        State(state): State<EdgeWorkerGatewayState>,
+        AxumPath((_node_id, job_id)): AxumPath<(String, String)>,
+        Json(heartbeat): Json<HeartbeatEdgeCommand>,
+    ) -> Response {
+        let mut active = state.active.lock().await;
+        let command = active.get_mut(&job_id).unwrap();
+        assert_eq!(command.revision, heartbeat.expected_revision);
+        command.revision += 1;
+        command.heartbeat_at = Some(Utc::now());
+        command.lease_expires_at =
+            Some(Utc::now() + chrono::Duration::seconds(heartbeat.lease_seconds as i64));
+        if heartbeat.side_effect_started && command.side_effect_started_at.is_none() {
+            command.side_effect_started_at = Some(Utc::now());
+        }
+        command.progress = heartbeat.progress;
+        state.command_heartbeats.fetch_add(1, Ordering::SeqCst);
+        Json(command.clone()).into_response()
+    }
+
+    async fn test_worker_append_output(
+        State(state): State<EdgeWorkerGatewayState>,
+        AxumPath((_node_id, job_id)): AxumPath<(String, String)>,
+        Json(command): Json<AppendEdgeOutputCommand>,
+    ) -> Json<crate::memory::EdgeCommandOutputChunk> {
+        let sequence = state.output_sequence.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+        Json(crate::memory::EdgeCommandOutputChunk {
+            job_id,
+            sequence,
+            stream: command.stream,
+            text: command.text,
+            created_at: Utc::now(),
+        })
+    }
+
+    async fn test_worker_finish(
+        State(state): State<EdgeWorkerGatewayState>,
+        AxumPath((_node_id, job_id)): AxumPath<(String, String)>,
+        Json(finish): Json<FinishEdgeCommand>,
+    ) -> Json<EdgeCommandRecord> {
+        let mut active = state.active.lock().await;
+        let mut command = active.remove(&job_id).unwrap();
+        assert_eq!(command.revision, finish.expected_revision);
+        command.revision += 1;
+        command.status = finish.status;
+        command.output = finish.output;
+        command.error = finish.error;
+        command.updated_at = Utc::now();
+        command.finished_at = Some(command.updated_at);
+        drop(active);
+        state.finished.lock().await.push(command.clone());
+        Json(command)
+    }
+
+    fn edge_worker_test_command(
+        job_id: &str,
+        node_id: &str,
+        target_id: &str,
+        arguments: serde_json::Value,
+    ) -> EdgeCommandRecord {
+        let mut route = serde_json::to_value(ExecutionRouteSnapshot {
+            route_id: format!("route:{target_id}:r1"),
+            target_id: target_id.to_string(),
+            target_revision: 1,
+            provider_node_id: Some(node_id.to_string()),
+            backend_kind: ExecutionTargetKind::EdgeNode,
+            endpoint_ref: None,
+            policy_digest: "edge-worker-test-policy".to_string(),
+        })
+        .unwrap();
+        route.as_object_mut().unwrap().insert(
+            EDGE_EXECUTION_SCOPE_KEY.to_string(),
+            serde_json::to_value(scope()).unwrap(),
+        );
+        let now = Utc::now();
+        EdgeCommandRecord {
+            job_id: job_id.to_string(),
+            revision: 1,
+            target_id: target_id.to_string(),
+            provider_node_id: node_id.to_string(),
+            tool_name: "exec".to_string(),
+            arguments: arguments.to_string(),
+            route,
+            status: EdgeCommandStatus::Claimed,
+            claimed_by: Some("edge-worker-test".to_string()),
+            claim_token: Some(format!("claim-{job_id}")),
+            lease_expires_at: Some(now + chrono::Duration::seconds(1)),
+            heartbeat_at: Some(now),
+            side_effect_started_at: None,
+            progress: None,
+            output: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+        }
+    }
 
     #[derive(Clone)]
     struct InterruptedArtifactUploadState {
@@ -1667,6 +1828,300 @@ mod tests {
             session_id: "session-a".to_string(),
             thread_id: "thread-a".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn parent_output_drain_is_bounded_by_buffer_not_background_sender_lifetime() {
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(4);
+        output_tx
+            .send(crate::tool::ToolOutputChunk {
+                stream: crate::memory::EdgeOutputStream::Stdout,
+                text: "before-background-receipt".to_string(),
+            })
+            .await
+            .unwrap();
+        let background_monitor_sender = output_tx.clone();
+
+        let buffered = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            close_and_drain_buffered_tool_output(&mut output_rx),
+        )
+        .await
+        .expect("Edge parent drain waited for a background monitor sender to close");
+
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(buffered[0].text, "before-background-receipt");
+        assert!(
+            background_monitor_sender
+                .send(crate::tool::ToolOutputChunk {
+                    stream: crate::memory::EdgeOutputStream::Stdout,
+                    text: "after-background-receipt".to_string(),
+                })
+                .await
+                .is_err(),
+            "closed parent receiver must reject post-receipt stream chunks"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_worker_detaches_two_services_and_runs_sibling_before_background_exit() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let database = tempfile::NamedTempFile::new().unwrap();
+        let release_first = workspace.path().join("release-first-service");
+        let release_second = workspace.path().join("release-second-service");
+        let first_completed = workspace.path().join("first-service-completed");
+        let second_completed = workspace.path().join("second-service-completed");
+        let sibling_completed = workspace.path().join("sibling-completed");
+        let node_id = "node-edge-background";
+        let target_id = "target-edge-background";
+        let commands = VecDeque::from([
+            edge_worker_test_command(
+                "edge-background-parent-1",
+                node_id,
+                target_id,
+                serde_json::json!({
+                    "command": format!(
+                        "i=0; while [ ! -f '{}' ] && [ \"$i\" -lt 250 ]; do sleep 0.02; i=$((i + 1)); done; touch '{}'",
+                        release_first.display(),
+                        first_completed.display()
+                    ),
+                    "cwd": workspace.path(),
+                    "wait_ms": 10,
+                    "keep_running": true
+                }),
+            ),
+            edge_worker_test_command(
+                "edge-background-parent-2",
+                node_id,
+                target_id,
+                serde_json::json!({
+                    "command": format!(
+                        "i=0; while [ ! -f '{}' ] && [ \"$i\" -lt 250 ]; do sleep 0.02; i=$((i + 1)); done; touch '{}'",
+                        release_second.display(),
+                        second_completed.display()
+                    ),
+                    "cwd": workspace.path(),
+                    "wait_ms": 10,
+                    "keep_running": true
+                }),
+            ),
+            edge_worker_test_command(
+                "edge-quick-sibling",
+                node_id,
+                target_id,
+                serde_json::json!({
+                    "command": format!("touch '{}'", sibling_completed.display()),
+                    "cwd": workspace.path(),
+                    "wait_ms": 1_000
+                }),
+            ),
+        ]);
+        let now = Utc::now();
+        let state = EdgeWorkerGatewayState {
+            node: ExecutionNodeRecord {
+                id: node_id.to_string(),
+                revision: 1,
+                owner_principal_id: "principal-a".to_string(),
+                name: "Edge background test node".to_string(),
+                status: crate::memory::ExecutionNodeStatus::Online,
+                device_key_fingerprint: "test-fingerprint".to_string(),
+                device_public_key: "test-public-key".to_string(),
+                protocol_version: 1,
+                platform: Some("test-unix".to_string()),
+                capabilities: vec!["exec".to_string()],
+                metadata: serde_json::json!({"test": true}),
+                created_at: now,
+                updated_at: now,
+                last_seen_at: Some(now),
+            },
+            queued: Arc::new(tokio::sync::Mutex::new(commands)),
+            active: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            finished: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            output_sequence: Arc::new(AtomicUsize::new(0)),
+            command_heartbeats: Arc::new(AtomicUsize::new(0)),
+        };
+        let app = Router::new()
+            .route(
+                "/api/edge/nodes/:node_id/heartbeat",
+                post(test_worker_node_heartbeat),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/claim",
+                post(test_worker_claim),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/heartbeat",
+                post(test_worker_command_heartbeat),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/output",
+                post(test_worker_append_output),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/finish",
+                post(test_worker_finish),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut config = crate::config::AppConfig::default();
+        config.permissions.mode = crate::permission::PermissionMode::FullAccess;
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        config.background_task.artifact_dir = workspace
+            .path()
+            .join("artifacts")
+            .to_string_lossy()
+            .into_owned();
+        config.background_task.timeout_notify_enabled = false;
+        let runtime = MorphzRuntime::builder(config, Arc::new(EdgeWorkerTestClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let gateway = EdgeGatewayClient::new(format!("http://{address}")).unwrap();
+        *gateway.connection.write().await = Some(ExecutionNodeConnection {
+            token: "edge-worker-test-connection".to_string(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        });
+        let credentials = EdgeNodeCredentials {
+            server_url: format!("http://{address}"),
+            node_id: node_id.to_string(),
+            device_key_fingerprint: "unused".to_string(),
+            device_public_key: "unused".to_string(),
+            device_private_key_pkcs8: "unused".to_string(),
+        };
+        let advertisement = EdgeNodeAdvertisement {
+            platform: Some("test-unix".to_string()),
+            capabilities: vec!["exec".to_string()],
+            metadata: serde_json::json!({"test": true}),
+            targets: vec![ExecutionTargetRegistration {
+                id: target_id.to_string(),
+                owner_principal_id: None,
+                provider_node_id: Some(node_id.to_string()),
+                kind: ExecutionTargetKind::EdgeNode,
+                name: "Edge background test target".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("test-unix".to_string()),
+                workspace_root: Some(workspace.path().to_string_lossy().into_owned()),
+                capabilities: vec!["exec".to_string()],
+                metadata: serde_json::json!({"test": true}),
+                policy_digest: "edge-worker-test-policy".to_string(),
+                last_seen_at: Some(Utc::now()),
+            }],
+        };
+        let worker = EdgeNodeWorker::new(
+            gateway,
+            credentials,
+            advertisement,
+            runtime.clone(),
+            EdgeWorkerConfig {
+                worker_id: "edge-worker-test".to_string(),
+                lease_seconds: 2,
+                claim_wait_seconds: 1,
+                heartbeat_interval: std::time::Duration::from_millis(25),
+            },
+        );
+
+        for expected_job in [
+            "edge-background-parent-1",
+            "edge-background-parent-2",
+            "edge-quick-sibling",
+        ] {
+            tokio::time::timeout(std::time::Duration::from_secs(1), worker.poll_once())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("Edge parent command '{expected_job}' occupied its lease")
+                })
+                .unwrap();
+        }
+        assert!(sibling_completed.exists());
+        assert!(
+            !first_completed.exists() && !second_completed.exists(),
+            "background services ended before the sibling command proved worker availability"
+        );
+        tokio::fs::write(&release_first, b"release").await.unwrap();
+        tokio::fs::write(&release_second, b"release").await.unwrap();
+
+        let finished = state.finished.lock().await.clone();
+        assert_eq!(finished.len(), 3);
+        for (index, expected_job) in [
+            "edge-background-parent-1",
+            "edge-background-parent-2",
+            "edge-quick-sibling",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(finished[index].job_id, expected_job);
+            assert_eq!(finished[index].status, EdgeCommandStatus::Succeeded);
+        }
+        let first_receipt: serde_json::Value =
+            serde_json::from_str(finished[0].output.as_deref().unwrap()).unwrap();
+        let second_receipt: serde_json::Value =
+            serde_json::from_str(finished[1].output.as_deref().unwrap()).unwrap();
+        assert_eq!(first_receipt["execution"], "background");
+        assert_eq!(second_receipt["execution"], "background");
+        let task_ids = [
+            first_receipt["task_id"].as_str().unwrap().to_string(),
+            second_receipt["task_id"].as_str().unwrap().to_string(),
+        ];
+
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !first_completed.exists() || !second_completed.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Edge background services did not continue after their parent receipts");
+        let terminal_events = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let events = runtime
+                    .query_events(crate::memory::QueryFilter {
+                        topic: Some("chat/tool_output".to_string()),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let terminals = events
+                    .into_iter()
+                    .filter(|event| {
+                        event
+                            .payload
+                            .get("task_id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|task_id| task_ids.iter().any(|value| value == task_id))
+                    })
+                    .collect::<Vec<_>>();
+                if terminals.len() == task_ids.len() {
+                    break terminals;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Edge background terminal facts were not durably recorded");
+        assert_eq!(terminal_events.len(), 2);
+        for task_id in &task_ids {
+            assert_eq!(
+                terminal_events
+                    .iter()
+                    .filter(|event| event.payload["task_id"] == task_id.as_str())
+                    .count(),
+                1,
+                "one Edge background exit must have exactly one terminal fact"
+            );
+            assert!(runtime.get_execution_job(task_id).await.unwrap().is_none());
+        }
+        assert!(
+            state.command_heartbeats.load(Ordering::SeqCst) >= 3,
+            "each parent command must cross at least one fenced heartbeat"
+        );
+        server.abort();
     }
 
     #[tokio::test]

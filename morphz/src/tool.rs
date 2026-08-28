@@ -5491,7 +5491,7 @@ async fn monitor_pipe<R>(
     buffer: Arc<ExecutionBuffer>,
     publish_ref: Arc<AtomicBool>,
     stream: EdgeOutputStream,
-    output_sink: Option<tokio::sync::mpsc::Sender<ToolOutputChunk>>,
+    mut output_sink: Option<tokio::sync::mpsc::Sender<ToolOutputChunk>>,
 ) where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -5503,8 +5503,8 @@ async fn monitor_pipe<R>(
         }
         let publish = publish_ref.load(Ordering::SeqCst);
         let safe_text = buffer.append(&line, publish);
-        if let Some(output_sink) = &output_sink {
-            if output_sink
+        if let Some(sink) = &output_sink {
+            if sink
                 .send(ToolOutputChunk {
                     stream,
                     text: safe_text,
@@ -5512,7 +5512,15 @@ async fn monitor_pipe<R>(
                 .await
                 .is_err()
             {
-                break;
+                // The Edge parent command closes its bounded live-stream
+                // receiver as soon as exec returns a background receipt. The
+                // physical pipe monitor must outlive that transport sink: it
+                // still owns archive capture, process backpressure, local
+                // progress Events, and the eventual background terminal fact.
+                // Dropping only the sink prevents a long-running child from
+                // receiving SIGPIPE or blocking on a full OS pipe after the
+                // parent command has completed.
+                output_sink = None;
             }
         }
         line.clear();
@@ -8109,6 +8117,7 @@ impl Tool for ExecuteCommandTool {
             }
             Err(_) => {
                 // The synchronous interval elapsed; detach as a background long-running task.
+                let mut durable_background_attached = false;
                 if let (Some(scheduler), Some(parent)) =
                     (&self.background_scheduler, execution_job_context.as_ref())
                 {
@@ -8131,6 +8140,7 @@ impl Tool for ExecuteCommandTool {
                             )
                             .into());
                         }
+                        durable_background_attached = true;
                     }
                 }
                 publish_flag.store(true, Ordering::SeqCst);
@@ -8190,8 +8200,8 @@ impl Tool for ExecuteCommandTool {
                         Err(_) => "\n[Runtime could not confirm that the process group was fully cleaned up after the shell exited.]",
                         }
                     };
-                    if let Some(scheduler) = &background_scheduler_cleanup {
-                        if scheduler.execution_jobs.is_some() {
+                    if durable_background_attached {
+                        if let Some(scheduler) = &background_scheduler_cleanup {
                             let scheduler_for_commit = Arc::clone(scheduler);
                             let retry_task_id = task_id_cleanup.clone();
                             let retry_output = Arc::<str>::from(output_str);
@@ -8221,6 +8231,8 @@ impl Tool for ExecuteCommandTool {
                             prune_background_task_history();
                             return;
                         }
+                    }
+                    if let Some(scheduler) = &background_scheduler_cleanup {
                         scheduler.cancel(&task_id_cleanup).await;
                     }
                     // Legacy (non-ExecutionJob) tasks publish directly through
@@ -12978,6 +12990,110 @@ Body
             .execute(&serde_json::json!({ "task_id": task_id }).to_string())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn edge_scoped_background_exec_detaches_stream_and_has_one_local_terminal_owner() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (terminal_tx, mut terminal_rx) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let terminal_tx = terminal_tx.clone();
+                Box::pin(async move { terminal_tx.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let workspace = TempDir::new().unwrap();
+        let completed = workspace.path().join("edge-background-completed");
+        let tool = ExecuteCommandTool::new_with_permissions_and_scheduler(
+            Arc::clone(&bus),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: workspace
+                    .path()
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .into_owned(),
+                timeout_notify_enabled: false,
+                ..BackgroundTaskConfig::default()
+            }),
+            broker_from_config(permissive_security()),
+            30,
+            Some(scheduler),
+        );
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(1);
+        let command = format!(
+            "sleep 0.05; i=0; while [ \"$i\" -lt 20000 ]; do printf '0123456789abcdef0123456789abcdef\\n'; i=$((i + 1)); done; touch '{}'",
+            completed.display()
+        );
+
+        // Edge execution intentionally has no CURRENT_EXECUTION_JOB: the
+        // central Runtime owns the remote parent Job. The local Scheduler may
+        // support durable Jobs for ordinary local execution, but that must not
+        // make it invent or retry an uncreated Edge-local child Job.
+        let result = CURRENT_TOOL_OUTPUT_SINK
+            .scope(
+                Some(output_tx),
+                CURRENT_SESSION_ID.scope(
+                    "edge-session:target-a".to_string(),
+                    CURRENT_CONTEXT_ID.scope(
+                        "edge-context:node-a".to_string(),
+                        CURRENT_ATTEMPT_ID.scope(
+                            "edge-parent-job".to_string(),
+                            tool.execute(
+                                &serde_json::json!({
+                                    "command": command,
+                                    "wait_ms": 10,
+                                    "keep_running": true
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["execution"], "background", "{result}");
+        let task_id = result["task_id"].as_str().unwrap().to_string();
+
+        // This is the Edge worker's parent/child boundary: accepted chunks
+        // remain drainable, but sender EOF is not awaited. Pipe monitors must
+        // continue consuming the child after this receiver closes.
+        output_rx.close();
+        while output_rx.recv().await.is_some() {}
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !completed.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background child stopped making progress after Edge stream closure");
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), terminal_rx.recv())
+            .await
+            .expect("Edge-local background terminal fact was not emitted")
+            .expect("terminal subscription closed unexpectedly");
+        assert_eq!(terminal.payload["task_id"], task_id);
+        assert_eq!(terminal.payload["task_status"], "succeeded");
+        assert_eq!(terminal.payload["exit_code"], 0);
+        assert!(
+            store.get_execution_job(&task_id).await.unwrap().is_none(),
+            "Edge-local process must not masquerade as a locally durable ExecutionJob"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            terminal_rx.try_recv().is_err(),
+            "one physical background exit produced duplicate terminal facts"
+        );
     }
 
     #[tokio::test]
