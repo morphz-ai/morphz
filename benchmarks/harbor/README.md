@@ -65,6 +65,9 @@ the same pinned Runtime, isolates their `prompt_cache_key` cohorts by wire mode,
 and writes provider-reported `cached_input_tokens / input_tokens` plus strict
 reward to `prompt_cache_ab.json`. Supply the Platform credential only through
 `MORPHZ_PROVIDER_API_KEY`; it is never placed in argv or the report.
+The report also preserves per-request usage, the first-request share, the
+post-first diagnostic ratio and the cold-start theoretical aggregate ceiling.
+Only the all-request aggregate is compared with the 85% acceptance line.
 
 The current Terminal-Bench 2.1 repository states that community leaderboard
 submissions are closed. These runs are still reproducible benchmark results and

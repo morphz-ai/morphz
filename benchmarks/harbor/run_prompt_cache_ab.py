@@ -116,6 +116,57 @@ def integer(value: Any) -> int:
     return value
 
 
+def trajectory_usage(trial_dir: Path) -> dict[str, Any]:
+    trajectory = load_json(trial_dir / "agent" / "trajectory.json")
+    steps = trajectory.get("steps")
+    require(isinstance(steps, list), f"missing trajectory steps: {trial_dir}")
+    records = []
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("metrics"), dict):
+            continue
+        metrics = step["metrics"]
+        prompt_tokens = integer(metrics.get("prompt_tokens"))
+        cached_tokens = integer(metrics.get("cached_tokens"))
+        require(
+            0 <= cached_tokens <= prompt_tokens,
+            f"invalid trajectory cache usage: {trial_dir}",
+        )
+        records.append(
+            {"input_tokens": prompt_tokens, "cached_input_tokens": cached_tokens}
+        )
+    require(records, f"trajectory has no Provider usage records: {trial_dir}")
+    final_metrics = trajectory.get("final_metrics")
+    require(isinstance(final_metrics, dict), f"missing final trajectory metrics: {trial_dir}")
+    extra = final_metrics.get("extra")
+    require(isinstance(extra, dict), f"missing final trajectory extras: {trial_dir}")
+    model_attempts = integer(extra.get("unique_model_attempts_with_usage"))
+    require(
+        model_attempts == len(records),
+        f"model attempt and usage-record counts differ: {trial_dir}",
+    )
+    first = records[0]
+    total_input = sum(record["input_tokens"] for record in records)
+    total_cached = sum(record["cached_input_tokens"] for record in records)
+    post_first_input = total_input - first["input_tokens"]
+    post_first_cached = total_cached - first["cached_input_tokens"]
+    theoretical_max_cached = first["cached_input_tokens"] + post_first_input
+    return {
+        "model_attempts": model_attempts,
+        "usage_records": records,
+        "total_input_tokens": total_input,
+        "total_cached_input_tokens": total_cached,
+        "first_request_input_tokens": first["input_tokens"],
+        "first_request_cached_input_tokens": first["cached_input_tokens"],
+        "post_first_input_tokens": post_first_input,
+        "post_first_cached_input_tokens": post_first_cached,
+        "post_first_cache_hit_ratio": (
+            post_first_cached / post_first_input if post_first_input else None
+        ),
+        "cold_start_theoretical_max_cache_hit_ratio": theoretical_max_cached
+        / total_input,
+    }
+
+
 def summarize_arm(strategy: str, job_dir: Path) -> dict[str, Any]:
     strict = load_json(job_dir / "strict_result.json")
     identity = strict.get("run_identity")
@@ -130,7 +181,8 @@ def summarize_arm(strategy: str, job_dir: Path) -> dict[str, Any]:
     require(isinstance(strict_trial, dict), f"invalid strict trial: {job_dir}")
     trial_name = strict_trial.get("trial")
     require(isinstance(trial_name, str) and trial_name, f"missing trial name: {job_dir}")
-    result = load_json(job_dir / trial_name / "result.json")
+    trial_dir = job_dir / trial_name
+    result = load_json(trial_dir / "result.json")
     agent_result = result.get("agent_result")
     require(isinstance(agent_result, dict), f"missing agent result: {job_dir}")
     input_tokens = integer(agent_result.get("n_input_tokens"))
@@ -140,6 +192,15 @@ def summarize_arm(strategy: str, job_dir: Path) -> dict[str, Any]:
     require(
         0 <= cached_input_tokens <= input_tokens,
         f"invalid cached/input usage: {job_dir}",
+    )
+    trajectory = trajectory_usage(trial_dir)
+    require(
+        trajectory["total_input_tokens"] == input_tokens,
+        f"trajectory and result input usage differ: {job_dir}",
+    )
+    require(
+        trajectory["total_cached_input_tokens"] == cached_input_tokens,
+        f"trajectory and result cached usage differ: {job_dir}",
     )
     cache_hit_ratio = cached_input_tokens / input_tokens
     return {
@@ -156,6 +217,21 @@ def summarize_arm(strategy: str, job_dir: Path) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "cache_hit_ratio": cache_hit_ratio,
         "meets_85_percent": cache_hit_ratio >= ACCEPTANCE_RATIO,
+        "model_attempts": trajectory["model_attempts"],
+        "first_request_input_tokens": trajectory["first_request_input_tokens"],
+        "first_request_cached_input_tokens": trajectory[
+            "first_request_cached_input_tokens"
+        ],
+        "post_first_input_tokens": trajectory["post_first_input_tokens"],
+        "post_first_cached_input_tokens": trajectory["post_first_cached_input_tokens"],
+        "post_first_cache_hit_ratio": trajectory["post_first_cache_hit_ratio"],
+        "cold_start_theoretical_max_cache_hit_ratio": trajectory[
+            "cold_start_theoretical_max_cache_hit_ratio"
+        ],
+        "cold_start_can_reach_85_percent": trajectory[
+            "cold_start_theoretical_max_cache_hit_ratio"
+        ]
+        >= ACCEPTANCE_RATIO,
     }
 
 

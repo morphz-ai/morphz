@@ -89,6 +89,31 @@ class PromptCacheAbTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                (trial / "agent").mkdir()
+                (trial / "agent" / "trajectory.json").write_text(
+                    json.dumps(
+                        {
+                            "steps": [
+                                {
+                                    "metrics": {
+                                        "prompt_tokens": 10,
+                                        "cached_tokens": 0,
+                                    }
+                                },
+                                {
+                                    "metrics": {
+                                        "prompt_tokens": 90,
+                                        "cached_tokens": cached,
+                                    }
+                                },
+                            ],
+                            "final_metrics": {
+                                "extra": {"unique_model_attempts_with_usage": 2}
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 arms[strategy] = ab.summarize_arm(strategy, job)
             report = ab.build_report("prove-plus-comm", arms)
         self.assertAlmostEqual(
@@ -96,6 +121,15 @@ class PromptCacheAbTests(unittest.TestCase):
         )
         self.assertTrue(report["strict_reward_equal"])
         self.assertTrue(report["explicit_meets_85_percent"])
+        self.assertEqual(
+            report["arms"]["explicit-content-boundaries"]["model_attempts"], 2
+        )
+        self.assertEqual(
+            report["arms"]["explicit-content-boundaries"][
+                "cold_start_theoretical_max_cache_hit_ratio"
+            ],
+            0.9,
+        )
 
 
 if __name__ == "__main__":
