@@ -8970,16 +8970,16 @@ impl ActivationStore for SqliteStore {
     async fn claim_thread_signal_batch(
         &self,
         mut signal: NewThreadSignal,
-        activation: NewThreadActivation,
+        mut activation: NewThreadActivation,
         max_signals: usize,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
         if max_signals == 0 {
-            return Err("Thread Signal batch 上限必须大于 0".into());
+            return Err("Thread Signal batch limit must be greater than zero".into());
         }
         let sequence = i64::try_from(signal.sequence)
-            .map_err(|_| "Thread Signal sequence 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Thread Signal sequence exceeds the SQLite INTEGER range")?;
         let max_signals = i64::try_from(max_signals)
-            .map_err(|_| "Thread Signal batch 上限超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Thread Signal batch limit exceeds the SQLite INTEGER range")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
 
@@ -9092,9 +9092,13 @@ impl ActivationStore for SqliteStore {
         if !inserted_signal {
             // A retried claim may reconstruct the unused candidate Thread
             // before discovering that this immutable Event was already routed.
-            // Follow the durable route and let the cleanup paths below remove
-            // that empty candidate instead of rejecting an idempotent replay.
+            // The committed Signal is the routing authority. Adopt both its
+            // Thread identity and generation; the durable Thread below also
+            // supplies the complete Activation route. Keeping only the
+            // Thread ID while retaining the candidate root creates a route
+            // that can never pass the invariant check or recover on replay.
             signal.thread_id = stored_signal.thread_id.clone();
+            signal.thread_generation = stored_signal.thread_generation;
         }
         if stored_signal.principal_id.is_none() && signal.principal_id.is_some() {
             sqlx::query(
@@ -9160,18 +9164,22 @@ impl ActivationStore for SqliteStore {
             return Ok(None);
         }
         if stored_signal.thread_id != signal.thread_id {
-            return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+            return Err(format!(
+                "Event '{}' is already routed through a different Thread Signal",
+                signal.event_id
+            )
+            .into());
         }
         if stored_signal.thread_generation != signal.thread_generation {
             return Err(format!(
-                "Event '{}' 的 Thread Signal generation {} != {}",
+                "Event '{}' Thread Signal generation mismatch: durable={}, proposed={}",
                 signal.event_id, stored_signal.thread_generation, signal.thread_generation
             )
             .into());
         }
         if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
             return Err(format!(
-                "Event '{}' 的 Thread Signal Principal 不一致",
+                "Event '{}' Thread Signal Principal does not match the durable route",
                 signal.event_id
             )
             .into());
@@ -9180,7 +9188,7 @@ impl ActivationStore for SqliteStore {
             && stored_signal.parent_activation_id != signal.parent_activation_id
         {
             return Err(format!(
-                "Event '{}' 的 Thread Signal parent Activation 不一致",
+                "Event '{}' Thread Signal parent Activation does not match the durable route",
                 signal.event_id
             )
             .into());
@@ -9196,7 +9204,7 @@ impl ActivationStore for SqliteStore {
                 && outbox.signal_id.as_deref() != Some(stored_signal.id.as_str())
             {
                 return Err(format!(
-                    "Signal Outbox Event '{}' 已物化为不同 Signal",
+                    "Signal Outbox Event '{}' was materialized as a different Signal",
                     stored_signal.event_id
                 )
                 .into());
@@ -9321,11 +9329,53 @@ impl ActivationStore for SqliteStore {
             || thread.session_id != activation.session_id
             || thread.root_turn_id != activation.root_turn_id
         {
-            return Err(format!(
-                "Thread Signal '{}' 与 Activation route 不一致",
-                stored_signal.id
+            if inserted_signal {
+                return Err(format!(
+                    "Thread Signal route mismatch: signal_id='{}', durable_thread_id='{}', durable_agent_id='{}', durable_context_id='{}', durable_session_id='{}', durable_root_turn_id='{}', proposed_activation_id='{}', proposed_agent_id='{}', proposed_context_id='{}', proposed_session_id='{}', proposed_root_turn_id='{}'",
+                    stored_signal.id,
+                    thread.id,
+                    thread.agent_id,
+                    thread.context_id,
+                    thread.session_id,
+                    thread.root_turn_id,
+                    activation.id,
+                    activation.agent_id,
+                    activation.context_id,
+                    activation.session_id,
+                    activation.root_turn_id,
+                )
+                .into());
+            }
+            tracing::debug!(
+                signal_id = %stored_signal.id,
+                candidate_thread_id = %candidate_thread_id,
+                durable_thread_id = %thread.id,
+                candidate_root_turn_id = %activation.root_turn_id,
+                durable_root_turn_id = %thread.root_turn_id,
+                event_code = "memory.sqlite.thread_signal.durable_route_adopted",
+                "Adopted the authoritative durable Thread route while materializing a pre-routed Signal"
+            );
+            activation.agent_id.clone_from(&thread.agent_id);
+            activation.context_id.clone_from(&thread.context_id);
+            activation.session_id.clone_from(&thread.session_id);
+            activation.root_turn_id.clone_from(&thread.root_turn_id);
+        }
+        if candidate_thread_id != thread.id {
+            sqlx::query(
+                r#"DELETE FROM threads
+                   WHERE id = ?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM thread_signals WHERE thread_id = ?
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM thread_activations
+                       WHERE root_turn_id = threads.root_turn_id
+                     )"#,
             )
-            .into());
+            .bind(&candidate_thread_id)
+            .bind(&candidate_thread_id)
+            .execute(&mut *tx)
+            .await?;
         }
 
         // A terminal Thread cannot accept another physical result.  Dialogue
@@ -9470,7 +9520,7 @@ impl ActivationStore for SqliteStore {
             && activation.initiating_principal_id != trigger.principal_id
         {
             return Err(format!(
-                "Activation '{}' 与其 Trigger Signal Principal 不一致",
+                "Activation '{}' Principal does not match its Trigger Signal",
                 activation.id
             )
             .into());
@@ -9480,13 +9530,13 @@ impl ActivationStore for SqliteStore {
             && thread.initiating_principal_id.as_ref() != activation_principal
         {
             return Err(format!(
-                "Thread '{}' 与 Activation '{}' Principal 不一致",
+                "Thread '{}' Principal does not match Activation '{}'",
                 thread.id, activation.id
             )
             .into());
         }
         let trigger_sequence = i64::try_from(trigger.sequence)
-            .map_err(|_| "Activation trigger sequence 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Activation trigger sequence exceeds the SQLite INTEGER range")?;
         sqlx::query(
             r#"INSERT INTO thread_activations
                (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
@@ -9557,7 +9607,7 @@ impl ActivationStore for SqliteStore {
         for (ordinal, row) in pending.iter().enumerate() {
             let pending_signal = thread_signal_from_row(row)?;
             let ordinal = i64::try_from(ordinal)
-                .map_err(|_| "Activation Signal ordinal 超出 SQLite INTEGER 范围")?;
+                .map_err(|_| "Activation Signal ordinal exceeds the SQLite INTEGER range")?;
             sqlx::query(
                 "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES (?, ?, ?)",
             )
@@ -9575,7 +9625,7 @@ impl ActivationStore for SqliteStore {
             .await?;
             if claimed.rows_affected() != 1 {
                 return Err(format!(
-                    "Thread Signal '{}' 在 Activation claim 中发生并发冲突",
+                    "Thread Signal '{}' changed concurrently during Activation claim",
                     pending_signal.id
                 )
                 .into());

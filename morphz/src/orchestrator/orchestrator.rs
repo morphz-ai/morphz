@@ -4543,10 +4543,10 @@ impl Orchestrator {
                 };
                 match orchestrator.reconcile_runnable_pending_thread_signals().await {
                     Ok(0) => {}
-                    Ok(dispatched) => tracing::warn!(
-                        dispatched,
-                        event_code = "orchestrator.thread_signal.runtime_recovered",
-                        "Recovered runnable Thread Signals whose immediate in-process dispatch did not materialize an Activation"
+                    Ok(redispatched) => tracing::warn!(
+                        redispatched,
+                        event_code = "orchestrator.thread_signal.runtime_redispatched",
+                        "Redispatched runnable durable Thread Signals after their prior in-process delivery failed; Activation materialization proceeds asynchronously"
                     ),
                     Err(error) => tracing::error!(
                         %error,
@@ -5472,7 +5472,10 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Signal Outbox dispatcher requires a persistent SessionStore")?;
-        let mut dispatched = 0usize;
+        // EventBus business handlers are asynchronous. This count records
+        // only accepted redispatch notifications; it must never be presented
+        // as proof that an Activation has already materialized.
+        let mut redispatched = 0usize;
         let mut cursor: Option<(chrono::DateTime<Utc>, String)> = None;
         loop {
             let pending = session_store
@@ -5902,9 +5905,9 @@ impl Orchestrator {
                 continue;
             };
             self.bus.dispatch_persisted(event).await?;
-            dispatched = dispatched.saturating_add(1);
+            redispatched = redispatched.saturating_add(1);
         }
-        Ok(dispatched)
+        Ok(redispatched)
     }
 
     async fn rebuild_activation_admission_queue(&self) -> Result<(), DynError> {

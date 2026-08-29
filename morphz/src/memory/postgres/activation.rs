@@ -303,11 +303,11 @@ impl ActivationStore for PostgresStore {
     async fn claim_thread_signal_batch(
         &self,
         mut signal: NewThreadSignal,
-        activation: NewThreadActivation,
+        mut activation: NewThreadActivation,
         max_signals: usize,
     ) -> Result<Option<ThreadActivationRecord>, StoreError> {
         if max_signals == 0 {
-            return Err("Thread Signal batch 上限必须大于 0".into());
+            return Err("Thread Signal batch limit must be greater than zero".into());
         }
         let max_signals = i64::try_from(max_signals)?;
         let now = now_text();
@@ -375,7 +375,7 @@ impl ActivationStore for PostgresStore {
                 joined_dialogue_activation = Some(activation_from_row(&row)?);
             }
         }
-        sqlx::query(
+        let inserted_signal = sqlx::query(
             r#"INSERT INTO thread_signals
                (id, thread_id, thread_generation, event_id, principal_id, sequence, kind, parent_activation_id,
                 status, created_at)
@@ -392,12 +392,21 @@ impl ActivationStore for PostgresStore {
         .bind(&signal.parent_activation_id)
         .bind(&now)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
         let stored_signal = sqlx::query("SELECT * FROM thread_signals WHERE event_id = $1")
             .bind(&signal.event_id)
             .fetch_one(&mut *tx)
             .await?;
         let mut stored_signal = signal_from_row(&stored_signal)?;
+        if !inserted_signal {
+            // A durable Signal may have selected a different pending
+            // DialogueTurn before this EventBus delivery reconstructed its
+            // candidate Thread. The committed mailbox route is authoritative.
+            signal.thread_id = stored_signal.thread_id.clone();
+            signal.thread_generation = stored_signal.thread_generation;
+        }
         if stored_signal.principal_id.is_none() && signal.principal_id.is_some() {
             sqlx::query(
                 "UPDATE thread_signals SET principal_id = $1 WHERE id = $2 AND principal_id IS NULL",
@@ -459,18 +468,22 @@ impl ActivationStore for PostgresStore {
             return Ok(None);
         }
         if stored_signal.thread_id != signal.thread_id {
-            return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+            return Err(format!(
+                "Event '{}' is already routed through a different Thread Signal",
+                signal.event_id
+            )
+            .into());
         }
         if stored_signal.thread_generation != signal.thread_generation {
             return Err(format!(
-                "Event '{}' 的 Thread Signal generation {} != {}",
+                "Event '{}' Thread Signal generation mismatch: durable={}, proposed={}",
                 signal.event_id, stored_signal.thread_generation, signal.thread_generation
             )
             .into());
         }
         if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
             return Err(format!(
-                "Event '{}' 的 Thread Signal Principal 不一致",
+                "Event '{}' Thread Signal Principal does not match the durable route",
                 signal.event_id
             )
             .into());
@@ -479,7 +492,7 @@ impl ActivationStore for PostgresStore {
             && stored_signal.parent_activation_id != signal.parent_activation_id
         {
             return Err(format!(
-                "Event '{}' 的 Thread Signal parent Activation 不一致",
+                "Event '{}' Thread Signal parent Activation does not match the durable route",
                 signal.event_id
             )
             .into());
@@ -495,7 +508,7 @@ impl ActivationStore for PostgresStore {
                 && outbox.signal_id.as_deref() != Some(stored_signal.id.as_str())
             {
                 return Err(format!(
-                    "Signal Outbox Event '{}' 已物化为不同 Signal",
+                    "Signal Outbox Event '{}' was materialized as a different Signal",
                     stored_signal.event_id
                 )
                 .into());
@@ -618,11 +631,52 @@ impl ActivationStore for PostgresStore {
             || thread.session_id != activation.session_id
             || thread.root_turn_id != activation.root_turn_id
         {
-            return Err(format!(
-                "Thread Signal '{}' 与 Activation route 不一致",
-                stored_signal.id
+            if inserted_signal {
+                return Err(format!(
+                    "Thread Signal route mismatch: signal_id='{}', durable_thread_id='{}', durable_agent_id='{}', durable_context_id='{}', durable_session_id='{}', durable_root_turn_id='{}', proposed_activation_id='{}', proposed_agent_id='{}', proposed_context_id='{}', proposed_session_id='{}', proposed_root_turn_id='{}'",
+                    stored_signal.id,
+                    thread.id,
+                    thread.agent_id,
+                    thread.context_id,
+                    thread.session_id,
+                    thread.root_turn_id,
+                    activation.id,
+                    activation.agent_id,
+                    activation.context_id,
+                    activation.session_id,
+                    activation.root_turn_id,
+                )
+                .into());
+            }
+            tracing::debug!(
+                signal_id = %stored_signal.id,
+                candidate_thread_id = %candidate_thread_id,
+                durable_thread_id = %thread.id,
+                candidate_root_turn_id = %activation.root_turn_id,
+                durable_root_turn_id = %thread.root_turn_id,
+                event_code = "memory.postgres.thread_signal.durable_route_adopted",
+                "Adopted the authoritative durable Thread route while materializing a pre-routed Signal"
+            );
+            activation.agent_id.clone_from(&thread.agent_id);
+            activation.context_id.clone_from(&thread.context_id);
+            activation.session_id.clone_from(&thread.session_id);
+            activation.root_turn_id.clone_from(&thread.root_turn_id);
+        }
+        if candidate_thread_id != thread.id {
+            sqlx::query(
+                r#"DELETE FROM threads candidate
+                   WHERE candidate.id = $1
+                     AND NOT EXISTS (
+                       SELECT 1 FROM thread_signals WHERE thread_id = candidate.id
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM thread_activations
+                       WHERE root_turn_id = candidate.root_turn_id
+                     )"#,
             )
-            .into());
+            .bind(&candidate_thread_id)
+            .execute(&mut *tx)
+            .await?;
         }
         if thread.lifecycle.is_terminal() {
             sqlx::query(
@@ -732,7 +786,7 @@ impl ActivationStore for PostgresStore {
             && activation.initiating_principal_id != trigger.principal_id
         {
             return Err(format!(
-                "Activation '{}' 与其 Trigger Signal Principal 不一致",
+                "Activation '{}' Principal does not match its Trigger Signal",
                 activation.id
             )
             .into());
@@ -742,7 +796,7 @@ impl ActivationStore for PostgresStore {
             && thread.initiating_principal_id.as_ref() != activation_principal
         {
             return Err(format!(
-                "Thread '{}' 与 Activation '{}' Principal 不一致",
+                "Thread '{}' Principal does not match Activation '{}'",
                 thread.id, activation.id
             )
             .into());
@@ -828,7 +882,7 @@ impl ActivationStore for PostgresStore {
             .await?;
             if claimed.rows_affected() != 1 {
                 return Err(format!(
-                    "Thread Signal '{}' 在 Activation claim 中发生并发冲突",
+                    "Thread Signal '{}' changed concurrently during Activation claim",
                     pending_signal.id
                 )
                 .into());

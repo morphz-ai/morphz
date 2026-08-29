@@ -17647,6 +17647,271 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_restart_materializes_a_pre_routed_consecutive_message_batch() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let tool_policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+
+        // Commit two consecutive messages without starting the Runtime. The
+        // second Signal is atomically routed onto the first message's pending
+        // DialogueTurn, before EventBus has materialized any Activation.
+        let crashed_runtime = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_agent(NewAgent {
+                id: crashed_runtime.identity().agent_id.clone(),
+                title: "Pre-routed batch recovery agent".to_string(),
+                root_context_id: crashed_runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_context(NewCognitiveContext {
+                id: crashed_runtime.identity().context_id.clone(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                title: "Pre-routed batch recovery context".to_string(),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_session(NewSession {
+                id: "session-pre-routed-batch-recovery".to_string(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                context_id: crashed_runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Pre-routed batch recovery session".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .inner
+            .store
+            .ensure_principal(NewPrincipal {
+                id: "principal-pre-routed-batch-recovery".to_string(),
+                provider_id: "runtime-test".to_string(),
+                assurance: "test".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .inner
+            .store
+            .bind_session_principal(
+                "session-pre-routed-batch-recovery",
+                "principal-pre-routed-batch-recovery",
+            )
+            .await
+            .unwrap();
+
+        let message = |suffix: &str| {
+            Event::new(
+                format!("event-pre-routed-batch-{suffix}"),
+                "User-Test".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                [
+                    (
+                        "context_id".to_string(),
+                        json!(crashed_runtime.identity().context_id),
+                    ),
+                    (
+                        "session_id".to_string(),
+                        json!("session-pre-routed-batch-recovery"),
+                    ),
+                    (
+                        "client_message_id".to_string(),
+                        json!(format!("client-pre-routed-batch-{suffix}")),
+                    ),
+                    (
+                        "principal_id".to_string(),
+                        json!("principal-pre-routed-batch-recovery"),
+                    ),
+                    ("text".to_string(), json!(format!("message {suffix}"))),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let first = message("first");
+        let second = message("second");
+        for (client_message_id, event) in [
+            ("client-pre-routed-batch-first", &first),
+            ("client-pre-routed-batch-second", &second),
+        ] {
+            assert!(matches!(
+                crashed_runtime
+                    .inner
+                    .store
+                    .claim_message(
+                        "session-pre-routed-batch-recovery",
+                        client_message_id,
+                        event,
+                        MessageDispatchMode::Interrupt,
+                    )
+                    .await
+                    .unwrap(),
+                MessageClaim::Accepted { .. }
+            ));
+        }
+        let signals = crashed_runtime
+            .inner
+            .store
+            .list_context_thread_signals(&crashed_runtime.identity().context_id, None)
+            .await
+            .unwrap();
+        let first_signal = signals
+            .iter()
+            .find(|signal| signal.event_id == first.id)
+            .unwrap();
+        let second_signal = signals
+            .iter()
+            .find(|signal| signal.event_id == second.id)
+            .unwrap();
+        assert_eq!(first_signal.thread_id, second_signal.thread_id);
+        assert!(signals
+            .iter()
+            .all(|signal| signal.status == crate::memory::ThreadSignalStatus::Pending));
+        let durable_thread_id = first_signal.thread_id.clone();
+        let candidate = crashed_runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: crate::memory::stable_thread_id(&second.id),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                context_id: crashed_runtime.identity().context_id.clone(),
+                session_id: "session-pre-routed-batch-recovery".to_string(),
+                initiating_principal_id: Some("principal-pre-routed-batch-recovery".to_string()),
+                root_turn_id: second.id.clone(),
+                kind: crate::memory::ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::runtime("dialogue-router"),
+            })
+            .await
+            .unwrap();
+        let materialized = crashed_runtime
+            .inner
+            .store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: crate::memory::stable_thread_signal_id(&second.id),
+                    thread_id: candidate.id,
+                    thread_generation: candidate.generation,
+                    event_id: second.id.clone(),
+                    principal_id: Some("principal-pre-routed-batch-recovery".to_string()),
+                    sequence: second_signal.sequence,
+                    kind: second.topic.clone(),
+                    parent_activation_id: None,
+                },
+                crate::memory::NewThreadActivation {
+                    id: crate::memory::stable_thread_activation_id(&second.id),
+                    agent_id: crashed_runtime.identity().agent_id.clone(),
+                    context_id: crashed_runtime.identity().context_id.clone(),
+                    session_id: "session-pre-routed-batch-recovery".to_string(),
+                    initiating_principal_id: Some(
+                        "principal-pre-routed-batch-recovery".to_string(),
+                    ),
+                    trigger_event_id: second.id.clone(),
+                    trigger_sequence: second_signal.sequence,
+                    trigger_kind: second.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: second.id.clone(),
+                },
+                crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+            )
+            .await
+            .expect("a pre-routed Signal must adopt its durable Thread route")
+            .expect("the durable pending batch must materialize one Activation");
+        assert_eq!(materialized.root_turn_id, first.id);
+        assert_eq!(materialized.trigger_event_id, second.id);
+        assert!(crashed_runtime
+            .inner
+            .store
+            .get_thread_by_root(&second.id)
+            .await
+            .unwrap()
+            .is_none());
+        drop(crashed_runtime);
+
+        let recovered_runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = recovered_runtime.subscribe("chat/reply", 4);
+        recovered_runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("the durable consecutive batch must materialize without a route mismatch")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+
+        let activations = recovered_runtime
+            .inner
+            .store
+            .list_context_thread_activations(&recovered_runtime.identity().context_id, true)
+            .await
+            .unwrap();
+        let activation = activations
+            .iter()
+            .find(|activation| activation.trigger_event_id == second.id)
+            .expect("the newest Event remains the unique Activation trigger");
+        let claimed = recovered_runtime
+            .inner
+            .store
+            .list_activation_signals(&activation.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            claimed
+                .iter()
+                .map(|signal| signal.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str(), second.id.as_str()]
+        );
+        assert_eq!(
+            activation.root_turn_id,
+            recovered_runtime
+                .inner
+                .store
+                .get_thread(&durable_thread_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .root_turn_id
+        );
+        assert!(
+            recovered_runtime
+                .inner
+                .store
+                .get_thread_by_root(&second.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the discarded Event-derived candidate Thread must not remain as an orphan"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), replies.recv())
+                .await
+                .is_err(),
+            "one durable Signal batch must produce exactly one reply"
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_restart_dispatches_a_committed_session_signal_once() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
