@@ -5367,6 +5367,7 @@ mod tests {
         history: &mut VecDeque<PromptCacheBoundaryIdentity>,
         provisional_key: &str,
         observations: &[&str],
+        explicit_prompt_cache: bool,
     ) -> (Value, String) {
         let mut messages = vec![
             Message {
@@ -5379,29 +5380,71 @@ mod tests {
             incremental_context_message(provisional_key, observations),
         ];
         let cohort_key =
-            prompt_cache_cohort_key("gpt-5.6-sol", None, true, &messages, &[]).unwrap();
+            prompt_cache_cohort_key("gpt-5.6-sol", None, explicit_prompt_cache, &messages, &[])
+                .unwrap();
         let mut segmented = segmented_model_text(&messages[1]).unwrap();
         segmented.prompt_cache_key = Some(cohort_key.clone());
-        let current = plan_incremental_cache_boundaries(&mut segmented, history).unwrap();
-        history.retain(|prior| prior != &current);
-        history.push_front(current);
-        history.truncate(OPENAI_TRACKED_CACHE_BOUNDARIES);
+        if explicit_prompt_cache {
+            let current = plan_incremental_cache_boundaries(&mut segmented, history).unwrap();
+            history.retain(|prior| prior != &current);
+            history.push_front(current);
+            history.truncate(OPENAI_TRACKED_CACHE_BOUNDARIES);
+        }
         messages[1].content = serde_json::to_string(&segmented).unwrap();
         (
-            build_openai_responses_request("gpt-5.6-sol", None, None, &messages, &[], true),
+            build_openai_responses_request(
+                "gpt-5.6-sol",
+                None,
+                None,
+                &messages,
+                &[],
+                explicit_prompt_cache,
+            ),
             cohort_key,
         )
+    }
+
+    fn model_visible_responses_contract(request: &Value) -> Value {
+        let input = request
+            .get("input")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|message| {
+                let content = match message.get("content").unwrap() {
+                    Value::String(text) => text.clone(),
+                    Value::Array(blocks) => blocks
+                        .iter()
+                        .filter_map(|block| block.get("text").and_then(Value::as_str))
+                        .collect::<String>(),
+                    other => panic!("unexpected Responses content: {other}"),
+                };
+                json!({
+                    "role": message.get("role").unwrap(),
+                    "content": content,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "model": request.get("model").unwrap(),
+            "input": input,
+            "tools": request.get("tools").cloned().unwrap_or_else(|| json!([])),
+        })
+    }
+
+    fn json_sha256(value: &Value) -> String {
+        format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
     }
 
     #[test]
     fn gpt_5_6_prompt_cache_preserves_prior_inbox_ends_and_caps_breakpoints() {
         let mut history = VecDeque::new();
         let (first_request, first_key) =
-            prepare_incremental_request(&mut history, "context-a", &["one"]);
+            prepare_incremental_request(&mut history, "context-a", &["one"], true);
         assert_eq!(explicit_breakpoint_texts(&first_request).len(), 2);
 
         let (second_request, second_key) =
-            prepare_incremental_request(&mut history, "different-context-b", &["one", "two"]);
+            prepare_incremental_request(&mut history, "different-context-b", &["one", "two"], true);
         assert_eq!(first_key, second_key);
         let second_breakpoints = explicit_breakpoint_texts(&second_request);
         assert_eq!(second_breakpoints.len(), 3);
@@ -5409,13 +5452,14 @@ mod tests {
         assert_eq!(second_breakpoints[2], " (observation two)");
 
         let (third_request, _) =
-            prepare_incremental_request(&mut history, "context-c", &["one", "two", "three"]);
+            prepare_incremental_request(&mut history, "context-c", &["one", "two", "three"], true);
         assert_eq!(explicit_breakpoint_texts(&third_request).len(), 4);
 
         let (fourth_request, _) = prepare_incremental_request(
             &mut history,
             "context-d",
             &["one", "two", "three", "four"],
+            true,
         );
         let fourth_breakpoints = explicit_breakpoint_texts(&fourth_request);
         assert_eq!(fourth_breakpoints.len(), 4);
@@ -5428,8 +5472,64 @@ mod tests {
             &mut history,
             "context-e",
             &["changed", "two", "three", "four", "five"],
+            true,
         );
         assert_eq!(explicit_breakpoint_texts(&rebuilt_request).len(), 2);
+    }
+
+    #[test]
+    fn prompt_cache_wire_modes_change_only_transport_metadata() {
+        let mut explicit_history = VecDeque::new();
+        let mut implicit_history = VecDeque::new();
+
+        let (explicit_first, explicit_key) =
+            prepare_incremental_request(&mut explicit_history, "explicit-a", &["one"], true);
+        let (implicit_first, implicit_key) =
+            prepare_incremental_request(&mut implicit_history, "implicit-a", &["one"], false);
+
+        let explicit_visible = model_visible_responses_contract(&explicit_first);
+        let implicit_visible = model_visible_responses_contract(&implicit_first);
+        assert_eq!(explicit_visible, implicit_visible);
+        assert_eq!(
+            json_sha256(&explicit_visible),
+            json_sha256(&implicit_visible)
+        );
+        assert_ne!(explicit_key, implicit_key);
+        assert_eq!(
+            explicit_first.get("prompt_cache_key"),
+            Some(&json!(explicit_key))
+        );
+        assert_eq!(
+            implicit_first.get("prompt_cache_key"),
+            Some(&json!(implicit_key))
+        );
+        assert!(explicit_first.get("prompt_cache_options").is_some());
+        assert!(implicit_first.get("prompt_cache_options").is_none());
+        assert!(explicit_first
+            .pointer("/input/1/content")
+            .unwrap()
+            .is_array());
+        assert!(implicit_first
+            .pointer("/input/1/content")
+            .unwrap()
+            .is_string());
+
+        let (explicit_second, explicit_second_key) =
+            prepare_incremental_request(&mut explicit_history, "explicit-b", &["one", "two"], true);
+        let (implicit_second, implicit_second_key) = prepare_incremental_request(
+            &mut implicit_history,
+            "implicit-b",
+            &["one", "two"],
+            false,
+        );
+        assert_eq!(explicit_key, explicit_second_key);
+        assert_eq!(implicit_key, implicit_second_key);
+        assert_eq!(
+            model_visible_responses_contract(&explicit_second),
+            model_visible_responses_contract(&implicit_second)
+        );
+        assert_eq!(explicit_breakpoint_texts(&explicit_second).len(), 3);
+        assert!(explicit_breakpoint_texts(&implicit_second).is_empty());
     }
 
     #[test]
