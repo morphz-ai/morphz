@@ -275,7 +275,7 @@ impl SessionDirectoryStore for PostgresStore {
         binding_from_row(&row)
     }
 
-    async fn bind_all_sessions_to_principal(
+    async fn bind_unbound_sessions_to_principal(
         &self,
         principal_id: &str,
         include_archived: bool,
@@ -284,8 +284,12 @@ impl SessionDirectoryStore for PostgresStore {
         let result = sqlx::query(
             r#"INSERT INTO session_principal_bindings
                (session_id, principal_id, bound_at, unbound_at)
-               SELECT id, $1, $2, NULL FROM sessions
-               WHERE ($3 OR status != 'archived')
+               SELECT s.id, $1, $2, NULL FROM sessions AS s
+               WHERE ($3 OR s.status != 'archived')
+                 AND NOT EXISTS (
+                   SELECT 1 FROM session_principal_bindings AS active
+                   WHERE active.session_id = s.id AND active.unbound_at IS NULL
+                 )
                ON CONFLICT(session_id, principal_id) DO UPDATE SET unbound_at = NULL
                WHERE session_principal_bindings.unbound_at IS NOT NULL"#,
         )

@@ -58,6 +58,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { nextDashboardLanguage, persistDashboardLanguage } from './i18n/language'
+import { selectOperatorReturnSession, type PrincipalScopeLocation } from './principalScope'
 import {
   createLiveModelState,
   findReasoningSummaryChainForPayload,
@@ -3194,6 +3195,7 @@ export default function App() {
   const executionTargetCatalogRequestRef = useRef('')
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
   const principalScopeRef = useRef<PrincipalDirectoryEntry | null>(null)
+  const operatorReturnScopeRef = useRef<PrincipalScopeLocation | null>(null)
   const activeViewRef = useRef(view)
   const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
 
@@ -3424,29 +3426,23 @@ export default function App() {
     }
   }, [])
 
-  const observePrincipal = useCallback(async (entry: PrincipalDirectoryEntry) => {
-    const principalId = entry.principal.id
-    if (principalId === status?.principal_id) {
+  const clearPrincipalScope = useCallback(async () => {
+    const rememberedScope = operatorReturnScopeRef.current
+    try {
+      const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(
+        '/api/sessions?include_archived=true',
+      )
+      const nextSessions = response.sessions ?? []
+      const nextSession = selectOperatorReturnSession(
+        nextSessions,
+        rememberedScope,
+        status?.context_id ?? selectedContextId,
+      )
       principalScopeRef.current = null
       setPrincipalScope(null)
-    } else {
-      principalScopeRef.current = entry
-      setPrincipalScope(entry)
-    }
-    try {
-      const sessionsPath = principalId === status?.principal_id
-        ? '/api/sessions?include_archived=true'
-        : `/api/operator/principals/${encodeURIComponent(principalId)}/sessions?include_archived=true`
-      const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(sessionsPath)
-      const nextSessions = response.sessions ?? []
-      const nextSession = nextSessions
-        .filter(item => item.status === 'active')
-        .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
       setSessions(nextSessions)
-      setPendingTurn(null)
       setPrincipalMenuOpen(false)
-      setSessionMenuOpen(false)
-      setConversationSessionMenuOpen(false)
+      setPendingTurn(null)
       if (nextSession) {
         setSelectedAgentId(nextSession.agent_id)
         setSelectedContextId(nextSession.context_id)
@@ -3454,25 +3450,30 @@ export default function App() {
         navigate(dashboardPath('dialogue', nextSession.context_id, nextSession.id))
       } else {
         setSelectedSessionId('')
-        navigate(dashboardPath('overview', selectedContextId))
+        navigate(dashboardPath('overview', status?.context_id ?? selectedContextId))
       }
+      operatorReturnScopeRef.current = null
       setError('')
     } catch (reason) {
-      principalScopeRef.current = null
-      setPrincipalScope(null)
-      setSessions([])
-      setSelectedSessionId('')
-      setPendingTurn(null)
       setError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [navigate, selectedContextId, status])
 
-  const clearPrincipalScope = useCallback(async () => {
-    principalScopeRef.current = null
-    setPrincipalScope(null)
+  const observePrincipal = useCallback(async (entry: PrincipalDirectoryEntry) => {
+    const principalId = entry.principal.id
+    if (principalId === status?.principal_id) {
+      await clearPrincipalScope()
+      return
+    }
+    const previousScope = principalScopeRef.current
+    if (!previousScope) {
+      operatorReturnScopeRef.current = { ...selectedScopeRef.current }
+    }
+    principalScopeRef.current = entry
+    setPrincipalScope(entry)
     try {
       const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(
-        '/api/sessions?include_archived=true',
+        `/api/operator/principals/${encodeURIComponent(principalId)}/sessions?include_archived=true`,
       )
       const nextSessions = response.sessions ?? []
       const nextSession = nextSessions
@@ -3480,6 +3481,8 @@ export default function App() {
         .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
       setSessions(nextSessions)
       setPrincipalMenuOpen(false)
+      setSessionMenuOpen(false)
+      setConversationSessionMenuOpen(false)
       setPendingTurn(null)
       if (nextSession) {
         setSelectedAgentId(nextSession.agent_id)
@@ -3492,9 +3495,11 @@ export default function App() {
       }
       setError('')
     } catch (reason) {
+      principalScopeRef.current = previousScope
+      setPrincipalScope(previousScope)
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [navigate, selectedContextId])
+  }, [clearPrincipalScope, navigate, selectedContextId, status])
 
   useEffect(() => {
     if (!principalMenuOpen) return
@@ -5521,11 +5526,7 @@ export default function App() {
   const composerSchedules = composerThreads
     .flatMap(item => item.schedules)
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
-  const activePrincipalId = principalScope?.principal.id
-    ?? contextView?.active_principal_id
-    ?? contextOverview?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
-    ?? contextView?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
-    ?? status?.principal_id
+  const activePrincipalId = principalScope?.principal.id ?? status?.principal_id
   const observingForeignPrincipal = Boolean(principalScope)
   const selectedFrameLineage = frameLineage?.root_frame_id === effectiveSelectedFrameId ? frameLineage : null
   const retiring = contextView?.state.retiring ?? {}

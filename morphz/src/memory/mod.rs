@@ -5686,7 +5686,7 @@ pub trait SessionDirectoryStore: Send + Sync {
         session_id: &str,
         principal_id: &str,
     ) -> Result<SessionPrincipalBinding, Box<dyn std::error::Error + Send + Sync>>;
-    async fn bind_all_sessions_to_principal(
+    async fn bind_unbound_sessions_to_principal(
         &self,
         principal_id: &str,
         include_archived: bool,

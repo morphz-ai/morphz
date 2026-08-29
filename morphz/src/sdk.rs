@@ -3664,9 +3664,10 @@ impl MorphzSdk {
         Ok(session)
     }
 
-    /// Makes every existing Session visible to the built-in Principal used by
-    /// a single-user/default host. Existing historical bindings are preserved;
-    /// only the current default binding is added when absent. This deliberately
+    /// Adopts legacy Sessions that have no active Principal binding into the
+    /// built-in Principal used by a single-user/default host. Sessions already
+    /// owned by an ingress Principal are never changed: operator visibility is
+    /// an authorization concern, not Session participation. This deliberately
     /// never runs in trusted-gateway mode, where only the gateway owns legacy
     /// Session ownership mappings.
     pub async fn adopt_sessions_for_default_principal(
@@ -3675,7 +3676,7 @@ impl MorphzSdk {
         include_archived: bool,
     ) -> SdkResult<usize> {
         self.runtime
-            .bind_all_sessions_to_principal(principal, include_archived)
+            .bind_unbound_sessions_to_principal(principal, include_archived)
             .await
             .map_err(SdkError::internal)
     }
@@ -4091,6 +4092,30 @@ mod tests {
             })
             .await
             .unwrap();
+        runtime
+            .create_session(NewSession {
+                id: "session-legacy-unbound".to_string(),
+                agent_id: "agent-sdk".to_string(),
+                context_id: "context-sdk".to_string(),
+                parent_session_id: None,
+                title: "Legacy unbound".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let raw_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(database.path()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE session_principal_bindings SET unbound_at = ? WHERE session_id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind("session-legacy-unbound")
+            .execute(&raw_pool)
+            .await
+            .unwrap();
+        raw_pool.close().await;
+
         let sdk = MorphzSdk::new(runtime);
         sdk.create_session(
             principal("principal-a"),
@@ -4146,6 +4171,13 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            sdk.list_sessions(&default_principal.principal_id, false)
+                .await
+                .unwrap()[0]
+                .id,
+            "session-legacy-unbound"
         );
         assert_eq!(
             sdk.list_sessions("principal-a", false).await.unwrap().len(),

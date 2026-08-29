@@ -3272,7 +3272,7 @@ impl MorphzRuntime {
         self.inner.store.list_session_principals(session_id).await
     }
 
-    pub async fn bind_all_sessions_to_principal(
+    pub async fn bind_unbound_sessions_to_principal(
         &self,
         assertion: PrincipalAssertion,
         include_archived: bool,
@@ -3280,7 +3280,7 @@ impl MorphzRuntime {
         let principal = self.ensure_principal(assertion).await?;
         self.inner
             .store
-            .bind_all_sessions_to_principal(&principal.id, include_archived)
+            .bind_unbound_sessions_to_principal(&principal.id, include_archived)
             .await
     }
 

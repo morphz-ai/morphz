@@ -3568,6 +3568,14 @@ async fn handle_list_sessions(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
+    // Operator visibility is administrative and must not be represented by
+    // adding the Runtime's default Principal as a participant in every Session.
+    if is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return match state.runtime.list_sessions(query.include_archived).await {
+            Ok(sessions) => Json(json!({ "sessions": sessions })).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+    }
     let principal = match request_principal(&state, &headers, None) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
@@ -9302,6 +9310,57 @@ mod tests {
         .await
         .into_response();
         assert_eq!(external_principal.status(), StatusCode::CREATED);
+
+        // The Dashboard Operator sees the complete catalog through its
+        // administrative authorization. It must not need to impersonate or be
+        // added as a participant in either trusted-gateway Session.
+        let operator_sessions = handle_list_sessions(
+            State(Arc::clone(&state)),
+            dashboard_headers(),
+            Query(SessionListQuery {
+                token: None,
+                include_archived: true,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_sessions.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(operator_sessions.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let operator_session_ids = body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|session| session["id"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(operator_session_ids.contains("gateway-session-a"));
+        assert!(operator_session_ids.contains("gateway-session-wechat"));
+
+        let gateway_sessions = handle_list_sessions(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(SessionListQuery {
+                token: None,
+                include_archived: true,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(gateway_sessions.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(gateway_sessions.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let gateway_session_ids = body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|session| session["id"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(gateway_session_ids.contains("gateway-session-a"));
+        assert!(!gateway_session_ids.contains("gateway-session-wechat"));
 
         let principal_search = handle_search_operator_principals(
             State(Arc::clone(&state)),
