@@ -59,6 +59,13 @@ to the ChatGPT Codex backend has been paired against direct requests and should
 be frozen as `implicit-prefix`; this result must not be generalized to other
 gateway versions.
 
+For the controlled GPT-5.6 cache pair, use `run_prompt_cache_ab.py`. It refuses
+Proxy URLs, runs one exact Terminal-Bench task once per arm, keeps both arms on
+the same pinned Runtime, isolates their `prompt_cache_key` cohorts by wire mode,
+and writes provider-reported `cached_input_tokens / input_tokens` plus strict
+reward to `prompt_cache_ab.json`. Supply the Platform credential only through
+`MORPHZ_PROVIDER_API_KEY`; it is never placed in argv or the report.
+
 The current Terminal-Bench 2.1 repository states that community leaderboard
 submissions are closed. These runs are still reproducible benchmark results and
 can be uploaded to Harbor Hub, but they must not be described as an accepted
