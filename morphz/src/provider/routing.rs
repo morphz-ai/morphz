@@ -400,7 +400,9 @@ impl RoutedClient {
                 );
             }
             catalog.resolve_route(alias).map_err(|error| {
-                format!("model alias '{alias}' in llm.allowed_evaluation_models is unavailable: {error}")
+                format!(
+                    "model alias '{alias}' in llm.allowed_evaluation_models is unavailable: {error}"
+                )
             })?;
         }
         Ok(())
