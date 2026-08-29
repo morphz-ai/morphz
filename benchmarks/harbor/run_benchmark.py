@@ -38,6 +38,12 @@ LOCK_PATH = Path(__file__).with_name("toolchain.lock.json")
 DEFAULT_BINARY = REPO_ROOT / ".codex-work" / "harbor-runtime" / "morphz"
 DEFAULT_WATCHER = REPO_ROOT / ".codex-work" / "harbor-runtime" / "morphz-harbor-wait"
 DOCKER_NETWORK_CAPACITY_PROBE = 8
+PROMPT_CACHE_STRATEGIES = {
+    "auto",
+    "disabled",
+    "implicit-prefix",
+    "explicit-content-boundaries",
+}
 
 
 def require_docker_network_capacity(required: int) -> None:
@@ -298,9 +304,32 @@ def provider_ipv4_base_url(base_url: str) -> tuple[str, str, str]:
     if not addresses:
         raise RuntimeError(f"Provider host has no IPv4 address: {host}")
     address = sorted(addresses)[0]
-    port = f":{parsed.port}" if parsed.port else ""
-    effective = urlunparse(parsed._replace(netloc=f"{address}{port}"))
+    if parsed.scheme == "https":
+        # Keep the hostname for TLS certificate validation and SNI. We still
+        # resolve and record one IPv4 address as run evidence, but replacing
+        # the authority with that address would make api.openai.com unusable.
+        effective = base_url
+    else:
+        port = f":{parsed.port}" if parsed.port else ""
+        effective = urlunparse(parsed._replace(netloc=f"{address}{port}"))
     return effective, host, address
+
+
+def provider_prompt_cache_strategy(base_url: str, protocol: str) -> str:
+    configured = os.environ.get("MORPHZ_PROMPT_CACHE_STRATEGY", "").strip()
+    if configured:
+        if configured not in PROMPT_CACHE_STRATEGIES:
+            raise RuntimeError(
+                "MORPHZ_PROMPT_CACHE_STRATEGY must be one of: "
+                + ", ".join(sorted(PROMPT_CACHE_STRATEGIES))
+            )
+        return configured
+    host = (urlparse(base_url).hostname or "").lower()
+    if protocol == "openai-responses" and host == "api.openai.com":
+        return "explicit-content-boundaries"
+    # Unknown compatible endpoints retain Runtime auto-detection. Pin either
+    # direction only after probing that exact endpoint/model/revision tuple.
+    return "auto"
 
 
 def advertised_model_ids(body: object) -> set[str]:
@@ -368,7 +397,7 @@ def preflight(
         detail = error.read(512).decode("utf-8", errors="replace").strip()
         suffix = f": {detail}" if detail else ""
         raise RuntimeError(
-            f"CLIProxyAPI model preflight failed with HTTP {error.code}{suffix}"
+            f"Provider model preflight failed with HTTP {error.code}{suffix}"
         ) from error
     model_ids = advertised_model_ids(body)
     if "gpt-5.6-sol" not in model_ids:
@@ -657,6 +686,7 @@ def main() -> int:
     if protocol != "openai-responses":
         raise RuntimeError(f"Expected openai-responses, got {protocol}")
     effective_base_url, provider_host, provider_address = provider_ipv4_base_url(base_url)
+    prompt_cache_strategy = provider_prompt_cache_strategy(base_url, protocol)
     preflight(
         args.binary,
         args.watcher,
@@ -694,6 +724,7 @@ def main() -> int:
         )
 
     run_identity = frozen_run_identity(args, lock)
+    run_identity["prompt_cache_strategy"] = prompt_cache_strategy
 
     environment = os.environ.copy()
     runtime_identity = runtime_version(lock)
@@ -707,6 +738,7 @@ def main() -> int:
             "MORPHZ_PROVIDER_BASE_URL": effective_base_url,
             "MORPHZ_PROVIDER_MODEL": "gpt-5.6-sol",
             "MORPHZ_PROVIDER_API_KEY": credential,
+            "MORPHZ_PROMPT_CACHE_STRATEGY": prompt_cache_strategy,
             "MORPHZ_REASONING_EFFORT": "max",
             "MORPHZ_HARNESS_MODE": args.harness_mode,
             "DOCKER_DEFAULT_PLATFORM": "linux/amd64",

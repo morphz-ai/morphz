@@ -927,6 +927,21 @@ pub enum ModelProtocol {
     GeminiContent,
 }
 
+/// Prompt-cache behavior declared for one physical Provider/model pair.
+///
+/// This is deliberately endpoint capability, not a task preference. `Auto`
+/// preserves the built-in OpenAI model/version behavior, while explicit
+/// declarations let compatible gateways disable fields they do not forward.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PromptCacheStrategy {
+    #[default]
+    Auto,
+    Disabled,
+    ImplicitPrefix,
+    ExplicitContentBoundaries,
+}
+
 impl ModelProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -1188,6 +1203,8 @@ impl<'de> Deserialize<'de> for ModelRouteConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderModelConfig {
+    /// Physical prompt-cache capability for this exact Provider/model pair.
+    pub prompt_cache_strategy: PromptCacheStrategy,
     /// Total model context window, including input and generated output.
     #[serde(deserialize_with = "deserialize_optional_positive_usize")]
     pub context_window_tokens: Option<usize>,
@@ -4762,6 +4779,26 @@ max_input_attachment_total_bytes = 201326592
         assert_eq!(limits.max_attachments, Some(64));
         assert_eq!(limits.max_attachment_bytes, Some(64 * 1024 * 1024));
         assert_eq!(limits.max_total_bytes, Some(192 * 1024 * 1024));
+    }
+
+    #[test]
+    fn provider_model_prompt_cache_strategy_is_endpoint_declared() {
+        assert_eq!(
+            ProviderModelConfig::default().prompt_cache_strategy,
+            PromptCacheStrategy::Auto
+        );
+        let explicit: ProviderModelConfig =
+            toml::from_str(r#"prompt_cache_strategy = "explicit-content-boundaries""#).unwrap();
+        assert_eq!(
+            explicit.prompt_cache_strategy,
+            PromptCacheStrategy::ExplicitContentBoundaries
+        );
+        let implicit: ProviderModelConfig =
+            toml::from_str(r#"prompt_cache_strategy = "implicit-prefix""#).unwrap();
+        assert_eq!(
+            implicit.prompt_cache_strategy,
+            PromptCacheStrategy::ImplicitPrefix
+        );
     }
 
     #[test]

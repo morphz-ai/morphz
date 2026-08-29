@@ -14,6 +14,8 @@ from benchmarks.harbor.run_benchmark import (
     frozen_run_identity,
     harbor_command,
     parse_args,
+    provider_ipv4_base_url,
+    provider_prompt_cache_strategy,
     require_docker_network_capacity,
     runtime_provider_config,
     runtime_version,
@@ -179,6 +181,46 @@ class HarborCommandTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "MORPHZ_PROVIDER_API_KEY"):
                 runtime_provider_config()
+
+    @patch(
+        "benchmarks.harbor.run_benchmark.socket.getaddrinfo",
+        return_value=[(2, 1, 6, "", ("104.18.6.192", 443))],
+    )
+    def test_https_provider_keeps_hostname_for_tls_while_recording_ipv4(
+        self, _resolve: object
+    ) -> None:
+        effective, host, address = provider_ipv4_base_url(
+            "https://api.openai.com/v1"
+        )
+        self.assertEqual(effective, "https://api.openai.com/v1")
+        self.assertEqual(host, "api.openai.com")
+        self.assertEqual(address, "104.18.6.192")
+
+    def test_prompt_cache_strategy_is_exact_endpoint_or_operator_declared(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                provider_prompt_cache_strategy(
+                    "https://api.openai.com/v1", "openai-responses"
+                ),
+                "explicit-content-boundaries",
+            )
+            self.assertEqual(
+                provider_prompt_cache_strategy(
+                    "http://172.17.0.1:8317/v1", "openai-responses"
+                ),
+                "auto",
+            )
+        with patch.dict(
+            os.environ,
+            {"MORPHZ_PROMPT_CACHE_STRATEGY": "implicit-prefix"},
+            clear=True,
+        ):
+            self.assertEqual(
+                provider_prompt_cache_strategy(
+                    "http://172.17.0.1:8317/v1", "openai-responses"
+                ),
+                "implicit-prefix",
+            )
 
     def test_runtime_identity_comes_from_lock(self) -> None:
         self.assertEqual(

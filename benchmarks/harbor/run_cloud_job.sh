@@ -43,6 +43,10 @@ for variable in MORPHZ_PROVIDER_BASE_URL MORPHZ_PROVIDER_PROTOCOL MORPHZ_PROVIDE
   fi
 done
 
+if [[ -n ${MORPHZ_PROMPT_CACHE_STRATEGY:-} ]]; then
+  export MORPHZ_PROMPT_CACHE_STRATEGY
+fi
+
 exec 9>"$lock_file"
 if ! flock -n 9; then
   echo "another Terminal-Bench job holds $lock_file" >&2

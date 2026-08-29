@@ -27,6 +27,12 @@ from benchmarks.harbor.morphz_atif import write_trajectory
 
 HARNESS_MODE_BOUND = "bound"
 HARNESS_MODE_NONE = "none"
+PROMPT_CACHE_STRATEGIES = {
+    "auto",
+    "disabled",
+    "implicit-prefix",
+    "explicit-content-boundaries",
+}
 
 
 class MorphzAgent(BaseAgent):
@@ -128,6 +134,14 @@ class MorphzAgent(BaseAgent):
             raise ValueError(
                 "The frozen benchmark profile requires MORPHZ_REASONING_EFFORT=max"
             )
+        prompt_cache_strategy = self._setting(
+            "MORPHZ_PROMPT_CACHE_STRATEGY", "auto"
+        )
+        if prompt_cache_strategy not in PROMPT_CACHE_STRATEGIES:
+            raise ValueError(
+                "MORPHZ_PROMPT_CACHE_STRATEGY must be one of: "
+                + ", ".join(sorted(PROMPT_CACHE_STRATEGIES))
+            )
 
         config = self.logs_dir / "morphz-harbor.toml"
         config.write_text(
@@ -142,6 +156,9 @@ class MorphzAgent(BaseAgent):
                     f'protocol = {protocol!r}',
                     f'base_url = {base_url!r}',
                     'credential = "harbor"',
+                    '',
+                    f'[providers.harbor.models.{model!r}]',
+                    f'prompt_cache_strategy = {prompt_cache_strategy!r}',
                     '',
                     '[credentials.harbor]',
                     'source = "env"',

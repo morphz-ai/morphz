@@ -176,6 +176,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
                     "MORPHZ_HARNESS_REF": "custom-terminal-task@1.0.0",
                     "MORPHZ_HARNESS_SOURCE_SHA256": digest,
                     "MORPHZ_PROVIDER_BASE_URL": "http://127.0.0.1:8317/v1",
+                    "MORPHZ_PROMPT_CACHE_STRATEGY": "explicit-content-boundaries",
                 },
             )
 
@@ -188,6 +189,9 @@ class HarnessBindingSetupTest(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn('mode = "full_access"', config)
+            self.assertIn(
+                "prompt_cache_strategy = 'explicit-content-boundaries'", config
+            )
             self.assertEqual(
                 environment.commands,
                 [

@@ -436,6 +436,11 @@ pub struct ModelTextPart {
     pub text: String,
     #[serde(default)]
     pub cache_boundary_after: bool,
+    /// Provider-neutral structural boundary that may be selected by a
+    /// request-local cache planner. This metadata is transport-only and is
+    /// never emitted in the Provider request or model-visible text.
+    #[serde(default)]
+    pub cache_boundary_candidate_after: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

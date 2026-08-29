@@ -1023,13 +1023,12 @@ fn compose_context_sexpr(
     Ok(composed)
 }
 
-fn stable_context_prompt_cache_key(context_id: &str) -> String {
-    let digest = Sha256::digest(context_id.as_bytes());
-    format!("morphz-context-{:x}", digest)[..64].to_string()
+fn stable_prompt_cache_seed(stable_prefix: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(stable_prefix.as_bytes()));
+    format!("morphz-prefix-v2-{}", &digest[..47])
 }
 
 fn compose_segmented_context_message(
-    context_id: &str,
     prefix: &str,
     base: &str,
     overlay: EvaluationContextOverlay<'_>,
@@ -1065,36 +1064,50 @@ fn compose_segmented_context_message(
             .join(" "),
     );
 
-    let mut inbox = String::new();
-    for item in &context[profile_index + 1..=inbox_index] {
-        inbox.push(' ');
-        inbox.push_str(&item.to_string());
+    let SExpr::List(inbox) = &context[inbox_index] else {
+        return Err("Composed Context Encoding inbox is not a List".into());
+    };
+    if !matches!(inbox.first(), Some(SExpr::Atom(name)) if name == "inbox") {
+        return Err("Composed Context Encoding inbox root is invalid".into());
     }
 
-    let mut dynamic = String::new();
+    let mut dynamic = String::from(")");
     for item in &context[inbox_index + 1..] {
         dynamic.push(' ');
         dynamic.push_str(&item.to_string());
     }
     dynamic.push(')');
 
-    let parts = vec![
-        ModelTextPart {
-            text: stable,
-            cache_boundary_after: true,
-        },
-        ModelTextPart {
-            text: inbox,
-            cache_boundary_after: true,
-        },
-        ModelTextPart {
-            text: dynamic,
-            cache_boundary_after: false,
-        },
-    ];
+    let mut parts = vec![ModelTextPart {
+        text: stable.clone(),
+        cache_boundary_after: true,
+        cache_boundary_candidate_after: false,
+    }];
+    let observations = &inbox[1..];
+    parts.push(ModelTextPart {
+        text: " (inbox".to_string(),
+        cache_boundary_after: observations.is_empty(),
+        cache_boundary_candidate_after: observations.is_empty(),
+    });
+    for (index, observation) in observations.iter().enumerate() {
+        parts.push(ModelTextPart {
+            text: format!(" {observation}"),
+            cache_boundary_after: index + 1 == observations.len(),
+            cache_boundary_candidate_after: true,
+        });
+    }
+    parts.push(ModelTextPart {
+        text: dynamic,
+        cache_boundary_after: false,
+        cache_boundary_candidate_after: false,
+    });
     let segmented = SegmentedModelText {
         parts,
-        prompt_cache_key: Some(stable_context_prompt_cache_key(context_id)),
+        // This seed intentionally excludes Context/Session identity so equal
+        // protocol prefixes can share a cache cohort. The Provider client
+        // refines it with the physical model, reasoning settings and tool
+        // schemas at the actual request boundary.
+        prompt_cache_key: Some(stable_prompt_cache_seed(&stable)),
     };
     if segmented.visible_text() != canonical {
         return Err("Segmented Context Message differs from canonical serialization".into());
@@ -9438,7 +9451,6 @@ impl Orchestrator {
                 );
                 if let Some(context_message) = messages.get_mut(1) {
                     *context_message = compose_segmented_context_message(
-                        &context.context_id,
                         context_message_prefix,
                         &context.sexpr,
                         context_overlay,
@@ -10534,7 +10546,6 @@ impl Orchestrator {
                 tool_calls: None,
             },
             compose_segmented_context_message(
-                &context.context_id,
                 context_message_prefix,
                 &context.sexpr,
                 measurement_overlay,
@@ -10662,7 +10673,6 @@ impl Orchestrator {
                 tool_calls: None,
             },
             compose_segmented_context_message(
-                &context.context_id,
                 context_message_prefix,
                 &context.sexpr,
                 request_overlay,
@@ -10913,7 +10923,6 @@ impl Orchestrator {
                 );
                 let mut candidate_messages = messages.clone();
                 candidate_messages[1] = compose_segmented_context_message(
-                    &candidate.context_id,
                     context_message_prefix,
                     &candidate.sexpr,
                     request_overlay,
@@ -11331,7 +11340,6 @@ impl Orchestrator {
                             tool_calls: None,
                         },
                         compose_segmented_context_message(
-                            &context.context_id,
                             context_message_prefix,
                             &context.sexpr,
                             recovery_overlay,
@@ -11616,7 +11624,6 @@ impl Orchestrator {
                         )),
                     };
                     base_protocol_messages[1] = compose_segmented_context_message(
-                        &context.context_id,
                         context_message_prefix,
                         &context.sexpr,
                         recovery_overlay,
@@ -21521,40 +21528,40 @@ mod tests {
             "{prefix}\n{}",
             compose_context_encoding(base, overlay).unwrap()
         );
-        let message =
-            compose_segmented_context_message("context-a", prefix, base, overlay).unwrap();
+        let message = compose_segmented_context_message(prefix, base, overlay).unwrap();
         let segmented = segmented_model_text(&message).expect("segmented Context envelope");
 
         assert_eq!(model_visible_message_text(&message), canonical);
-        assert_eq!(segmented.parts.len(), 3);
+        assert_eq!(segmented.parts.len(), 5);
         assert!(segmented.parts[0].cache_boundary_after);
+        assert!(!segmented.parts[0].cache_boundary_candidate_after);
         assert!(segmented.parts[0]
             .text
             .ends_with("(evaluation-profile none)"));
-        assert!(segmented.parts[1].cache_boundary_after);
-        assert!(segmented.parts[1].text.starts_with(" (inbox "));
-        assert!(segmented.parts[1].text.ends_with(')'));
+        assert_eq!(segmented.parts[1].text, " (inbox");
+        assert!(!segmented.parts[1].cache_boundary_after);
+        assert!(segmented.parts[2].cache_boundary_candidate_after);
         assert!(!segmented.parts[2].cache_boundary_after);
-        assert!(segmented.parts[2].text.starts_with(" (observation-state)"));
-        assert!(segmented.parts[2]
+        assert!(segmented.parts[3].cache_boundary_candidate_after);
+        assert!(segmented.parts[3].cache_boundary_after);
+        assert!(!segmented.parts[4].cache_boundary_after);
+        assert!(segmented.parts[4].text.starts_with(") (observation-state)"));
+        assert!(segmented.parts[4]
             .text
             .contains("(runtime-directive (kind work) (description continue))"));
-        assert!(segmented.parts[2].text.ends_with(')'));
+        assert!(segmented.parts[4].text.ends_with(')'));
         assert_eq!(
             segmented.prompt_cache_key.as_deref(),
-            compose_segmented_context_message("context-a", prefix, base, overlay)
+            compose_segmented_context_message(prefix, base, overlay)
                 .ok()
                 .and_then(|message| segmented_model_text(&message))
                 .and_then(|content| content.prompt_cache_key)
                 .as_deref()
         );
-        assert_ne!(
-            segmented.prompt_cache_key,
-            compose_segmented_context_message("context-b", prefix, base, overlay)
-                .ok()
-                .and_then(|message| segmented_model_text(&message))
-                .and_then(|content| content.prompt_cache_key)
-        );
+        assert!(segmented
+            .prompt_cache_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("morphz-prefix-v2-") && key.len() == 64));
     }
 
     #[test]

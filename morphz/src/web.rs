@@ -2105,6 +2105,7 @@ async fn handle_put_provider_account_models(
                 max_input_attachments: selection.max_input_attachments,
                 max_input_attachment_bytes: selection.max_input_attachment_bytes,
                 max_input_attachment_total_bytes: selection.max_input_attachment_total_bytes,
+                ..ProviderModelConfig::default()
             },
         );
     }

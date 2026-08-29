@@ -1,9 +1,29 @@
 # Morphz Provider 可移植 Prompt Cache 边界设计 v1
 
-> 状态：第一阶段生产实现与真实烟测完成；Inbox 增量分块及其他 Provider 映射待后续验证
-> 日期：2026-08-28
+> 状态：GPT-5.6 增量 Inbox 显式边界实现完成；ChatGPT Codex OAuth 端点不兼容已确认；Platform API 真实 A/B 待凭据验证
+> 日期：2026-08-29
 > 适用范围：Context Encoding、模型请求封装、Provider Adapter、缓存用量与成本观测
 > 前置设计：[Prefix Cache 友好的 Context Encoding 正式布局 v1](morphz_prefix_cache_context_encoding_layout_v1.md)
+
+## 0. 2026-08-29 实现更新
+
+ME-08 的后续分析确认：第一阶段只把“完整 Inbox 末端”设为显式断点，下一轮追加
+Observation 后该断点会移动，因此实际命中长期停留在固定 System/协议前缀。当前实现已经
+补齐这一缺口：
+
+1. Renderer 在每条 canonical Observation 末端标记候选边界，模型可见文本逐字节不变；
+2. 请求规划器保留与当前 Inbox 仍匹配的最近历史末端，并始终选择当前 Inbox 末端；
+3. OpenAI 每次请求最多发四个显式断点：固定协议边界、最多两个最近历史 Inbox 边界和
+   当前 Inbox 边界；
+4. Cache Cohort 不再由 `context_id` 派生，而由物理模型、有效推理档位、工具合同、System
+   Message 和稳定 Context 前缀共同哈希，因此跨 Context 的相同稳定前缀可以复用；
+5. Retire、Restore 或较早 Observation 变化时，内容哈希不再匹配，规划器自动退回固定协议
+   与当前 Inbox 两个边界并重建缓存；
+6. 进程内只保存最近 256 个 Cohort、每个 Cohort 最近 50 个边界；状态丢失只造成冷启动，
+   不改变 Context 语义。
+
+确定性请求合同和完整 `morphz` 库回归已通过。这里证明的是“请求形态已修复”，不是新的
+Provider 命中率；修复后的命中率和成本仍必须由第 9.3 节的真实配对 A/B 给出。
 
 ## 1. 要解决的问题
 
@@ -22,7 +42,7 @@ evaluation-environment / evaluate
 这个顺序保证动态状态不会改写其前面的稳定字节。在支持自动前缀识别的 Provider 上，
 真实 A/B 已经证明这种布局能够显著提高缓存命中率。
 
-但当前生产请求还有一层没有表达出来的物理边界：Runtime 先通过
+缺陷修复前的生产请求还有一层没有表达出来的物理边界：Runtime 先通过
 `compose_context_message()` 把自然语言引导和完整 Context Encoding 合并为一个
 `String`，OpenAI Responses Adapter 再把它序列化为单个 `content`：
 
@@ -45,11 +65,11 @@ Context 尾部发生变化，某些 Provider 或代理线路就无法复用这�
 
 这是请求封装层的缺口，不是 Structured Context（结构化上下文）机制本身的缺陷。
 
-## 2. 已完成的真实验证
+## 2. 已完成的真实验证与证据更正
 
 2026-08-28 使用现有 `mini-m4.local` CLIProxyAPI 路线，对 GPT-5.6 Sol 做了单条
-User Message 内多内容块的真实 A/B。请求仍然只有一条逻辑 User Message，但
-`content` 被划分为两个 `input_text` 块，第一块末尾设置显式缓存断点：
+User Message 内多内容块的真实 A/B。Morphz 侧请求把 `content` 划分为两个
+`input_text` 块，并在第一块末尾设置显式缓存断点：
 
 ```json
 {
@@ -78,15 +98,19 @@ User Message 内多内容块的真实 A/B。请求仍然只有一条逻辑 User 
 | 修改缓存断点之前的内容 | 24,115 | 0 | 0% |
 | 恢复原稳定块，再修改第二块 | 24,115 | 23,296 | 96.6% |
 
-物理响应模型为 `gpt-5.6-sol`。这组验证说明：
+物理响应模型为 `gpt-5.6-sol`。后续请求捕获、CLIProxyAPI 翻译器审计和绕过 Proxy 的
+直连对照确认：该 Proxy 在转发 ChatGPT Codex OAuth 请求前删除
+`prompt_cache_options` 和 `prompt_cache_breakpoint`。因此这组 96.6% 结果只能证明稳定前缀
+布局能够被**隐式缓存**复用，不能证明显式断点被上游执行。此前把它写成“显式断点真实
+验证”是证据归因错误，现更正为：
 
-1. 缓存断点可以位于同一条 User Message 的内容块之间；
-2. 断点之后的动态内容不会破坏断点之前的缓存；
-3. 断点之前发生变化时，缓存会按预期失效；
-4. 缓存元数据不需要写入 S 表达式，也不需要成为模型可见文本。
+1. 相同的长前缀和变化尾部可以在该线路获得 96% 以上的隐式缓存命中；
+2. 修改长前缀会让缓存失效，恢复原前缀后可以再次命中；
+3. 本实验没有隔离出显式断点字段的因果效应；
+4. 显式断点的接口可行性必须在真正支持该字段的 Platform `/v1/responses` 端点另测。
 
-本次 A/B 直接验证的是 `prompt_cache_breakpoint`。`prompt_cache_key` 是官方接口提供的
-另一项缓存分组提示，但不是本次 96.6% 命中的前提。
+`prompt_cache_key` 仍然是上游接受的缓存分组提示，但它不等于内容边界，也不能让变化字节
+之前的任意位置自动成为可复用断点。
 
 该线路没有报告 `cache_write_tokens`，但后续请求报告了 23,296 个 cached input tokens，
 足以证明稳定前缀被实际复用。不同 Provider 对写入用量的报告字段并不统一，不能把
@@ -94,7 +118,7 @@ User Message 内多内容块的真实 A/B。请求仍然只有一条逻辑 User 
 
 这只是实现可行性验证，不作为论文实验结果。
 
-### 2.1 生产路径验证
+### 2.1 生产路径验证的正确解释
 
 第一阶段实现完成后，又使用 Morphz 正常请求路径进行了隔离烟测。实际链路为：
 
@@ -104,12 +128,46 @@ Morphz → CLIProxyAPI（mini-m4.local）→ OpenAI Responses 协议 → GPT-5.6
 
 在同一个持续运行的 Runtime 进程、同一 Context 和同一 Session 中连续发送两轮对话请求，
 第一轮为 20,853 个输入词元、缓存命中 0；第二轮为 21,202 个输入词元，其中 11,776 个为
-缓存输入词元，命中率为 55.5%。这证明缓存字段不仅存在于独立探针中，也已经进入 Morphz
-生产请求封装，并能经 CLIProxyAPI 形成实际缓存命中。
+缓存输入词元，命中率为 55.5%。这证明 Morphz 生产请求能够形成缓存命中，但由于 Proxy
+删除显式字段，不能证明 `prompt_cache_breakpoint` 已被上游执行。
 
 另一个紧接着完成的同激活工具回合没有观察到缓存命中。两次观测说明“字段已经生效”与
 “每一次连续调用都会立即命中”不是同一结论；缓存建立时机、请求前缀变化和工具回合间隔
 仍需由正式 A/B 分开测量。本文不把这组烟测当作最终成本结论。
+
+### 2.2 ChatGPT Codex OAuth 与 Platform API 是两个能力边界
+
+2026-08-29 对当前登录账户绕过 CLIProxyAPI，直接请求
+`https://chatgpt.com/backend-api/codex/responses`：
+
+- 不带显式字段的相同请求可以成功，并在 exact repeat 上达到约 95%–98% 命中；
+- 带顶层 `prompt_cache_options` 的请求稳定返回 HTTP 400：
+  `Unsupported parameter: prompt_cache_options`；
+- 只带内容块 `prompt_cache_breakpoint` 的请求也返回 HTTP 400，表明该 Codex 后端没有执行
+  Platform 文档描述的显式断点契约。
+
+为排除“Proxy 原样透传、错误其实来自上游”的歧义，又对 CLIProxyAPI `v7.2.140` 做了相同
+请求的三组配对探针：只带顶层 options、只带内容块 breakpoint、两者都带。三组请求经 Proxy
+均为 HTTP 200；相同 payload 直连 Codex 依次返回对应的 HTTP 400。该版本的官方 tag 源码也
+在 `ConvertOpenAIResponsesRequestToCodex` 中先删除 `prompt_cache_options` /
+`prompt_cache_retention`，再遍历删除内容块 `prompt_cache_breakpoint`。因此“7.2.140 会剥离”
+是当前端点/版本的实证结论，但不能外推为所有 Proxy 或未知兼容端点的默认行为。
+
+OpenAI 官方 Platform 文档同时明确规定：GPT-5.6 及后续模型的 `/v1/responses` 支持
+`prompt_cache_options.mode = explicit` 和内容块级 `prompt_cache_breakpoint`。因此能力必须
+由“物理端点 + Adapter revision + 物理模型”共同决定，不能只由 `gpt-5.6-sol` 模型名决定。
+
+同日完成的真实 Morphz 单任务 transport-only 试验，把 canonical Context 的 Inbox 末端拆成
+一个 User Message，并把变化尾部放入后续 Developer Message；模型可见字符拼接保持相同，
+但请求角色结构发生变化。四次调用合计 94,934 个输入词元、23,552 个缓存词元，命中率仅
+24.81%，与未分割基线没有改善，因此该试验已经回滚。
+
+请求级证据解释了为什么合成长前缀 exact repeat 很高、真实多步 Agent 却很低：Morphz 在
+Context 之后还要发送当前 Activation 的 reasoning/function-call/tool-result continuation；
+GPT-5.6 隐式模式把断点放在最新 eligible user/tool message 末端，而这个一次性 Tool Result
+每轮都会变化。能稳定复用的只剩更早的 System/工具合同前缀，实测通常为 11,776 词元。
+在不删除原生 Function Calling 握手、不重复累积历史、不改变 Structured Context 语义的
+约束下，Codex OAuth 隐式模式无法表达 Inbox 内部历史边界；这正是显式断点需要解决的问题。
 
 ## 3. 设计原则
 
@@ -143,8 +201,9 @@ Provider 不支持缓存、缓存过期、缓存未命中或命中率为零时�
 `prompt_cache_key` 是 OpenAI Responses 的通用请求字段，因此所有 Responses 路线都会发送
 稳定的 Cache Cohort；GPT-5.5 等使用自动前缀缓存的模型也能利用该字段。内容块上的
 `prompt_cache_breakpoint` 和 `prompt_cache_options` 则是 GPT-5.6 及后续模型新增的显式缓存
-能力，只有满足这一官方能力边界时才发送。Provider 可以是官方端点，也可以是已经通过探针
-的 CLIProxyAPI；实现不依赖 `openai-codex` Adapter。其他协议不会收到 OpenAI 字段。
+能力，只有物理端点和模型都满足这一能力边界时才发送。公开 Platform `/v1/responses` 与
+ChatGPT Codex OAuth Responses 不能视为同一端点；当前 `openai-codex` Adapter 保持普通
+canonical 文本并禁用显式字段，避免确定性的 HTTP 400。其他协议不会收到 OpenAI 字段。
 
 ## 4. 建议的内部结构
 
@@ -167,6 +226,7 @@ struct SegmentedModelText {
 struct ModelTextPart {
     text: String,
     cache_boundary_after: bool,
+    cache_boundary_candidate_after: bool,
 }
 ```
 
@@ -286,23 +346,21 @@ Content Block 在 `(observation B)` 和 `(observation C)` 之间断开并不改�
 
 ### 4.2.2 如何知道“上一轮 Inbox 末端”
 
-每个封闭 Inbox 块使用以下信息形成稳定身份：
+每个候选 Inbox 前缀使用以下信息形成稳定身份：
 
 ```text
-Context ID
-Context Protocol Version
-first Event Sequence
-last Event Sequence
-canonical block hash
+stable Provider Request Cohort
+visible prefix byte length
+canonical prefix SHA-256
 ```
 
-这些信息保存在请求准备阶段的本地元数据中，不进入 Context。下一轮新增 Observation 时，
-旧块的 Sequence 范围和内容哈希保持不变，Planner 就能选择旧块末端作为读取断点，同时选择
-新 Inbox 末端作为写入断点。如果旧 Observation 被 Retire 或 Restore，内容哈希和连续范围
+这些信息保存在请求准备阶段的进程内元数据中，不进入 Context。下一轮新增 Observation
+时，旧前缀的长度和内容哈希保持不变，Planner 就能选择旧 Inbox 末端作为读取断点，同时
+选择新 Inbox 末端作为写入断点。如果旧 Observation 被 Retire、Restore 或重写，前缀哈希
 发生变化，旧边界自然不再被选择。
 
-第一版不需要让 Runtime 判断某段文本在语义上“重要不重要”。它只依据 Context 已有的
-稳定性规则和 Event Sequence 进行确定性分块。
+Runtime 不判断某段文本在语义上“重要不重要”。它只依据 Context AST 的 Observation
+边界、canonical 字节和前缀哈希进行确定性选择。
 
 ### 4.2.3 对当前代码的具体改动位置
 
@@ -342,36 +400,33 @@ provider.rs / build_openai_responses_request()
 测试再将拼接结果与现有 `SExpr::to_string()` 对照；迁移完成并证明等价后，前者成为唯一的
 请求序列化路径。
 
-### 4.3 Context 的建议内容块
+### 4.3 Context 的当前内容块
 
-当前第一阶段采用三个内容块：
+当前生产 Renderer 先产生以下候选片段：
 
 1. **固定协议块**：固定引导、`context` 根开头、`protocol` 和稳定的
-   `evaluation-profile`；
-2. **完整 Inbox 块**：覆盖本轮完整的活跃 Inbox，并在末端设置断点；
-3. **动态尾部块**：`observation-state`、`mind`、`session-directory`、`kernel`、
-   `evaluation-environment`、`evaluate` 和 Context 根的结束括号。
+   `evaluation-profile`，固定设置断点；
+2. **Inbox 开头**：只包含 ` (inbox`；
+3. **Observation 候选块**：每条 canonical Observation 单独成为传输候选片段；
+4. **动态尾部块**：从 Inbox 的结束括号开始，包含 `observation-state`、`mind`、
+   `session-directory`、`kernel`、`evaluation-environment`、`evaluate` 和 Context 根的
+   结束括号。
+
+Provider Planner 只选择最多四个实际断点，Adapter 再把未选中的相邻候选片段合并，因此
+不会把数百条 Observation 原样膨胀成数百个 `input_text` 块。
 
 这些块拼起来仍是一段合法且与当前完全相同的 S 表达式文本。Provider Content Block
 边界可以出现在 S 表达式的两个字符之间，但不会向文本插入任何标记，因此不会破坏语法。
 
 ## 5. Inbox 的增量边界
 
-当前实现已经为完整 Inbox 末端设置断点；新增 Observation 会改变该块，因此仍可能失去
-上一轮 Inbox 末端的缓存。下一阶段再按确定性规则把 Inbox 分成不可变的连续块，例如：
-
-- 按连续 Event Sequence 范围分块；
-- 同时设置目标词元上限，避免单块无限增长；
-- 一个块封闭后不再追加内容；
-- 新 Observation 进入新的活动块；
-- 每个封闭块记录内容指纹，但指纹不进入模型文本。
-
-每次请求最多选择少量战略边界：
+当前实现以 Observation 末端作为候选边界，并为候选前缀计算增量 SHA-256 身份。每次请求
+最多选择四个战略边界：
 
 1. 固定协议块末端；
-2. 上一轮已经封闭的 Inbox 末端；
-3. 本轮最新 Inbox 末端，用于下一轮；
-4. 保留一个边界给特定 Provider 或长任务策略。
+2. 与当前 Inbox 仍完全匹配的最长最近历史末端；
+3. 如容量允许，再选择一个次近的匹配历史末端；
+4. 本轮最新 Inbox 末端，用于下一轮。
 
 这样，一条新 Observation 到达时，请求既可以命中上一轮的稳定 Inbox 前缀，又可以为包含
 新 Observation 的前缀建立下一轮缓存。具体块大小不在本设计中凭经验固定，应通过 A/B
@@ -389,21 +444,20 @@ Retire、Restore 或修改较早的活跃历史会从首次变化处产生一次
 
 `prompt_cache_key` 不能替代内容块，也不能让已经变化的字节继续命中。
 
-当前实现以 **Context** 为 Cache Cohort，而不是以 Session 为主体。多个 Session 挂载同一
-Context 时使用同一个稳定键；第一阶段的键为 Context ID 的非秘密哈希。物理模型、账户和
-端点仍由 Provider 侧自然隔离，模型可见字节发生变化时也不会错误命中。后续如需跨 Context
-复用公共 System / Tool 前缀，再评估由以下信息形成更细的分层键：
+当前实现以稳定的 **Provider Request Cohort** 为缓存分组，而不是以 Context 或 Session
+身份分组。键由以下信息形成：
 
 ```text
-Provider Instance
 Physical Model
-Adapter / Protocol Revision
-System Prompt Hash
-Tool Schema Hash
-Context ID
-Context Protocol Version
-Evaluation Profile Artifact Hash（如存在）
+Effective Reasoning Effort
+Ordered Tool Name / Description / JSON Schema
+System and preceding Message bytes
+Stable Context protocol / evaluation-profile prefix
 ```
+
+因此相同请求合同下的不同 Context 可以共享公共前缀；模型、推理档位、工具顺序或 schema、
+System Prompt、Context Protocol 或 Evaluation Profile 任一变化都会进入新 Cohort。Provider
+账户和端点仍由独立的 `ProtocolClient` 实例自然隔离。
 
 不能把 Turn ID、Activation ID、随机请求 ID 或当前时间放进 Cohort Key。任何会改变模型可见
 固定前缀的配置都必须形成新的 Cohort。
@@ -413,40 +467,41 @@ Context 投影和 Provider 账户隔离负责。
 
 ## 7. Provider 能力模型
 
-当前第一阶段把 Responses 通用字段与版本化能力分开：`prompt_cache_key` 按协议发送，显式
-断点按 OpenAI 公布的 GPT-5.6 及后续模型能力发送。后续扩展到其他 Provider 时，应在
-`ProviderModelConfig` 增加可选 Prompt Cache 能力配置，而不是复用模型路由的业务能力列表：
+当前实现把 Responses 通用字段与物理端点能力分开：`prompt_cache_key` 按协议发送，显式
+断点同时受模型版本、Adapter 和 `ProviderModelConfig.prompt_cache_strategy` 控制。该字段
+描述精确 Provider/model 组合，不复用模型路由的业务能力列表：
 
-```text
-prompt_cache.strategy:
-  disabled
-  implicit-prefix
-  explicit-content-boundaries
-  explicit-cache-resource
+```toml
+[providers.openai.models."gpt-5.6-sol"]
+prompt_cache_strategy = "explicit-content-boundaries"
 
-prompt_cache.max_boundaries_per_request
-prompt_cache.retention
-prompt_cache.usage_reporting
+[providers.codex-proxy.models."gpt-5.6-sol"]
+prompt_cache_strategy = "implicit-prefix"
 ```
 
-这里的配置描述物理端点能力，不要求上层任务必须具备缓存。在能力配置实现以前，其他协议
-默认不发送任何 Provider-specific 字段，只保留稳定的字节布局。
+可选值为 `auto`、`disabled`、`implicit-prefix` 和 `explicit-content-boundaries`。`auto`
+保留现有 OpenAI 模型版本判断；确认性实验必须对精确端点/模型/revision 显式冻结策略。
+`openai-codex` Adapter 即使被误配为 explicit 也会拒绝输出显式字段，因为该后端已直接
+验证为 HTTP 400。其他协议不会收到 OpenAI Provider-specific 字段。
 
 建议的 Provider 映射如下：
 
 | Provider / 协议 | 第一阶段行为 | 说明 |
 | --- | --- | --- |
-| OpenAI Responses | 所有模型发送 `prompt_cache_key`；GPT-5.6 及后续模型再发送内容块断点和 cache options | 显式断点已在 GPT-5.6 Sol 路线完成真实可行性验证 |
+| OpenAI Platform Responses | 所有模型发送 `prompt_cache_key`；GPT-5.6 及后续模型再发送内容块断点和 cache options | 官方契约明确支持；Morphz 真实 A/B 待独立 Platform API key |
+| ChatGPT Codex OAuth Responses | 发送 `prompt_cache_key`，保持 canonical Context 单消息，不发送显式字段 | 直连已确认 `prompt_cache_options` 返回 HTTP 400；Proxy 不是根因 |
+| CLIProxyAPI 7.2.140 → Codex OAuth | 可显式冻结为 `implicit-prefix` | 三组配对探针均由 Proxy 200、直连 400；官方 tag 源码明确剥离字段 |
 | OpenAI Chat Compatible | 默认不启用；只有精确端点声明且探测通过后才映射 | 不能因“OpenAI compatible”就假定支持 Responses 字段 |
 | Anthropic Messages | 把内部边界映射为内容块 `cache_control` | 字段、TTL 和计费方式与 OpenAI 不同 |
 | DeepSeek / Qwen 自动缓存端点 | 不发送显式断点，继续保持稳定字节前缀 | DeepSeek 官方说明为自动前缀缓存；实际兼容端点仍以配置和 Usage 为准 |
 | Gemini implicit caching | 不发送显式断点，保留稳定前缀并读取 Usage | 新模型支持隐式缓存，但不等于支持 OpenAI 字段 |
 | Gemini explicit caching | 后续映射为独立 Cached Content 资源 | 涉及资源创建、TTL 和生命周期，不纳入第一阶段 |
-| 未知 Provider | 忽略缓存提示，发送语义等价的普通文本 | 正确性不受影响 |
+| 未知 Responses Provider | `auto` 保留兼容行为；正式实验前必须探测并冻结 | 不从“它是 Proxy”推断支持或不支持 |
 
 官方接口参考：
 
 - [OpenAI Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
+- [CLIProxyAPI v7.2.140](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.2.140)
 - [Anthropic Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache/)
 - [Gemini Context Caching](https://ai.google.dev/gemini-api/docs/caching)
@@ -484,7 +539,8 @@ prompt_cache.usage_reporting
 5. Attachment、Continuation、Tool Result 和其他 Provider 协议不泄露内部 envelope；
 6. Provider Usage 分开保存缓存读取、缓存写入和普通未缓存输入，避免重复计费。
 
-Inbox 增量分块、Retire / Restore 谱系和首次分歧定位属于下一阶段测试。
+Inbox 增量边界、历史谱系匹配、四断点上限、早期历史变化后的重建，以及跨 Context Cohort
+复用都已有确定性合同测试。首次分歧的持久化观测仍属于后续 Benchmark 工具工作。
 
 ### 9.2 Adapter 合同测试
 
@@ -494,7 +550,8 @@ Inbox 增量分块、Retire / Restore 谱系和首次分歧定位属于下一阶
 - Anthropic：第一阶段拼接为原普通文本，不发送 OpenAI 字段；
 - DeepSeek / Qwen / Gemini implicit：不出现未知字段；
 - 未知兼容端点：退化为普通文本且内容完全相同；
-- `openai-codex` 兼容 Adapter 与普通 Responses Adapter 都保留标准缓存字段。
+- `openai-codex` Adapter 只保留 `prompt_cache_key` 和 canonical 文本；普通 Platform
+  Responses Adapter 在 GPT-5.6+ 输出显式断点字段。
 
 不支持字段的 4xx 受控降级尚未实现。
 
@@ -544,18 +601,22 @@ Context 数据，比较：
 - 保证现有字符串请求仍是无缓存能力时的默认路径；
 - 完成逐字节等价、Context Inspect 和所有 Provider 的结构回归。
 
-### Phase 2：OpenAI Responses 缓存字段（第一轮已完成）
+### Phase 2：OpenAI Platform Responses 缓存字段（实现完成，真实 A/B 待凭据）
 
 - 所有 Responses 模型使用 `prompt_cache_key` / Cohort；
-- GPT-5.6 及后续物理模型启用显式内容块断点；
-- 已完成独立字段 A/B 和 Morphz 正常生产路径烟测；
-- 正式多场景成本 A/B 留到下一次 Benchmark 前执行并冻结。
+- GPT-5.6 及后续物理模型在支持该字段的 Platform 端点启用显式内容块断点；
+- ChatGPT Codex OAuth 端点禁用显式字段，避免确定性的 400；
+- 此前经 CLIProxyAPI 得到的 96.6% 已更正为隐式缓存证据；
+- Platform 真实同题 A/B 需要独立 API key，不能复用 Codex OAuth token。
 
-### Phase 3：Inbox 增量分块
+### Phase 3：Inbox 增量边界（生产实现已完成）
 
-- 冻结块大小与边界选择规则；
-- 验证 append、Mind revision、Session switch 和 retire；
-- 记录首次分歧位于哪个 Context region 和哪个内容块。
+- 每条 Observation 末端作为结构候选，不改变 canonical 文本；
+- 规划器按完整前缀哈希保留最近可复用边界，并遵守四断点上限；
+- 较早历史变化时自动停止选择失效边界并重建；
+- 已完成 append、跨 Context Cohort、模型/推理/工具隔离和回退的合同测试；
+- Codex OAuth transport-only 试验无改善并已回滚；
+- Platform 显式模式的真实多场景 A/B 与首次分歧观测仍待执行。
 
 ### Phase 4：其他 Provider
 
@@ -587,27 +648,23 @@ ME-08 已报告的 Token 和缓存数据是当时完整系统与当时请求封�
 参考智能体重新进行配对测量。论文正文不需要记录此次排查过程；只需要报告最终采用的系统
 配置、实验方法、测量结果和适用范围。
 
-## 13. 需要评审的决策
+## 13. 已冻结的实现决策与待决项
 
-实现前需要明确以下选择：
+已经冻结：
 
-1. 是否确认缓存边界只属于临时传输表示，不进入 Yao 和 Event Store；
-2. 是否采用 Context 级而非 Session 级 Cache Cohort；
-3. Inbox 按 Observation 数量、估算词元还是两者共同约束分块；
-4. OpenAI 每轮四个边界的具体分配；
-5. 生产环境是否允许一次无缓存降级重试；
-6. 第一阶段是否只实现 OpenAI Responses，其他 Provider 在 A/B 通过后再接入；
-7. 达到怎样的成本下降和正确率门槛后默认开启。
+- 缓存边界只属于请求封装层的临时表示，不进入 Yao、Event Store 或模型可见文本；
+- Cache Cohort 绑定稳定 Provider 请求合同，不绑定 Context 或 Session 身份；
+- 每条 Observation 末端是候选边界，Adapter 只输出 Planner 选中的少量内容块；
+- OpenAI 每轮选择固定协议、最长可复用历史 Inbox、可选的次近历史 Inbox 和当前 Inbox，
+  总数不超过四个；
+- 当前只对支持显式字段的 OpenAI Platform Responses GPT-5.6+ 能力边界启用显式断点；
+- ChatGPT Codex OAuth 与 Platform API 是独立能力边界，不能只按模型名合并判断。
 
-当前建议答案是：
+仍待决定：
 
-- 采用只存在于请求封装层的临时分块；
-- Cache Cohort 绑定 Context，使共享 Context 的多个 Session 可以复用稳定前缀；
-- Inbox 在 Observation 边界上分块，并同时设置目标词元上限；
-- OpenAI 每轮使用“固定协议、上一稳定 Inbox 末端、当前 Inbox 末端”三个边界，保留第四个；
-- 生产模式允许一次有记录的无缓存降级，Benchmark 模式禁止静默降级；
-- 第一阶段只实现并验证 OpenAI Responses，再扩展其他 Provider；
-- 默认开启前要求任务结果不退化，并在代表性长 Context 上观察到可重复的真实 API 成本下降。
+- 生产端点明确拒绝缓存字段时，是否允许一次有记录的无缓存降级重试；
+- 修复后的真实成本下降和正确率门槛；
+- Anthropic、DeepSeek、Qwen、Gemini 与其他兼容端点的逐模型能力映射。
 
 ## 14. 建议结论
 

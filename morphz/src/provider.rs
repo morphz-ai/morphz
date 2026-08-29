@@ -1,18 +1,20 @@
 use crate::config::{
-    AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, ProviderConfig,
-    ProviderModelConfig,
+    AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, PromptCacheStrategy,
+    ProviderConfig, ProviderModelConfig,
 };
 use crate::llm::{
     model_attachments, model_visible_message_text, provider_continuation, segmented_model_text,
     Client, Message, ModelAttachment, ModelAttemptBinding, ModelFailure, ModelFailureKind,
-    ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
-    ProviderContinuation, ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
+    ModelStreamEvent, ModelStreamSender, ModelTextPart, ModelUsage, PromptTokenAccuracy,
+    PromptTokenCount, ProviderContinuation, ReasoningEffort, Response, SegmentedModelText,
+    ToolCallRepr, ToolDefinition,
 };
 use base64::Engine;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -97,6 +99,7 @@ fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderMod
     let max_input_attachment_total_bytes =
         positive_usize(row.get("max_input_attachment_total_bytes"));
     ProviderModelConfig {
+        prompt_cache_strategy: PromptCacheStrategy::Auto,
         context_window_tokens,
         max_input_tokens,
         max_output_tokens,
@@ -281,7 +284,13 @@ pub(crate) struct ProtocolClient {
     first_byte_timeout: Duration,
     max_output_tokens: Option<u32>,
     reasoning_effort: RwLock<Option<ReasoningEffort>>,
+    model_profiles: BTreeMap<String, ProviderModelConfig>,
     usage_anchors: Mutex<HashMap<u64, PromptUsageAnchor>>,
+    /// Recent incremental Context-prefix boundaries, grouped by the exact
+    /// stable Provider request cohort. This is transport optimization state:
+    /// losing it on restart causes only a cold cache write, never a semantic
+    /// change or an Event Store mutation.
+    prompt_cache_lineages: Mutex<PromptCacheLineageStore>,
 }
 
 fn boxed_model_failure(failure: ModelFailure) -> ProviderError {
@@ -524,6 +533,35 @@ struct PromptUsageAnchor {
     actual_prompt_tokens: usize,
 }
 
+const OPENAI_MAX_EXPLICIT_CACHE_BOUNDARIES: usize = 4;
+const OPENAI_TRACKED_CACHE_BOUNDARIES: usize = 50;
+const OPENAI_TRACKED_CACHE_COHORTS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptCacheBoundaryIdentity {
+    visible_bytes: usize,
+    digest: [u8; 32],
+}
+
+#[derive(Debug, Default)]
+struct PromptCacheLineageStore {
+    histories: HashMap<String, VecDeque<PromptCacheBoundaryIdentity>>,
+    recency: VecDeque<String>,
+}
+
+impl PromptCacheLineageStore {
+    fn history_mut(&mut self, cohort_key: &str) -> &mut VecDeque<PromptCacheBoundaryIdentity> {
+        self.recency.retain(|key| key != cohort_key);
+        self.recency.push_front(cohort_key.to_string());
+        while self.recency.len() > OPENAI_TRACKED_CACHE_COHORTS {
+            if let Some(stale_key) = self.recency.pop_back() {
+                self.histories.remove(&stale_key);
+            }
+        }
+        self.histories.entry(cohort_key.to_string()).or_default()
+    }
+}
+
 pub(crate) fn supported_reasoning_efforts_for_model(
     adapter: &str,
     model: &str,
@@ -590,6 +628,174 @@ pub(crate) fn normalize_reasoning_effort_for_model(
     }
 }
 
+fn hash_prompt_cache_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update(value.len().to_le_bytes());
+    hasher.update(value);
+}
+
+fn prompt_cache_cohort_key(
+    model: &str,
+    reasoning_effort: Option<ReasoningEffort>,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+) -> Option<String> {
+    let segmented_index = messages
+        .iter()
+        .position(|message| segmented_model_text(message).is_some())?;
+    let segmented = segmented_model_text(&messages[segmented_index])?;
+    let stable_end = segmented
+        .parts
+        .iter()
+        .position(|part| part.cache_boundary_after && !part.cache_boundary_candidate_after)?;
+
+    let mut hasher = Sha256::new();
+    hash_prompt_cache_field(&mut hasher, b"morphz.prompt-cache-cohort.v2");
+    hash_prompt_cache_field(&mut hasher, model.as_bytes());
+    hash_prompt_cache_field(
+        &mut hasher,
+        reasoning_effort
+            .map(ReasoningEffort::as_str)
+            .unwrap_or("provider_default")
+            .as_bytes(),
+    );
+    for tool in tools {
+        hash_prompt_cache_field(&mut hasher, tool.name.as_bytes());
+        hash_prompt_cache_field(&mut hasher, tool.description.as_bytes());
+        hash_prompt_cache_field(
+            &mut hasher,
+            serde_json::to_string(&tool.parameters)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+    }
+    for (index, message) in messages.iter().enumerate().take(segmented_index + 1) {
+        hash_prompt_cache_field(&mut hasher, message.role.as_bytes());
+        if index == segmented_index {
+            for part in segmented.parts.iter().take(stable_end + 1) {
+                hash_prompt_cache_field(&mut hasher, part.text.as_bytes());
+            }
+        } else {
+            hash_prompt_cache_field(&mut hasher, model_visible_message_text(message).as_bytes());
+            hash_prompt_cache_field(
+                &mut hasher,
+                message.name.as_deref().unwrap_or_default().as_bytes(),
+            );
+        }
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    Some(format!("morphz-v2-{}", &digest[..54]))
+}
+
+fn incremental_cache_boundary_candidates(
+    segmented: &SegmentedModelText,
+) -> Vec<(usize, PromptCacheBoundaryIdentity)> {
+    let mut hasher = Sha256::new();
+    let mut visible_bytes = 0usize;
+    let mut candidates = Vec::new();
+    for (index, part) in segmented.parts.iter().enumerate() {
+        hasher.update(part.text.as_bytes());
+        visible_bytes = visible_bytes.saturating_add(part.text.len());
+        if part.cache_boundary_candidate_after {
+            candidates.push((
+                index,
+                PromptCacheBoundaryIdentity {
+                    visible_bytes,
+                    digest: hasher.clone().finalize().into(),
+                },
+            ));
+        }
+    }
+    candidates
+}
+
+fn prompt_cache_boundary_diagnostics(segmented: &SegmentedModelText) -> String {
+    let mut hasher = Sha256::new();
+    let mut visible_bytes = 0usize;
+    let mut boundaries = Vec::new();
+    for part in &segmented.parts {
+        hasher.update(part.text.as_bytes());
+        visible_bytes = visible_bytes.saturating_add(part.text.len());
+        if !part.cache_boundary_after {
+            continue;
+        }
+        let digest = hasher.clone().finalize();
+        let digest_prefix = digest
+            .iter()
+            .take(6)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        boundaries.push(format!("{visible_bytes}:{digest_prefix}"));
+    }
+    boundaries.join(",")
+}
+
+/// Select at most four OpenAI explicit breakpoints: fixed protocol, the
+/// longest still-matching recent Inbox prefixes, and the current Inbox end.
+/// Returning the current identity lets the caller remember it for the next
+/// physical request without persisting cache state into Context semantics.
+fn plan_incremental_cache_boundaries(
+    segmented: &mut SegmentedModelText,
+    history: &VecDeque<PromptCacheBoundaryIdentity>,
+) -> Option<PromptCacheBoundaryIdentity> {
+    let candidates = incremental_cache_boundary_candidates(segmented);
+    let (current_index, current_identity) = candidates.last()?.clone();
+
+    for part in &mut segmented.parts {
+        if part.cache_boundary_candidate_after {
+            part.cache_boundary_after = false;
+        }
+    }
+    let fixed_boundaries = segmented
+        .parts
+        .iter()
+        .filter(|part| part.cache_boundary_after && !part.cache_boundary_candidate_after)
+        .count();
+    let mut selected = HashSet::from([current_index]);
+    let mut matching_history = history
+        .iter()
+        .filter_map(|prior| {
+            candidates
+                .iter()
+                .find(|(_, candidate)| candidate == prior)
+                .map(|(index, candidate)| (*index, candidate.visible_bytes))
+        })
+        .collect::<Vec<_>>();
+    matching_history.sort_by_key(|candidate| std::cmp::Reverse(candidate.1));
+    matching_history.dedup_by_key(|(index, _)| *index);
+    let remaining = OPENAI_MAX_EXPLICIT_CACHE_BOUNDARIES
+        .saturating_sub(fixed_boundaries.saturating_add(selected.len()));
+    for (index, _) in matching_history.into_iter().take(remaining) {
+        selected.insert(index);
+    }
+    for index in selected {
+        segmented.parts[index].cache_boundary_after = true;
+    }
+    Some(current_identity)
+}
+
+fn coalesce_selected_cache_parts(parts: &[ModelTextPart]) -> Vec<ModelTextPart> {
+    let mut coalesced = Vec::new();
+    let mut text = String::new();
+    for part in parts {
+        text.push_str(&part.text);
+        if part.cache_boundary_after {
+            coalesced.push(ModelTextPart {
+                text: std::mem::take(&mut text),
+                cache_boundary_after: true,
+                cache_boundary_candidate_after: false,
+            });
+        }
+    }
+    if !text.is_empty() {
+        coalesced.push(ModelTextPart {
+            text,
+            cache_boundary_after: false,
+            cache_boundary_candidate_after: false,
+        });
+    }
+    coalesced
+}
+
 impl ProtocolClient {
     pub(crate) fn new(
         provider: &ProviderConfig,
@@ -647,7 +853,9 @@ impl ProtocolClient {
             first_byte_timeout: Duration::from_secs(llm.first_byte_timeout_secs.max(1)),
             max_output_tokens: llm.max_output_tokens,
             reasoning_effort: RwLock::new(llm.reasoning_effort),
+            model_profiles: provider.models.clone(),
             usage_anchors: Mutex::new(HashMap::new()),
+            prompt_cache_lineages: Mutex::new(PromptCacheLineageStore::default()),
         })
     }
 
@@ -660,6 +868,83 @@ impl ProtocolClient {
 
     fn protocol_for_model(&self, model: &str) -> ModelProtocol {
         self.protocol.effective_for_model(model)
+    }
+
+    fn request_reasoning_effort(
+        &self,
+        model: &str,
+        reasoning_override: Option<Option<ReasoningEffort>>,
+    ) -> Option<ReasoningEffort> {
+        let reasoning_effort = reasoning_override.unwrap_or_else(|| {
+            self.reasoning_effort
+                .read()
+                .map(|effort| *effort)
+                .unwrap_or(None)
+        });
+        normalize_reasoning_effort_for_model(self.adapter.as_str(), model, reasoning_effort)
+    }
+
+    fn prepare_prompt_cache_messages(
+        &self,
+        model: &str,
+        mut messages: Vec<Message>,
+        tools: &[ToolDefinition],
+        reasoning_override: Option<Option<ReasoningEffort>>,
+        record_current_boundary: bool,
+    ) -> Result<Vec<Message>, ProviderError> {
+        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
+            return Ok(messages);
+        }
+        let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
+        let Some(cohort_key) = prompt_cache_cohort_key(model, reasoning_effort, &messages, tools)
+        else {
+            return Ok(messages);
+        };
+        let explicit_prompt_cache = self.explicit_prompt_cache_enabled(model);
+
+        for message in &mut messages {
+            let Some(mut segmented) = segmented_model_text(message) else {
+                continue;
+            };
+            segmented.prompt_cache_key = Some(cohort_key.clone());
+            if explicit_prompt_cache {
+                if let Ok(mut lineages) = self.prompt_cache_lineages.lock() {
+                    let tracked_cohorts_before = lineages.histories.len();
+                    let history = lineages.history_mut(&cohort_key);
+                    let history_before = history.len();
+                    let candidate_count = incremental_cache_boundary_candidates(&segmented).len();
+                    if let Some(current) =
+                        plan_incremental_cache_boundaries(&mut segmented, history)
+                    {
+                        if record_current_boundary {
+                            history.retain(|prior| prior != &current);
+                            history.push_front(current);
+                            history.truncate(OPENAI_TRACKED_CACHE_BOUNDARIES);
+                        }
+                    }
+                    let cohort_prefix = cohort_key.chars().take(16).collect::<String>();
+                    let selected_boundaries = prompt_cache_boundary_diagnostics(&segmented);
+                    tracing::info!(
+                        model,
+                        cache_cohort = %cohort_prefix,
+                        tracked_cohorts_before,
+                        history_before,
+                        history_after = history.len(),
+                        candidate_count,
+                        selected_boundaries = %selected_boundaries,
+                        record_current_boundary,
+                        event_code = "provider.prompt_cache.plan",
+                        "Planned explicit Prompt Cache boundaries"
+                    );
+                } else {
+                    let empty_history = VecDeque::new();
+                    plan_incremental_cache_boundaries(&mut segmented, &empty_history);
+                }
+            }
+            message.content = serde_json::to_string(&segmented)?;
+            break;
+        }
+        Ok(messages)
     }
 
     fn endpoint_for(&self, streaming: bool, model: &str) -> Result<String, ProviderError> {
@@ -706,14 +991,7 @@ impl ProtocolClient {
         tools: &[ToolDefinition],
         reasoning_override: Option<Option<ReasoningEffort>>,
     ) -> Value {
-        let reasoning_effort = reasoning_override.unwrap_or_else(|| {
-            self.reasoning_effort
-                .read()
-                .map(|effort| *effort)
-                .unwrap_or(None)
-        });
-        let reasoning_effort =
-            normalize_reasoning_effort_for_model(self.adapter.as_str(), model, reasoning_effort);
+        let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
         let request = build_request_with_prompt_cache(
             self.protocol_for_model(model),
             model,
@@ -727,8 +1005,21 @@ impl ProtocolClient {
     }
 
     fn explicit_prompt_cache_enabled(&self, model: &str) -> bool {
-        self.protocol_for_model(model) == ModelProtocol::OpenaiResponses
-            && openai_model_supports_explicit_prompt_cache(model)
+        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses
+            || self.adapter == "openai-codex"
+        {
+            return false;
+        }
+        match self
+            .model_profiles
+            .get(model)
+            .map(|profile| profile.prompt_cache_strategy)
+            .unwrap_or_default()
+        {
+            PromptCacheStrategy::Disabled | PromptCacheStrategy::ImplicitPrefix => false,
+            PromptCacheStrategy::ExplicitContentBoundaries => true,
+            PromptCacheStrategy::Auto => openai_model_supports_explicit_prompt_cache(model),
+        }
     }
 
     fn request_for_model(
@@ -1436,7 +1727,9 @@ impl Client for ProtocolClient {
     ) -> Result<Option<PromptTokenCount>, ProviderError> {
         let model = self.model_snapshot();
         let protocol = self.protocol_for_model(&model);
-        let body = self.request_for_model(&model, messages, tools);
+        let messages =
+            self.prepare_prompt_cache_messages(&model, messages.to_vec(), tools, None, false)?;
+        let body = self.request_for_model(&model, &messages, tools);
         let base_estimate_tokens = serialized_request_token_estimate(&body);
         let calibration_shape = prompt_calibration_shape(protocol, &model, &body);
         let calibration_key = prompt_calibration_key(scope, calibration_shape);
@@ -1481,6 +1774,7 @@ impl Client for ProtocolClient {
     ) -> Result<Response, ProviderError> {
         let model = self.model_snapshot();
         let protocol = self.protocol_for_model(&model);
+        let messages = self.prepare_prompt_cache_messages(&model, messages, &tools, None, true)?;
         let request = self.request_for_model(&model, &messages, &tools);
         if self.adapter == "openai-codex" {
             // ChatGPT's Codex backend only accepts Responses requests in its
@@ -1503,6 +1797,7 @@ impl Client for ProtocolClient {
     ) -> Result<Response, ProviderError> {
         let _ = stream.send(ModelStreamEvent::Started);
         let model = self.model_snapshot();
+        let messages = self.prepare_prompt_cache_messages(&model, messages, &tools, None, true)?;
         let request = self.request_for_model(&model, &messages, &tools);
         match self
             .send_stream(&model, &request, measurement.as_ref(), &stream)
@@ -1536,6 +1831,13 @@ impl Client for ProtocolClient {
     ) -> Result<Response, ProviderError> {
         let _ = stream.send(ModelStreamEvent::Started);
         let model = self.model_snapshot();
+        let messages = self.prepare_prompt_cache_messages(
+            &model,
+            messages,
+            &tools,
+            options.reasoning_effort,
+            true,
+        )?;
         let request = self.request_for_model_with_reasoning(
             &model,
             &messages,
@@ -2864,9 +3166,8 @@ fn build_openai_responses_request(
         if let Some(segmented) = segmented_model_text(message) {
             prompt_cache_key = segmented.prompt_cache_key.clone();
             if explicit_prompt_cache {
-                let content = segmented
-                    .parts
-                    .iter()
+                let content = coalesce_selected_cache_parts(&segmented.parts)
+                    .into_iter()
                     .map(|part| {
                         let mut block = json!({
                             "type": "input_text",
@@ -4903,7 +5204,7 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_6_responses_maps_segmented_context_to_explicit_cache_boundaries() {
+    fn gpt_5_6_responses_uses_explicit_public_and_plain_codex_context() {
         let context = segmented_text_message(
             "user",
             SegmentedModelText {
@@ -4911,10 +5212,12 @@ mod tests {
                     ModelTextPart {
                         text: "stable".to_string(),
                         cache_boundary_after: true,
+                        cache_boundary_candidate_after: false,
                     },
                     ModelTextPart {
                         text: "dynamic".to_string(),
                         cache_boundary_after: false,
+                        cache_boundary_candidate_after: false,
                     },
                 ],
                 prompt_cache_key: Some("morphz-context-test".to_string()),
@@ -4935,27 +5238,17 @@ mod tests {
         )
         .unwrap();
 
-        let request = client.request_for_model("gpt-5.6-sol", &[context.clone()], &[]);
-        assert_eq!(
-            request.pointer("/prompt_cache_options"),
-            Some(&json!({"mode": "explicit", "ttl": "30m"}))
-        );
+        let request = client.request_for_model("gpt-5.6-sol", std::slice::from_ref(&context), &[]);
+        assert!(request.get("prompt_cache_options").is_none());
         assert_eq!(
             request.get("prompt_cache_key"),
             Some(&json!("morphz-context-test"))
         );
         assert_eq!(
-            request.pointer("/input/0/content/0"),
-            Some(&json!({
-                "type": "input_text",
-                "text": "stable",
-                "prompt_cache_breakpoint": {"mode": "explicit"}
-            }))
+            request.pointer("/input/0"),
+            Some(&json!({"role": "user", "content": "stabledynamic"}))
         );
-        assert_eq!(
-            request.pointer("/input/0/content/1"),
-            Some(&json!({"type": "input_text", "text": "dynamic"}))
-        );
+        assert!(request.pointer("/input/1").is_none());
 
         let generic = ProtocolClient::new(
             &provider,
@@ -4964,7 +5257,8 @@ mod tests {
             &LlmConfig::default(),
         )
         .unwrap();
-        let generic_request = generic.request_for_model("gpt-5.6-sol", &[context.clone()], &[]);
+        let generic_request =
+            generic.request_for_model("gpt-5.6-sol", std::slice::from_ref(&context), &[]);
         assert_eq!(
             generic_request.pointer("/input/0/content/0/prompt_cache_breakpoint"),
             Some(&json!({"mode": "explicit"}))
@@ -4974,11 +5268,12 @@ mod tests {
             Some(&json!({"mode": "explicit", "ttl": "30m"}))
         );
 
-        let older = client.request_for_model("gpt-5.5", &[context.clone()], &[]);
+        let older = client.request_for_model("gpt-5.5", std::slice::from_ref(&context), &[]);
         assert_eq!(
             older.pointer("/input/0/content"),
             Some(&json!("stabledynamic"))
         );
+        assert!(older.pointer("/input/1").is_none());
         assert!(older.get("prompt_cache_options").is_none());
         assert_eq!(
             older.get("prompt_cache_key"),
@@ -4987,12 +5282,190 @@ mod tests {
 
         let future = client.request_for_model("gpt-5.7-sol", &[context], &[]);
         assert_eq!(
-            future.pointer("/input/0/content/0/prompt_cache_breakpoint"),
-            Some(&json!({"mode": "explicit"}))
+            future.pointer("/input/0/content"),
+            Some(&json!("stabledynamic"))
+        );
+        assert!(future.pointer("/input/1").is_none());
+        assert!(future.get("prompt_cache_options").is_none());
+
+        let public_older = generic.request_for_model(
+            "gpt-5.5",
+            std::slice::from_ref(&incremental_context_message("older", &["one"])),
+            &[],
         );
         assert_eq!(
-            future.get("prompt_cache_options"),
-            Some(&json!({"mode": "explicit", "ttl": "30m"}))
+            public_older.pointer("/input/0/content"),
+            Some(&json!(
+                "stable-system-and-protocol (inbox (observation one)) dynamic-tail"
+            ))
+        );
+        assert!(public_older.get("prompt_cache_options").is_none());
+    }
+
+    fn incremental_context_message(provisional_key: &str, observations: &[&str]) -> Message {
+        let mut parts = vec![
+            ModelTextPart {
+                text: "stable-system-and-protocol".to_string(),
+                cache_boundary_after: true,
+                cache_boundary_candidate_after: false,
+            },
+            ModelTextPart {
+                text: " (inbox".to_string(),
+                cache_boundary_after: observations.is_empty(),
+                cache_boundary_candidate_after: observations.is_empty(),
+            },
+        ];
+        for (index, observation) in observations.iter().enumerate() {
+            parts.push(ModelTextPart {
+                text: format!(" (observation {observation})"),
+                cache_boundary_after: index + 1 == observations.len(),
+                cache_boundary_candidate_after: true,
+            });
+        }
+        parts.push(ModelTextPart {
+            text: ") dynamic-tail".to_string(),
+            cache_boundary_after: false,
+            cache_boundary_candidate_after: false,
+        });
+        segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts,
+                prompt_cache_key: Some(provisional_key.to_string()),
+            },
+        )
+        .unwrap()
+    }
+
+    fn explicit_breakpoint_texts(request: &Value) -> Vec<String> {
+        request
+            .pointer("/input/1/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|block| block.get("prompt_cache_breakpoint").is_some())
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn prepare_incremental_request(
+        history: &mut VecDeque<PromptCacheBoundaryIdentity>,
+        provisional_key: &str,
+        observations: &[&str],
+    ) -> (Value, String) {
+        let mut messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: "stable system".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            incremental_context_message(provisional_key, observations),
+        ];
+        let cohort_key = prompt_cache_cohort_key("gpt-5.6-sol", None, &messages, &[]).unwrap();
+        let mut segmented = segmented_model_text(&messages[1]).unwrap();
+        segmented.prompt_cache_key = Some(cohort_key.clone());
+        let current = plan_incremental_cache_boundaries(&mut segmented, history).unwrap();
+        history.retain(|prior| prior != &current);
+        history.push_front(current);
+        history.truncate(OPENAI_TRACKED_CACHE_BOUNDARIES);
+        messages[1].content = serde_json::to_string(&segmented).unwrap();
+        (
+            build_openai_responses_request("gpt-5.6-sol", None, None, &messages, &[], true),
+            cohort_key,
+        )
+    }
+
+    #[test]
+    fn gpt_5_6_prompt_cache_preserves_prior_inbox_ends_and_caps_breakpoints() {
+        let mut history = VecDeque::new();
+        let (first_request, first_key) =
+            prepare_incremental_request(&mut history, "context-a", &["one"]);
+        assert_eq!(explicit_breakpoint_texts(&first_request).len(), 2);
+
+        let (second_request, second_key) =
+            prepare_incremental_request(&mut history, "different-context-b", &["one", "two"]);
+        assert_eq!(first_key, second_key);
+        let second_breakpoints = explicit_breakpoint_texts(&second_request);
+        assert_eq!(second_breakpoints.len(), 3);
+        assert!(second_breakpoints[1].ends_with("(observation one)"));
+        assert_eq!(second_breakpoints[2], " (observation two)");
+
+        let (third_request, _) =
+            prepare_incremental_request(&mut history, "context-c", &["one", "two", "three"]);
+        assert_eq!(explicit_breakpoint_texts(&third_request).len(), 4);
+
+        let (fourth_request, _) = prepare_incremental_request(
+            &mut history,
+            "context-d",
+            &["one", "two", "three", "four"],
+        );
+        let fourth_breakpoints = explicit_breakpoint_texts(&fourth_request);
+        assert_eq!(fourth_breakpoints.len(), 4);
+        assert!(fourth_breakpoints
+            .iter()
+            .any(|text| text.ends_with("(observation three)")));
+        assert_eq!(fourth_breakpoints.last().unwrap(), " (observation four)");
+
+        let (rebuilt_request, _) = prepare_incremental_request(
+            &mut history,
+            "context-e",
+            &["changed", "two", "three", "four", "five"],
+        );
+        assert_eq!(explicit_breakpoint_texts(&rebuilt_request).len(), 2);
+    }
+
+    #[test]
+    fn prompt_cache_cohort_tracks_model_reasoning_tools_and_stable_prefix() {
+        let messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: "stable system".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            incremental_context_message("context-a", &["one"]),
+        ];
+        let base = prompt_cache_cohort_key("gpt-5.6-sol", None, &messages, &[]).unwrap();
+        assert_eq!(base.len(), 64);
+        assert_eq!(
+            base,
+            prompt_cache_cohort_key(
+                "gpt-5.6-sol",
+                None,
+                &[
+                    messages[0].clone(),
+                    incremental_context_message("other-context", &["different"]),
+                ],
+                &[],
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            base,
+            prompt_cache_cohort_key("gpt-5.6-sol", Some(ReasoningEffort::High), &messages, &[],)
+                .unwrap()
+        );
+        assert_ne!(
+            base,
+            prompt_cache_cohort_key("gpt-5.6-terra", None, &messages, &[]).unwrap()
+        );
+        assert_ne!(
+            base,
+            prompt_cache_cohort_key(
+                "gpt-5.6-sol",
+                None,
+                &messages,
+                &[ToolDefinition {
+                    name: "read".to_string(),
+                    description: "Read a file".to_string(),
+                    parameters: json!({"type": "object"}),
+                }],
+            )
+            .unwrap()
         );
     }
 
@@ -5010,6 +5483,73 @@ mod tests {
     }
 
     #[test]
+    fn configured_prompt_cache_strategy_controls_the_physical_endpoint() {
+        let context = incremental_context_message("configured", &["one"]);
+        let mut provider = ProviderConfig {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://provider.invalid/v1".to_string(),
+            ..ProviderConfig::default()
+        };
+        provider.models.insert(
+            "gpt-5.6-sol".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ImplicitPrefix,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "provider-gpt56-alias".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ExplicitContentBoundaries,
+                ..ProviderModelConfig::default()
+            },
+        );
+
+        let implicit = ProtocolClient::new(
+            &provider,
+            "gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model("gpt-5.6-sol", std::slice::from_ref(&context), &[]);
+        assert!(implicit.get("prompt_cache_options").is_none());
+        assert_eq!(
+            implicit.pointer("/input/0/content"),
+            Some(&json!(
+                "stable-system-and-protocol (inbox (observation one)) dynamic-tail"
+            ))
+        );
+
+        let explicit = ProtocolClient::new(
+            &provider,
+            "provider-gpt56-alias".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model("provider-gpt56-alias", std::slice::from_ref(&context), &[]);
+        assert_eq!(
+            explicit.get("prompt_cache_options"),
+            Some(&json!({"mode": "explicit", "ttl": "30m"}))
+        );
+        assert!(explicit
+            .pointer("/input/0/content/0/prompt_cache_breakpoint")
+            .is_some());
+
+        let codex = ProtocolClient::new_with_adapter(
+            &provider,
+            "openai-codex",
+            "provider-gpt56-alias".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model("provider-gpt56-alias", &[context], &[]);
+        assert!(codex.get("prompt_cache_options").is_none());
+    }
+
+    #[test]
     fn providers_without_explicit_breakpoint_support_receive_canonical_text() {
         let message = segmented_text_message(
             "user",
@@ -5018,10 +5558,12 @@ mod tests {
                     ModelTextPart {
                         text: "alpha".to_string(),
                         cache_boundary_after: true,
+                        cache_boundary_candidate_after: false,
                     },
                     ModelTextPart {
                         text: " beta".to_string(),
                         cache_boundary_after: false,
+                        cache_boundary_candidate_after: false,
                     },
                 ],
                 prompt_cache_key: Some("ignored".to_string()),
@@ -5034,7 +5576,7 @@ mod tests {
             "test",
             None,
             None,
-            &[message.clone()],
+            std::slice::from_ref(&message),
             &[],
         );
         assert_eq!(
@@ -5048,7 +5590,7 @@ mod tests {
             "test",
             None,
             None,
-            &[message.clone()],
+            std::slice::from_ref(&message),
             &[],
         );
         assert_eq!(

@@ -36,9 +36,10 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - CLIProxyAPI `7.2.140` on the same isolated cloud node, bound only to the
   Docker host bridge.
 
-The launcher resolves and pins the provider's IPv4 address for each job. Both
-the logical provider host and the effective IPv4 address are recorded by
-preflight.
+The launcher resolves and records the provider's IPv4 address for each job.
+Plain-HTTP bridge endpoints are replaced with that exact address. HTTPS
+endpoints retain their hostname so certificate validation and SNI remain valid;
+the resolved IPv4 is still recorded by preflight as run evidence.
 
 On an isolated cloud experiment node, CLIProxyAPI may instead run on that same
 node. Export `MORPHZ_PROVIDER_BASE_URL`, `MORPHZ_PROVIDER_PROTOCOL` and
@@ -48,6 +49,15 @@ containers (normally the node's private IPv4 address), not `127.0.0.1`, because
 loopback inside a task container refers to that container. Keep port 8317 closed
 in the public security group and authenticate the proxy with a non-example API
 key.
+
+Prompt-cache capability is frozen per physical endpoint/model. Direct
+`https://api.openai.com/v1` runs select `explicit-content-boundaries` for
+GPT-5.6. Unknown compatible endpoints remain `auto`; after an exact capability
+probe, set `MORPHZ_PROMPT_CACHE_STRATEGY` to `implicit-prefix`,
+`explicit-content-boundaries`, or `disabled`. CLIProxyAPI `7.2.140` forwarding
+to the ChatGPT Codex backend has been paired against direct requests and should
+be frozen as `implicit-prefix`; this result must not be generalized to other
+gateway versions.
 
 The current Terminal-Bench 2.1 repository states that community leaderboard
 submissions are closed. These runs are still reproducible benchmark results and
