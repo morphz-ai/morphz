@@ -636,6 +636,7 @@ fn hash_prompt_cache_field(hasher: &mut Sha256, value: &[u8]) {
 fn prompt_cache_cohort_key(
     model: &str,
     reasoning_effort: Option<ReasoningEffort>,
+    explicit_prompt_cache: bool,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Option<String> {
@@ -649,8 +650,16 @@ fn prompt_cache_cohort_key(
         .position(|part| part.cache_boundary_after && !part.cache_boundary_candidate_after)?;
 
     let mut hasher = Sha256::new();
-    hash_prompt_cache_field(&mut hasher, b"morphz.prompt-cache-cohort.v2");
+    hash_prompt_cache_field(&mut hasher, b"morphz.prompt-cache-cohort.v3");
     hash_prompt_cache_field(&mut hasher, model.as_bytes());
+    hash_prompt_cache_field(
+        &mut hasher,
+        if explicit_prompt_cache {
+            b"explicit-content-boundaries"
+        } else {
+            b"implicit-prefix"
+        },
+    );
     hash_prompt_cache_field(
         &mut hasher,
         reasoning_effort
@@ -683,7 +692,7 @@ fn prompt_cache_cohort_key(
         }
     }
     let digest = format!("{:x}", hasher.finalize());
-    Some(format!("morphz-v2-{}", &digest[..54]))
+    Some(format!("morphz-v3-{}", &digest[..54]))
 }
 
 fn incremental_cache_boundary_candidates(
@@ -896,11 +905,16 @@ impl ProtocolClient {
             return Ok(messages);
         }
         let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
-        let Some(cohort_key) = prompt_cache_cohort_key(model, reasoning_effort, &messages, tools)
-        else {
+        let explicit_prompt_cache = self.explicit_prompt_cache_enabled(model);
+        let Some(cohort_key) = prompt_cache_cohort_key(
+            model,
+            reasoning_effort,
+            explicit_prompt_cache,
+            &messages,
+            tools,
+        ) else {
             return Ok(messages);
         };
-        let explicit_prompt_cache = self.explicit_prompt_cache_enabled(model);
 
         for message in &mut messages {
             let Some(mut segmented) = segmented_model_text(message) else {
@@ -5364,7 +5378,8 @@ mod tests {
             },
             incremental_context_message(provisional_key, observations),
         ];
-        let cohort_key = prompt_cache_cohort_key("gpt-5.6-sol", None, &messages, &[]).unwrap();
+        let cohort_key =
+            prompt_cache_cohort_key("gpt-5.6-sol", None, true, &messages, &[]).unwrap();
         let mut segmented = segmented_model_text(&messages[1]).unwrap();
         segmented.prompt_cache_key = Some(cohort_key.clone());
         let current = plan_incremental_cache_boundaries(&mut segmented, history).unwrap();
@@ -5429,13 +5444,18 @@ mod tests {
             },
             incremental_context_message("context-a", &["one"]),
         ];
-        let base = prompt_cache_cohort_key("gpt-5.6-sol", None, &messages, &[]).unwrap();
+        let base = prompt_cache_cohort_key("gpt-5.6-sol", None, true, &messages, &[]).unwrap();
         assert_eq!(base.len(), 64);
+        assert_ne!(
+            base,
+            prompt_cache_cohort_key("gpt-5.6-sol", None, false, &messages, &[]).unwrap()
+        );
         assert_eq!(
             base,
             prompt_cache_cohort_key(
                 "gpt-5.6-sol",
                 None,
+                true,
                 &[
                     messages[0].clone(),
                     incremental_context_message("other-context", &["different"]),
@@ -5446,18 +5466,25 @@ mod tests {
         );
         assert_ne!(
             base,
-            prompt_cache_cohort_key("gpt-5.6-sol", Some(ReasoningEffort::High), &messages, &[],)
-                .unwrap()
+            prompt_cache_cohort_key(
+                "gpt-5.6-sol",
+                Some(ReasoningEffort::High),
+                true,
+                &messages,
+                &[],
+            )
+            .unwrap()
         );
         assert_ne!(
             base,
-            prompt_cache_cohort_key("gpt-5.6-terra", None, &messages, &[]).unwrap()
+            prompt_cache_cohort_key("gpt-5.6-terra", None, true, &messages, &[]).unwrap()
         );
         assert_ne!(
             base,
             prompt_cache_cohort_key(
                 "gpt-5.6-sol",
                 None,
+                true,
                 &messages,
                 &[ToolDefinition {
                     name: "read".to_string(),

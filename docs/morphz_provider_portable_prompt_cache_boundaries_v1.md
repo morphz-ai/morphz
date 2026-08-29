@@ -15,8 +15,9 @@ Observation 后该断点会移动，因此实际命中长期停留在固定 Syst
 2. 请求规划器保留与当前 Inbox 仍匹配的最近历史末端，并始终选择当前 Inbox 末端；
 3. OpenAI 每次请求最多发四个显式断点：固定协议边界、最多两个最近历史 Inbox 边界和
    当前 Inbox 边界；
-4. Cache Cohort 不再由 `context_id` 派生，而由物理模型、有效推理档位、工具合同、System
-   Message 和稳定 Context 前缀共同哈希，因此跨 Context 的相同稳定前缀可以复用；
+4. Cache Cohort 不再由 `context_id` 派生，而由物理模型、实际缓存 wire mode、有效推理档位、
+   工具合同、System Message 和稳定 Context 前缀共同哈希，因此同一策略下跨 Context 的相同
+   稳定前缀可以复用，同时配对实验的 implicit/explicit 两臂不会共享缓存命名空间；
 5. Retire、Restore 或较早 Observation 变化时，内容哈希不再匹配，规划器自动退回固定协议
    与当前 Inbox 两个边界并重建缓存；
 6. 进程内只保存最近 256 个 Cohort、每个 Cohort 最近 50 个边界；状态丢失只造成冷启动，
@@ -455,9 +456,9 @@ System and preceding Message bytes
 Stable Context protocol / evaluation-profile prefix
 ```
 
-因此相同请求合同下的不同 Context 可以共享公共前缀；模型、推理档位、工具顺序或 schema、
-System Prompt、Context Protocol 或 Evaluation Profile 任一变化都会进入新 Cohort。Provider
-账户和端点仍由独立的 `ProtocolClient` 实例自然隔离。
+因此相同请求合同下的不同 Context 可以共享公共前缀；模型、实际缓存 wire mode、推理档位、
+工具顺序或 schema、System Prompt、Context Protocol 或 Evaluation Profile 任一变化都会进入
+新 Cohort。Provider 账户和端点仍由独立的 `ProtocolClient` 实例自然隔离。
 
 不能把 Turn ID、Activation ID、随机请求 ID 或当前时间放进 Cohort Key。任何会改变模型可见
 固定前缀的配置都必须形成新的 Cohort。
