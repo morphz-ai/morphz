@@ -6,15 +6,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = Path(__file__).with_name("run_benchmark.py")
 PLATFORM_BASE_URL = "https://api.openai.com/v1"
+PLATFORM_MODEL = "gpt-5.6-sol"
+CLOUDFLARE_MODEL = "openai/gpt-5.6-sol"
+CLOUDFLARE_PATH = re.compile(r"/client/v4/accounts/[0-9a-f]{32}/ai/v1")
 STRATEGIES = ("implicit-prefix", "explicit-content-boundaries")
 ACCEPTANCE_RATIO = 0.85
 
@@ -30,12 +35,30 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def direct_platform_environment(environment: dict[str, str]) -> dict[str, str]:
+def controlled_provider_environment(environment: dict[str, str]) -> dict[str, str]:
     base_url = environment.get("MORPHZ_PROVIDER_BASE_URL", "").rstrip("/")
-    require(
-        base_url == PLATFORM_BASE_URL,
-        "Prompt Cache A/B requires MORPHZ_PROVIDER_BASE_URL=https://api.openai.com/v1",
-    )
+    provider_model = environment.get("MORPHZ_PROVIDER_MODEL", "").strip()
+    parsed = urlparse(base_url)
+    if base_url == PLATFORM_BASE_URL:
+        provider_model = provider_model or PLATFORM_MODEL
+        require(
+            provider_model == PLATFORM_MODEL,
+            f"OpenAI Platform A/B requires MORPHZ_PROVIDER_MODEL={PLATFORM_MODEL}",
+        )
+    else:
+        cloudflare_unified = (
+            parsed.scheme == "https"
+            and (parsed.hostname or "").lower() == "api.cloudflare.com"
+            and CLOUDFLARE_PATH.fullmatch(parsed.path) is not None
+        )
+        require(
+            cloudflare_unified,
+            "Prompt Cache A/B requires the OpenAI Platform or Cloudflare unified AI API",
+        )
+        require(
+            provider_model == CLOUDFLARE_MODEL,
+            f"Cloudflare A/B requires MORPHZ_PROVIDER_MODEL={CLOUDFLARE_MODEL}",
+        )
     require(
         environment.get("MORPHZ_PROVIDER_PROTOCOL", "openai-responses")
         == "openai-responses",
@@ -47,6 +70,7 @@ def direct_platform_environment(environment: dict[str, str]) -> dict[str, str]:
     )
     prepared = environment.copy()
     prepared["MORPHZ_PROVIDER_PROTOCOL"] = "openai-responses"
+    prepared["MORPHZ_PROVIDER_MODEL"] = provider_model
     return prepared
 
 
@@ -212,6 +236,7 @@ def summarize_arm(strategy: str, job_dir: Path) -> dict[str, Any]:
         "runtime_git_commit": identity.get("runtime_git_commit"),
         "runtime_binary_sha256": identity.get("runtime_binary_sha256"),
         "infrastructure_git_commit": identity.get("infrastructure_git_commit"),
+        "provider_model": identity.get("provider_model"),
         "input_tokens": input_tokens,
         "cached_input_tokens": cached_input_tokens,
         "output_tokens": output_tokens,
@@ -235,17 +260,34 @@ def summarize_arm(strategy: str, job_dir: Path) -> dict[str, Any]:
     }
 
 
-def build_report(task: str, arms: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def build_report(
+    task: str,
+    arms: dict[str, dict[str, Any]],
+    *,
+    provider: str,
+    provider_model: str,
+) -> dict[str, Any]:
     require(set(arms) == set(STRATEGIES), "A/B report requires both cache strategies")
     implicit = arms["implicit-prefix"]
     explicit = arms["explicit-content-boundaries"]
-    for field in ("task_name", "runtime_git_commit", "runtime_binary_sha256"):
+    for field in (
+        "task_name",
+        "runtime_git_commit",
+        "runtime_binary_sha256",
+        "provider_model",
+    ):
         require(implicit[field] == explicit[field], f"paired arms differ on {field}")
+    require(
+        implicit["provider_model"] == provider_model,
+        "paired arms do not bind the reported provider model",
+    )
     return {
-        "schema_version": "morphz-gpt56-prompt-cache-ab-v1",
+        "schema_version": "morphz-gpt56-prompt-cache-ab-v2",
         "task": task,
-        "provider": PLATFORM_BASE_URL,
-        "physical_model": "gpt-5.6-sol",
+        "provider": provider,
+        "upstream_model": PLATFORM_MODEL,
+        "provider_model": provider_model,
+        "physical_model": provider_model,
         "reasoning_effort": "max",
         "acceptance_cache_hit_ratio": ACCEPTANCE_RATIO,
         "cache_cohort_isolation": (
@@ -278,7 +320,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     require(not any(marker in args.task for marker in "*?["), "task must be an exact name")
-    environment = direct_platform_environment(dict(os.environ))
+    environment = controlled_provider_environment(dict(os.environ))
+    provider = environment["MORPHZ_PROVIDER_BASE_URL"].rstrip("/")
+    provider_model = environment["MORPHZ_PROVIDER_MODEL"]
     order = STRATEGIES if args.order == "implicit-first" else tuple(reversed(STRATEGIES))
     args.jobs_root.mkdir(parents=True, exist_ok=True)
     arms: dict[str, dict[str, Any]] = {}
@@ -292,7 +336,12 @@ def main() -> int:
             environment=environment,
         )
         arms[strategy] = summarize_arm(strategy, job_dir)
-    report = build_report(args.task, arms)
+    report = build_report(
+        args.task,
+        arms,
+        provider=provider,
+        provider_model=provider_model,
+    )
     report_path = args.jobs_root / "prompt_cache_ab.json"
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",

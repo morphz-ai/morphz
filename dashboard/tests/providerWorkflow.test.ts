@@ -208,6 +208,7 @@ test('model editor copies explicit catalog capacities and preserves operator ove
       id: 'model-a',
       enabled: true,
       alias: 'Fast',
+      promptCacheStrategy: 'auto',
       contextWindowTokens: '200000',
       maxInputTokens: '180000',
       maxOutputTokens: '10000',
@@ -219,6 +220,7 @@ test('model editor copies explicit catalog capacities and preserves operator ove
       id: 'model-b',
       enabled: false,
       alias: '',
+      promptCacheStrategy: 'auto',
       contextWindowTokens: '',
       maxInputTokens: '',
       maxOutputTokens: '',
@@ -239,8 +241,9 @@ test('enabled model payload validates physical capacity relationships before the
     maxInputAttachmentTotalBytes: 201_326_592,
   }
   assert.deepEqual(buildEnabledModelSelections([valid]), [{
-    id: 'model-a',
-    alias: 'Fast',
+      id: 'model-a',
+      alias: 'Fast',
+      prompt_cache_strategy: 'auto',
     context_window_tokens: 200_000,
     max_input_tokens: 190_000,
     max_output_tokens: 10_000,

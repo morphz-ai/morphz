@@ -14,7 +14,7 @@ binding live in [`toolchain.lock.json`](toolchain.lock.json):
 - Terminal-Bench `2.1`, 89 tasks, pinned to the official repository commit;
 - reportable runs use the exact Harbor registry dataset digest required by the
   leaderboard CI, rather than the local Git checkout used during development;
-- Morphz `paper-eval-runtime-v4`;
+- Morphz Runtime identity and binary SHA-256 pinned by `toolchain.lock.json`;
 - native Morphz (`harness_mode=none`) is the default for reportable runs;
   Harness binding requires an explicit package and profile;
 - `terminal-task@0.5.0` has been retired and its source removed after it was
@@ -54,20 +54,59 @@ Prompt-cache capability is frozen per physical endpoint/model. Direct
 `https://api.openai.com/v1` runs select `explicit-content-boundaries` for
 GPT-5.6. Unknown compatible endpoints remain `auto`; after an exact capability
 probe, set `MORPHZ_PROMPT_CACHE_STRATEGY` to `implicit-prefix`,
-`explicit-content-boundaries`, or `disabled`. CLIProxyAPI `7.2.140` forwarding
-to the ChatGPT Codex backend has been paired against direct requests and should
-be frozen as `implicit-prefix`; this result must not be generalized to other
-gateway versions.
+`implicit-content-boundaries`, `implicit-message-boundaries`,
+`experimental-structured-deltas`, `explicit-content-boundaries`, or `disabled`.
+`implicit-prefix` is the ordinary canonical text path. The
+`experimental-structured-deltas` strategy exists only in a Runtime built with
+`--features experimental-openai-chatgpt-structured-cache`; it emits one User
+message whose first `input_text` block is a complete closed canonical Context and
+whose later blocks are ordered Structured ContextDelta forms. It rebases the seed
+after a Context transaction, seed Observation retirement, attachment, or
+model/reasoning/phase/System/tool contract change; retiring a delta Observation
+rebuilds only the delta projection. `implicit-content-boundaries`
+preserves Planner segments as multiple `input_text` blocks inside the same User
+message without explicit cache fields; `implicit-message-boundaries` emits those
+same segments as consecutive User message items. These two implicit boundary
+strategies are diagnostic controls, not proven optimizations: real
+`git-multibranch` runs stopped at 11,776 cached tokens, and the message-item
+request was not a strict extension because each new Inbox Observation was
+inserted before the canonical closing/state suffix. For CLIProxyAPI `7.2.140`
+forwarding to the ChatGPT Codex backend, keep `auto`/`implicit-prefix` by default.
+A user who deliberately chooses the experimental tradeoff must configure
+`experimental-structured-deltas` for the exact Provider/model; the Runtime does
+not infer this from an Adapter name or Proxy URL. Wire-audited
+`cancel-async-tasks` and `git-multibranch` runs both passed their strict verifiers;
+their stable-generation weighted cache hit rates were 91.99% and 88.63%,
+respectively. The latter includes one endpoint-reported zero-cache response for
+an otherwise byte-identical request.
+Public GPT-5.6 endpoints that accept the documented fields should use
+`explicit-content-boundaries`.
 
-For the controlled GPT-5.6 cache pair, use `run_prompt_cache_ab.py`. It refuses
-Proxy URLs, runs one exact Terminal-Bench task once per arm, keeps both arms on
+Every OpenAI Responses request carrying a Morphz cache cohort now emits
+`provider.prompt_cache.wire_audit` without prompt contents. It records SHA-256
+fingerprints for request properties, input items, and content blocks, plus both
+item-level and block-level strict-prefix status. The paired
+`provider.prompt_cache.wire_outcome` event correlates that request sequence and
+digest with Provider-reported cache usage. A cache miss may be attributed to
+the endpoint only when the properties and prior eligible boundary both match;
+`matched_prior_boundary_items = 0` means the Morphz wire layout invalidated the
+prefix before the request left the Runtime. The audit also showed one cold
+response on the first exact strict extension before later extensions became
+hot, so reports must distinguish wire validity from Provider-reported reuse.
+
+For the controlled GPT-5.6 cache pair, use `run_prompt_cache_ab.py`. It accepts
+only the OpenAI Platform or the Cloudflare unified AI API route with the exact
+`openai/gpt-5.6-sol` provider model; arbitrary compatible Proxy URLs remain
+rejected. It runs one exact Terminal-Bench task once per arm, keeps both arms on
 the same pinned Runtime, isolates their `prompt_cache_key` cohorts by wire mode,
 and writes provider-reported `cached_input_tokens / input_tokens` plus strict
-reward to `prompt_cache_ab.json`. Supply the Platform credential only through
+reward to `prompt_cache_ab.json`. Supply the provider credential only through
 `MORPHZ_PROVIDER_API_KEY`; it is never placed in argv or the report.
 The report also preserves per-request usage, the first-request share, the
 post-first diagnostic ratio and the cold-start theoretical aggregate ceiling.
-Only the all-request aggregate is compared with the 85% acceptance line.
+Reports must show both all-request aggregate and stable hot-path rates; the 85%
+cost target is interpreted per task together with unavoidable cold-start share,
+task result and total token/call count, rather than as a blind short-task cutoff.
 
 The current Terminal-Bench 2.1 repository states that community leaderboard
 submissions are closed. These runs are still reproducible benchmark results and

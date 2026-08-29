@@ -8402,66 +8402,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     let mut inbox = vec![atom("inbox")];
     let mut observation_state = vec![atom("observation-state")];
     for observation in observations {
-        let mut fields = vec![
-            pair("ref", atom(&observation.reference)),
-            pair("seq", atom(observation.sequence.to_string())),
-            pair("turn", atom(observation.turn.to_string())),
-        ];
-        if let Some(session_id) = &observation.session_id {
-            fields.push(pair("session", atom(session_id)));
-        }
-        if let Some(principal_id) = &observation.principal_id {
-            fields.push(pair("principal", atom(principal_id)));
-        }
-        if let Some(attempt) = observation.attempt {
-            fields.push(pair("attempt", atom(attempt.to_string())));
-        }
-        if let Some(caused_by) = &observation.caused_by {
-            fields.push(pair("caused-by", atom(caused_by)));
-        }
-        if let Some(tool_name) = &observation.tool_name {
-            fields.push(pair("tool", atom(tool_name)));
-        }
-        fields.extend([
-            pair("kind", atom(&observation.kind)),
-            pair("topic", atom(&observation.topic)),
-            pair("actor", atom(&observation.actor)),
-            pair(
-                "timestamp",
-                atom(crate::local_time::format_rfc3339_for_local(
-                    &observation.timestamp,
-                )),
-            ),
-            list(
-                "content",
-                vec![
-                    pair("representation", atom(&observation.representation)),
-                    pair("visible-chars", atom(observation.visible_chars.to_string())),
-                    pair("total-chars", atom(observation.total_chars.to_string())),
-                    pair("text", atom(&observation.preview)),
-                ],
-            ),
-        ]);
-        if let Some(tool_status) = &observation.tool_status {
-            fields.push(pair("tool-status", atom(tool_status)));
-        }
-        if let Some(output_empty) = observation.output_empty {
-            fields.push(pair(
-                "output-empty",
-                atom(if output_empty { "true" } else { "false" }),
-            ));
-        }
-        if let Some(resource) = &observation.resource {
-            let mut resource_fields = vec![
-                pair("kind", atom(&resource.kind)),
-                pair("key", atom(&resource.key)),
-            ];
-            if let Some(version) = &resource.version {
-                resource_fields.push(pair("version", atom(version)));
-            }
-            fields.push(list("resource", resource_fields));
-        }
-        inbox.push(list("observation", fields));
+        inbox.push(render_inbox_observation(observation));
 
         // Observation payload and causal identity are immutable Event facts.
         // Mutable projection metadata lives after the long Inbox so changes
@@ -8539,6 +8480,78 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         ));
     }
     SExpr::List(context).to_string()
+}
+
+/// Render the immutable portion of one Context Inbox Observation.
+///
+/// The experimental structured-cache transport reuses this exact renderer for
+/// `context-delta` additions. Keeping one renderer prevents the delta path from
+/// quietly becoming a second, weaker message-history schema.
+pub(crate) fn render_context_delta_observation(observation: &ContextObservation) -> SExpr {
+    render_inbox_observation(observation)
+}
+
+fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
+    let mut fields = vec![
+        pair("ref", atom(&observation.reference)),
+        pair("seq", atom(observation.sequence.to_string())),
+        pair("turn", atom(observation.turn.to_string())),
+    ];
+    if let Some(session_id) = &observation.session_id {
+        fields.push(pair("session", atom(session_id)));
+    }
+    if let Some(principal_id) = &observation.principal_id {
+        fields.push(pair("principal", atom(principal_id)));
+    }
+    if let Some(attempt) = observation.attempt {
+        fields.push(pair("attempt", atom(attempt.to_string())));
+    }
+    if let Some(caused_by) = &observation.caused_by {
+        fields.push(pair("caused-by", atom(caused_by)));
+    }
+    if let Some(tool_name) = &observation.tool_name {
+        fields.push(pair("tool", atom(tool_name)));
+    }
+    fields.extend([
+        pair("kind", atom(&observation.kind)),
+        pair("topic", atom(&observation.topic)),
+        pair("actor", atom(&observation.actor)),
+        pair(
+            "timestamp",
+            atom(crate::local_time::format_rfc3339_for_local(
+                &observation.timestamp,
+            )),
+        ),
+        list(
+            "content",
+            vec![
+                pair("representation", atom(&observation.representation)),
+                pair("visible-chars", atom(observation.visible_chars.to_string())),
+                pair("total-chars", atom(observation.total_chars.to_string())),
+                pair("text", atom(&observation.preview)),
+            ],
+        ),
+    ]);
+    if let Some(tool_status) = &observation.tool_status {
+        fields.push(pair("tool-status", atom(tool_status)));
+    }
+    if let Some(output_empty) = observation.output_empty {
+        fields.push(pair(
+            "output-empty",
+            atom(if output_empty { "true" } else { "false" }),
+        ));
+    }
+    if let Some(resource) = &observation.resource {
+        let mut resource_fields = vec![
+            pair("kind", atom(&resource.kind)),
+            pair("key", atom(&resource.key)),
+        ];
+        if let Some(version) = &resource.version {
+            resource_fields.push(pair("version", atom(version)));
+        }
+        fields.push(list("resource", resource_fields));
+    }
+    list("observation", fields)
 }
 
 fn render_observation_state(

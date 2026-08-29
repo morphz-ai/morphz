@@ -8,6 +8,12 @@ default-run = "morphz"
 [features]
 default = []
 experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
+# ChatGPT's Codex transport currently has no reliable explicit Prompt Cache
+# breakpoint. This experiment keeps one canonical Structured Context seed and
+# appends ordered, structured ContextDelta blocks inside one User message. It
+# is deliberately compile-time opt-in so the default Context semantics and all
+# public Platform API routes remain untouched.
+experimental-openai-chatgpt-structured-cache = []
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }

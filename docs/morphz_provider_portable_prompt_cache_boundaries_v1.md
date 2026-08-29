@@ -1,7 +1,7 @@
 # Morphz Provider 可移植 Prompt Cache 边界设计 v1
 
-> 状态：GPT-5.6 增量 Inbox 显式边界实现完成；ChatGPT Codex OAuth 端点不兼容已确认；Platform API 真实 A/B 待凭据验证
-> 日期：2026-08-29
+> 状态：Platform/API 显式断点已实现；Codex OAuth 的高缓存兼容方案已收敛为默认关闭的实验编译特性，使用单条 User Message、一个完整 canonical Context seed 和多个 Structured ContextDelta `input_text` blocks
+> 日期：2026-08-30
 > 适用范围：Context Encoding、模型请求封装、Provider Adapter、缓存用量与成本观测
 > 前置设计：[Prefix Cache 友好的 Context Encoding 正式布局 v1](morphz_prefix_cache_context_encoding_layout_v1.md)
 
@@ -13,8 +13,9 @@ Observation 后该断点会移动，因此实际命中长期停留在固定 Syst
 
 1. Renderer 在每条 canonical Observation 末端标记候选边界，模型可见文本逐字节不变；
 2. 请求规划器保留与当前 Inbox 仍匹配的最近历史末端，并始终选择当前 Inbox 末端；
-3. OpenAI 每次请求最多发四个显式断点：固定协议边界、最多两个最近历史 Inbox 边界和
-   当前 Inbox 边界；
+3. Planner 每次最多选择四个边界：固定协议边界、最多两个最近历史 Inbox 边界和当前
+   Inbox 边界；支持公开字段的 API 路线将其编码为显式断点，Codex OAuth 路线保留相同
+   `input_text` 内容块但不发送显式元数据；
 4. Cache Cohort 不再由 `context_id` 派生，而由物理模型、实际缓存 wire mode、有效推理档位、
    工具合同、System Message 和稳定 Context 前缀共同哈希，因此同一策略下跨 Context 的相同
    稳定前缀可以复用，同时配对实验的 implicit/explicit 两臂不会共享缓存命名空间；
@@ -23,8 +24,12 @@ Observation 后该断点会移动，因此实际命中长期停留在固定 Syst
 6. 进程内只保存最近 256 个 Cohort、每个 Cohort 最近 50 个边界；状态丢失只造成冷启动，
    不改变 Context 语义。
 
-确定性请求合同和完整 `morphz` 库回归已通过。这里证明的是“请求形态已修复”，不是新的
-Provider 命中率；修复后的命中率和成本仍必须由第 9.3 节的真实配对 A/B 给出。
+确定性请求合同和完整 `morphz` 库回归已通过。API 小样本已证明显式写入、复用和前缀变化
+失效的因果链；Codex 同消息 content-block 线路已有 96.6% 的真实隐式复用证据。真实多步题
+随后证明这条证据不能外推：普通 content block 不是 GPT-5.6 Platform 的隐式断点，而当前
+canonical Context 在 Inbox 后仍有关闭与状态尾项，因此旧请求也不是新请求的严格 item
+前缀。第 2.3 节保留早期 append-only transcript 的历史证据；第 2.4 节记录最终采用的 Structured
+ContextDelta 实验设计与真实单题结果。它们用于验证机制，不替代论文所需的全模型配对成本实验。
 
 ## 1. 要解决的问题
 
@@ -158,17 +163,156 @@ OpenAI 官方 Platform 文档同时明确规定：GPT-5.6 及后续模型的 `/v
 `prompt_cache_options.mode = explicit` 和内容块级 `prompt_cache_breakpoint`。因此能力必须
 由“物理端点 + Adapter revision + 物理模型”共同决定，不能只由 `gpt-5.6-sol` 模型名决定。
 
+同日又对当前配置的 Cloudflare API 路线做了最小字段探针。物理模型使用该路线要求的
+`openai/gpt-5.6-sol` 标识；baseline、仅顶层 options、仅内容块 breakpoint、两者同时存在
+四种请求均返回 HTTP 200。随后用约 7.8K 输入词元做了受控长前缀验证：
+
+| API 请求 | 输入词元 | 缓存写入词元 | 缓存读取词元 |
+| --- | ---: | ---: | ---: |
+| 显式模式首次写入 | 7,822 | 7,819 | 0 |
+| 保持原前缀并追加新回合 | 7,833 | 0 | 7,819 |
+| 修改稳定前缀第一个词 | 7,822 | 7,819 | 0 |
+| 隐式模式首次写入 | 7,822 | 7,819 | 0 |
+| 隐式模式保持前缀并追加 | 7,833 | 11 | 7,819 |
+
+这组结果证明当前 API 路线真实支持 GPT-5.6 显式字段，也证明 append-only 前缀在显式和
+隐式模式下都能复用。它不等于“单个 monolithic Message 的任意变化后缀也能复用”；后者
+正是原实验观察到会失效的形态。因为用户明确要求停止额外 API 消耗，未继续跑完整任务集。
+
 同日完成的真实 Morphz 单任务 transport-only 试验，把 canonical Context 的 Inbox 末端拆成
 一个 User Message，并把变化尾部放入后续 Developer Message；模型可见字符拼接保持相同，
 但请求角色结构发生变化。四次调用合计 94,934 个输入词元、23,552 个缓存词元，命中率仅
 24.81%，与未分割基线没有改善，因此该试验已经回滚。
 
-请求级证据解释了为什么合成长前缀 exact repeat 很高、真实多步 Agent 却很低：Morphz 在
-Context 之后还要发送当前 Activation 的 reasoning/function-call/tool-result continuation；
-GPT-5.6 隐式模式把断点放在最新 eligible user/tool message 末端，而这个一次性 Tool Result
-每轮都会变化。能稳定复用的只剩更早的 System/工具合同前缀，实测通常为 11,776 词元。
-在不删除原生 Function Calling 握手、不重复累积历史、不改变 Structured Context 语义的
-约束下，Codex OAuth 隐式模式无法表达 Inbox 内部历史边界；这正是显式断点需要解决的问题。
+这个失败只排除了“跨 User/Developer Message 改写角色结构”的方案，不能排除同一 User
+Message 内的 content-block transport。第 2 节的 96.6% 实验恰好属于后一种形态：Proxy
+剥离显式字段后仍保留两个 `input_text` 块，稳定第一块被隐式复用。因此先实现了更窄的
+同消息 content-block 策略：仍是一条 User Message、仍是同一 canonical 文本，只把 Planner
+已选择的边界保留为多个 `input_text` 块；不发送显式缓存字段。
+
+2026-08-29 的真实 `git-multibranch` 运行否定了把最小探针外推到多步 Agent 的做法。该策略
+9 次请求合计 257,283 input / 70,656 cached，命中率 27.46%；排除前两个冷请求后为 33.29%。命中
+请求的缓存量始终固定为 11,776 tokens，另有一次相同 Cohort 请求为零。相同 task ref、
+`gpt-5.6-sol/max` 的官方 Codex 两次有效运行分别达到 354,048 / 384,354（92.12%）和
+517,632 / 550,714（93.99%），reward 均为 1。因此差距不能用题目本身的低缓存上限解释。
+
+后续同题实验进一步定位了 11,776 平台。v4 把 Planner 选中的段落映射为连续 same-role User
+message items，但仍沿用了“最多四个显式断点”的移动窗口；8 次请求合计 217,711 input /
+47,104 cached（21.64%），排除两个冷启动请求后为 27.21%，标准 verifier reward 为 1。v5
+改为确定性 message-item 拓扑，旧段落边界不再重排；10 次请求合计 275,530 input / 94,208
+cached（34.19%），排除两个冷启动请求后为 40.79%，reward 同样为 1。v5 消除了 v4 的间歇
+归零，但后 8 次请求仍全部精确命中 11,776。
+
+最初把 v5 解释成“Codex 不缓存完全不变的 same-role message 前缀”是不充分的。源码级 wire
+审计发现，canonical Context 的真实形态是 `稳定头 + Inbox Observations + 关闭/状态尾项`。
+message-item 模式下，第 N 轮结尾是 `... Observation N, 尾项`，第 N+1 轮则是
+`... Observation N, Observation N+1, 尾项`；新观察插在旧尾项之前。旧观察 item 虽然逐字节
+不变，但上一轮**最新** User item 是尾项，完整旧 item 序列并不是新序列的严格前缀。
+因此 v5 证明的是 Morphz 没有制造出更深的合格断点，不是 OpenAI 拒绝复用一个已经证明
+完全相同的合格断点。
+
+这与当前 [OpenAI Prompt Caching 文档](https://developers.openai.com/api/docs/guides/prompt-caching)
+一致：GPT-5.6 Platform 的隐式模式在最新合格 User 或 Tool Message 末尾放置断点；普通
+`input_text` block 本身不是隐式断点，内容块内部只有显式 `prompt_cache_breakpoint` 才能选择
+边界。ChatGPT Codex OAuth 是独立物理端点，其内部隐式布局不能只凭 Platform 文档假定，
+但 Morphz 必须先证明自己的 outbound wire 前缀严格成立，才有资格把未命中归因给端点。
+
+v6 把所有结构段保留为确定性 `input_text` blocks；已取回的前三次 usage 仍是
+`0, 0, 11,776` cached。远端 SSH 身份失效前没有取回完整尾段和 verifier，故该运行只作为
+早期反证，不宣称完整任务结论。
+
+这也说明 85% 不能机械套用到短题整题累计：v4 的两个冷启动请求已经占 44,609 input，即使
+其余 6 次调用全部缓存，按该次调用形态计算的累计上限也只有约 79.5%。同题比较必须同时报告
+整题累计率、排除冷启动后的 hot-path 命中率、不可避免的新增长词元和 verifier。官方 Codex
+之所以能在同题达到 92--94%，也与其 22/31 次调用摊薄冷启动有关；这不影响 11,776 固定平台
+仍是 Morphz 实现缺陷的结论。
+
+Provider 在最终 outbound Responses body 上记录两类
+不含模型可见内容的事件：
+
+- `provider.prompt_cache.wire_audit`：请求参数 SHA-256、每个 input item 的类型/字节数/SHA-256、
+  与上一请求的最长公共 item 前缀、上一请求是否为严格前缀，以及当前请求能匹配的最长历史
+  隐式断点；
+- `provider.prompt_cache.wire_outcome`：用同一 request sequence/digest 关联 Provider 报告的
+  input、cached、cache-write 和 uncached tokens。
+
+这个协议已经把“我们的前缀没成立”和“Provider 没有复用已成立前缀”分成了可证伪的两个
+分支，并直接定位出旧方案的问题：新的 Observation 插在 canonical tail 之前，旧请求不是
+新请求的严格前缀。
+
+### 2.3 Codex OAuth append-only transcript 的历史单题结果（未作为产品设计采用）
+
+修复版在不改变 Structured Context 权威结构和模型可见文本的前提下，保存第一轮完整 Context
+Message（包括不持久化到 Context 语义中的 hidden segmentation metadata），后续 activation
+重放同一 seed，并在其后追加原生 reasoning、tool call 和 tool output。Context transaction、
+Observation retire、模型、推理档位、phase、System 或工具合同变化时开启新 transport generation。
+
+第一道 `git-multibranch` 使用 v7 修复版，7 次调用共 212,698 input / 124,928 cached，整题
+加权命中率 58.74%，标准 verifier reward 为 1。前 3 次为冷调用；第 4--7 次的输入分别为
+32,014 / 34,161 / 35,625 / 39,022，缓存分别为 26,112 / 31,232 / 33,280 / 34,304，单次
+命中率为 81.57% / 91.43% / 93.42% / 87.91%，稳定热路径加权命中率为 88.72%。wire audit
+证明第 3→4、4→5、5→6、6→7 次均是相同请求属性下的完整严格 item 前缀。
+
+v7 同时暴露了一个 Morphz 问题：transport seed 在 Provider refinement 之前把 Context 扁平化，
+导致第 2→3 次虽然 input items 相同，Cache Cohort 和请求属性却改变。v8 改为保存和重放完整
+Context Message，消除了这次身份漂移。
+
+第二道 `cancel-async-tasks` 使用 v8 修复版，10 次调用共 286,866 input / 190,976 cached，整题
+加权命中率 66.57%，标准 verifier reward、integrity Gate 和 public run Gate 均为 1/通过。
+第 2→3 次已经是同一 Cohort、相同请求属性、5/5 个 input items 严格前缀，但第 3 次仍报告
+0 cached；第 3→4 次为 12/12 严格前缀后转为 24,064 / 26,423（91.07%）命中。第 4--10
+次稳定热路径共 218,159 input / 190,976 cached，加权命中率 87.54%。这些调用的单次命中率为：
+
+| 调用 | input tokens | cached tokens | 命中率 |
+| ---: | ---: | ---: | ---: |
+| 4 | 26,423 | 24,064 | 91.07% |
+| 5 | 29,802 | 25,088 | 84.18% |
+| 6 | 30,469 | 20,992 | 68.89% |
+| 7 | 31,404 | 29,184 | 92.93% |
+| 8 | 32,708 | 30,208 | 92.36% |
+| 9 | 33,512 | 32,256 | 96.25% |
+| 10 | 33,841 | 29,184 | 86.24% |
+
+因此不能再声称“OpenAI 对完全不变的前缀也不缓存”：两道真实题都在严格前缀成立后形成了
+深层命中。v8 的首次严格重复仍冷，以及后续服务端选择的缓存深度波动，是已经隔离出的端点
+行为；当前证据不能进一步区分异步缓存建立、路由抖动或服务端淘汰策略，因而也不能把其中
+任一解释写成确定事实。整题累计低于 85% 主要来自 phase/工具合同切换造成的两个必要冷启动，
+以及一次端点未复用；它不等于稳定轨迹的缓存优化失效。
+
+上述 v7/v8 证明了严格追加前缀可以命中缓存，但它把 seed 后的内容表达成原生
+assistant/tool transcript，形成了第二套模型可见上下文结构。该实现不作为默认行为，也不作为
+最终实验特性的语义设计；这里只保留它作为机制探索的历史证据。
+
+### 2.4 最终实验设计：canonical Context + Structured ContextDelta blocks
+
+最终实现由编译特性 `experimental-openai-chatgpt-structured-cache` 控制，默认构建不包含该能力。
+即使编译进 Runtime，也不会根据 Adapter 名字或 URL 猜测端点身份；Dashboard 只在 Runtime
+公布该实验能力时显示开关，并由用户对具体 Provider/物理模型显式选择
+`experimental-structured-deltas`。这使 API Proxy、反向代理和自定义域名都能被准确配置。
+
+物理请求始终只有一条 User Message：第一个 `input_text` block 是完整、闭合且可独立求值的
+canonical Context；每个后续 block 都是一个版本化 `context-delta` S 表达式，包含来源 attempt、
+assistant text、tool call 和使用 canonical Observation renderer 产生的完整 Observation。模型按
+`base preceding-context` 和有序 delta 进行求值；实现不会用普通消息列表替换 Structured Context。
+
+缓存 generation 的重建规则按来源精确区分：Context transaction、合同变化、attachment、非规范
+投影，或 retire 命中 seed 中的 Observation 时重建完整 seed；retire 只命中 delta Observation 时
+保留 seed，只重新投影 delta 区。这样 retire 不会变成不断累加 tombstone，也不会让已退休内容
+反而永久增加上下文。
+
+真实 `cancel-async-tasks` 单题使用 feature 构建
+`5fa3d3d378d3-structured-delta-v1`，Terminal-Bench verifier、strict reward 和 integrity gate 均为
+1/通过。稳定 generation 的第 3--7 次请求，wire audit 逐次证明旧 content blocks 是新请求的
+严格前缀；Provider 报告 115,200 cached / 125,228 input，热路径加权命中率 91.99%。把两个必要
+冷 generation 起点也计入，整题累计为 115,200 / 168,903，即 68.20%。因此 85% 应用于稳定
+热路径，不应脱离题长和冷启动次数套在整题累计值上。
+
+第二道 `git-multibranch` 使用同一二进制，Terminal-Bench verifier、strict reward 和 integrity
+gate 同样为 1/通过。第 3--21 次稳定 generation 共 618,148 input / 547,840 cached，热路径
+加权命中率 88.63%；整题含两个冷起点为 547,840 / 662,789，即 82.66%。这组热路径已经包含
+一次物理请求摘要完全相同却由端点报告 0 cached 的异常；随后相同请求恢复 31,232 / 32,275
+（96.77%）命中。去掉该异常不是正式统计口径，但它证明剩余波动不能归因于 Morphz 修改了
+wire 前缀；即使保留这次服务端未复用，热路径仍超过 85%。
 
 ## 3. 设计原则
 
@@ -185,6 +329,11 @@ Context 的权威表示仍然是一棵 canonical S 表达式。缓存断点属�
 
 删除全部缓存元数据后，各内容块按顺序拼接所得文本必须与当前 canonical Context Message
 逐字节相同。这个等价性是实现的第一项硬性测试。
+
+`experimental-openai-chatgpt-structured-cache` 是明确隔离的例外：它不声称与每轮重建的单棵
+Context 文本逐字节相同，而是维持同一结构化求值语义——一个完整 Context seed 加一组同样
+采用 S 表达式和 canonical Observation schema 的 ContextDelta。因为这是模型可见表示的实验性
+变化，所以必须同时经过编译特性和 Provider/模型显式配置两道开关，绝不能成为默认退化路径。
 
 ### 3.2 不把某一家 Provider 的字段当作通用协议
 
@@ -203,8 +352,9 @@ Provider 不支持缓存、缓存过期、缓存未命中或命中率为零时�
 稳定的 Cache Cohort；GPT-5.5 等使用自动前缀缓存的模型也能利用该字段。内容块上的
 `prompt_cache_breakpoint` 和 `prompt_cache_options` 则是 GPT-5.6 及后续模型新增的显式缓存
 能力，只有物理端点和模型都满足这一能力边界时才发送。公开 Platform `/v1/responses` 与
-ChatGPT Codex OAuth Responses 不能视为同一端点；当前 `openai-codex` Adapter 保持普通
-canonical 文本并禁用显式字段，避免确定性的 HTTP 400。其他协议不会收到 OpenAI 字段。
+ChatGPT Codex OAuth Responses 不能视为同一端点；当前 `openai-codex` Adapter 保持同一
+canonical 文本和同一 User Message，仅保留 transient `input_text` 内容块边界，并禁用显式
+字段以避免确定性的 HTTP 400。其他协议不会收到 OpenAI 字段。
 
 ## 4. 建议的内部结构
 
@@ -231,8 +381,10 @@ struct ModelTextPart {
 }
 ```
 
-不支持显式断点的 Adapter 会先拼接全部 `text`，再按原有普通文本协议发送；模型看到的
-字节与改动前相同。
+普通的不支持显式断点 Adapter 会先拼接全部 `text`，再按原有普通文本协议发送。Codex
+Responses 默认也发送拼接后的规范文本。`implicit-content-boundaries` 和
+`implicit-message-boundaries` 仍可被显式配置为诊断策略，但真实同题实验没有证明它们产生了
+更深的合格断点，因此不能作为 `auto` 默认值。所有路径中模型看到的拼接字节均与改动前相同。
 
 ### 4.2 Renderer 同时给出完整文本和稳定分区
 
@@ -394,7 +546,8 @@ provider.rs / build_openai_responses_request()
 2. 固定自然语言引导进入第一个文本片段，并与 Context parts 一起返回；
 3. 新增 transient `SegmentedModelText`，不改变 Event Store 中的消息格式；
 4. `build_openai_responses_request()` 遇到 `TextParts` 时输出 `input_text` 数组；
-5. 其他 Adapter 在没有对应能力时只拼接 `part.text`，得到与旧实现完全相同的字符串。
+5. 普通 Adapter 和 Codex Responses 的默认路径都只拼接 `part.text`；仅显式诊断配置会
+   保留 content blocks 或 same-role message items，且模型可见拼接结果仍与旧实现相同。
 
 为了避免“完整文本”和“分块文本”出现两套序列化逻辑，`canonical_text` 本身也必须由
 `segmented_context_writer()` 的所有输出缓冲区拼接得到，不能再单独调用另一份 Formatter。
@@ -477,21 +630,31 @@ Context 投影和 Provider 账户隔离负责。
 prompt_cache_strategy = "explicit-content-boundaries"
 
 [providers.codex-proxy.models."gpt-5.6-sol"]
-prompt_cache_strategy = "implicit-prefix"
+prompt_cache_strategy = "experimental-structured-deltas"
 ```
 
-可选值为 `auto`、`disabled`、`implicit-prefix` 和 `explicit-content-boundaries`。`auto`
-保留现有 OpenAI 模型版本判断；确认性实验必须对精确端点/模型/revision 显式冻结策略。
-`openai-codex` Adapter 即使被误配为 explicit 也会拒绝输出显式字段，因为该后端已直接
+可选值为 `auto`、`disabled`、`implicit-prefix`、`implicit-content-boundaries`、
+`implicit-message-boundaries`、`experimental-structured-deltas` 和
+`explicit-content-boundaries`。`implicit-prefix` 发送单个规范文本字符串；
+`implicit-content-boundaries` 在同一条 User Message 内保留多个 `input_text` 块，但不发送
+任何显式缓存字段；`implicit-message-boundaries` 保留相同文本和 User 角色，将段落映射为
+连续的 User message items。`openai-codex` 的 `auto`、`disabled` 和 `implicit-prefix` 当前均
+发送单个规范文本；两种分块模式只用于显式诊断。确认性实验必须对精确端点、模型和 revision
+冻结策略。`openai-codex` Adapter 即使配置为 explicit 也拒绝输出显式字段，因为该后端已直接
 验证为 HTTP 400。其他协议不会收到 OpenAI Provider-specific 字段。
+
+`experimental-structured-deltas` 只有在构建时启用
+`--features experimental-openai-chatgpt-structured-cache` 才是合法配置；默认构建的保存接口和
+Provider 初始化都会拒绝它，而不是静默退化。启用该编译特性后，Dashboard 会显示实验能力，
+但仍由用户对每个 Provider/物理模型显式选择，因而不依赖 `openai-codex` Adapter 名字识别 Proxy。
 
 建议的 Provider 映射如下：
 
 | Provider / 协议 | 第一阶段行为 | 说明 |
 | --- | --- | --- |
-| OpenAI Platform Responses | 所有模型发送 `prompt_cache_key`；GPT-5.6 及后续模型再发送内容块断点和 cache options | 官方契约明确支持；Morphz 真实 A/B 待独立 Platform API key |
-| ChatGPT Codex OAuth Responses | 发送 `prompt_cache_key`，保持 canonical Context 单消息，不发送显式字段 | 直连已确认 `prompt_cache_options` 返回 HTTP 400；Proxy 不是根因 |
-| CLIProxyAPI 7.2.140 → Codex OAuth | 可显式冻结为 `implicit-prefix` | 三组配对探针均由 Proxy 200、直连 400；官方 tag 源码明确剥离字段 |
+| OpenAI Platform / 已验证 API Responses | 所有模型发送 `prompt_cache_key`；GPT-5.6 及后续模型再发送内容块断点和 cache options | 官方契约明确支持；当前 Cloudflare API 路线已验证 7,819 cached / 7,833 input |
+| ChatGPT Codex OAuth Responses | 默认发送 `prompt_cache_key` 和单个规范文本；不发送显式字段 | 需要高缓存时，可在实验构建中对该 Provider/模型显式选择 Structured ContextDelta |
+| CLIProxyAPI 7.2.140 → Codex OAuth | 不按 Proxy 名字猜测；Dashboard 显式配置 | 该 revision 对显式字段的处理已有配对请求与源码证据；实验 delta 路径已由真实单题验证 |
 | OpenAI Chat Compatible | 默认不启用；只有精确端点声明且探测通过后才映射 | 不能因“OpenAI compatible”就假定支持 Responses 字段 |
 | Anthropic Messages | 把内部边界映射为内容块 `cache_control` | 字段、TTL 和计费方式与 OpenAI 不同 |
 | DeepSeek / Qwen 自动缓存端点 | 不发送显式断点，继续保持稳定字节前缀 | DeepSeek 官方说明为自动前缀缓存；实际兼容端点仍以配置和 Usage 为准 |
@@ -541,7 +704,13 @@ prompt_cache_strategy = "implicit-prefix"
 6. Provider Usage 分开保存缓存读取、缓存写入和普通未缓存输入，避免重复计费。
 
 Inbox 增量边界、历史谱系匹配、四断点上限、早期历史变化后的重建，以及跨 Context Cohort
-复用都已有确定性合同测试。首次分歧的持久化观测仍属于后续 Benchmark 工具工作。
+复用都已有确定性合同测试。新增的 wire-form 测试进一步证明：连续 same-role message-item
+策略会把新 Observation 插入旧尾项之前，因此旧请求不是新请求的严格 item 前缀；普通
+content-block 的变化仍发生在同一消息 item 内，也不会凭空产生隐式消息断点。最终出站 JSON
+现已同时记录逐 item 和逐 content-block SHA-256、两层最长公共前缀及严格追加状态。这样可以
+直接证明“整个 User item 已变化，但前 N 个 input_text blocks 仍是严格旧前缀”。Structured
+ContextDelta 的确定性测试覆盖单 User 物理形状、连续 block 严格追加、做题循环、seed/delta
+retire 分流、Context transaction rebase 和默认构建拒绝实验配置。
 
 ### 9.2 Adapter 合同测试
 
@@ -551,8 +720,12 @@ Inbox 增量边界、历史谱系匹配、四断点上限、早期历史变化�
 - Anthropic：第一阶段拼接为原普通文本，不发送 OpenAI 字段；
 - DeepSeek / Qwen / Gemini implicit：不出现未知字段；
 - 未知兼容端点：退化为普通文本且内容完全相同；
-- `openai-codex` Adapter 只保留 `prompt_cache_key` 和 canonical 文本；普通 Platform
-  Responses Adapter 在 GPT-5.6+ 输出显式断点字段。
+- `openai-codex` Adapter 保留 `prompt_cache_key`、同消息 content blocks 和 canonical
+  拼接文本，剥离显式 options/breakpoint；普通 Platform Responses Adapter 在 GPT-5.6+
+  输出相同块边界和显式断点字段；
+- `disabled` 和普通 implicit Provider 仍发送原单字符串。
+- 实验构建中显式选择 `experimental-structured-deltas` 时，只发送一个 User item；block 0 是
+  完整闭合 Context，后续 blocks 全是 Structured ContextDelta；默认构建明确拒绝该配置。
 
 不支持字段的 4xx 受控降级尚未实现。
 
@@ -602,22 +775,39 @@ Context 数据，比较：
 - 保证现有字符串请求仍是无缓存能力时的默认路径；
 - 完成逐字节等价、Context Inspect 和所有 Provider 的结构回归。
 
-### Phase 2：OpenAI Platform Responses 缓存字段（实现完成，真实 A/B 待凭据）
+### Phase 2：OpenAI Platform / API Responses 缓存字段（实现与最小 A/B 完成）
 
 - 所有 Responses 模型使用 `prompt_cache_key` / Cohort；
 - GPT-5.6 及后续物理模型在支持该字段的 Platform 端点启用显式内容块断点；
 - ChatGPT Codex OAuth 端点禁用显式字段，避免确定性的 400；
 - 此前经 CLIProxyAPI 得到的 96.6% 已更正为隐式缓存证据；
-- Platform 真实同题 A/B 需要独立 API key，不能复用 Codex OAuth token。
+- 当前 Cloudflare API 路线已验证显式写入、7,819-token 复用和稳定前缀变化失效；
+- 完整任务 Benchmark 因成本约束暂停，不把最小探针外推为总体成本结论。
 
-### Phase 3：Inbox 增量边界（生产实现已完成）
+### Phase 3：Inbox 增量边界与 Structured ContextDelta 实验（已完成真实单题验证）
 
 - 每条 Observation 末端作为结构候选，不改变 canonical 文本；
 - 规划器按完整前缀哈希保留最近可复用边界，并遵守四断点上限；
 - 较早历史变化时自动停止选择失效边界并重建；
 - 已完成 append、跨 Context Cohort、模型/推理/工具隔离和回退的合同测试；
-- Codex OAuth transport-only 试验无改善并已回滚；
-- Platform 显式模式的真实多场景 A/B 与首次分歧观测仍待执行。
+- 改变 User/Developer 角色结构的 Codex transport-only 试验无改善并已回滚；
+- 同一 User Message 内的 content-block transport 真实同题仅 27.46%，普通 block 并不等于
+  GPT-5.6 的隐式 message breakpoint；
+- 连续 same-role User message-item transport 的 v4/v5 同题分别为 21.64%/34.19%，且 wire
+  结构证明新增 Observation 插在旧 canonical tail 之前，不是严格追加；
+- v7/v8 的原生 assistant/tool transcript 方案证明严格追加机制有效，但因引入第二套模型可见
+  结构而只保留为历史证据，不作为产品默认或最终实验设计；
+- 最终实验路径保持一条 User Message，以完整闭合 Context 为 seed，并只追加版本化、完整
+  Observation schema 的 Structured ContextDelta blocks；
+- feature 默认不编译；编译后也必须由 Dashboard 对具体 Provider/模型显式启用，Proxy 不依赖
+  Adapter 名称猜测；
+- seed Observation retire / Context transaction 重建 seed；delta Observation retire 只重建 delta
+  投影，不追加 tombstone；
+- `cancel-async-tasks` reward、strict reward、integrity gate 均为 1/通过，稳定 generation 热路径
+  为 115,200 cached / 125,228 input（91.99%）；
+- `git-multibranch` 同样 reward、strict reward、integrity gate 均为 1/通过；稳定 generation
+  即使计入一次相同请求的端点 0-cache 异常，仍为 547,840 / 618,148（88.63%）；
+- 完整多模型配对仍属于后续论文实验，不再用付费全套 Benchmark 探索 GPT-5.6 的已收敛机制。
 
 ### Phase 4：其他 Provider
 
@@ -660,19 +850,26 @@ ME-08 已报告的 Token 和缓存数据是当时完整系统与当时请求封�
   总数不超过四个；
 - 当前只对支持显式字段的 OpenAI Platform Responses GPT-5.6+ 能力边界启用显式断点；
 - ChatGPT Codex OAuth 与 Platform API 是独立能力边界，不能只按模型名合并判断。
+- Codex OAuth 默认继续使用原 canonical Structured Context，不启用 append-only 变体；
+- 高缓存兼容路径是默认关闭的实验编译特性：单条 User Message、完整闭合 Context seed、
+  Structured ContextDelta blocks；它只能由 Dashboard 对具体 Provider/模型显式启用；
+- 实验路径不得退化成一半 Structured Context、一半普通 assistant/tool transcript，也不得用
+  tombstone 代替真实 retire；seed 与 delta 的 retire 必须按 provenance 分别重建。
 
 仍待决定：
 
 - 生产端点明确拒绝缓存字段时，是否允许一次有记录的无缓存降级重试；
-- 修复后的真实成本下降和正确率门槛；
+- 完整多模型配对中的真实成本下降和正确率门槛；
 - Anthropic、DeepSeek、Qwen、Gemini 与其他兼容端点的逐模型能力映射。
 
 ## 14. 建议结论
 
-建议采用本方案，但分两步决策：
+当前建议分端点处理：支持 GPT-5.6 显式字段的 Platform/API 路线继续使用内容块断点；Codex
+OAuth 或其 Proxy 默认保持原 canonical Context。只有用户明确接受实验复杂度并希望降低 Token
+成本时，才在 feature 构建中对具体 Provider/模型启用 canonical Context + Structured
+ContextDelta blocks。
 
-1. 先批准“传输层分块、语义文本不变”的总体架构；
-2. 再通过 GPT-5.6 Sol 多场景 A/B 决定具体分块大小、断点分配和默认启用范围。
-
-这样既保留 v26 已经验证过的稳定布局，也补上 Provider 看不到单个字符串内部稳定边界的
-缺口。修复不需要改变 Structured Context、Yao 程序或 Mind Frame 的语义。
+该实验不改变 Event Store、Yao、Mind Frame 或 canonical Context 的权威状态；它改变的是模型
+可见求值表示，因此必须保持完整结构化协议、精确 retire/rebase 和可关闭性。真实单题已证明
+稳定热路径超过 85%；短题整题累计仍必须单独报告冷启动占比，不能用一个绝对门槛掩盖题长、
+generation 切换和端点偶发未复用。

@@ -939,6 +939,12 @@ pub enum PromptCacheStrategy {
     Auto,
     Disabled,
     ImplicitPrefix,
+    ImplicitContentBoundaries,
+    ImplicitMessageBoundaries,
+    /// Compile-time gated ChatGPT/Codex compatibility experiment. The
+    /// Provider receives one User message containing a canonical Context seed
+    /// followed by ordered ContextDelta input_text blocks.
+    ExperimentalStructuredDeltas,
     ExplicitContentBoundaries,
 }
 
@@ -4798,6 +4804,24 @@ max_input_attachment_total_bytes = 201326592
         assert_eq!(
             implicit.prompt_cache_strategy,
             PromptCacheStrategy::ImplicitPrefix
+        );
+        let implicit_content_boundaries: ProviderModelConfig =
+            toml::from_str(r#"prompt_cache_strategy = "implicit-content-boundaries""#).unwrap();
+        assert_eq!(
+            implicit_content_boundaries.prompt_cache_strategy,
+            PromptCacheStrategy::ImplicitContentBoundaries
+        );
+        let implicit_message_boundaries: ProviderModelConfig =
+            toml::from_str(r#"prompt_cache_strategy = "implicit-message-boundaries""#).unwrap();
+        assert_eq!(
+            implicit_message_boundaries.prompt_cache_strategy,
+            PromptCacheStrategy::ImplicitMessageBoundaries
+        );
+        let structured_deltas: ProviderModelConfig =
+            toml::from_str(r#"prompt_cache_strategy = "experimental-structured-deltas""#).unwrap();
+        assert_eq!(
+            structured_deltas.prompt_cache_strategy,
+            PromptCacheStrategy::ExperimentalStructuredDeltas
         );
     }
 

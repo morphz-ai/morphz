@@ -5,6 +5,7 @@ WORKDIR /src
 ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
 ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 ARG MORPHZ_BUILD_GIT_COMMIT
+ARG MORPHZ_CARGO_FEATURES=""
 # Morphz intentionally puts the newer hotbundle SQLite archive before SQLx's
 # bundled archive. Rust's x86_64 self-contained LLD rejects those duplicate
 # symbols unless the same first-definition-wins policy is made explicit.
@@ -21,7 +22,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target-static \
     test -n "$MORPHZ_BUILD_GIT_COMMIT" \
     && export OPENSSL_LIB_DIR="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" \
-    && cargo build --locked --release -p morphz --bin morphz \
+    && if [ -n "$MORPHZ_CARGO_FEATURES" ]; then \
+         cargo build --locked --release -p morphz --bin morphz --features "$MORPHZ_CARGO_FEATURES"; \
+       else \
+         cargo build --locked --release -p morphz --bin morphz; \
+       fi \
     && ! ldd /src/target-static/release/morphz | grep -E 'libssl|libcrypto' \
     && cc -O2 -Wall -Wextra -Werror \
         /src/benchmarks/harbor/harbor_wait.c \

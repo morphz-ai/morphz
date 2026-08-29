@@ -31,6 +31,9 @@ PROMPT_CACHE_STRATEGIES = {
     "auto",
     "disabled",
     "implicit-prefix",
+    "implicit-content-boundaries",
+    "implicit-message-boundaries",
+    "experimental-structured-deltas",
     "explicit-content-boundaries",
 }
 

@@ -44,7 +44,7 @@ class BenchmarkGateTest(unittest.TestCase):
                     {
                         "source": "agent",
                         "llm_call_count": 1,
-                        "model_name": "gpt-5.6-sol",
+                        "model_name": "openai/gpt-5.6-sol",
                         "reasoning_effort": "max",
                         "message": "done",
                     }
@@ -88,6 +88,7 @@ class BenchmarkGateTest(unittest.TestCase):
                         "integrity_gate_passed": True,
                         "run_identity": {
                             "model": "gpt-5.6-sol",
+                            "provider_model": "openai/gpt-5.6-sol",
                             "harness": {
                                 "id": "terminal-task",
                                 "version": "0.1.0",

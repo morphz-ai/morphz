@@ -1,4 +1,14 @@
+export type PromptCacheStrategy =
+  | 'auto'
+  | 'disabled'
+  | 'implicit-prefix'
+  | 'implicit-content-boundaries'
+  | 'implicit-message-boundaries'
+  | 'experimental-structured-deltas'
+  | 'explicit-content-boundaries'
+
 export interface ProviderModelProfile {
+  prompt_cache_strategy?: PromptCacheStrategy
   context_window_tokens?: number
   max_input_tokens?: number
   max_output_tokens?: number
@@ -87,6 +97,7 @@ export interface AccountModelOption {
   id: string
   enabled: boolean
   alias: string
+  promptCacheStrategy: PromptCacheStrategy
   contextWindowTokens: string
   maxInputTokens: string
   maxOutputTokens: string
@@ -98,6 +109,7 @@ export interface AccountModelOption {
 export interface EnabledModelSelection {
   id: string
   alias?: string
+  prompt_cache_strategy: PromptCacheStrategy
   context_window_tokens?: number
   max_input_tokens?: number
   max_output_tokens?: number
@@ -275,6 +287,8 @@ export function buildAccountModelOptions(input: {
       id,
       enabled: enabled.has(id),
       alias: aliases.get(id) ?? '',
+      promptCacheStrategy:
+        configured?.prompt_cache_strategy ?? provider?.prompt_cache_strategy ?? 'auto',
       contextWindowTokens:
         (configured?.context_window_tokens ?? provider?.context_window_tokens)?.toString() ?? '',
       maxInputTokens:
@@ -327,6 +341,7 @@ export function buildEnabledModelSelections(options: AccountModelOption[]): Enab
     return {
       id: option.id,
       alias: option.alias.trim() || undefined,
+      prompt_cache_strategy: option.promptCacheStrategy ?? 'auto',
       context_window_tokens: contextWindow,
       max_input_tokens: maxInput,
       max_output_tokens: maxOutput,

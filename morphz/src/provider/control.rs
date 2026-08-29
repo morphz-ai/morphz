@@ -17,6 +17,11 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderControlSnapshot {
     pub generated_at: DateTime<Utc>,
+    /// Compile-time experimental capabilities which the control plane may
+    /// explicitly configure. Absence means Dashboard must not offer the
+    /// corresponding setting.
+    #[serde(default)]
+    pub experimental_features: Vec<String>,
     pub selected_model_alias: String,
     /// Additional logical routes the Agent may explicitly select for infer or
     /// scheduled child Evaluations. The selected primary route is authorized

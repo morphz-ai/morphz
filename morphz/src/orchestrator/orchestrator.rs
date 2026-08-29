@@ -23,8 +23,9 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    attachment_message, model_attachments, provider_continuation_message, segmented_text_message,
-    Client, Message, ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
+    attachment_message, model_attachments, model_visible_message_text,
+    provider_continuation_message, segmented_model_text, segmented_text_message, Client, Message,
+    ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
     ModelRequestContext, ModelTextPart, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
     ProviderContinuation, SegmentedModelText, ToolDefinition,
 };
@@ -47,7 +48,10 @@ use crate::memory::{
     ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
-use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
+use crate::orchestrator::context::{
+    attribute_prompt_components, render_context_delta_observation, ContextEngine,
+    ContextObservation, ContextView,
+};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::permission::{DurableApprovalGrant, PermissionBroker};
 use crate::plan_execution::{
@@ -67,6 +71,7 @@ use crate::tool::{
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -1455,6 +1460,10 @@ struct ToolExecutionOptions {
     /// Provider response.
     model_attempt_id: Option<String>,
     provider_continuation: Option<ProviderContinuation>,
+    /// New experimental Structured ContextDelta generations persist one
+    /// canonical Context seed on their first assistant tool-call Event. Later
+    /// Activations reuse that Event-backed seed and leave this field empty.
+    prompt_cache_transport_seed: Option<PromptCacheTransportSeed>,
 }
 
 #[derive(Debug, Default)]
@@ -2538,10 +2547,39 @@ fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), 
     Ok(())
 }
 
+const PROMPT_CACHE_TRANSPORT_SEED_VERSION: u8 = 3;
+const STRUCTURED_CONTEXT_DELTA_VERSION: u8 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PromptCacheStructuredDelta {
+    source_sequence: u64,
+    observation_id: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PromptCacheTransportSeed {
+    version: u8,
+    contract_digest: String,
+    /// One complete canonical Context. It is always the first content block
+    /// and remains independently evaluable even when every delta is rebuilt.
+    context_message: Message,
+    /// Exact active Observation identities represented inside context_message.
+    /// Retiring one of these requires a new seed; retiring a delta Observation
+    /// only rebuilds the delta projection after this immutable base.
+    context_observation_ids: BTreeSet<String>,
+    /// Deltas already visible in the request which produced the assistant_call
+    /// carrying this seed. They predate that Event and therefore cannot be
+    /// reconstructed solely by scanning later Event rows.
+    initial_deltas: Vec<PromptCacheStructuredDelta>,
+}
+
 #[derive(Debug, Default)]
 struct ToolContinuationEnvelope {
     messages: Vec<Message>,
     delivered_output_ids: HashSet<String>,
+    structured_deltas: Vec<PromptCacheStructuredDelta>,
+    prompt_cache_transport_seed: Option<PromptCacheTransportSeed>,
 }
 
 fn retain_pending_continuation_calls(
@@ -2567,6 +2605,183 @@ fn retain_pending_continuation_calls(
                 })
         })
         .collect()
+}
+
+fn prompt_cache_transport_contract_digest(
+    model_alias: &str,
+    reasoning_effort: &str,
+    phase: &str,
+    system_message: &Message,
+    tools: &[ToolDefinition],
+) -> String {
+    let encoded = serde_json::to_vec(&json!({
+        "version": PROMPT_CACHE_TRANSPORT_SEED_VERSION,
+        "model_alias": model_alias,
+        "reasoning_effort": reasoning_effort,
+        "phase": phase,
+        "system_role": system_message.role,
+        "system_content": model_visible_message_text(system_message),
+        "tools": tools,
+    }))
+    .unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(encoded))
+}
+
+fn prompt_cache_transport_seed(
+    contract_digest: String,
+    context_message: &Message,
+    context_observation_ids: BTreeSet<String>,
+    initial_deltas: Vec<PromptCacheStructuredDelta>,
+) -> PromptCacheTransportSeed {
+    PromptCacheTransportSeed {
+        version: PROMPT_CACHE_TRANSPORT_SEED_VERSION,
+        contract_digest,
+        context_message: context_message.clone(),
+        context_observation_ids,
+        initial_deltas,
+    }
+}
+
+fn structured_context_delta_message(
+    context_message: &Message,
+    deltas: &[PromptCacheStructuredDelta],
+) -> Result<Message, DynError> {
+    let context = segmented_model_text(context_message)
+        .ok_or("Structured ContextDelta transport requires a segmented Context message")?;
+    let mut parts = Vec::with_capacity(1 + deltas.len());
+    parts.push(ModelTextPart {
+        // The seed is one complete, closed Context block. Internal Context
+        // segmentation belongs to the canonical/default transport and must
+        // not leak into this append-only experiment.
+        text: context.visible_text(),
+        cache_boundary_after: true,
+        cache_boundary_candidate_after: true,
+    });
+    parts.extend(deltas.iter().map(|delta| ModelTextPart {
+        text: format!("\n{}", delta.text),
+        cache_boundary_after: true,
+        cache_boundary_candidate_after: true,
+    }));
+    Ok(segmented_text_message(
+        "user",
+        SegmentedModelText {
+            parts,
+            prompt_cache_key: context.prompt_cache_key,
+        },
+    )?)
+}
+
+fn prompt_cache_seed_requires_rebase(
+    seed: &PromptCacheTransportSeed,
+    retired_observation_ids: &BTreeSet<String>,
+) -> bool {
+    !seed
+        .context_observation_ids
+        .is_disjoint(retired_observation_ids)
+}
+
+fn active_prompt_cache_seed_deltas(
+    seed: &PromptCacheTransportSeed,
+    retired_observation_ids: &BTreeSet<String>,
+) -> Vec<PromptCacheStructuredDelta> {
+    seed.initial_deltas
+        .iter()
+        .filter(|delta| !retired_observation_ids.contains(&delta.observation_id))
+        .cloned()
+        .collect()
+}
+
+fn prompt_cache_transport_context_commit_after_sequence(events: &[Event]) -> u64 {
+    events
+        .iter()
+        .filter(|event| event.event_type == TYPE_TOOL_OUTPUT)
+        .filter(|event| context_tx_output_succeeded(event))
+        .filter_map(|event| event.sequence)
+        .max()
+        .unwrap_or(0)
+}
+
+fn delta_atom(value: impl ToString) -> SExpr {
+    SExpr::Atom(value.to_string())
+}
+
+fn delta_pair(name: &str, value: SExpr) -> SExpr {
+    SExpr::List(vec![delta_atom(name), value])
+}
+
+fn delta_list(name: &str, mut values: Vec<SExpr>) -> SExpr {
+    let mut items = Vec::with_capacity(values.len() + 1);
+    items.push(delta_atom(name));
+    items.append(&mut values);
+    SExpr::List(items)
+}
+
+fn context_observation_supports_delta(observation: &ContextObservation) -> bool {
+    !observation.protected
+        && observation.retrievable
+        && observation.freshness == Default::default()
+        && observation.usage == Default::default()
+}
+
+fn prompt_cache_structured_delta(
+    assistant_call: &Event,
+    call: &crate::llm::ToolCall,
+    observation: &ContextObservation,
+) -> Option<PromptCacheStructuredDelta> {
+    if !context_observation_supports_delta(observation) {
+        return None;
+    }
+    let attempt_id = assistant_call
+        .payload
+        .get("attempt_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let assistant_text = assistant_call
+        .payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let form = delta_list(
+        "context-delta",
+        vec![
+            delta_list(
+                "protocol",
+                vec![
+                    delta_pair("version", delta_atom(STRUCTURED_CONTEXT_DELTA_VERSION)),
+                    delta_pair("base", delta_atom("preceding-context")),
+                    delta_pair("operation", delta_atom("append-inbox-observation")),
+                    delta_pair(
+                        "evaluation",
+                        delta_atom("evaluate the preceding closed context followed by all ordered context-delta forms as one Structured Context; preserve Observation refs and apply retire through Runtime projection rather than conversational inference"),
+                    ),
+                ],
+            ),
+            delta_list(
+                "source",
+                vec![
+                    delta_pair("attempt", delta_atom(attempt_id)),
+                    delta_pair("assistant-text", delta_atom(assistant_text)),
+                    delta_list(
+                        "tool-call",
+                        vec![
+                            delta_pair("id", delta_atom(&call.id)),
+                            delta_pair("name", delta_atom(&call.function.name)),
+                            delta_pair("arguments", delta_atom(&call.function.arguments)),
+                        ],
+                    ),
+                ],
+            ),
+            delta_list(
+                "inbox-append",
+                vec![render_context_delta_observation(observation)],
+            ),
+        ],
+    );
+    Some(PromptCacheStructuredDelta {
+        source_sequence: observation.sequence,
+        observation_id: observation.id.clone(),
+        text: form.to_string(),
+    })
 }
 
 pub struct Orchestrator {
@@ -8432,6 +8647,7 @@ impl Orchestrator {
         root_turn_id: Option<&str>,
         trigger_event_id: Option<&str>,
         retired_observation_ids: &BTreeSet<String>,
+        context_observations: &[ContextObservation],
     ) -> Result<ToolContinuationEnvelope, DynError> {
         let Some(trigger_event_id) = trigger_event_id else {
             return Ok(ToolContinuationEnvelope::default());
@@ -8498,6 +8714,10 @@ impl Orchestrator {
         }
 
         let mut continuation = ToolContinuationEnvelope::default();
+        let observations = context_observations
+            .iter()
+            .map(|observation| (observation.id.as_str(), observation))
+            .collect::<HashMap<_, _>>();
         for event in &turn_events {
             if event.topic != "chat/assistant_call" {
                 continue;
@@ -8557,6 +8777,14 @@ impl Orchestrator {
                     continue;
                 };
                 continuation.delivered_output_ids.insert(output.id.clone());
+                if let Some(delta) = observations
+                    .get(output.id.as_str())
+                    .and_then(|observation| {
+                        prompt_cache_structured_delta(event, &call, observation)
+                    })
+                {
+                    continuation.structured_deltas.push(delta);
+                }
                 continuation
                     .messages
                     .push(self.standard_tool_result_message(&call, output));
@@ -8578,6 +8806,149 @@ impl Orchestrator {
             }
         }
         Ok(continuation)
+    }
+
+    /// Rebuild ordered Structured ContextDelta blocks from the latest
+    /// compatible Event-backed Context seed in this root turn. This never
+    /// substitutes an assistant/tool chat transcript for the Context model.
+    async fn structured_delta_cache_transport_for_root(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+        contract_digest: &str,
+        retired_observation_ids: &BTreeSet<String>,
+        context_observations: &[ContextObservation],
+    ) -> Result<Option<ToolContinuationEnvelope>, DynError> {
+        let mut events = self
+            .store
+            .query(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                root_turn_id: Some(root_turn_id.to_string()),
+                types: vec![TYPE_AGENT_CALL.to_string(), TYPE_TOOL_OUTPUT.to_string()],
+                excluded_topics: vec!["chat/context_inspect".to_string()],
+                ..Default::default()
+            })
+            .await?;
+        events.sort_by_key(|event| event.sequence.unwrap_or(u64::MAX));
+
+        // A committed Context transaction changes canonical state outside the
+        // append-only Observation delta contract and therefore starts a new
+        // seed generation. Retirement is handled per seed/delta provenance
+        // below instead of unconditionally throwing away the whole seed.
+        let reset_after_sequence = prompt_cache_transport_context_commit_after_sequence(&events);
+
+        let selected_seed = events
+            .iter()
+            .filter(|event| event.topic == "chat/assistant_call")
+            .filter(|event| event.sequence.unwrap_or(0) > reset_after_sequence)
+            .filter_map(|event| {
+                let seed = event
+                    .payload
+                    .get("prompt_cache_transport_seed")
+                    .and_then(|value| {
+                        serde_json::from_value::<PromptCacheTransportSeed>(value.clone()).ok()
+                    })?;
+                (seed.version == PROMPT_CACHE_TRANSPORT_SEED_VERSION
+                    && seed.contract_digest == contract_digest
+                    && !prompt_cache_seed_requires_rebase(&seed, retired_observation_ids))
+                .then_some((event.sequence.unwrap_or(0), seed))
+            })
+            .max_by_key(|(sequence, _)| *sequence);
+        let Some((seed_sequence, seed)) = selected_seed else {
+            return Ok(None);
+        };
+
+        let outputs = events
+            .iter()
+            .filter(|event| event.event_type == TYPE_TOOL_OUTPUT)
+            .filter(|event| event.sequence.unwrap_or(0) >= seed_sequence)
+            .filter_map(|event| {
+                Some((
+                    (
+                        event.payload.get("attempt_id")?.as_str()?.to_string(),
+                        event.payload.get("tool_call_id")?.as_str()?.to_string(),
+                    ),
+                    event.clone(),
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let observations = context_observations
+            .iter()
+            .map(|observation| (observation.id.as_str(), observation))
+            .collect::<HashMap<_, _>>();
+        let initial_deltas = active_prompt_cache_seed_deltas(&seed, retired_observation_ids);
+
+        let mut continuation = ToolContinuationEnvelope {
+            delivered_output_ids: initial_deltas
+                .iter()
+                .map(|delta| delta.observation_id.clone())
+                .collect(),
+            structured_deltas: initial_deltas,
+            prompt_cache_transport_seed: Some(seed),
+            ..Default::default()
+        };
+        for event in events
+            .iter()
+            .filter(|event| event.topic == "chat/assistant_call")
+            .filter(|event| event.sequence.unwrap_or(0) >= seed_sequence)
+        {
+            let Some(attempt_id) = event
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            let calls_value = event
+                .payload
+                .get("continuation_tool_calls")
+                .or_else(|| event.payload.get("transcript_tool_calls"))
+                .or_else(|| event.payload.get("tool_calls"));
+            let Some(calls_value) = calls_value else {
+                continue;
+            };
+            let calls = retain_pending_continuation_calls(
+                attempt_id,
+                serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?,
+                &outputs,
+                retired_observation_ids,
+            );
+            if calls.is_empty() {
+                continue;
+            }
+
+            for call in calls {
+                let Some(output) = outputs.get(&(attempt_id.to_string(), call.id.clone())) else {
+                    continue;
+                };
+                if output
+                    .payload
+                    .get("model_attachments")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|items| !items.is_empty())
+                {
+                    return Ok(None);
+                }
+                let Some(observation) = observations.get(output.id.as_str()) else {
+                    // A bounded or otherwise non-canonical projection cannot
+                    // safely invent a weaker delta. Fall back to a fresh seed.
+                    return Ok(None);
+                };
+                let Some(delta) = prompt_cache_structured_delta(event, &call, observation) else {
+                    return Ok(None);
+                };
+                continuation.delivered_output_ids.insert(output.id.clone());
+                continuation.structured_deltas.push(delta);
+            }
+        }
+        continuation
+            .structured_deltas
+            .sort_by_key(|delta| delta.source_sequence);
+        continuation
+            .structured_deltas
+            .dedup_by(|right, left| right.observation_id == left.observation_id);
+        Ok(Some(continuation))
     }
 
     fn standard_tool_result_message(&self, call: &crate::llm::ToolCall, output: &Event) -> Message {
@@ -9846,6 +10217,7 @@ impl Orchestrator {
                 record_assistant_call: false,
                 model_attempt_id,
                 provider_continuation: None,
+                prompt_cache_transport_seed: None,
             },
         )
         .await?;
@@ -10374,12 +10746,17 @@ impl Orchestrator {
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
             route.context_token_budget = Some(context.token_budget_policy.clone());
         }
-        let continuation = self
+        // Preserve the full current Observation projection for the optional
+        // ContextDelta encoder before the ordinary one-shot continuation path
+        // excludes the same outputs from the canonical Context message.
+        let prompt_cache_context_observations = context.observations.clone();
+        let mut continuation = self
             .tool_continuation_for_trigger(
                 session_id,
                 Some(&activation.root_turn_id),
                 Some(&activation.trigger_event_id),
                 &context.state.retired,
+                &prompt_cache_context_observations,
             )
             .await?;
         let continuation_messages = continuation.messages.clone();
@@ -10860,6 +11237,7 @@ impl Orchestrator {
                         record_assistant_call: true,
                         model_attempt_id: None,
                         provider_continuation: None,
+                        prompt_cache_transport_seed: None,
                     },
                 ))
                 .await?;
@@ -10977,14 +11355,118 @@ impl Orchestrator {
                 );
             }
         }
+        let initial_request_policy = self
+            .effective_model_request_policy(session_id, &attempt_id)
+            .await?;
+        let mut prompt_cache_transport_seed_to_persist = None;
+        let structured_delta_ids = continuation
+            .structured_deltas
+            .iter()
+            .map(|delta| delta.observation_id.as_str())
+            .collect::<HashSet<_>>();
+        let transport_shape_is_safe = !bounded_critical_projection
+            && cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            && !safety_refusal_recovery_active
+            && !recovering_completion_intent
+            && messages.len() >= 2
+            && messages.len() == 2 + continuation_messages.len()
+            && segmented_model_text(&messages[1]).is_some()
+            && !messages
+                .iter()
+                .any(|message| model_attachments(message).is_some())
+            && continuation.delivered_output_ids.len() == structured_delta_ids.len()
+            && continuation
+                .delivered_output_ids
+                .iter()
+                .all(|id| structured_delta_ids.contains(id.as_str()))
+            && self.client.prefers_structured_delta_cache_transport(Some(
+                initial_request_policy.model_alias.as_str(),
+            ));
+        if transport_shape_is_safe {
+            let contract_digest = prompt_cache_transport_contract_digest(
+                &initial_request_policy.model_alias,
+                &initial_request_policy.reasoning_effort,
+                &effective_phase,
+                &messages[0],
+                &tools,
+            );
+            let current_context_message = messages[1].clone();
+            let current_seed = prompt_cache_transport_seed(
+                contract_digest.clone(),
+                &current_context_message,
+                context
+                    .observations
+                    .iter()
+                    .map(|observation| observation.id.clone())
+                    .collect(),
+                continuation.structured_deltas.clone(),
+            );
+            let prior_output_ids = continuation.delivered_output_ids.clone();
+            let structured = self
+                .structured_delta_cache_transport_for_root(
+                    session_id,
+                    &activation.root_turn_id,
+                    &contract_digest,
+                    &context.state.retired,
+                    &prompt_cache_context_observations,
+                )
+                .await?;
+            if let Some(structured) = structured.filter(|candidate| {
+                prior_output_ids
+                    .iter()
+                    .all(|id| candidate.delivered_output_ids.contains(id))
+            }) {
+                let seed = structured
+                    .prompt_cache_transport_seed
+                    .as_ref()
+                    .expect("Structured ContextDelta transport must carry its Context seed");
+                messages = vec![
+                    messages[0].clone(),
+                    structured_context_delta_message(
+                        &seed.context_message,
+                        &structured.structured_deltas,
+                    )?,
+                ];
+                continuation.delivered_output_ids = structured.delivered_output_ids;
+                continuation.structured_deltas = structured.structured_deltas;
+                request_prompt_measurement = self
+                    .count_projected_prompt_tokens(&context, &messages, &tools)
+                    .await;
+                tracing::info!(
+                    context_id = %context_id,
+                    session_id,
+                    activation_id = %activation.id,
+                    context_delta_blocks = continuation.structured_deltas.len(),
+                    replayed_output_count = continuation.delivered_output_ids.len(),
+                    contract_digest = %contract_digest,
+                    event_code = "orchestrator.prompt_cache.structured_delta_reused",
+                    "Reused one Event-backed canonical Context seed and projected ordered Structured ContextDelta blocks"
+                );
+            } else {
+                messages = vec![
+                    messages[0].clone(),
+                    structured_context_delta_message(
+                        &current_context_message,
+                        &continuation.structured_deltas,
+                    )?,
+                ];
+                prompt_cache_transport_seed_to_persist = Some(current_seed);
+                tracing::info!(
+                    context_id = %context_id,
+                    session_id,
+                    activation_id = %activation.id,
+                    context_delta_blocks = continuation.structured_deltas.len(),
+                    contract_digest = %contract_digest,
+                    event_code = "orchestrator.prompt_cache.structured_delta_started",
+                    "Started an experimental canonical Context plus Structured ContextDelta cache generation"
+                );
+            }
+        }
         let mut base_protocol_messages = messages;
         let restored_reasoning = self
             .restore_reasoning_continuation_state(&context_id, session_id, &activation.id)
             .await?;
         let mut protocol_messages = base_protocol_messages.clone();
-        let initial_request_policy = self
-            .effective_model_request_policy(session_id, &attempt_id)
-            .await?;
         // New records persist the exact physical model that owns the opaque
         // continuation. Legacy records predate request-boundary switching, so
         // their Activation snapshot is the correct fallback owner.
@@ -11759,6 +12241,7 @@ impl Orchestrator {
                             record_assistant_call: true,
                             model_attempt_id: Some(model_attempt_id.clone()),
                             provider_continuation: provider_continuation.clone(),
+                            prompt_cache_transport_seed: None,
                         },
                     ))
                     .await?;
@@ -12112,6 +12595,7 @@ impl Orchestrator {
                     record_assistant_call: true,
                     model_attempt_id: Some(terminal_model_attempt_id.clone()),
                     provider_continuation: terminal_provider_continuation,
+                    prompt_cache_transport_seed: prompt_cache_transport_seed_to_persist,
                 },
             ))
             .await;
@@ -15074,6 +15558,7 @@ impl Orchestrator {
                 record_assistant_call: false,
                 model_attempt_id: None,
                 provider_continuation: None,
+                prompt_cache_transport_seed: None,
             },
         )
         .await?;
@@ -16254,6 +16739,9 @@ impl Orchestrator {
         ];
         if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
             assistant_call_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
+        }
+        if let Some(seed) = options.prompt_cache_transport_seed.as_ref() {
+            assistant_call_payload.push(("prompt_cache_transport_seed".to_string(), json!(seed)));
         }
         if let Some(provider_continuation) = provider_continuation {
             assistant_call_payload.push((
@@ -17793,6 +18281,7 @@ impl Orchestrator {
                 record_assistant_call: true,
                 model_attempt_id: None,
                 provider_continuation: None,
+                prompt_cache_transport_seed: None,
             },
         )
         .await?;
@@ -20205,34 +20694,38 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        action_group_reconcile_id, activation_admission_class, apply_prompt_estimate_delta,
-        attached_delegation_return_route, baseline_system_prompt, classify_terminal_response,
-        cognitive_sexpr_vm_system_prompt, completed_objective_update_call,
-        compose_context_encoding, compose_segmented_context_message,
-        continuation_messages_for_projection, critical_maintenance_transaction_available,
-        decide_provider_circuit_admission, derived_thread_kind,
-        durable_activation_revocation_reason, durable_activation_revocation_reason_for_record,
+        action_group_reconcile_id, activation_admission_class, active_prompt_cache_seed_deltas,
+        apply_prompt_estimate_delta, attached_delegation_return_route, baseline_system_prompt,
+        classify_terminal_response, cognitive_sexpr_vm_system_prompt,
+        completed_objective_update_call, compose_context_encoding,
+        compose_segmented_context_message, continuation_messages_for_projection,
+        critical_maintenance_transaction_available, decide_provider_circuit_admission,
+        derived_thread_kind, durable_activation_revocation_reason,
+        durable_activation_revocation_reason_for_record,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
         harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
         model_binding_completion_error, model_harness_tool_scope,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
         persistent_provider_wait_contexts, plan_infer_tool_scope,
-        production_system_prompt_inspection, provider_delivery_retry_delay,
-        recover_action_group_from_durable_events, recovered_action_group_settled_event,
-        recovery_owns_activation, render_harness_context, render_system_contract,
-        required_cognitive_coordination_response, restrict_tools_to_scope,
+        production_system_prompt_inspection, prompt_cache_seed_requires_rebase,
+        prompt_cache_transport_context_commit_after_sequence,
+        prompt_cache_transport_contract_digest, prompt_cache_transport_seed,
+        provider_delivery_retry_delay, recover_action_group_from_durable_events,
+        recovered_action_group_settled_event, recovery_owns_activation, render_harness_context,
+        render_system_contract, required_cognitive_coordination_response, restrict_tools_to_scope,
         retain_context_bound_capability_tools, retain_context_maintenance_tools,
         retain_final_reply_control_tools, retain_pending_continuation_calls, scheduler_audit_event,
         semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
-        should_force_final_for_maintenance, tool_call_activity_preview,
-        validate_final_reply_response, validate_objective_closure_review_response,
-        validate_objective_completion_call, ContextEngine, DialogueThreadGate, DialogueThreadLease,
-        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        ModelVisibleAttachmentReference, NoReplyMode, Orchestrator, ProviderCircuitAdmission,
-        ProviderCircuitPhase, ProviderCircuitState, Registry, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        should_force_final_for_maintenance, structured_context_delta_message,
+        tool_call_activity_preview, validate_final_reply_response,
+        validate_objective_closure_review_response, validate_objective_completion_call,
+        ContextEngine, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
+        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
+        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        ModelVisibleAttachmentReference, NoReplyMode, Orchestrator, PromptCacheStructuredDelta,
+        ProviderCircuitAdmission, ProviderCircuitPhase, ProviderCircuitState, Registry,
+        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -20242,9 +20735,9 @@ mod tests {
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{
         attachment_message, model_attachments, model_visible_message_text, segmented_model_text,
-        FunctionCall, Message, ModelAttemptBinding, ModelAttemptBindingError, ModelFailureKind,
-        ModelUsage, PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ToolCall,
-        ToolDefinition,
+        segmented_text_message, FunctionCall, Message, ModelAttemptBinding,
+        ModelAttemptBindingError, ModelFailureKind, ModelTextPart, ModelUsage, PromptTokenAccuracy,
+        PromptTokenCount, ProviderContinuation, SegmentedModelText, ToolCall, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -20764,6 +21257,200 @@ mod tests {
             retain_pending_continuation_calls("attempt-1", vec![call], &outputs, &BTreeSet::new());
 
         assert!(retained.is_empty());
+    }
+
+    #[test]
+    fn prompt_cache_transport_seed_round_trip_is_one_user_message_with_structured_blocks() {
+        let context = segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts: vec![
+                    ModelTextPart {
+                        text: "stable context".to_string(),
+                        cache_boundary_after: true,
+                        cache_boundary_candidate_after: true,
+                    },
+                    ModelTextPart {
+                        text: " dynamic tail".to_string(),
+                        cache_boundary_after: false,
+                        cache_boundary_candidate_after: false,
+                    },
+                ],
+                prompt_cache_key: Some("context-key".to_string()),
+            },
+        )
+        .unwrap();
+        let delta = PromptCacheStructuredDelta {
+            source_sequence: 9,
+            observation_id: "output-9".to_string(),
+            text: "(context-delta (protocol (version 1)) (inbox-append (observation (ref @e9))))"
+                .to_string(),
+        };
+
+        let seed = prompt_cache_transport_seed(
+            "sha256:contract".to_string(),
+            &context,
+            BTreeSet::from(["seed-output".to_string()]),
+            vec![delta.clone()],
+        );
+        let restored =
+            structured_context_delta_message(&seed.context_message, &seed.initial_deltas).unwrap();
+        let restored_parts = segmented_model_text(&restored).unwrap();
+
+        assert_eq!(restored.role, "user");
+        assert_eq!(restored_parts.parts.len(), 2);
+        assert_eq!(
+            restored_parts.parts[0].text,
+            model_visible_message_text(&context),
+        );
+        assert_eq!(restored_parts.parts[1].text, format!("\n{}", delta.text));
+        assert_eq!(
+            restored_parts.prompt_cache_key.as_deref(),
+            Some("context-key")
+        );
+        assert_eq!(
+            seed.context_observation_ids,
+            BTreeSet::from(["seed-output".to_string()])
+        );
+    }
+
+    #[test]
+    fn prompt_cache_transport_contract_digest_covers_every_wire_contract_dimension() {
+        let system = Message {
+            role: "system".to_string(),
+            content: "system contract".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        let tools = vec![ToolDefinition {
+            name: "read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        }];
+        let base = prompt_cache_transport_contract_digest(
+            "gpt-5.6-sol",
+            "high",
+            "execution",
+            &system,
+            &tools,
+        );
+        let changed_system = Message {
+            content: "changed system contract".to_string(),
+            ..system.clone()
+        };
+        let changed_tools = vec![ToolDefinition {
+            name: "write".to_string(),
+            ..tools[0].clone()
+        }];
+
+        assert_ne!(
+            base,
+            prompt_cache_transport_contract_digest(
+                "gpt-5.6-terra",
+                "high",
+                "execution",
+                &system,
+                &tools,
+            )
+        );
+        assert_ne!(
+            base,
+            prompt_cache_transport_contract_digest(
+                "gpt-5.6-sol",
+                "medium",
+                "execution",
+                &system,
+                &tools,
+            )
+        );
+        assert_ne!(
+            base,
+            prompt_cache_transport_contract_digest(
+                "gpt-5.6-sol",
+                "high",
+                "dialogue",
+                &system,
+                &tools,
+            )
+        );
+        assert_ne!(
+            base,
+            prompt_cache_transport_contract_digest(
+                "gpt-5.6-sol",
+                "high",
+                "execution",
+                &changed_system,
+                &tools,
+            )
+        );
+        assert_ne!(
+            base,
+            prompt_cache_transport_contract_digest(
+                "gpt-5.6-sol",
+                "high",
+                "execution",
+                &system,
+                &changed_tools,
+            )
+        );
+    }
+
+    #[test]
+    fn prompt_cache_transport_rebases_for_context_commit_but_not_delta_retirement() {
+        let mut committed = Event::new(
+            "context-output".to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("tool_name".to_string(), json!("context_tx")),
+                ("text".to_string(), json!(r#"{"status":"committed"}"#)),
+            ]),
+        );
+        committed.sequence = Some(4);
+        let mut retired = Event::new(
+            "retired-output".to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            Default::default(),
+        );
+        retired.sequence = Some(7);
+        let events = vec![committed, retired];
+
+        assert_eq!(
+            prompt_cache_transport_context_commit_after_sequence(&events),
+            4
+        );
+        let context = segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts: vec![ModelTextPart {
+                    text: "(context (inbox (observation (ref @e1))))".to_string(),
+                    cache_boundary_after: true,
+                    cache_boundary_candidate_after: true,
+                }],
+                prompt_cache_key: Some("retire-test".to_string()),
+            },
+        )
+        .unwrap();
+        let seed = prompt_cache_transport_seed(
+            "sha256:contract".to_string(),
+            &context,
+            BTreeSet::from(["seed-output".to_string()]),
+            vec![PromptCacheStructuredDelta {
+                source_sequence: 7,
+                observation_id: "retired-output".to_string(),
+                text: "(context-delta (inbox-append (observation (ref @e7))))".to_string(),
+            }],
+        );
+        let retire_delta = BTreeSet::from(["retired-output".to_string()]);
+        assert!(!prompt_cache_seed_requires_rebase(&seed, &retire_delta));
+        assert!(active_prompt_cache_seed_deltas(&seed, &retire_delta).is_empty());
+
+        let retire_seed = BTreeSet::from(["seed-output".to_string()]);
+        assert!(prompt_cache_seed_requires_rebase(&seed, &retire_seed));
     }
 
     #[async_trait::async_trait]

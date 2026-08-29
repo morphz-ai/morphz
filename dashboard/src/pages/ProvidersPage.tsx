@@ -113,6 +113,7 @@ interface ModelRouteConfig {
 
 interface ProviderControlSnapshot {
   generated_at: string
+  experimental_features?: string[]
   selected_model_alias: string
   allowed_evaluation_models: string[]
   permission_mode: string
@@ -1141,6 +1142,9 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
     modelEditor?.options ?? [],
     modelSearchQuery,
   )
+  const structuredCacheExperimentAvailable = (snapshot.experimental_features ?? []).includes(
+    'openai-chatgpt-structured-cache',
+  )
 
   const saveAccountModels = async () => {
     if (!modelEditor || savingModels) return
@@ -1696,6 +1700,23 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
                         </label>
                         <small>{t('providers.modelAliasHint')}</small>
                       </div>
+                      {structuredCacheExperimentAvailable && (
+                        <div className="provider-model-alias">
+                          <label>
+                            <span>{t('providers.promptCacheTransport')}</span>
+                            <select
+                              value={option.promptCacheStrategy}
+                              onChange={event => updateAccountModel(option.id, {
+                                promptCacheStrategy: event.target.value as ProviderModelConfig['prompt_cache_strategy'],
+                              })}
+                            >
+                              <option value="auto">{t('providers.promptCacheAutomatic')}</option>
+                              <option value="experimental-structured-deltas">{t('providers.promptCacheStructuredDeltas')}</option>
+                            </select>
+                          </label>
+                          <small>{t('providers.promptCacheStructuredDeltasHint')}</small>
+                        </div>
+                      )}
                       <details>
                         <summary>{t('providers.modelCapacityAdvanced')}</summary>
                         <p>{t('providers.modelCapacityHint')}</p>

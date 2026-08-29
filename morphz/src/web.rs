@@ -382,6 +382,7 @@ struct PutProviderAccountModelsRequest {
 struct ProviderAccountModelSelection {
     id: String,
     alias: Option<String>,
+    prompt_cache_strategy: Option<crate::config::PromptCacheStrategy>,
     context_window_tokens: Option<usize>,
     max_input_tokens: Option<usize>,
     max_output_tokens: Option<usize>,
@@ -2096,16 +2097,25 @@ async fn handle_put_provider_account_models(
             .alias
             .and_then(|alias| (!alias.trim().is_empty()).then_some(alias));
         display_aliases.insert(id.clone(), display_alias);
+        let prompt_cache_strategy = selection.prompt_cache_strategy.unwrap_or_default();
+        if prompt_cache_strategy == crate::config::PromptCacheStrategy::ExperimentalStructuredDeltas
+            && !cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "experimental-structured-deltas requires a Morphz build with feature experimental-openai-chatgpt-structured-cache",
+            );
+        }
         models.insert(
             id,
             ProviderModelConfig {
+                prompt_cache_strategy,
                 context_window_tokens: selection.context_window_tokens,
                 max_input_tokens: selection.max_input_tokens,
                 max_output_tokens: selection.max_output_tokens,
                 max_input_attachments: selection.max_input_attachments,
                 max_input_attachment_bytes: selection.max_input_attachment_bytes,
                 max_input_attachment_total_bytes: selection.max_input_attachment_total_bytes,
-                ..ProviderModelConfig::default()
             },
         );
     }
@@ -10267,6 +10277,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: None,
                     context_window_tokens: Some(200_000),
@@ -10300,6 +10311,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: Some("fast-subscription".to_string()),
                     context_window_tokens: Some(200_000),
@@ -10350,6 +10362,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: None,
                     context_window_tokens: Some(0),
@@ -11485,6 +11498,7 @@ account = "xai-account"
             Json(PutProviderAccountModelsRequest {
                 models: vec![
                     ProviderAccountModelSelection {
+                        prompt_cache_strategy: None,
                         id: "model-a".to_string(),
                         alias: Some("primary-local".to_string()),
                         context_window_tokens: Some(200_000),
@@ -11495,6 +11509,7 @@ account = "xai-account"
                         max_input_attachment_total_bytes: Some(192 * 1024 * 1024),
                     },
                     ProviderAccountModelSelection {
+                        prompt_cache_strategy: None,
                         id: "model-b".to_string(),
                         alias: None,
                         context_window_tokens: None,

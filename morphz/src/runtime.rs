@@ -3069,6 +3069,12 @@ impl MorphzRuntime {
         }
         Ok(ProviderControlSnapshot {
             generated_at: chrono::Utc::now(),
+            experimental_features: if cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            {
+                vec!["openai-chatgpt-structured-cache".to_string()]
+            } else {
+                Vec::new()
+            },
             selected_model_alias: self.model(),
             allowed_evaluation_models: config.llm.allowed_evaluation_models.clone(),
             permission_mode: self.inner.permissions.profile().mode,
@@ -10659,6 +10665,7 @@ mod tests {
     struct PhysicalBatchClient {
         calls: AtomicU64,
         observed_complete_batch: Arc<AtomicBool>,
+        requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
     }
 
     struct DurableEvalClient {
@@ -12452,11 +12459,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Client for PhysicalBatchClient {
+        fn prefers_structured_delta_cache_transport(&self, _requested_model: Option<&str>) -> bool {
+            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        }
+
         async fn create_completion(
             &self,
             messages: Vec<Message>,
             tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(messages.clone());
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 assert!(tools.iter().any(|tool| tool.name == "list_files"));
@@ -12489,20 +12504,99 @@ mod tests {
                 });
             }
             if call == 1 {
-                let delivered_tool_results = messages
-                    .iter()
-                    .filter(|message| message.role == "tool")
-                    .filter_map(|message| message.tool_call_id.as_deref())
-                    .collect::<std::collections::HashSet<_>>();
-                let complete = delivered_tool_results.len() == 2
-                    && delivered_tool_results.contains("probe-a")
-                    && delivered_tool_results.contains("probe-b");
+                let complete = if cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+                    let deltas = messages
+                        .get(1)
+                        .and_then(crate::llm::segmented_model_text)
+                        .map(|content| {
+                            content
+                                .parts
+                                .into_iter()
+                                .skip(1)
+                                .map(|part| part.text)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    messages.len() == 2
+                        && deltas.len() == 2
+                        && deltas.iter().any(|delta| delta.contains("probe-a"))
+                        && deltas.iter().any(|delta| delta.contains("probe-b"))
+                        && deltas.iter().all(|delta| delta.contains("context-delta"))
+                } else {
+                    let delivered_tool_results = messages
+                        .iter()
+                        .filter(|message| message.role == "tool")
+                        .filter_map(|message| message.tool_call_id.as_deref())
+                        .collect::<std::collections::HashSet<_>>();
+                    delivered_tool_results.len() == 2
+                        && delivered_tool_results.contains("probe-a")
+                        && delivered_tool_results.contains("probe-b")
+                };
                 self.observed_complete_batch
                     .store(complete, Ordering::SeqCst);
                 if !complete {
                     return Err(
                         "model resumed before the full physical tool batch was durable".into(),
                     );
+                }
+                return Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "probe-c".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "list_files".to_string(),
+                        arguments: json!({
+                            "path": ".",
+                            "glob": "README.md",
+                            "max_results": 10
+                        })
+                        .to_string(),
+                    }],
+                });
+            }
+            if call == 2 {
+                let complete = if cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+                    let deltas = messages
+                        .get(1)
+                        .and_then(crate::llm::segmented_model_text)
+                        .map(|content| {
+                            content
+                                .parts
+                                .into_iter()
+                                .skip(1)
+                                .map(|part| part.text)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    messages.len() == 2
+                        && deltas.len() == 3
+                        && ["probe-a", "probe-b", "probe-c"]
+                            .iter()
+                            .all(|id| deltas.iter().any(|delta| delta.contains(id)))
+                } else {
+                    let delivered_tool_results = messages
+                        .iter()
+                        .filter(|message| message.role == "tool")
+                        .filter_map(|message| message.tool_call_id.as_deref())
+                        .collect::<std::collections::HashSet<_>>();
+                    // The default path recompiles one current canonical
+                    // Context containing probe-a/probe-b Observations. Only
+                    // the current native continuation (probe-c) remains a
+                    // separate assistant/tool pair.
+                    messages.len() == 4
+                        && messages.get(2).is_some_and(|message| {
+                            message.role == "assistant"
+                                && message.tool_calls.as_ref().is_some_and(|calls| {
+                                    calls.len() == 1 && calls[0].id == "probe-c"
+                                })
+                        })
+                        && delivered_tool_results.len() == 1
+                        && delivered_tool_results.contains("probe-c")
+                };
+                self.observed_complete_batch
+                    .store(complete, Ordering::SeqCst);
+                if !complete {
+                    return Err("structured cache transport lost a prior tool result".into());
                 }
                 return Ok(text_response("physical-batch-complete"));
             }
@@ -14825,9 +14919,11 @@ mod tests {
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
         let observed_complete_batch = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let client = Arc::new(PhysicalBatchClient {
             calls: AtomicU64::new(0),
             observed_complete_batch: Arc::clone(&observed_complete_batch),
+            requests: Arc::clone(&requests),
         });
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
@@ -14862,15 +14958,64 @@ mod tests {
         // Event-driven, so the bound only decides how fast a hang is reported:
         // enough headroom to survive a loaded parallel run, short enough that a
         // real hang does not stall the suite for a minute.
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
+        let reply = match tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
             .await
-            .unwrap()
-            .unwrap();
+        {
+            Ok(reply) => reply.unwrap(),
+            Err(error) => {
+                let request_roles = requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .map(|request| {
+                        request
+                            .iter()
+                            .map(|message| message.role.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                panic!(
+                    "physical batch reply timed out after {} model calls; request roles: {request_roles:?}; {error}",
+                    client.calls.load(Ordering::SeqCst)
+                );
+            }
+        };
         assert_eq!(reply.payload["text"], "physical-batch-complete");
         assert_eq!(reply.payload["thread_kind"], "execution");
         assert_eq!(reply.payload["delivery_kind"], "turn_reply");
         assert!(observed_complete_batch.load(Ordering::SeqCst));
-        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        let requests = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].len(), 2);
+        if cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+            assert_eq!(requests[1].len(), 2);
+            assert_eq!(requests[2].len(), 2);
+            assert_eq!(requests[1][0], requests[2][0]);
+            assert_eq!(requests[1][1].role, "user");
+            assert_eq!(requests[2][1].role, "user");
+            let second = crate::llm::segmented_model_text(&requests[1][1]).unwrap();
+            let third = crate::llm::segmented_model_text(&requests[2][1]).unwrap();
+            assert_eq!(second.parts.len(), 3);
+            assert_eq!(third.parts.len(), 4);
+            assert_eq!(second.parts, third.parts[..second.parts.len()]);
+            assert!(third.parts[1..]
+                .iter()
+                .all(|part| part.text.contains("context-delta")));
+        } else {
+            assert_eq!(requests[1].len(), 5);
+            assert_eq!(requests[2].len(), 4);
+            assert_eq!(requests[1][0], requests[2][0]);
+            assert_eq!(requests[1][2].role, "assistant");
+            assert_eq!(requests[1][2].tool_calls.as_ref().map(Vec::len), Some(2));
+            assert_eq!(requests[1][3].role, "tool");
+            assert_eq!(requests[1][4].role, "tool");
+            assert_eq!(requests[2][2].role, "assistant");
+            assert_eq!(requests[2][2].tool_calls.as_ref().map(Vec::len), Some(1));
+            assert_eq!(requests[2][3].role, "tool");
+        }
 
         let jobs = runtime
             .inner
@@ -14882,7 +15027,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs.len(), 3);
         assert!(jobs
             .iter()
             .all(|job| job.status == crate::memory::ExecutionJobStatus::Succeeded));

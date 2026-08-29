@@ -9,7 +9,7 @@ use super::{resolve_credential, DiscoveredProviderModel, ProtocolClient, Provide
 use crate::config::{
     AppConfig, AuthAccountConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol,
     ModelRouteAffinity, ModelRouteCandidateConfig, ModelRouteConfig, ModelRouteSelection,
-    ProviderConfig, ProviderInstanceConfig,
+    PromptCacheStrategy, ProviderConfig, ProviderInstanceConfig,
 };
 use crate::llm::{
     Client, Message, ModelAttemptBinding, ModelAttemptBindingError, ModelFailure, ModelFailureKind,
@@ -1591,6 +1591,40 @@ impl Client for RoutedClient {
         format!("model-route:{}", binding.route_id)
     }
 
+    fn prefers_structured_delta_cache_transport(&self, requested_model: Option<&str>) -> bool {
+        if !cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+            return false;
+        }
+        let alias = requested_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| self.alias().ok());
+        let Some(alias) = alias else {
+            return false;
+        };
+        let Ok(catalog) = self.catalog() else {
+            return false;
+        };
+        let Ok((_, route)) = catalog.resolve_route(&alias) else {
+            return false;
+        };
+        !route.candidates.is_empty()
+            && route.candidates.iter().all(|candidate| {
+                let Some(provider) = catalog.provider_instances.get(&candidate.provider) else {
+                    return false;
+                };
+                let strategy = provider
+                    .models
+                    .get(&candidate.model)
+                    .map(|profile| profile.prompt_cache_strategy)
+                    .unwrap_or_default();
+                provider.protocol.effective_for_model(&candidate.model)
+                    == ModelProtocol::OpenaiResponses
+                    && strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
+            })
+    }
+
     fn supports_async_cancellation(&self) -> bool {
         true
     }
@@ -2066,6 +2100,77 @@ mod tests {
             },
         );
         app
+    }
+
+    #[test]
+    fn routed_structured_delta_transport_requires_every_candidate_to_opt_in() {
+        let public_config = routed_config();
+        let public = RoutedClient::new(&public_config, "coding".to_string()).unwrap();
+        assert!(!public.prefers_structured_delta_cache_transport(Some("coding")));
+
+        let mut declared_implicit_config = public_config;
+        declared_implicit_config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .models
+            .get_mut("physical-model-alpha")
+            .unwrap()
+            .prompt_cache_strategy = PromptCacheStrategy::ImplicitPrefix;
+        let declared_implicit =
+            RoutedClient::new(&declared_implicit_config, "coding".to_string()).unwrap();
+        assert!(!declared_implicit.prefers_structured_delta_cache_transport(Some("coding")));
+
+        let mut codex_config = routed_config();
+        let provider = codex_config.provider_instances.get_mut("direct").unwrap();
+        provider.adapter = "openai-codex".to_string();
+        provider
+            .models
+            .get_mut("physical-model-alpha")
+            .unwrap()
+            .prompt_cache_strategy = PromptCacheStrategy::Auto;
+        let codex = RoutedClient::new(&codex_config, "coding".to_string()).unwrap();
+        assert!(!codex.prefers_structured_delta_cache_transport(Some("coding")));
+
+        codex_config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .models
+            .get_mut("physical-model-alpha")
+            .unwrap()
+            .prompt_cache_strategy = PromptCacheStrategy::ExperimentalStructuredDeltas;
+        let structured = RoutedClient::new(&codex_config, "coding".to_string()).unwrap();
+        assert_eq!(
+            structured.prefers_structured_delta_cache_transport(Some("coding")),
+            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        );
+
+        codex_config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .models
+            .insert(
+                "physical-model-beta".to_string(),
+                ProviderModelConfig {
+                    prompt_cache_strategy: PromptCacheStrategy::ExplicitContentBoundaries,
+                    ..ProviderModelConfig::default()
+                },
+            );
+        codex_config
+            .model_routes
+            .get_mut("coding-primary")
+            .unwrap()
+            .candidates
+            .push(ModelRouteCandidateConfig {
+                provider: "direct".to_string(),
+                model: "physical-model-beta".to_string(),
+                priority: 20,
+                ..ModelRouteCandidateConfig::default()
+            });
+        let mixed = RoutedClient::new(&codex_config, "coding".to_string()).unwrap();
+        assert!(!mixed.prefers_structured_delta_cache_transport(Some("coding")));
     }
 
     #[tokio::test]

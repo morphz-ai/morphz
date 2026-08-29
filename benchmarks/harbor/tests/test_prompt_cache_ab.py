@@ -10,25 +10,44 @@ from benchmarks.harbor import run_prompt_cache_ab as ab
 
 
 class PromptCacheAbTests(unittest.TestCase):
-    def test_direct_platform_environment_rejects_proxy_and_requires_key(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "api.openai.com"):
-            ab.direct_platform_environment(
+    def test_controlled_provider_environment_rejects_unknown_proxy_and_requires_key(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(RuntimeError, "OpenAI Platform or Cloudflare"):
+            ab.controlled_provider_environment(
                 {
                     "MORPHZ_PROVIDER_BASE_URL": "http://172.17.0.1:8317/v1",
                     "MORPHZ_PROVIDER_API_KEY": "proxy-key",
                 }
             )
         with self.assertRaisesRegex(RuntimeError, "MORPHZ_PROVIDER_API_KEY"):
-            ab.direct_platform_environment(
+            ab.controlled_provider_environment(
                 {"MORPHZ_PROVIDER_BASE_URL": "https://api.openai.com/v1"}
             )
-        prepared = ab.direct_platform_environment(
+        prepared = ab.controlled_provider_environment(
             {
                 "MORPHZ_PROVIDER_BASE_URL": "https://api.openai.com/v1/",
                 "MORPHZ_PROVIDER_API_KEY": "platform-key",
             }
         )
         self.assertEqual(prepared["MORPHZ_PROVIDER_PROTOCOL"], "openai-responses")
+        self.assertEqual(prepared["MORPHZ_PROVIDER_MODEL"], "gpt-5.6-sol")
+
+    def test_controlled_provider_environment_accepts_exact_cloudflare_route(self) -> None:
+        prepared = ab.controlled_provider_environment(
+            {
+                "MORPHZ_PROVIDER_BASE_URL": (
+                    "https://api.cloudflare.com/client/v4/accounts/"
+                    "0123456789abcdef0123456789abcdef/ai/v1"
+                ),
+                "MORPHZ_PROVIDER_PROTOCOL": "openai-responses",
+                "MORPHZ_PROVIDER_MODEL": "openai/gpt-5.6-sol",
+                "MORPHZ_PROVIDER_API_KEY": "cloudflare-key",
+            }
+        )
+        self.assertEqual(
+            prepared["MORPHZ_PROVIDER_MODEL"], "openai/gpt-5.6-sol"
+        )
 
     def test_arm_command_is_one_exact_smoke_trial(self) -> None:
         with mock.patch.object(ab.sys, "executable", "/python"):
@@ -65,6 +84,7 @@ class PromptCacheAbTests(unittest.TestCase):
                                 "runtime_git_commit": "runtime-commit",
                                 "runtime_binary_sha256": "runtime-sha",
                                 "infrastructure_git_commit": "infra-commit",
+                                "provider_model": "gpt-5.6-sol",
                             },
                             "trials": [
                                 {
@@ -115,7 +135,12 @@ class PromptCacheAbTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 arms[strategy] = ab.summarize_arm(strategy, job)
-            report = ab.build_report("prove-plus-comm", arms)
+            report = ab.build_report(
+                "prove-plus-comm",
+                arms,
+                provider="https://api.openai.com/v1",
+                provider_model="gpt-5.6-sol",
+            )
         self.assertAlmostEqual(
             report["explicit_minus_implicit_cache_hit_ratio"], 0.7
         )

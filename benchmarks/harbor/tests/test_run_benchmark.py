@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import io
+import json
 import os
 import subprocess
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,9 +18,11 @@ from benchmarks.harbor.run_benchmark import (
     harbor_command,
     parse_args,
     provider_ipv4_base_url,
+    provider_model_preflight,
     provider_prompt_cache_strategy,
     require_docker_network_capacity,
     runtime_provider_config,
+    runtime_provider_model,
     runtime_version,
 )
 
@@ -182,6 +187,42 @@ class HarborCommandTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MORPHZ_PROVIDER_API_KEY"):
                 runtime_provider_config()
 
+    def test_provider_model_uses_exact_environment_identifier(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"MORPHZ_PROVIDER_MODEL": "openai/gpt-5.6-sol"},
+            clear=True,
+        ):
+            self.assertEqual(runtime_provider_model(), "openai/gpt-5.6-sol")
+
+    def test_provider_model_preflight_falls_back_to_responses_on_405(self) -> None:
+        catalog_error = urllib.error.HTTPError(
+            "https://provider.invalid/v1/models",
+            405,
+            "Method Not Allowed",
+            {},
+            io.BytesIO(b"{}"),
+        )
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = io.BytesIO(
+            json.dumps(
+                {
+                    "model": "openai/gpt-5.6-sol",
+                    "status": "completed",
+                }
+            ).encode()
+        )
+        with patch(
+            "benchmarks.harbor.run_benchmark.urllib.request.urlopen",
+            side_effect=[catalog_error, response],
+        ):
+            method = provider_model_preflight(
+                "https://provider.invalid/v1",
+                "test-key",
+                "openai/gpt-5.6-sol",
+            )
+        self.assertEqual(method, "responses")
+
     @patch(
         "benchmarks.harbor.run_benchmark.socket.getaddrinfo",
         return_value=[(2, 1, 6, "", ("104.18.6.192", 443))],
@@ -212,14 +253,14 @@ class HarborCommandTest(unittest.TestCase):
             )
         with patch.dict(
             os.environ,
-            {"MORPHZ_PROMPT_CACHE_STRATEGY": "implicit-prefix"},
+            {"MORPHZ_PROMPT_CACHE_STRATEGY": "implicit-message-boundaries"},
             clear=True,
         ):
             self.assertEqual(
                 provider_prompt_cache_strategy(
                     "http://172.17.0.1:8317/v1", "openai-responses"
                 ),
-                "implicit-prefix",
+                "implicit-message-boundaries",
             )
 
     def test_runtime_identity_comes_from_lock(self) -> None:

@@ -146,6 +146,13 @@ test('provider capacity is copied from catalog fields without speculative copy',
   assert.doesNotMatch(zhCatalog, /服务目录往往不提供可靠的容量信息/)
 })
 
+test('structured ContextDelta cache is offered only when the Runtime build exposes it', () => {
+  assert.match(providersSource, /experimental_features \?\? \[\]/)
+  assert.match(providersSource, /openai-chatgpt-structured-cache/)
+  assert.match(providersSource, /experimental-structured-deltas/)
+  assert.match(providersSource, /structuredCacheExperimentAvailable &&/)
+})
+
 test('conversation selector renders the catalog display label, never the route control id', () => {
   assert.match(appSource, /status\?\.model_options/)
   assert.match(appSource, /<option key=\{option\.id\} value=\{option\.id\}>\{option\.label\}<\/option>/)

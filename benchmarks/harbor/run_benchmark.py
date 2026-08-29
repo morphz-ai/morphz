@@ -42,6 +42,9 @@ PROMPT_CACHE_STRATEGIES = {
     "auto",
     "disabled",
     "implicit-prefix",
+    "implicit-content-boundaries",
+    "implicit-message-boundaries",
+    "experimental-structured-deltas",
     "explicit-content-boundaries",
 }
 
@@ -154,6 +157,15 @@ def runtime_provider_config() -> tuple[str, str, str]:
     provider_host = urlparse(base_url).hostname or ""
     credential = resolve_credential(config, credential_ref, provider_host)
     return base_url, protocol, credential
+
+
+def runtime_provider_model() -> str:
+    """Return the exact model identifier sent on the configured provider wire."""
+    configured = os.environ.get("MORPHZ_PROVIDER_MODEL", "").strip()
+    if configured:
+        return configured
+    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    return str(lock["model"]["physical_model"])
 
 
 def runtime_version(lock: dict[str, object]) -> str:
@@ -341,6 +353,68 @@ def advertised_model_ids(body: object) -> set[str]:
     }
 
 
+def provider_model_preflight(
+    base_url: str,
+    credential: str,
+    provider_model: str,
+) -> str:
+    """Verify the exact wire model via a catalog or minimal Responses call."""
+    request = urllib.request.Request(base_url.rstrip("/") + "/models")
+    if credential:
+        request.add_header("Authorization", f"Bearer {credential}")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code not in {404, 405}:
+            detail = error.read(512).decode("utf-8", errors="replace").strip()
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"Provider model preflight failed with HTTP {error.code}{suffix}"
+            ) from error
+    else:
+        if provider_model not in advertised_model_ids(body):
+            raise RuntimeError(
+                f"Provider does not advertise exact model `{provider_model}`"
+            )
+        return "models"
+
+    payload = json.dumps(
+        {
+            "model": provider_model,
+            "input": "Reply with exactly OK.",
+            "max_output_tokens": 16,
+            "reasoning": {"effort": "none"},
+            "store": False,
+        }
+    ).encode()
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/responses",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    if credential:
+        request.add_header("Authorization", f"Bearer {credential}")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read(512).decode("utf-8", errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"Provider Responses preflight failed with HTTP {error.code}{suffix}"
+        ) from error
+    if not isinstance(body, dict):
+        raise RuntimeError("Provider Responses preflight returned a non-object")
+    if body.get("model") != provider_model or body.get("status") != "completed":
+        raise RuntimeError(
+            "Provider Responses preflight did not complete on exact model "
+            f"`{provider_model}`"
+        )
+    return "responses"
+
+
 def preflight(
     binary: Path,
     watcher: Path,
@@ -348,6 +422,7 @@ def preflight(
     credential: str,
     logical_host: str,
     provider_address: str,
+    provider_model: str,
 ) -> None:
     require_tool("docker")
     require_tool("harbor")
@@ -387,24 +462,11 @@ def preflight(
             f"expected {watcher_expected}, got {watcher_actual}"
         )
 
-    request = urllib.request.Request(base_url.rstrip("/") + "/models")
-    if credential:
-        request.add_header("Authorization", f"Bearer {credential}")
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            body = json.load(response)
-    except urllib.error.HTTPError as error:
-        detail = error.read(512).decode("utf-8", errors="replace").strip()
-        suffix = f": {detail}" if detail else ""
-        raise RuntimeError(
-            f"Provider model preflight failed with HTTP {error.code}{suffix}"
-        ) from error
-    model_ids = advertised_model_ids(body)
-    if "gpt-5.6-sol" not in model_ids:
-        raise RuntimeError("CLIProxyAPI does not advertise exact model `gpt-5.6-sol`")
+    model_preflight = provider_model_preflight(base_url, credential, provider_model)
     print("preflight=passed")
     print("harbor=0.21.0")
-    print("model=gpt-5.6-sol")
+    print("model=" + provider_model)
+    print("provider_model_preflight=" + model_preflight)
     print("reasoning_effort=max")
     print("provider_node=" + logical_host)
     print("provider_ipv4=" + provider_address)
@@ -683,6 +745,7 @@ def expected_trial_count_error(
 def main() -> int:
     args = parse_args()
     base_url, protocol, credential = runtime_provider_config()
+    provider_model = runtime_provider_model()
     if protocol != "openai-responses":
         raise RuntimeError(f"Expected openai-responses, got {protocol}")
     effective_base_url, provider_host, provider_address = provider_ipv4_base_url(base_url)
@@ -694,6 +757,7 @@ def main() -> int:
         credential,
         provider_host,
         provider_address,
+        provider_model,
     )
     if args.mode == "preflight":
         return 0
@@ -725,6 +789,7 @@ def main() -> int:
 
     run_identity = frozen_run_identity(args, lock)
     run_identity["prompt_cache_strategy"] = prompt_cache_strategy
+    run_identity["provider_model"] = provider_model
 
     environment = os.environ.copy()
     runtime_identity = runtime_version(lock)
@@ -736,7 +801,7 @@ def main() -> int:
             "MORPHZ_HARBOR_VERSION": runtime_identity,
             "MORPHZ_PROVIDER_PROTOCOL": protocol,
             "MORPHZ_PROVIDER_BASE_URL": effective_base_url,
-            "MORPHZ_PROVIDER_MODEL": "gpt-5.6-sol",
+            "MORPHZ_PROVIDER_MODEL": provider_model,
             "MORPHZ_PROVIDER_API_KEY": credential,
             "MORPHZ_PROMPT_CACHE_STRATEGY": prompt_cache_strategy,
             "MORPHZ_REASONING_EFFORT": "max",

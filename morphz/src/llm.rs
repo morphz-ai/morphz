@@ -959,6 +959,14 @@ pub trait Client: Send + Sync {
         binding.provider_instance_id.clone()
     }
 
+    /// Whether this logical route explicitly opts into the compile-time gated
+    /// Structured ContextDelta cache transport. The representation remains one
+    /// User message; no ordinary assistant/tool transcript is substituted for
+    /// Morphz's Context semantics.
+    fn prefers_structured_delta_cache_transport(&self, _requested_model: Option<&str>) -> bool {
+        false
+    }
+
     /// Whether dropping an in-flight completion future reliably cancels its
     /// underlying I/O.
     ///

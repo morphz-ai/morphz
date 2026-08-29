@@ -291,6 +291,11 @@ pub(crate) struct ProtocolClient {
     /// losing it on restart causes only a cold cache write, never a semantic
     /// change or an Event Store mutation.
     prompt_cache_lineages: Mutex<PromptCacheLineageStore>,
+    /// Privacy-preserving fingerprints of the exact OpenAI Responses wire
+    /// items sent for each cache cohort. This lets production evidence prove
+    /// whether an earlier eligible message boundary is still a byte-identical
+    /// prefix without logging prompt or tool contents.
+    prompt_cache_wire_audits: Mutex<PromptCacheWireAuditStore>,
 }
 
 fn boxed_model_failure(failure: ModelFailure) -> ProviderError {
@@ -536,6 +541,51 @@ struct PromptUsageAnchor {
 const OPENAI_MAX_EXPLICIT_CACHE_BOUNDARIES: usize = 4;
 const OPENAI_TRACKED_CACHE_BOUNDARIES: usize = 50;
 const OPENAI_TRACKED_CACHE_COHORTS: usize = 256;
+const OPENAI_TRACKED_WIRE_REQUESTS: usize = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptCacheWireMode {
+    /// Preserve the canonical model-visible text as one string and let the
+    /// physical endpoint choose its implicit prefix boundary.
+    ImplicitText,
+    /// Preserve Morphz's planned boundaries as content blocks and mark them
+    /// with the public Responses API's explicit breakpoint metadata.
+    ExplicitContentBoundaries,
+    /// Preserve the same content-block boundaries without explicit metadata.
+    /// The ChatGPT Codex backend rejects the public breakpoint fields, while
+    /// still accepting standard Responses `input_text` blocks.
+    ImplicitContentBoundaries,
+    /// Preserve the same canonical text and User role, but emit every
+    /// structural segment as a consecutive Responses message item. Keeping
+    /// old item boundaries fixed lets a growing Inbox remain append-only.
+    ImplicitMessageBoundaries,
+}
+
+impl PromptCacheWireMode {
+    fn cohort_tag(self) -> &'static [u8] {
+        match self {
+            Self::ImplicitText => b"implicit-prefix",
+            Self::ExplicitContentBoundaries => b"explicit-content-boundaries",
+            Self::ImplicitContentBoundaries => b"implicit-content-boundaries",
+            Self::ImplicitMessageBoundaries => b"implicit-message-boundaries",
+        }
+    }
+
+    fn plans_cache_boundaries(self) -> bool {
+        self == Self::ExplicitContentBoundaries
+    }
+
+    fn emits_content_blocks(self) -> bool {
+        matches!(
+            self,
+            Self::ExplicitContentBoundaries | Self::ImplicitContentBoundaries
+        )
+    }
+
+    fn emits_explicit_breakpoints(self) -> bool {
+        self == Self::ExplicitContentBoundaries
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PromptCacheBoundaryIdentity {
@@ -547,6 +597,145 @@ struct PromptCacheBoundaryIdentity {
 struct PromptCacheLineageStore {
     histories: HashMap<String, VecDeque<PromptCacheBoundaryIdentity>>,
     recency: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptCacheWireItemIdentity {
+    kind: &'static str,
+    encoded_bytes: usize,
+    digest: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+struct PromptCacheWireSnapshot {
+    sequence: u64,
+    request_digest: [u8; 32],
+    request_properties_digest: [u8; 32],
+    input_items: Vec<PromptCacheWireItemIdentity>,
+    content_blocks: Vec<PromptCacheWireItemIdentity>,
+    latest_implicit_boundary_items: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct PromptCacheWireAudit {
+    sequence: u64,
+    cohort_prefix: String,
+    request_digest_prefix: String,
+    request_properties_digest_prefix: String,
+    input_item_count: usize,
+    latest_implicit_boundary_items: Option<usize>,
+    latest_implicit_boundary_digest_prefix: Option<String>,
+    previous_sequence: Option<u64>,
+    previous_input_item_count: Option<usize>,
+    longest_common_input_items: usize,
+    previous_is_strict_prefix: bool,
+    content_block_count: usize,
+    previous_content_block_count: Option<usize>,
+    longest_common_content_blocks: usize,
+    previous_content_blocks_is_strict_prefix: bool,
+    matched_prior_boundary_items: usize,
+    matched_prior_boundary_sequence: Option<u64>,
+    matched_prior_boundary_digest_prefix: Option<String>,
+    input_item_fingerprints: String,
+    content_block_fingerprints: String,
+}
+
+#[derive(Debug, Default)]
+struct PromptCacheWireAuditStore {
+    histories: HashMap<String, VecDeque<PromptCacheWireSnapshot>>,
+    recency: VecDeque<String>,
+    next_sequence: u64,
+}
+
+impl PromptCacheWireAuditStore {
+    fn record(
+        &mut self,
+        cohort_key: &str,
+        mut snapshot: PromptCacheWireSnapshot,
+    ) -> PromptCacheWireAudit {
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        snapshot.sequence = self.next_sequence;
+
+        self.recency.retain(|key| key != cohort_key);
+        self.recency.push_front(cohort_key.to_string());
+        while self.recency.len() > OPENAI_TRACKED_CACHE_COHORTS {
+            if let Some(stale_key) = self.recency.pop_back() {
+                self.histories.remove(&stale_key);
+            }
+        }
+
+        let history = self.histories.entry(cohort_key.to_string()).or_default();
+        let previous = history.front();
+        let longest_common_input_items = previous
+            .map(|prior| common_wire_item_prefix_len(&prior.input_items, &snapshot.input_items))
+            .unwrap_or_default();
+        let previous_is_strict_prefix = previous.is_some_and(|prior| {
+            prior.request_properties_digest == snapshot.request_properties_digest
+                && prior.input_items.len() < snapshot.input_items.len()
+                && longest_common_input_items == prior.input_items.len()
+        });
+        let longest_common_content_blocks = previous
+            .map(|prior| {
+                common_wire_item_prefix_len(&prior.content_blocks, &snapshot.content_blocks)
+            })
+            .unwrap_or_default();
+        let previous_content_blocks_is_strict_prefix = previous.is_some_and(|prior| {
+            prior.request_properties_digest == snapshot.request_properties_digest
+                && prior.content_blocks.len() < snapshot.content_blocks.len()
+                && longest_common_content_blocks == prior.content_blocks.len()
+        });
+
+        let matched_prior = history
+            .iter()
+            .filter(|prior| prior.request_properties_digest == snapshot.request_properties_digest)
+            .filter_map(|prior| {
+                let boundary_items = prior.latest_implicit_boundary_items?;
+                wire_item_prefix_matches(&prior.input_items, &snapshot.input_items, boundary_items)
+                    .then_some((prior, boundary_items))
+            })
+            .max_by_key(|(_, boundary_items)| *boundary_items);
+        let matched_prior_boundary_items = matched_prior
+            .map(|(_, boundary_items)| boundary_items)
+            .unwrap_or_default();
+        let matched_prior_boundary_sequence = matched_prior.map(|(prior, _)| prior.sequence);
+        let matched_prior_boundary_digest_prefix = matched_prior.map(|(prior, boundary_items)| {
+            digest_prefix(&wire_item_prefix_digest(&prior.input_items, boundary_items))
+        });
+
+        let audit = PromptCacheWireAudit {
+            sequence: snapshot.sequence,
+            cohort_prefix: cohort_key.chars().take(16).collect(),
+            request_digest_prefix: digest_prefix(&snapshot.request_digest),
+            request_properties_digest_prefix: digest_prefix(&snapshot.request_properties_digest),
+            input_item_count: snapshot.input_items.len(),
+            latest_implicit_boundary_items: snapshot.latest_implicit_boundary_items,
+            latest_implicit_boundary_digest_prefix: snapshot.latest_implicit_boundary_items.map(
+                |boundary_items| {
+                    digest_prefix(&wire_item_prefix_digest(
+                        &snapshot.input_items,
+                        boundary_items,
+                    ))
+                },
+            ),
+            previous_sequence: previous.map(|prior| prior.sequence),
+            previous_input_item_count: previous.map(|prior| prior.input_items.len()),
+            longest_common_input_items,
+            previous_is_strict_prefix,
+            content_block_count: snapshot.content_blocks.len(),
+            previous_content_block_count: previous.map(|prior| prior.content_blocks.len()),
+            longest_common_content_blocks,
+            previous_content_blocks_is_strict_prefix,
+            matched_prior_boundary_items,
+            matched_prior_boundary_sequence,
+            matched_prior_boundary_digest_prefix,
+            input_item_fingerprints: wire_item_diagnostics(&snapshot.input_items),
+            content_block_fingerprints: wire_item_diagnostics(&snapshot.content_blocks),
+        };
+
+        history.push_front(snapshot);
+        history.truncate(OPENAI_TRACKED_WIRE_REQUESTS);
+        audit
+    }
 }
 
 impl PromptCacheLineageStore {
@@ -633,10 +822,167 @@ fn hash_prompt_cache_field(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
+fn sha256_json(value: &Value) -> [u8; 32] {
+    Sha256::digest(serde_json::to_vec(value).unwrap_or_default()).into()
+}
+
+fn digest_prefix(digest: &[u8; 32]) -> String {
+    digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn prompt_cache_wire_item_kind(item: &Value) -> &'static str {
+    match item.get("role").and_then(Value::as_str) {
+        Some("user") => "user",
+        Some("developer") => "developer",
+        Some("system") => "system",
+        Some("assistant") => "assistant",
+        Some("tool") => "tool",
+        Some(_) => "other-role",
+        None => match item.get("type").and_then(Value::as_str) {
+            Some("function_call_output") => "function-call-output",
+            Some("function_call") => "function-call",
+            Some("reasoning") => "reasoning",
+            Some("message") => "message",
+            Some(_) => "other-type",
+            None => "unknown",
+        },
+    }
+}
+
+fn prompt_cache_wire_content_block_kind(block: &Value) -> &'static str {
+    match block.get("type").and_then(Value::as_str) {
+        Some("input_text") => "input-text",
+        Some("input_image") => "input-image",
+        Some("input_file") => "input-file",
+        Some(_) => "other-content",
+        None => "unknown-content",
+    }
+}
+
+fn prompt_cache_wire_item_is_implicitly_eligible(item: &Value) -> bool {
+    matches!(
+        item.get("role").and_then(Value::as_str),
+        Some("user" | "tool")
+    ) || item.get("type").and_then(Value::as_str) == Some("function_call_output")
+}
+
+fn prompt_cache_wire_snapshot(body: &Value) -> Option<PromptCacheWireSnapshot> {
+    let input = body.get("input")?.as_array()?;
+    let input_items = input
+        .iter()
+        .map(|item| {
+            let encoded = serde_json::to_vec(item).unwrap_or_default();
+            PromptCacheWireItemIdentity {
+                kind: prompt_cache_wire_item_kind(item),
+                encoded_bytes: encoded.len(),
+                digest: Sha256::digest(&encoded).into(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let content_blocks = input
+        .iter()
+        .enumerate()
+        .flat_map(|(item_index, item)| {
+            item.get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(move |block| {
+                    let encoded = serde_json::to_vec(block).unwrap_or_default();
+                    let mut hasher = Sha256::new();
+                    hash_prompt_cache_field(
+                        &mut hasher,
+                        b"morphz.prompt-cache-wire-content-block.v1",
+                    );
+                    hash_prompt_cache_field(&mut hasher, &item_index.to_le_bytes());
+                    hash_prompt_cache_field(&mut hasher, &encoded);
+                    PromptCacheWireItemIdentity {
+                        kind: prompt_cache_wire_content_block_kind(block),
+                        encoded_bytes: encoded.len(),
+                        digest: hasher.finalize().into(),
+                    }
+                })
+        })
+        .collect::<Vec<_>>();
+    let explicit_only = body
+        .pointer("/prompt_cache_options/mode")
+        .and_then(Value::as_str)
+        == Some("explicit");
+    let latest_implicit_boundary_items = (!explicit_only)
+        .then(|| {
+            input
+                .iter()
+                .rposition(prompt_cache_wire_item_is_implicitly_eligible)
+                .map(|index| index + 1)
+        })
+        .flatten();
+    let mut request_properties = body.clone();
+    request_properties.as_object_mut()?.remove("input");
+
+    Some(PromptCacheWireSnapshot {
+        sequence: 0,
+        request_digest: sha256_json(body),
+        request_properties_digest: sha256_json(&request_properties),
+        input_items,
+        content_blocks,
+        latest_implicit_boundary_items,
+    })
+}
+
+fn common_wire_item_prefix_len(
+    previous: &[PromptCacheWireItemIdentity],
+    current: &[PromptCacheWireItemIdentity],
+) -> usize {
+    previous
+        .iter()
+        .zip(current)
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn wire_item_prefix_matches(
+    previous: &[PromptCacheWireItemIdentity],
+    current: &[PromptCacheWireItemIdentity],
+    prefix_items: usize,
+) -> bool {
+    prefix_items <= previous.len()
+        && prefix_items <= current.len()
+        && previous[..prefix_items] == current[..prefix_items]
+}
+
+fn wire_item_prefix_digest(items: &[PromptCacheWireItemIdentity], prefix_items: usize) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hash_prompt_cache_field(&mut hasher, b"morphz.prompt-cache-wire-prefix.v1");
+    for item in items.iter().take(prefix_items) {
+        hash_prompt_cache_field(&mut hasher, &item.digest);
+    }
+    hasher.finalize().into()
+}
+
+fn wire_item_diagnostics(items: &[PromptCacheWireItemIdentity]) -> String {
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            format!(
+                "{index}:{}:{}:{}",
+                item.kind,
+                item.encoded_bytes,
+                digest_prefix(&item.digest)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn prompt_cache_cohort_key(
     model: &str,
     reasoning_effort: Option<ReasoningEffort>,
-    explicit_prompt_cache: bool,
+    wire_mode: PromptCacheWireMode,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Option<String> {
@@ -652,14 +998,7 @@ fn prompt_cache_cohort_key(
     let mut hasher = Sha256::new();
     hash_prompt_cache_field(&mut hasher, b"morphz.prompt-cache-cohort.v3");
     hash_prompt_cache_field(&mut hasher, model.as_bytes());
-    hash_prompt_cache_field(
-        &mut hasher,
-        if explicit_prompt_cache {
-            b"explicit-content-boundaries"
-        } else {
-            b"implicit-prefix"
-        },
-    );
+    hash_prompt_cache_field(&mut hasher, wire_mode.cohort_tag());
     hash_prompt_cache_field(
         &mut hasher,
         reasoning_effort
@@ -822,6 +1161,12 @@ impl ProtocolClient {
         credential: Option<String>,
         llm: &LlmConfig,
     ) -> Result<Self, ProviderError> {
+        if provider.models.get(&model).is_some_and(|profile| {
+            profile.prompt_cache_strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
+        }) && !cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        {
+            return Err("prompt_cache_strategy=experimental-structured-deltas requires build feature experimental-openai-chatgpt-structured-cache".into());
+        }
         let mut headers = HeaderMap::new();
         for (name, value) in &provider.headers {
             headers.insert(
@@ -865,6 +1210,7 @@ impl ProtocolClient {
             model_profiles: provider.models.clone(),
             usage_anchors: Mutex::new(HashMap::new()),
             prompt_cache_lineages: Mutex::new(PromptCacheLineageStore::default()),
+            prompt_cache_wire_audits: Mutex::new(PromptCacheWireAuditStore::default()),
         })
     }
 
@@ -905,14 +1251,10 @@ impl ProtocolClient {
             return Ok(messages);
         }
         let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
-        let explicit_prompt_cache = self.explicit_prompt_cache_enabled(model);
-        let Some(cohort_key) = prompt_cache_cohort_key(
-            model,
-            reasoning_effort,
-            explicit_prompt_cache,
-            &messages,
-            tools,
-        ) else {
+        let wire_mode = self.prompt_cache_wire_mode(model);
+        let Some(cohort_key) =
+            prompt_cache_cohort_key(model, reasoning_effort, wire_mode, &messages, tools)
+        else {
             return Ok(messages);
         };
 
@@ -921,7 +1263,7 @@ impl ProtocolClient {
                 continue;
             };
             segmented.prompt_cache_key = Some(cohort_key.clone());
-            if explicit_prompt_cache {
+            if wire_mode.plans_cache_boundaries() {
                 if let Ok(mut lineages) = self.prompt_cache_lineages.lock() {
                     let tracked_cohorts_before = lineages.histories.len();
                     let history = lineages.history_mut(&cohort_key);
@@ -948,7 +1290,8 @@ impl ProtocolClient {
                         selected_boundaries = %selected_boundaries,
                         record_current_boundary,
                         event_code = "provider.prompt_cache.plan",
-                        "Planned explicit Prompt Cache boundaries"
+                        wire_mode = ?wire_mode,
+                        "Planned Prompt Cache content boundaries"
                     );
                 } else {
                     let empty_history = VecDeque::new();
@@ -1013,26 +1356,147 @@ impl ProtocolClient {
             reasoning_effort,
             messages,
             tools,
-            self.explicit_prompt_cache_enabled(model),
+            self.prompt_cache_wire_mode(model),
         );
         self.adapt_request(model, request)
     }
 
-    fn explicit_prompt_cache_enabled(&self, model: &str) -> bool {
-        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses
-            || self.adapter == "openai-codex"
-        {
-            return false;
+    fn record_prompt_cache_wire_audit(
+        &self,
+        model: &str,
+        body: &Value,
+    ) -> Option<PromptCacheWireAudit> {
+        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
+            return None;
         }
-        match self
+        let cohort_key = body.get("prompt_cache_key")?.as_str()?;
+        let snapshot = prompt_cache_wire_snapshot(body)?;
+        let audit = self
+            .prompt_cache_wire_audits
+            .lock()
+            .ok()?
+            .record(cohort_key, snapshot);
+        tracing::info!(
+            model,
+            adapter = self.adapter.as_str(),
+            cache_cohort = %audit.cohort_prefix,
+            request_sequence = audit.sequence,
+            request_digest = %audit.request_digest_prefix,
+            request_properties_digest = %audit.request_properties_digest_prefix,
+            input_item_count = audit.input_item_count,
+            latest_implicit_boundary_items = ?audit.latest_implicit_boundary_items,
+            latest_implicit_boundary_digest = ?audit.latest_implicit_boundary_digest_prefix,
+            previous_sequence = ?audit.previous_sequence,
+            previous_input_item_count = ?audit.previous_input_item_count,
+            longest_common_input_items = audit.longest_common_input_items,
+            previous_is_strict_prefix = audit.previous_is_strict_prefix,
+            content_block_count = audit.content_block_count,
+            previous_content_block_count = ?audit.previous_content_block_count,
+            longest_common_content_blocks = audit.longest_common_content_blocks,
+            previous_content_blocks_is_strict_prefix = audit.previous_content_blocks_is_strict_prefix,
+            matched_prior_boundary_items = audit.matched_prior_boundary_items,
+            matched_prior_boundary_sequence = ?audit.matched_prior_boundary_sequence,
+            matched_prior_boundary_digest = ?audit.matched_prior_boundary_digest_prefix,
+            input_item_fingerprints = %audit.input_item_fingerprints,
+            content_block_fingerprints = %audit.content_block_fingerprints,
+            event_code = "provider.prompt_cache.wire_audit",
+            "Audited Prompt Cache wire-prefix identity without recording model-visible content"
+        );
+        Some(audit)
+    }
+
+    fn log_prompt_cache_wire_outcome(
+        &self,
+        model: &str,
+        audit: &PromptCacheWireAudit,
+        usage: &ModelUsage,
+    ) {
+        tracing::info!(
+            model,
+            adapter = self.adapter.as_str(),
+            cache_cohort = %audit.cohort_prefix,
+            request_sequence = audit.sequence,
+            request_digest = %audit.request_digest_prefix,
+            matched_prior_boundary_items = audit.matched_prior_boundary_items,
+            matched_prior_boundary_sequence = ?audit.matched_prior_boundary_sequence,
+            longest_common_content_blocks = audit.longest_common_content_blocks,
+            previous_content_blocks_is_strict_prefix = audit.previous_content_blocks_is_strict_prefix,
+            input_tokens = ?usage.input_tokens,
+            uncached_input_tokens = ?usage.uncached_input_tokens,
+            cached_input_tokens = ?usage.cached_input_tokens,
+            cache_write_input_tokens = ?usage.cache_write_input_tokens,
+            event_code = "provider.prompt_cache.wire_outcome",
+            "Correlated Prompt Cache wire-prefix evidence with Provider-reported usage"
+        );
+    }
+
+    fn prompt_cache_wire_mode(&self, model: &str) -> PromptCacheWireMode {
+        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
+            return PromptCacheWireMode::ImplicitText;
+        }
+        let strategy = self
             .model_profiles
             .get(model)
             .map(|profile| profile.prompt_cache_strategy)
-            .unwrap_or_default()
-        {
-            PromptCacheStrategy::Disabled | PromptCacheStrategy::ImplicitPrefix => false,
-            PromptCacheStrategy::ExplicitContentBoundaries => true,
-            PromptCacheStrategy::Auto => openai_model_supports_explicit_prompt_cache(model),
+            .unwrap_or_default();
+        if strategy == PromptCacheStrategy::Disabled {
+            return PromptCacheWireMode::ImplicitText;
+        }
+
+        if self.adapter == "openai-codex" {
+            return match strategy {
+                PromptCacheStrategy::ImplicitContentBoundaries
+                | PromptCacheStrategy::ExplicitContentBoundaries => {
+                    PromptCacheWireMode::ImplicitContentBoundaries
+                }
+                PromptCacheStrategy::ExperimentalStructuredDeltas
+                    if cfg!(feature = "experimental-openai-chatgpt-structured-cache") =>
+                {
+                    PromptCacheWireMode::ImplicitContentBoundaries
+                }
+                PromptCacheStrategy::ImplicitMessageBoundaries => {
+                    PromptCacheWireMode::ImplicitMessageBoundaries
+                }
+                // The Codex backend rejects public explicit-breakpoint fields.
+                // Content/message splitting without those fields did not
+                // create a deeper cache boundary in the real multi-step run,
+                // and message splitting is not a strict item extension while
+                // the canonical Context still has a trailing closing segment.
+                // Keep Auto semantically minimal until a wire-audited run
+                // proves a stronger endpoint-specific strategy.
+                PromptCacheStrategy::Auto
+                | PromptCacheStrategy::Disabled
+                | PromptCacheStrategy::ImplicitPrefix
+                | PromptCacheStrategy::ExperimentalStructuredDeltas => {
+                    PromptCacheWireMode::ImplicitText
+                }
+            };
+        }
+
+        match strategy {
+            PromptCacheStrategy::ImplicitContentBoundaries => {
+                PromptCacheWireMode::ImplicitContentBoundaries
+            }
+            PromptCacheStrategy::ImplicitMessageBoundaries => {
+                PromptCacheWireMode::ImplicitMessageBoundaries
+            }
+            PromptCacheStrategy::ExperimentalStructuredDeltas
+                if cfg!(feature = "experimental-openai-chatgpt-structured-cache") =>
+            {
+                PromptCacheWireMode::ImplicitContentBoundaries
+            }
+            PromptCacheStrategy::ExplicitContentBoundaries => {
+                PromptCacheWireMode::ExplicitContentBoundaries
+            }
+            PromptCacheStrategy::Auto if openai_model_supports_explicit_prompt_cache(model) => {
+                PromptCacheWireMode::ExplicitContentBoundaries
+            }
+            PromptCacheStrategy::Auto
+            | PromptCacheStrategy::Disabled
+            | PromptCacheStrategy::ImplicitPrefix
+            | PromptCacheStrategy::ExperimentalStructuredDeltas => {
+                PromptCacheWireMode::ImplicitText
+            }
         }
     }
 
@@ -1226,6 +1690,7 @@ impl ProtocolClient {
         if protocol == ModelProtocol::OpenaiChat {
             streaming_body["stream_options"] = json!({"include_usage": true});
         }
+        let prompt_cache_wire_audit = self.record_prompt_cache_wire_audit(model, &streaming_body);
 
         // Retrying is safe until a successful response is accepted and stream
         // events begin. Once any event has been consumed we must not replay the
@@ -1356,7 +1821,11 @@ impl ProtocolClient {
             self.apply_sse_frame(protocol, &pending, &mut accumulator, stream)?;
         }
         let actual_prompt_tokens = accumulator.prompt_tokens;
+        let actual_usage = accumulator.usage.clone();
         let response = accumulator.finish(stream)?;
+        if let Some(audit) = prompt_cache_wire_audit.as_ref() {
+            self.log_prompt_cache_wire_outcome(model, audit, &actual_usage);
+        }
         if let (Some(measurement), Some(actual_prompt_tokens)) = (measurement, actual_prompt_tokens)
         {
             self.observe_completion_usage(protocol, model, body, measurement, actual_prompt_tokens);
@@ -1696,6 +2165,24 @@ impl Client for ProtocolClient {
             self.base_url,
             model
         )
+    }
+
+    fn prefers_structured_delta_cache_transport(&self, requested_model: Option<&str>) -> bool {
+        if !cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+            return false;
+        }
+        let model = requested_model
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| self.model_snapshot());
+        let strategy = self
+            .model_profiles
+            .get(&model)
+            .map(|profile| profile.prompt_cache_strategy)
+            .unwrap_or_default();
+        self.protocol_for_model(&model) == ModelProtocol::OpenaiResponses
+            && strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
     }
 
     fn supports_async_cancellation(&self) -> bool {
@@ -3052,7 +3539,7 @@ fn build_request(
         reasoning_effort,
         messages,
         tools,
-        false,
+        PromptCacheWireMode::ImplicitText,
     )
 }
 
@@ -3063,7 +3550,7 @@ fn build_request_with_prompt_cache(
     reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
-    explicit_prompt_cache: bool,
+    prompt_cache_wire_mode: PromptCacheWireMode,
 ) -> Value {
     match protocol {
         ModelProtocol::OpenaiChat => {
@@ -3075,7 +3562,7 @@ fn build_request_with_prompt_cache(
             reasoning_effort,
             messages,
             tools,
-            explicit_prompt_cache,
+            prompt_cache_wire_mode,
         ),
         ModelProtocol::AnthropicMessages => {
             build_anthropic_request(model, max_output_tokens, reasoning_effort, messages, tools)
@@ -3158,7 +3645,7 @@ fn build_openai_responses_request(
     reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
-    explicit_prompt_cache: bool,
+    prompt_cache_wire_mode: PromptCacheWireMode,
 ) -> Value {
     let mut input = Vec::new();
     let mut prompt_cache_key = None;
@@ -3179,27 +3666,64 @@ fn build_openai_responses_request(
         }
         if let Some(segmented) = segmented_model_text(message) {
             prompt_cache_key = segmented.prompt_cache_key.clone();
-            if explicit_prompt_cache {
-                let content = coalesce_selected_cache_parts(&segmented.parts)
+            if prompt_cache_wire_mode == PromptCacheWireMode::ImplicitMessageBoundaries {
+                // Do not reuse the explicit-breakpoint planner here. Its
+                // moving four-boundary window would regroup old text as the
+                // Inbox grows, invalidating an otherwise identical prefix.
+                input.extend(
+                    segmented
+                        .parts
+                        .into_iter()
+                        .filter(|part| !part.text.is_empty())
+                        .map(|part| {
+                            json!({
+                                "role": message.role,
+                                "content": part.text,
+                            })
+                        }),
+                );
+            } else if prompt_cache_wire_mode == PromptCacheWireMode::ImplicitContentBoundaries {
+                // The implicit endpoint has no four-breakpoint limit. Keep
+                // every structural block stable so extending the Inbox only
+                // inserts a new block after the previously cached prefix.
+                let content = segmented
+                    .parts
                     .into_iter()
+                    .filter(|part| !part.text.is_empty())
                     .map(|part| {
-                        let mut block = json!({
+                        json!({
                             "type": "input_text",
                             "text": part.text,
-                        });
-                        if part.cache_boundary_after {
-                            block["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
-                            has_explicit_breakpoint = true;
-                        }
-                        block
+                        })
                     })
                     .collect::<Vec<_>>();
                 input.push(json!({"role": message.role, "content": content}));
             } else {
-                input.push(json!({
-                    "role": message.role,
-                    "content": segmented.visible_text(),
-                }));
+                let selected_parts = coalesce_selected_cache_parts(&segmented.parts);
+                if prompt_cache_wire_mode.emits_content_blocks() {
+                    let content = selected_parts
+                        .into_iter()
+                        .map(|part| {
+                            let mut block = json!({
+                                "type": "input_text",
+                                "text": part.text,
+                            });
+                            if part.cache_boundary_after
+                                && prompt_cache_wire_mode.emits_explicit_breakpoints()
+                            {
+                                block["prompt_cache_breakpoint"] = json!({"mode": "explicit"});
+                                has_explicit_breakpoint = true;
+                            }
+                            block
+                        })
+                        .collect::<Vec<_>>();
+                    input.push(json!({"role": message.role, "content": content}));
+                } else {
+                    input.push(json!({
+                        "role": message.role,
+                        "content": segmented.visible_text(),
+                    }));
+                }
             }
             continue;
         }
@@ -3267,8 +3791,9 @@ fn adapt_codex_request(mut request: Value) -> Value {
     );
 
     // These fields are valid for the public Responses API but rejected by
-    // the ChatGPT Codex backend. CLIProxyAPI applies the same compatibility
-    // boundary before forwarding a request upstream.
+    // the ChatGPT Codex backend. The separately tested CLIProxyAPI v7.2.140
+    // revision applies the same compatibility boundary before forwarding;
+    // do not generalize that observation to unknown gateway revisions.
     for field in [
         "max_output_tokens",
         "max_completion_tokens",
@@ -3279,6 +3804,7 @@ fn adapt_codex_request(mut request: Value) -> Value {
         "user",
         "previous_response_id",
         "generate",
+        "prompt_cache_options",
         "prompt_cache_retention",
         "safety_identifier",
         "stream_options",
@@ -3310,6 +3836,13 @@ fn adapt_codex_request(mut request: Value) -> Value {
         for item in input {
             if item.get("role").and_then(Value::as_str) == Some("system") {
                 item["role"] = Value::String("developer".to_string());
+            }
+            if let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) {
+                for block in content {
+                    if let Some(block) = block.as_object_mut() {
+                        block.remove("prompt_cache_breakpoint");
+                    }
+                }
             }
         }
     }
@@ -5218,7 +5751,7 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_6_responses_uses_explicit_public_and_plain_codex_context() {
+    fn gpt_5_6_responses_uses_explicit_public_and_canonical_codex_implicit_text() {
         let context = segmented_text_message(
             "user",
             SegmentedModelText {
@@ -5259,10 +5792,14 @@ mod tests {
             Some(&json!("morphz-context-test"))
         );
         assert_eq!(
-            request.pointer("/input/0"),
-            Some(&json!({"role": "user", "content": "stabledynamic"}))
+            request.pointer("/input/0/content"),
+            Some(&json!("stabledynamic"))
         );
         assert!(request.pointer("/input/1").is_none());
+        assert!(request
+            .to_string()
+            .find("prompt_cache_breakpoint")
+            .is_none());
 
         let generic = ProtocolClient::new(
             &provider,
@@ -5300,6 +5837,7 @@ mod tests {
             Some(&json!("stabledynamic"))
         );
         assert!(future.pointer("/input/1").is_none());
+        assert!(future.to_string().find("prompt_cache_breakpoint").is_none());
         assert!(future.get("prompt_cache_options").is_none());
 
         let public_older = generic.request_for_model(
@@ -5363,11 +5901,21 @@ mod tests {
             .collect()
     }
 
+    fn response_content_block_texts(request: &Value, message_index: usize) -> Vec<String> {
+        request["input"][message_index]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
     fn prepare_incremental_request(
         history: &mut VecDeque<PromptCacheBoundaryIdentity>,
         provisional_key: &str,
         observations: &[&str],
-        explicit_prompt_cache: bool,
+        wire_mode: PromptCacheWireMode,
     ) -> (Value, String) {
         let mut messages = vec![
             Message {
@@ -5380,11 +5928,10 @@ mod tests {
             incremental_context_message(provisional_key, observations),
         ];
         let cohort_key =
-            prompt_cache_cohort_key("gpt-5.6-sol", None, explicit_prompt_cache, &messages, &[])
-                .unwrap();
+            prompt_cache_cohort_key("gpt-5.6-sol", None, wire_mode, &messages, &[]).unwrap();
         let mut segmented = segmented_model_text(&messages[1]).unwrap();
         segmented.prompt_cache_key = Some(cohort_key.clone());
-        if explicit_prompt_cache {
+        if wire_mode.plans_cache_boundaries() {
             let current = plan_incremental_cache_boundaries(&mut segmented, history).unwrap();
             history.retain(|prior| prior != &current);
             history.push_front(current);
@@ -5392,39 +5939,36 @@ mod tests {
         }
         messages[1].content = serde_json::to_string(&segmented).unwrap();
         (
-            build_openai_responses_request(
-                "gpt-5.6-sol",
-                None,
-                None,
-                &messages,
-                &[],
-                explicit_prompt_cache,
-            ),
+            build_openai_responses_request("gpt-5.6-sol", None, None, &messages, &[], wire_mode),
             cohort_key,
         )
     }
 
     fn model_visible_responses_contract(request: &Value) -> Value {
-        let input = request
-            .get("input")
-            .and_then(Value::as_array)
-            .unwrap()
-            .iter()
-            .map(|message| {
-                let content = match message.get("content").unwrap() {
-                    Value::String(text) => text.clone(),
-                    Value::Array(blocks) => blocks
-                        .iter()
-                        .filter_map(|block| block.get("text").and_then(Value::as_str))
-                        .collect::<String>(),
-                    other => panic!("unexpected Responses content: {other}"),
-                };
-                json!({
-                    "role": message.get("role").unwrap(),
-                    "content": content,
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut input = Vec::<Value>::new();
+        for message in request.get("input").and_then(Value::as_array).unwrap() {
+            let role = message.get("role").unwrap();
+            let content = match message.get("content").unwrap() {
+                Value::String(text) => text.clone(),
+                Value::Array(blocks) => blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<String>(),
+                other => panic!("unexpected Responses content: {other}"),
+            };
+            if let Some(previous) = input.last_mut().filter(|previous| {
+                previous.get("role") == Some(role)
+                    && previous.get("content").is_some_and(Value::is_string)
+            }) {
+                previous["content"] = json!(format!(
+                    "{}{}",
+                    previous["content"].as_str().unwrap(),
+                    content
+                ));
+            } else {
+                input.push(json!({"role": role, "content": content}));
+            }
+        }
         json!({
             "model": request.get("model").unwrap(),
             "input": input,
@@ -5436,30 +5980,215 @@ mod tests {
         format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
     }
 
+    fn record_wire_audit(
+        store: &mut PromptCacheWireAuditStore,
+        request: &Value,
+    ) -> PromptCacheWireAudit {
+        store.record(
+            request["prompt_cache_key"].as_str().unwrap(),
+            prompt_cache_wire_snapshot(request).unwrap(),
+        )
+    }
+
+    #[test]
+    fn prompt_cache_wire_audit_proves_strict_message_append_and_prior_boundary_match() {
+        let first = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"role": "developer", "content": "fixed instructions"},
+                {"role": "user", "content": "stable context"}
+            ],
+            "prompt_cache_key": "cohort-a",
+            "stream": true
+        });
+        let second = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"role": "developer", "content": "fixed instructions"},
+                {"role": "user", "content": "stable context"},
+                {"role": "user", "content": "new suffix"}
+            ],
+            "prompt_cache_key": "cohort-a",
+            "stream": true
+        });
+        let mut store = PromptCacheWireAuditStore::default();
+        let cold = record_wire_audit(&mut store, &first);
+        let warm = record_wire_audit(&mut store, &second);
+
+        assert_eq!(cold.matched_prior_boundary_items, 0);
+        assert_eq!(warm.longest_common_input_items, 2);
+        assert!(warm.previous_is_strict_prefix);
+        assert_eq!(warm.matched_prior_boundary_items, 2);
+        assert_eq!(warm.matched_prior_boundary_sequence, Some(cold.sequence));
+        assert_eq!(warm.latest_implicit_boundary_items, Some(3));
+    }
+
+    #[test]
+    fn prompt_cache_wire_audit_rejects_insertion_before_trailing_user_item() {
+        let first = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"role": "developer", "content": "fixed instructions"},
+                {"role": "user", "content": "stable context"},
+                {"role": "user", "content": "))"}
+            ],
+            "prompt_cache_key": "cohort-b",
+            "stream": true
+        });
+        let second = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"role": "developer", "content": "fixed instructions"},
+                {"role": "user", "content": "stable context"},
+                {"role": "user", "content": "new observation"},
+                {"role": "user", "content": "))"}
+            ],
+            "prompt_cache_key": "cohort-b",
+            "stream": true
+        });
+        let mut store = PromptCacheWireAuditStore::default();
+        record_wire_audit(&mut store, &first);
+        let audit = record_wire_audit(&mut store, &second);
+
+        assert_eq!(audit.longest_common_input_items, 2);
+        assert!(!audit.previous_is_strict_prefix);
+        assert_eq!(audit.matched_prior_boundary_items, 0);
+        assert_eq!(audit.latest_implicit_boundary_items, Some(4));
+    }
+
+    #[test]
+    fn prompt_cache_wire_audit_rejects_matching_input_when_request_properties_change() {
+        let first = json!({
+            "model": "gpt-5.6-sol",
+            "reasoning": {"effort": "high"},
+            "input": [{"role": "user", "content": "stable context"}],
+            "prompt_cache_key": "cohort-c",
+            "stream": true
+        });
+        let second = json!({
+            "model": "gpt-5.6-sol",
+            "reasoning": {"effort": "max"},
+            "input": [
+                {"role": "user", "content": "stable context"},
+                {"role": "user", "content": "new suffix"}
+            ],
+            "prompt_cache_key": "cohort-c",
+            "stream": true
+        });
+        let mut store = PromptCacheWireAuditStore::default();
+        record_wire_audit(&mut store, &first);
+        let audit = record_wire_audit(&mut store, &second);
+
+        assert_eq!(audit.longest_common_input_items, 1);
+        assert!(!audit.previous_is_strict_prefix);
+        assert_eq!(audit.matched_prior_boundary_items, 0);
+    }
+
+    #[test]
+    fn prompt_cache_wire_audit_treats_changed_content_blocks_as_one_changed_message() {
+        let first = json!({
+            "model": "gpt-5.6-sol",
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": "stable"},
+                {"type": "input_text", "text": " observation one"},
+                {"type": "input_text", "text": "))"}
+            ]}],
+            "prompt_cache_key": "cohort-d",
+            "stream": true
+        });
+        let second = json!({
+            "model": "gpt-5.6-sol",
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": "stable"},
+                {"type": "input_text", "text": " observation one"},
+                {"type": "input_text", "text": " observation two"},
+                {"type": "input_text", "text": "))"}
+            ]}],
+            "prompt_cache_key": "cohort-d",
+            "stream": true
+        });
+        let mut store = PromptCacheWireAuditStore::default();
+        record_wire_audit(&mut store, &first);
+        let audit = record_wire_audit(&mut store, &second);
+
+        assert_eq!(audit.longest_common_input_items, 0);
+        assert!(!audit.previous_is_strict_prefix);
+        assert_eq!(audit.longest_common_content_blocks, 2);
+        assert!(!audit.previous_content_blocks_is_strict_prefix);
+        assert_eq!(audit.matched_prior_boundary_items, 0);
+        assert!(!audit.input_item_fingerprints.contains("stable"));
+        assert!(!audit.input_item_fingerprints.contains("observation"));
+        assert!(!audit.content_block_fingerprints.contains("stable"));
+        assert!(!audit.content_block_fingerprints.contains("observation"));
+    }
+
+    #[test]
+    fn prompt_cache_wire_audit_proves_strict_content_block_append() {
+        let first = json!({
+            "model": "gpt-5.6-sol",
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": "closed canonical context"},
+                {"type": "input_text", "text": "structured delta one"}
+            ]}],
+            "prompt_cache_key": "cohort-content-append",
+            "stream": true
+        });
+        let second = json!({
+            "model": "gpt-5.6-sol",
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": "closed canonical context"},
+                {"type": "input_text", "text": "structured delta one"},
+                {"type": "input_text", "text": "structured delta two"}
+            ]}],
+            "prompt_cache_key": "cohort-content-append",
+            "stream": true
+        });
+        let mut store = PromptCacheWireAuditStore::default();
+        record_wire_audit(&mut store, &first);
+        let audit = record_wire_audit(&mut store, &second);
+
+        assert_eq!(audit.longest_common_input_items, 0);
+        assert!(!audit.previous_is_strict_prefix);
+        assert_eq!(audit.longest_common_content_blocks, 2);
+        assert!(audit.previous_content_blocks_is_strict_prefix);
+    }
+
     #[test]
     fn gpt_5_6_prompt_cache_preserves_prior_inbox_ends_and_caps_breakpoints() {
         let mut history = VecDeque::new();
-        let (first_request, first_key) =
-            prepare_incremental_request(&mut history, "context-a", &["one"], true);
+        let (first_request, first_key) = prepare_incremental_request(
+            &mut history,
+            "context-a",
+            &["one"],
+            PromptCacheWireMode::ExplicitContentBoundaries,
+        );
         assert_eq!(explicit_breakpoint_texts(&first_request).len(), 2);
 
-        let (second_request, second_key) =
-            prepare_incremental_request(&mut history, "different-context-b", &["one", "two"], true);
+        let (second_request, second_key) = prepare_incremental_request(
+            &mut history,
+            "different-context-b",
+            &["one", "two"],
+            PromptCacheWireMode::ExplicitContentBoundaries,
+        );
         assert_eq!(first_key, second_key);
         let second_breakpoints = explicit_breakpoint_texts(&second_request);
         assert_eq!(second_breakpoints.len(), 3);
         assert!(second_breakpoints[1].ends_with("(observation one)"));
         assert_eq!(second_breakpoints[2], " (observation two)");
 
-        let (third_request, _) =
-            prepare_incremental_request(&mut history, "context-c", &["one", "two", "three"], true);
+        let (third_request, _) = prepare_incremental_request(
+            &mut history,
+            "context-c",
+            &["one", "two", "three"],
+            PromptCacheWireMode::ExplicitContentBoundaries,
+        );
         assert_eq!(explicit_breakpoint_texts(&third_request).len(), 4);
 
         let (fourth_request, _) = prepare_incremental_request(
             &mut history,
             "context-d",
             &["one", "two", "three", "four"],
-            true,
+            PromptCacheWireMode::ExplicitContentBoundaries,
         );
         let fourth_breakpoints = explicit_breakpoint_texts(&fourth_request);
         assert_eq!(fourth_breakpoints.len(), 4);
@@ -5472,7 +6201,7 @@ mod tests {
             &mut history,
             "context-e",
             &["changed", "two", "three", "four", "five"],
-            true,
+            PromptCacheWireMode::ExplicitContentBoundaries,
         );
         assert_eq!(explicit_breakpoint_texts(&rebuilt_request).len(), 2);
     }
@@ -5480,56 +6209,518 @@ mod tests {
     #[test]
     fn prompt_cache_wire_modes_change_only_transport_metadata() {
         let mut explicit_history = VecDeque::new();
+        let mut implicit_blocks_history = VecDeque::new();
+        let mut implicit_messages_history = VecDeque::new();
         let mut implicit_history = VecDeque::new();
 
-        let (explicit_first, explicit_key) =
-            prepare_incremental_request(&mut explicit_history, "explicit-a", &["one"], true);
-        let (implicit_first, implicit_key) =
-            prepare_incremental_request(&mut implicit_history, "implicit-a", &["one"], false);
+        let (explicit_first, explicit_key) = prepare_incremental_request(
+            &mut explicit_history,
+            "explicit-a",
+            &["one"],
+            PromptCacheWireMode::ExplicitContentBoundaries,
+        );
+        let (implicit_blocks_first, implicit_blocks_key) = prepare_incremental_request(
+            &mut implicit_blocks_history,
+            "implicit-blocks-a",
+            &["one"],
+            PromptCacheWireMode::ImplicitContentBoundaries,
+        );
+        let (implicit_messages_first, implicit_messages_key) = prepare_incremental_request(
+            &mut implicit_messages_history,
+            "implicit-messages-a",
+            &["one"],
+            PromptCacheWireMode::ImplicitMessageBoundaries,
+        );
+        let (implicit_first, implicit_key) = prepare_incremental_request(
+            &mut implicit_history,
+            "implicit-a",
+            &["one"],
+            PromptCacheWireMode::ImplicitText,
+        );
 
         let explicit_visible = model_visible_responses_contract(&explicit_first);
+        let implicit_blocks_visible = model_visible_responses_contract(&implicit_blocks_first);
+        let implicit_messages_visible = model_visible_responses_contract(&implicit_messages_first);
         let implicit_visible = model_visible_responses_contract(&implicit_first);
+        assert_eq!(explicit_visible, implicit_blocks_visible);
+        assert_eq!(explicit_visible, implicit_messages_visible);
         assert_eq!(explicit_visible, implicit_visible);
+        assert_eq!(
+            json_sha256(&explicit_visible),
+            json_sha256(&implicit_blocks_visible)
+        );
+        assert_eq!(
+            json_sha256(&explicit_visible),
+            json_sha256(&implicit_messages_visible)
+        );
         assert_eq!(
             json_sha256(&explicit_visible),
             json_sha256(&implicit_visible)
         );
+        assert_ne!(explicit_key, implicit_blocks_key);
+        assert_ne!(explicit_key, implicit_messages_key);
         assert_ne!(explicit_key, implicit_key);
+        assert_ne!(implicit_blocks_key, implicit_key);
         assert_eq!(
             explicit_first.get("prompt_cache_key"),
             Some(&json!(explicit_key))
+        );
+        assert_eq!(
+            implicit_blocks_first.get("prompt_cache_key"),
+            Some(&json!(implicit_blocks_key))
+        );
+        assert_eq!(
+            implicit_messages_first.get("prompt_cache_key"),
+            Some(&json!(implicit_messages_key))
         );
         assert_eq!(
             implicit_first.get("prompt_cache_key"),
             Some(&json!(implicit_key))
         );
         assert!(explicit_first.get("prompt_cache_options").is_some());
+        assert!(implicit_blocks_first.get("prompt_cache_options").is_none());
         assert!(implicit_first.get("prompt_cache_options").is_none());
         assert!(explicit_first
             .pointer("/input/1/content")
             .unwrap()
             .is_array());
+        assert!(implicit_blocks_first
+            .pointer("/input/1/content")
+            .unwrap()
+            .is_array());
+        assert!(implicit_messages_first["input"].as_array().unwrap().len() > 2);
+        assert!(implicit_messages_first["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .skip(1)
+            .all(|item| item["role"] == "user" && item["content"].is_string()));
         assert!(implicit_first
             .pointer("/input/1/content")
             .unwrap()
             .is_string());
+        let explicit_block_texts = explicit_first["input"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let implicit_block_texts = implicit_blocks_first["input"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(explicit_block_texts.concat(), implicit_block_texts.concat());
+        assert!(implicit_block_texts.len() > explicit_block_texts.len());
+        assert!(implicit_blocks_first["input"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|block| block.get("prompt_cache_breakpoint").is_none()));
 
-        let (explicit_second, explicit_second_key) =
-            prepare_incremental_request(&mut explicit_history, "explicit-b", &["one", "two"], true);
+        let (explicit_second, explicit_second_key) = prepare_incremental_request(
+            &mut explicit_history,
+            "explicit-b",
+            &["one", "two"],
+            PromptCacheWireMode::ExplicitContentBoundaries,
+        );
+        let (implicit_blocks_second, implicit_blocks_second_key) = prepare_incremental_request(
+            &mut implicit_blocks_history,
+            "implicit-blocks-b",
+            &["one", "two"],
+            PromptCacheWireMode::ImplicitContentBoundaries,
+        );
+        let (implicit_messages_second, implicit_messages_second_key) = prepare_incremental_request(
+            &mut implicit_messages_history,
+            "implicit-messages-b",
+            &["one", "two"],
+            PromptCacheWireMode::ImplicitMessageBoundaries,
+        );
         let (implicit_second, implicit_second_key) = prepare_incremental_request(
             &mut implicit_history,
             "implicit-b",
             &["one", "two"],
-            false,
+            PromptCacheWireMode::ImplicitText,
         );
         assert_eq!(explicit_key, explicit_second_key);
+        assert_eq!(implicit_blocks_key, implicit_blocks_second_key);
+        assert_eq!(implicit_messages_key, implicit_messages_second_key);
         assert_eq!(implicit_key, implicit_second_key);
+        assert_eq!(
+            model_visible_responses_contract(&explicit_second),
+            model_visible_responses_contract(&implicit_blocks_second)
+        );
+        assert_eq!(
+            model_visible_responses_contract(&explicit_second),
+            model_visible_responses_contract(&implicit_messages_second)
+        );
         assert_eq!(
             model_visible_responses_contract(&explicit_second),
             model_visible_responses_contract(&implicit_second)
         );
         assert_eq!(explicit_breakpoint_texts(&explicit_second).len(), 3);
+        assert!(explicit_breakpoint_texts(&implicit_blocks_second).is_empty());
         assert!(explicit_breakpoint_texts(&implicit_second).is_empty());
+        let explicit_second_texts = explicit_second["input"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let implicit_blocks_second_texts = implicit_blocks_second["input"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            explicit_second_texts.concat(),
+            implicit_blocks_second_texts.concat()
+        );
+        assert!(implicit_blocks_second_texts.len() > explicit_second_texts.len());
+        assert_eq!(implicit_blocks_second_texts[2], " (observation one)");
+        assert_eq!(implicit_blocks_second_texts[3], " (observation two)");
+    }
+
+    #[test]
+    fn implicit_content_boundaries_keep_prior_inbox_blocks_append_only() {
+        let mut history = VecDeque::new();
+        let (first, first_key) = prepare_incremental_request(
+            &mut history,
+            "first",
+            &["one"],
+            PromptCacheWireMode::ImplicitContentBoundaries,
+        );
+        let (second, second_key) = prepare_incremental_request(
+            &mut history,
+            "second",
+            &["one", "two"],
+            PromptCacheWireMode::ImplicitContentBoundaries,
+        );
+
+        assert_eq!(first_key, second_key);
+        assert!(history.is_empty());
+        let first_blocks = first["input"][1]["content"].as_array().unwrap();
+        let second_blocks = second["input"][1]["content"].as_array().unwrap();
+        assert_eq!(first_blocks.len() + 1, second_blocks.len());
+        assert_eq!(
+            &first_blocks[..first_blocks.len() - 1],
+            &second_blocks[..first_blocks.len() - 1]
+        );
+        assert_eq!(
+            second_blocks[second_blocks.len() - 2]["text"],
+            " (observation two)"
+        );
+        assert!(first_blocks
+            .iter()
+            .chain(second_blocks.iter())
+            .all(|block| block["type"] == "input_text"
+                && block.get("prompt_cache_breakpoint").is_none()));
+    }
+
+    #[test]
+    fn implicit_message_boundaries_insert_before_the_canonical_trailing_item() {
+        let mut history = VecDeque::new();
+        let (first, first_key) = prepare_incremental_request(
+            &mut history,
+            "first",
+            &["one"],
+            PromptCacheWireMode::ImplicitMessageBoundaries,
+        );
+        let (second, second_key) = prepare_incremental_request(
+            &mut history,
+            "second",
+            &["one", "two"],
+            PromptCacheWireMode::ImplicitMessageBoundaries,
+        );
+
+        assert_eq!(first_key, second_key);
+        assert!(history.is_empty());
+        let first_items = first["input"].as_array().unwrap();
+        let second_items = second["input"].as_array().unwrap();
+        assert_eq!(first_items.len() + 1, second_items.len());
+
+        // Historical observation items stay byte-identical, but the canonical
+        // closing suffix remains the last User item. The new observation is
+        // inserted before it, so the request as a whole is not a strict item
+        // extension and the prior implicit end-of-message breakpoint cannot
+        // match.
+        assert_eq!(
+            &first_items[..first_items.len() - 1],
+            &second_items[..first_items.len() - 1]
+        );
+        assert_eq!(
+            second_items[second_items.len() - 2]["content"],
+            " (observation two)"
+        );
+        let mut audit_store = PromptCacheWireAuditStore::default();
+        record_wire_audit(&mut audit_store, &first);
+        let second_audit = record_wire_audit(&mut audit_store, &second);
+        assert_eq!(
+            second_audit.longest_common_input_items,
+            first_items.len() - 1
+        );
+        assert!(!second_audit.previous_is_strict_prefix);
+        assert_eq!(second_audit.matched_prior_boundary_items, 0);
+        assert!(first_items
+            .iter()
+            .chain(second_items.iter())
+            .all(|item| item["role"] == "system" || item["role"] == "user"));
+        assert_eq!(
+            model_visible_responses_contract(&first),
+            model_visible_responses_contract(
+                &prepare_incremental_request(
+                    &mut VecDeque::new(),
+                    "visible-first",
+                    &["one"],
+                    PromptCacheWireMode::ImplicitText,
+                )
+                .0
+            )
+        );
+    }
+
+    #[test]
+    fn configured_codex_message_transport_preserves_context_role_and_text() {
+        let mut provider = ProviderConfig {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://provider.invalid/v1".to_string(),
+            ..ProviderConfig::default()
+        };
+        let public = ProtocolClient::new(
+            &provider,
+            "gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        provider.models.insert(
+            "gpt-5.6-sol".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ImplicitMessageBoundaries,
+                ..ProviderModelConfig::default()
+            },
+        );
+        let codex = ProtocolClient::new_with_adapter(
+            &provider,
+            "openai-codex",
+            "gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        for observations in [&["one"][..], &["one", "two"][..]] {
+            let messages = vec![
+                Message {
+                    role: "system".to_string(),
+                    content: "stable system".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                },
+                incremental_context_message("provisional", observations),
+            ];
+            let public_messages = public
+                .prepare_prompt_cache_messages("gpt-5.6-sol", messages.clone(), &[], None, true)
+                .unwrap();
+            let codex_messages = codex
+                .prepare_prompt_cache_messages("gpt-5.6-sol", messages, &[], None, true)
+                .unwrap();
+            let public_request = public.request_for_model("gpt-5.6-sol", &public_messages, &[]);
+            let codex_request = codex.request_for_model("gpt-5.6-sol", &codex_messages, &[]);
+
+            assert_eq!(public_request["input"].as_array().unwrap().len(), 2);
+            assert!(codex_request["input"].as_array().unwrap().len() > 2);
+            assert_eq!(
+                public_request.pointer("/input/1/role"),
+                Some(&json!("user"))
+            );
+            assert!(codex_request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .skip(1)
+                .all(|item| item["role"] == "user" && item["content"].is_string()));
+            let public_context = response_content_block_texts(&public_request, 1).concat();
+            let codex_context = codex_request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .skip(1)
+                .filter_map(|item| item["content"].as_str())
+                .collect::<String>();
+            assert_eq!(public_context, codex_context);
+            assert_eq!(
+                model_visible_responses_contract(&public_request)["input"][1],
+                model_visible_responses_contract(&codex_request)["input"][1]
+            );
+            assert!(codex_request.get("prompt_cache_options").is_none());
+            assert!(codex_request
+                .to_string()
+                .find("prompt_cache_breakpoint")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn structured_delta_cache_transport_requires_compiled_explicit_model_opt_in() {
+        let mut provider = ProviderConfig {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://provider.invalid/v1".to_string(),
+            ..ProviderConfig::default()
+        };
+        provider.models.insert(
+            "auto".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::Auto,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "implicit".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ImplicitPrefix,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "explicit".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ExplicitContentBoundaries,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "message-blocks".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ImplicitMessageBoundaries,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "structured-deltas".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ExperimentalStructuredDeltas,
+                ..ProviderModelConfig::default()
+            },
+        );
+        let codex = ProtocolClient::new_with_adapter(
+            &provider,
+            "openai-codex",
+            "auto".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let public =
+            ProtocolClient::new(&provider, "auto".to_string(), None, &LlmConfig::default())
+                .unwrap();
+
+        assert!(!codex.prefers_structured_delta_cache_transport(Some("auto")));
+        assert!(!codex.prefers_structured_delta_cache_transport(Some("implicit")));
+        assert!(!codex.prefers_structured_delta_cache_transport(Some("explicit")));
+        assert!(!codex.prefers_structured_delta_cache_transport(Some("message-blocks")));
+        assert!(!public.prefers_structured_delta_cache_transport(Some("auto")));
+        assert!(!public.prefers_structured_delta_cache_transport(Some("implicit")));
+        assert_eq!(
+            codex.prefers_structured_delta_cache_transport(Some("structured-deltas")),
+            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        );
+        // The opt-in is an endpoint declaration, not adapter-name inference;
+        // this also supports an OpenAI-compatible Proxy in front of ChatGPT.
+        assert_eq!(
+            public.prefers_structured_delta_cache_transport(Some("structured-deltas")),
+            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        );
+    }
+
+    #[cfg(not(feature = "experimental-openai-chatgpt-structured-cache"))]
+    #[test]
+    fn structured_delta_cache_config_is_rejected_when_feature_is_not_compiled() {
+        let mut provider = ProviderConfig {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://provider.invalid/v1".to_string(),
+            ..ProviderConfig::default()
+        };
+        provider.models.insert(
+            "structured-deltas".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ExperimentalStructuredDeltas,
+                ..ProviderModelConfig::default()
+            },
+        );
+        let error = ProtocolClient::new(
+            &provider,
+            "structured-deltas".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .err()
+        .expect("an uncompiled experimental transport must be rejected");
+        assert!(error
+            .to_string()
+            .contains("experimental-openai-chatgpt-structured-cache"));
+    }
+
+    #[cfg(feature = "experimental-openai-chatgpt-structured-cache")]
+    #[test]
+    fn structured_delta_cache_opt_in_emits_one_user_item_with_multiple_text_blocks() {
+        let mut provider = ProviderConfig {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: "https://proxy.invalid/v1".to_string(),
+            ..ProviderConfig::default()
+        };
+        provider.models.insert(
+            "proxied-chatgpt".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ExperimentalStructuredDeltas,
+                ..ProviderModelConfig::default()
+            },
+        );
+        let client = ProtocolClient::new_with_adapter(
+            &provider,
+            "openai-compatible",
+            "proxied-chatgpt".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let message = segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts: vec![
+                    ModelTextPart {
+                        text: "(context (inbox))".to_string(),
+                        cache_boundary_after: true,
+                        cache_boundary_candidate_after: true,
+                    },
+                    ModelTextPart {
+                        text: "\n(context-delta (inbox-append (observation)))".to_string(),
+                        cache_boundary_after: true,
+                        cache_boundary_candidate_after: true,
+                    },
+                ],
+                prompt_cache_key: Some("structured-cohort".to_string()),
+            },
+        )
+        .unwrap();
+        let request = client.request_for_model("proxied-chatgpt", &[message], &[]);
+        let input = request["input"].as_array().unwrap();
+        let content = input[0]["content"].as_array().unwrap();
+
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["text"], "(context (inbox))");
+        assert!(content[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("context-delta"));
+        assert!(content
+            .iter()
+            .all(|block| block.get("prompt_cache_breakpoint").is_none()));
     }
 
     #[test]
@@ -5544,18 +6735,43 @@ mod tests {
             },
             incremental_context_message("context-a", &["one"]),
         ];
-        let base = prompt_cache_cohort_key("gpt-5.6-sol", None, true, &messages, &[]).unwrap();
+        let base = prompt_cache_cohort_key(
+            "gpt-5.6-sol",
+            None,
+            PromptCacheWireMode::ExplicitContentBoundaries,
+            &messages,
+            &[],
+        )
+        .unwrap();
         assert_eq!(base.len(), 64);
         assert_ne!(
             base,
-            prompt_cache_cohort_key("gpt-5.6-sol", None, false, &messages, &[]).unwrap()
+            prompt_cache_cohort_key(
+                "gpt-5.6-sol",
+                None,
+                PromptCacheWireMode::ImplicitContentBoundaries,
+                &messages,
+                &[],
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            base,
+            prompt_cache_cohort_key(
+                "gpt-5.6-sol",
+                None,
+                PromptCacheWireMode::ImplicitText,
+                &messages,
+                &[],
+            )
+            .unwrap()
         );
         assert_eq!(
             base,
             prompt_cache_cohort_key(
                 "gpt-5.6-sol",
                 None,
-                true,
+                PromptCacheWireMode::ExplicitContentBoundaries,
                 &[
                     messages[0].clone(),
                     incremental_context_message("other-context", &["different"]),
@@ -5569,7 +6785,7 @@ mod tests {
             prompt_cache_cohort_key(
                 "gpt-5.6-sol",
                 Some(ReasoningEffort::High),
-                true,
+                PromptCacheWireMode::ExplicitContentBoundaries,
                 &messages,
                 &[],
             )
@@ -5577,14 +6793,21 @@ mod tests {
         );
         assert_ne!(
             base,
-            prompt_cache_cohort_key("gpt-5.6-terra", None, true, &messages, &[]).unwrap()
+            prompt_cache_cohort_key(
+                "gpt-5.6-terra",
+                None,
+                PromptCacheWireMode::ExplicitContentBoundaries,
+                &messages,
+                &[],
+            )
+            .unwrap()
         );
         assert_ne!(
             base,
             prompt_cache_cohort_key(
                 "gpt-5.6-sol",
                 None,
-                true,
+                PromptCacheWireMode::ExplicitContentBoundaries,
                 &messages,
                 &[ToolDefinition {
                     name: "read".to_string(),
@@ -5631,6 +6854,27 @@ mod tests {
                 ..ProviderModelConfig::default()
             },
         );
+        provider.models.insert(
+            "codex-proxy-gpt56-alias".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ImplicitContentBoundaries,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "codex-proxy-message-gpt56-alias".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::ImplicitMessageBoundaries,
+                ..ProviderModelConfig::default()
+            },
+        );
+        provider.models.insert(
+            "disabled-gpt56-alias".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::Disabled,
+                ..ProviderModelConfig::default()
+            },
+        );
 
         let implicit = ProtocolClient::new(
             &provider,
@@ -5664,6 +6908,59 @@ mod tests {
             .pointer("/input/0/content/0/prompt_cache_breakpoint")
             .is_some());
 
+        let implicit_content_boundaries = ProtocolClient::new(
+            &provider,
+            "codex-proxy-gpt56-alias".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model(
+            "codex-proxy-gpt56-alias",
+            std::slice::from_ref(&context),
+            &[],
+        );
+        assert!(implicit_content_boundaries
+            .get("prompt_cache_options")
+            .is_none());
+        assert!(implicit_content_boundaries
+            .pointer("/input/0/content")
+            .unwrap()
+            .is_array());
+        assert!(implicit_content_boundaries["input"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|block| block.get("prompt_cache_breakpoint").is_none()));
+
+        let implicit_message_boundaries = ProtocolClient::new(
+            &provider,
+            "codex-proxy-message-gpt56-alias".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model(
+            "codex-proxy-message-gpt56-alias",
+            std::slice::from_ref(&context),
+            &[],
+        );
+        assert!(implicit_message_boundaries
+            .get("prompt_cache_options")
+            .is_none());
+        assert!(
+            implicit_message_boundaries["input"]
+                .as_array()
+                .unwrap()
+                .len()
+                > 1
+        );
+        assert!(implicit_message_boundaries["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["role"] == "user" && item["content"].is_string()));
+
         let codex = ProtocolClient::new_with_adapter(
             &provider,
             "openai-codex",
@@ -5674,6 +6971,27 @@ mod tests {
         .unwrap()
         .request_for_model("provider-gpt56-alias", &[context], &[]);
         assert!(codex.get("prompt_cache_options").is_none());
+        assert!(codex.pointer("/input/0/content").unwrap().is_array());
+        assert!(codex["input"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|block| block.get("prompt_cache_breakpoint").is_none()));
+
+        let disabled_context = incremental_context_message("disabled", &["one"]);
+        let disabled_codex = ProtocolClient::new_with_adapter(
+            &provider,
+            "openai-codex",
+            "disabled-gpt56-alias".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model("disabled-gpt56-alias", &[disabled_context], &[]);
+        assert!(disabled_codex
+            .pointer("/input/0/content")
+            .unwrap()
+            .is_string());
     }
 
     #[test]
@@ -5769,12 +7087,19 @@ mod tests {
             "model": "codex-model-alpha",
             "input": [
                 {"role": "system", "content": "system"},
-                {"role": "user", "content": "hello"}
+                {"role": "user", "content": [
+                    {
+                        "type": "input_text",
+                        "text": "hello",
+                        "prompt_cache_breakpoint": {"mode": "explicit"}
+                    }
+                ]}
             ],
             "tools": [{"type": "function", "name": "probe"}],
             "max_output_tokens": 64,
             "temperature": 0.5,
             "truncation": "auto",
+            "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
             "user": "unsupported"
         });
 
@@ -5788,7 +7113,20 @@ mod tests {
         assert_eq!(adapted.get("parallel_tool_calls"), Some(&Value::Bool(true)));
         assert_eq!(adapted.get("instructions"), Some(&json!("")));
         assert_eq!(adapted.pointer("/input/0/role"), Some(&json!("developer")));
-        for rejected in ["max_output_tokens", "temperature", "truncation", "user"] {
+        assert_eq!(
+            adapted.pointer("/input/1/content/0/text"),
+            Some(&json!("hello"))
+        );
+        assert!(adapted
+            .pointer("/input/1/content/0/prompt_cache_breakpoint")
+            .is_none());
+        for rejected in [
+            "max_output_tokens",
+            "temperature",
+            "truncation",
+            "prompt_cache_options",
+            "user",
+        ] {
             assert!(adapted.get(rejected).is_none(), "field={rejected}");
         }
     }

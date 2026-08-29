@@ -90,8 +90,10 @@ def _provider_error_counts(job_dir: Path) -> dict[str, int]:
     patterns = {
         "usage_limit_reached": "usage_limit_reached",
         "auth_unavailable": "auth_unavailable",
+        "http_402": "HTTP 402",
         "http_429": "HTTP 429",
         "http_503": "HTTP 503",
+        "wholesale_rate_limit": "Wholesale rate limit exceeded",
         "provider_request_failed": "Provider request failed",
     }
     counts = {name: 0 for name in patterns}
@@ -117,6 +119,11 @@ def audit_gate(
     atif_validator = atif_validator or validate_atif
     strict = _json(job_dir / "strict_result.json")
     run_identity = strict.get("run_identity") or {}
+    expected_model = str(
+        run_identity.get("provider_model")
+        or run_identity.get("model")
+        or "gpt-5.6-sol"
+    )
     expected_harness = run_identity.get("harness") or {}
     trials: list[dict[str, Any]] = []
     context_ids: list[str] = []
@@ -151,7 +158,7 @@ def audit_gate(
                 unmatched_observations += 1
             if step.get("source") != "agent" or not step.get("llm_call_count"):
                 continue
-            if step.get("model_name") != "gpt-5.6-sol":
+            if step.get("model_name") != expected_model:
                 model_errors.append(f"model:{step.get('model_name')}")
             if step.get("reasoning_effort") != "max":
                 model_errors.append(f"reasoning:{step.get('reasoning_effort')}")
