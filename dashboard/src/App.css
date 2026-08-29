@@ -2334,8 +2334,10 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .provider-model-alias label { display: grid; gap: 5px; }
 .provider-model-alias span { color: var(--muted); font: 8px var(--mono); }
 .provider-model-alias small { color: var(--faint); font-size: 9px; line-height: 1.45; }
-.provider-model-alias input { width: 100%; min-height: 35px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--radius-xs); outline: none; color: var(--text); background: var(--surface); font: 10px var(--mono); }
-.provider-model-alias input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.provider-model-alias input,
+.provider-model-alias select { width: 100%; min-height: 35px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--radius-xs); outline: none; color: var(--text); background: var(--surface); font: 10px var(--mono); }
+.provider-model-alias input:focus,
+.provider-model-alias select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .provider-model-manager-list details { border-top: 1px solid var(--line); }
 .provider-model-manager-list details > summary { padding: 9px 12px; color: var(--muted); font-size: 9px; cursor: pointer; }
 .provider-model-manager-list details > p { margin: 0; padding: 0 12px 9px; color: var(--faint); font-size: 9px; line-height: 1.5; }
