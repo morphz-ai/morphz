@@ -1488,9 +1488,6 @@ impl ProtocolClient {
             PromptCacheStrategy::ExplicitContentBoundaries => {
                 PromptCacheWireMode::ExplicitContentBoundaries
             }
-            PromptCacheStrategy::Auto if openai_model_supports_explicit_prompt_cache(model) => {
-                PromptCacheWireMode::ExplicitContentBoundaries
-            }
             PromptCacheStrategy::Auto
             | PromptCacheStrategy::Disabled
             | PromptCacheStrategy::ImplicitPrefix
@@ -1996,22 +1993,6 @@ impl ProtocolClient {
             .map(|model| model.id)
             .collect())
     }
-}
-
-fn openai_model_supports_explicit_prompt_cache(model: &str) -> bool {
-    let normalized = model.trim().to_ascii_lowercase();
-    let Some(version) = normalized.strip_prefix("gpt-") else {
-        return false;
-    };
-    let mut components = version.split(['.', '-']);
-    let Some(major) = components.next().and_then(|part| part.parse::<u32>().ok()) else {
-        return false;
-    };
-    let minor = components
-        .next()
-        .and_then(|part| part.parse::<u32>().ok())
-        .unwrap_or_default();
-    (major, minor) >= (5, 6)
 }
 
 pub async fn list_provider_models(
@@ -5751,7 +5732,7 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_6_responses_uses_explicit_public_and_canonical_codex_implicit_text() {
+    fn gpt_5_6_auto_preserves_canonical_text_for_public_and_codex() {
         let context = segmented_text_message(
             "user",
             SegmentedModelText {
@@ -5811,13 +5792,14 @@ mod tests {
         let generic_request =
             generic.request_for_model("gpt-5.6-sol", std::slice::from_ref(&context), &[]);
         assert_eq!(
-            generic_request.pointer("/input/0/content/0/prompt_cache_breakpoint"),
-            Some(&json!({"mode": "explicit"}))
+            generic_request.pointer("/input/0/content"),
+            Some(&json!("stabledynamic"))
         );
-        assert_eq!(
-            generic_request.get("prompt_cache_options"),
-            Some(&json!({"mode": "explicit", "ttl": "30m"}))
-        );
+        assert!(generic_request.get("prompt_cache_options").is_none());
+        assert!(generic_request
+            .to_string()
+            .find("prompt_cache_breakpoint")
+            .is_none());
 
         let older = client.request_for_model("gpt-5.5", std::slice::from_ref(&context), &[]);
         assert_eq!(
@@ -5896,16 +5878,6 @@ mod tests {
             .into_iter()
             .flatten()
             .filter(|block| block.get("prompt_cache_breakpoint").is_some())
-            .filter_map(|block| block.get("text").and_then(Value::as_str))
-            .map(ToOwned::to_owned)
-            .collect()
-    }
-
-    fn response_content_block_texts(request: &Value, message_index: usize) -> Vec<String> {
-        request["input"][message_index]["content"]
-            .as_array()
-            .into_iter()
-            .flatten()
             .filter_map(|block| block.get("text").and_then(Value::as_str))
             .map(ToOwned::to_owned)
             .collect()
@@ -6543,7 +6515,11 @@ mod tests {
                 .iter()
                 .skip(1)
                 .all(|item| item["role"] == "user" && item["content"].is_string()));
-            let public_context = response_content_block_texts(&public_request, 1).concat();
+            let public_context = public_request
+                .pointer("/input/1/content")
+                .and_then(Value::as_str)
+                .expect("Auto must preserve canonical Context as one text item")
+                .to_string();
             let codex_context = codex_request["input"]
                 .as_array()
                 .unwrap()
@@ -6820,19 +6796,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_prompt_cache_capability_follows_openai_version_boundary() {
-        assert!(!openai_model_supports_explicit_prompt_cache("gpt-5.5"));
-        assert!(!openai_model_supports_explicit_prompt_cache(
-            "gpt-5.5-2026-04-23"
-        ));
-        assert!(openai_model_supports_explicit_prompt_cache("gpt-5.6"));
-        assert!(openai_model_supports_explicit_prompt_cache("gpt-5.6-sol"));
-        assert!(openai_model_supports_explicit_prompt_cache("gpt-5.7"));
-        assert!(openai_model_supports_explicit_prompt_cache("gpt-6"));
-        assert!(!openai_model_supports_explicit_prompt_cache("grok-5.6"));
-    }
-
-    #[test]
     fn configured_prompt_cache_strategy_controls_the_physical_endpoint() {
         let context = incremental_context_message("configured", &["one"]);
         let mut provider = ProviderConfig {
@@ -6840,6 +6803,13 @@ mod tests {
             base_url: "https://provider.invalid/v1".to_string(),
             ..ProviderConfig::default()
         };
+        provider.models.insert(
+            "auto-gpt-5.6-sol".to_string(),
+            ProviderModelConfig {
+                prompt_cache_strategy: PromptCacheStrategy::Auto,
+                ..ProviderModelConfig::default()
+            },
+        );
         provider.models.insert(
             "gpt-5.6-sol".to_string(),
             ProviderModelConfig {
@@ -6874,6 +6844,22 @@ mod tests {
                 prompt_cache_strategy: PromptCacheStrategy::Disabled,
                 ..ProviderModelConfig::default()
             },
+        );
+
+        let auto = ProtocolClient::new(
+            &provider,
+            "auto-gpt-5.6-sol".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap()
+        .request_for_model("auto-gpt-5.6-sol", std::slice::from_ref(&context), &[]);
+        assert!(auto.get("prompt_cache_options").is_none());
+        assert_eq!(
+            auto.pointer("/input/0/content"),
+            Some(&json!(
+                "stable-system-and-protocol (inbox (observation one)) dynamic-tail"
+            ))
         );
 
         let implicit = ProtocolClient::new(

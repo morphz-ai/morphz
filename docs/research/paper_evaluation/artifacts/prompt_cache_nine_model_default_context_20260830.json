@@ -1,0 +1,174 @@
+{
+  "schema_version": "morphz-layout-prefix-cache-nine-model-v2",
+  "date": "2026-08-30",
+  "valid_for_provider_capability_claims": true,
+  "valid_for_real_agent_cache_rate_claims": false,
+  "scope_note": "The nine-model results are synthetic endpoint capability probes with no tools. Real Morphz cache-rate claims must use the real_task_correction runs below.",
+  "historical_me08_commit": "d5a5fb806183f44fb5b47df65bf4def8ff8ab093",
+  "stable_tools_validation_base_commit": "9ba02417fd1c6c3fef757928fe97f6b71657146f",
+  "historical_me08_batch_status": {
+    "task_correctness_records": "historical_only",
+    "cache_and_cost_metrics_valid_as_final": false,
+    "recommendation": "stop_and_rerun_on_the_stable_tools_fix"
+  },
+  "proxy_version": "7.2.140 HEAD-4c78e40",
+  "request_shape": {
+    "single_user_message": true,
+    "single_user_text_block": true,
+    "closed_structured_context": true,
+    "context_delta_enabled": false,
+    "explicit_cache_breakpoints_enabled": false,
+    "tools": 0,
+    "history_chars_target": 120000,
+    "observations": 320,
+    "scenarios": [
+      "warm",
+      "append-one",
+      "append-two",
+      "mind-revision",
+      "append-after-revision"
+    ],
+    "summary_excludes_warmup": true
+  },
+  "superseded_probe": {
+    "name": "three-request-real-task-plus-unpaired-scaffold-ceiling",
+    "valid_for_provider_capability_claims": false,
+    "reason": "The separate scaffold controls were non-monotonic and were not interleaved with equal-length default requests. The probe conflicted with the historical Qwen v26 paired A/B and was too short to establish steady-state cache behavior."
+  },
+  "real_task_correction": {
+    "task": "terminal-bench/cancel-async-tasks",
+    "production_context": true,
+    "production_system_prompt": true,
+    "reasoning_effort": "max",
+    "coding_eval_mode": true,
+    "context_eval_mode": false,
+    "runs": [
+      {
+        "name": "gpt-old-dynamic-tools-default-transport",
+        "model": "gpt-5.6-sol",
+        "input_cached": [[21467, 0], [21501, 0], [24673, 11776], [26168, 11776], [26595, 0]],
+        "steady_input_tokens": 98937,
+        "steady_cached_input_tokens": 23552,
+        "steady_cache_hit_rate": 0.23805007125888373,
+        "tool_counts_observed": [27, 26],
+        "task_completed": true
+      },
+      {
+        "name": "k3-old-dynamic-tools-default-transport",
+        "model": "k3-256k",
+        "input_cached": [[22466, 0], [22430, 3584], [23853, 20224], [24859, 20992]],
+        "steady_input_tokens": 71142,
+        "steady_cached_input_tokens": 44800,
+        "steady_cache_hit_rate": 0.6297264625672598,
+        "tool_counts_observed": [27, 26],
+        "task_completed": true
+      },
+      {
+        "name": "gpt-stable-tools-default-single-block",
+        "model": "gpt-5.6-sol",
+        "input_cached": [[22054, 0], [22265, 12800], [26181, 12800], [25396, 12800], [27179, 12800]],
+        "steady_input_tokens": 101021,
+        "steady_cached_input_tokens": 51200,
+        "steady_cache_hit_rate": 0.5068253175072508,
+        "tool_count": 28,
+        "tool_schema_stable_within_run": true,
+        "prompt_cache_key_stable_within_run": true,
+        "task_completed": false,
+        "stop_reason": "controlled stop after five completed usage events"
+      },
+      {
+        "name": "gpt-stable-tools-experimental-structured-deltas",
+        "model": "gpt-5.6-sol",
+        "input_cached": [[22051, 0], [22344, 20992], [23126, 22016], [24498, 22016]],
+        "steady_input_tokens": 69968,
+        "steady_cached_input_tokens": 65024,
+        "steady_cache_hit_rate": 0.9293399839926828,
+        "tool_count": 28,
+        "tool_schema_stable_within_run": true,
+        "prompt_cache_key_stable_within_run": true,
+        "single_user_message": true,
+        "user_text_blocks": [1, 2, 3, 4],
+        "task_completed": true,
+        "smoke_tests_passed": true
+      }
+    ]
+  },
+  "models": [
+    {
+      "route": "gpt-5.6-sol",
+      "reported_model": "gpt-5.6-sol",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[85711, 0], [85744, 84736], [85777, 84736], [85777, 84736], [85810, 84736]],
+      "inbox_first_steady": {"input_tokens": 343108, "cached_input_tokens": 338944, "cache_hit_rate": 0.9878638795947632},
+      "dynamic_first_steady": {"input_tokens": 343048, "cached_input_tokens": 19456, "cache_hit_rate": 0.05671509526363658},
+      "classification": "clear_consistent_single_block_prefix_cache"
+    },
+    {
+      "route": "qwen3.8-max-preview",
+      "reported_model": "qwen3.8-max-preview",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[62855, 0], [62895, 59136], [62935, 62464], [62935, 62464], [62975, 62464]],
+      "inbox_first_steady": {"input_tokens": 251740, "cached_input_tokens": 246528, "cache_hit_rate": 0.9792960991499166},
+      "dynamic_first_steady": {"input_tokens": 251684, "cached_input_tokens": 16384, "cache_hit_rate": 0.06509750321832139},
+      "classification": "clear_consistent_single_block_prefix_cache"
+    },
+    {
+      "route": "deepseek-v4-pro",
+      "reported_model": "deepseek-v4-pro",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[61856, 0], [61889, 53632], [61922, 61696], [61922, 61696], [61955, 61696]],
+      "inbox_first_steady": {"input_tokens": 247688, "cached_input_tokens": 238720, "cache_hit_rate": 0.9637931591356869},
+      "dynamic_first_steady": {"input_tokens": 247628, "cached_input_tokens": 19968, "cache_hit_rate": 0.08063708465924693},
+      "classification": "clear_consistent_single_block_prefix_cache"
+    },
+    {
+      "route": "bai-deepseek-v4-flash",
+      "reported_model": "deepseek-v4-flash",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[61849, 0], [61882, 61440], [61915, 61440], [61915, 4864], [61948, 61440]],
+      "inbox_first_steady": {"input_tokens": 247660, "cached_input_tokens": 189184, "cache_hit_rate": 0.7638859727045143},
+      "dynamic_first_steady": {"input_tokens": 247600, "cached_input_tokens": 17920, "cache_hit_rate": 0.07237479806138934},
+      "classification": "clear_but_intermittent_single_block_prefix_cache"
+    },
+    {
+      "route": "k3-256k",
+      "reported_model": "k3-256k",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[61766, 0], [61799, 61440], [61832, 61440], [61832, 61696], [61865, 61440]],
+      "inbox_first_steady": {"input_tokens": 247328, "cached_input_tokens": 246016, "cache_hit_rate": 0.9946953034027688},
+      "classification": "clear_consistent_single_block_prefix_cache"
+    },
+    {
+      "route": "glm-5.3",
+      "reported_model": "glm-5.3",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[61543, 0], [61578, 61184], [61613, 61184], [61613, 61440], [61648, 61440]],
+      "inbox_first_steady": {"input_tokens": 246452, "cached_input_tokens": 245248, "cache_hit_rate": 0.9951146673591612},
+      "classification": "clear_consistent_single_block_prefix_cache"
+    },
+    {
+      "route": "gemini-3.7-flash-high",
+      "reported_model": "gemini-3.7-flash-high",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[63614, 0], [63656, 61404], [63698, 61404], [63698, 61404], [63740, 61404]],
+      "inbox_first_steady": {"input_tokens": 254792, "cached_input_tokens": 245616, "cache_hit_rate": 0.9639863104022104},
+      "classification": "clear_consistent_single_block_prefix_cache"
+    },
+    {
+      "route": "grok-4.6",
+      "reported_model": "grok-4.6-build",
+      "protocol": "openai-responses",
+      "inbox_first_input_cached": [[62352, 128], [62441, 128], [62453, 5120], [62463, 5120], [62497, 54272]],
+      "inbox_first_steady": {"input_tokens": 249854, "cached_input_tokens": 64640, "cache_hit_rate": 0.25871108727496855},
+      "classification": "clear_but_delayed_single_block_prefix_cache"
+    },
+    {
+      "route": "claude-opus-5",
+      "reported_model": "claude-opus-5",
+      "protocol": "anthropic-messages",
+      "inbox_first_input_cached": [[115419, 0], [115462, 0], [115505, 0], [115505, 0], [115548, 0]],
+      "inbox_first_steady": {"input_tokens": 462020, "cached_input_tokens": 0, "cache_hit_rate": 0.0},
+      "classification": "implicit_prefix_cache_not_observed"
+    }
+  ]
+}

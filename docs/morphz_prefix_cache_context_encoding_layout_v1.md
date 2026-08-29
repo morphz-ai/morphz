@@ -7,10 +7,13 @@
 > 配套设计：[Domain Harness](morphz_domain_harness_architecture_v1.md)、[Yao Harness `.hns`](morphz_yao_harness_file.md)
 > Provider 显式缓存边界补充设计：[Provider 可移植 Prompt Cache 边界设计 v1](morphz_provider_portable_prompt_cache_boundaries_v1.md)
 
-> 2026-08-28 补充：本文的真实 A/B 来自支持自动前缀识别的 Qwen 路线，结论继续有效；
-> 对需要内容块断点才能复用内部稳定前缀的 GPT-5.6 Responses 路线，第一阶段 Provider
-> 映射已经完成，并通过 CLIProxyAPI 生产路径观察到实际缓存命中。该补充不改变 Context
-> Protocol v26 的语义或物理顺序；正式成本结论仍以重新运行的配对 Benchmark 为准。
+> 2026-08-30 更正：长稳定前缀 synthetic probe 表明 GPT-5.6 在无 tools、超长单文本块装置中
+> 可以达到 98.79%，但该数值不能外推为真实 Morphz 任务表现。同一道 Terminal-Bench 真实题
+> 复核了论文约 26% 的低命中现象：旧工具合同预热后为 23.81%；固定普通工作阶段的 tools
+> 集合、schema 与顺序后提高到 50.68%；再启用单 User message、结构化 Context seed + delta
+> blocks 的实验 transport 后达到 92.93%。因此 Inbox-first 仍是必要布局，但不是 GPT 路线
+> 达到成本目标的充分条件。完整九模型能力探针和真实任务校正见
+> [九模型默认 Structured Context 隐式前缀缓存实验](research/paper_evaluation/prompt_cache_nine_model_default_context_20260830.md)。
 
 ## 1. 决策摘要
 

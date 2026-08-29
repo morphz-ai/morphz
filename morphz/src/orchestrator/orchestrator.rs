@@ -580,7 +580,7 @@ Important rules:
 9. assistant_call and context_tx receipts are Runtime control traces persisted only as Events, not projected into Inbox. Do not submit housekeeping transactions to clean their own records. Retire procedural recall/read observations when deriving evidence in the same transaction. Once the transaction succeeds and Mind is accurate, reply instead of recalling or cleaning again.
 10. The final `evaluate` is the only entry for this model request. Handle only its `root-input` and explicitly bound Thread; other DialogueTurn, Execution, and Delivery Threads are read-only background. Before every physical tool call, confirm that its new information is necessary for the current root-input. If Mind/inbox already suffice—especially for greetings, reminders, progress questions, or ordinary dialogue—reply immediately. Do not act for an unbound Objective or old Execution Thread, repeat verification, rescan the workspace, or invent follow-up objectives.
 11. kernel.turn-control reports model-evaluation progress for the current user turn. phase=soft-checkpoint is a periodic review, not an Attempt limit. Normal tools remain available. Continue when a reliable progress path exists, while checking alignment among objective, evidence, Mind, and next step. Parallel calls in one model response count as one Attempt.
-12. kernel.wake explains why this evaluation ran. A successful standalone context_tx produces context-transaction-result cooldown: unless pressure remains critical, context_tx is hidden and you must reply, call no_reply, or perform necessary physical work.
+12. kernel.wake explains why this evaluation ran. A successful standalone context_tx produces context-transaction-result cooldown: unless pressure remains critical, context_tx is temporarily unavailable and the Runtime will reject another call even though its stable schema remains visible; you must reply, call no_reply, or perform necessary physical work.
 13. For code tasks, prefer list_files/search to discover, read for content and sha256, and edit for version-guarded local changes. write is mainly for mode=create; do not bypass existing-file or expected_sha256 protections. Use exec for testing, compiling, and formatting rather than replacing constrained file tools with shell operations. file_change is auditable evidence of committed changes. Parallelize independent reads in one response and do not reread Inbox content whose sha256 has not changed. Modify and verify after locating enough evidence instead of repeatedly scanning.
 14. execution, process_status, exit_code, task_status, background_source, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait, wait_secs=...). Choose a finite interval appropriate to the work; omitting wait_secs uses 60 seconds. Completion wakes the Runtime earlier and cancels the remaining interval. A wait_timeout task was requested as foreground work and merely crossed exec.wait_ms; inspect it when awakened and wait again only if continued execution is intentional. Explicitly backgrounded services remain completion-driven unless you request a real deadline or stall checkpoint with check_task_after. Process terminal success/failed/cancelled/timeout rather than waiting again. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or persisted Events. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
 15. kernel.objectives and evaluate.objective-context expose physical Objective state, but visibility is not binding. Only evaluate.objective-binding makes this an Objective Evaluation that may advance the Objective through the current Execution Thread. With binding=none, use Objective state only for understanding or progress replies and never act for it. When a bound Objective still has work and is not waiting, report current progress normally; the Supervisor continues or restores its main Execution Thread. Register exact waits with objective_update(status=active, wait_condition=...). Use blocked only when neither an automatic wait nor a reliable path exists. Submit completed only after auditing every part of the stated objective against persisted Event evidence. A completed receipt opens a final-delivery Attempt in the same Activation; produce a complete ordinary report rather than a terse tool acknowledgement. The final reply and Objective, Activation, and Thread terminal states commit atomically.
@@ -1293,6 +1293,25 @@ fn retain_final_reply_control_tools(
     });
 }
 
+/// Ordinary work keeps the route-level schema stable for Provider prefix
+/// caching. Explicit protocol boundaries retain physical tool restriction:
+/// these phases intentionally change evaluation semantics and already rebuild
+/// or terminate the reusable Context prefix.
+fn provider_tools_for_phase(
+    stable_work_tools: &[ToolDefinition],
+    allowed_tools: &[ToolDefinition],
+    phase: &str,
+) -> Vec<ToolDefinition> {
+    if matches!(
+        phase,
+        "critical-maintenance" | "final-reply" | "objective-finalization"
+    ) {
+        allowed_tools.to_vec()
+    } else {
+        stable_work_tools.to_vec()
+    }
+}
+
 fn derived_thread_kind(event: &Event, _has_objective_route: bool) -> ThreadKind {
     if event.topic == "chat/thread_completion_ready" {
         ThreadKind::Delivery
@@ -1372,7 +1391,7 @@ const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model requ
 
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return ordinary text that honestly delivers completed status, the latest reliable verification, and remaining work; call no_reply exclusively only when no message is truly needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue."#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime hides context_tx for this request to stop consecutive housekeeping. End the Evaluation with ordinary text, call no_reply exclusively, or perform only physical actions truly required by the current task. context_tx returns after a new user or tool observation."#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with ordinary text, call no_reply exclusively, or perform only physical actions truly required by the current task. context_tx becomes callable again after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
@@ -3887,7 +3906,12 @@ impl Orchestrator {
                 .as_secs()
                 .saturating_mul(1_000),
         });
-        let tool_definitions = registry.definitions();
+        // Registry storage is intentionally optimized for lookup rather than
+        // iteration order. Canonicalize the Provider-visible Function Calling
+        // contract so a Runtime restart cannot reshuffle otherwise identical
+        // schemas and invalidate a resumable prefix-cache generation.
+        let mut tool_definitions = registry.definitions();
+        tool_definitions.sort_by(|left, right| left.name.cmp(&right.name));
         let orchestrator = Arc::new(Self {
             self_ref: std::sync::OnceLock::new(),
             runtime_claimant_id: new_runtime_claimant_id(),
@@ -10932,22 +10956,26 @@ impl Orchestrator {
         if let Some(message) = attachment_message.clone() {
             measurement_messages.push(message);
         }
-        let mut measurement_tools = self.tool_definitions.clone();
-        retain_context_bound_capability_tools(&mut measurement_tools, &context.capability_bindings);
+        // Build the stable tool contract for this Evaluation route. Context
+        // capability bindings and Harness/plan scopes are semantic isolation
+        // boundaries, but transient Objective state and ordinary work-phase
+        // cooldowns must not rewrite this contract between consecutive work
+        // requests.
+        let mut stable_work_tools = self.tool_definitions.clone();
+        retain_context_bound_capability_tools(&mut stable_work_tools, &context.capability_bindings);
         if thread_kind == "delivery" {
-            measurement_tools.clear();
+            stable_work_tools.clear();
         }
-        if !objective_control_available {
-            measurement_tools.retain(|tool| !is_objective_bound_tool(&tool.name));
-        }
-        if !objective_amend_available {
-            measurement_tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
-        }
-        restrict_tools_to_scope(&mut measurement_tools, plan_infer_tools.as_ref());
-        restrict_tools_to_scope(&mut measurement_tools, model_harness_tool_scope.as_ref());
+        restrict_tools_to_scope(&mut stable_work_tools, plan_infer_tools.as_ref());
+        restrict_tools_to_scope(&mut stable_work_tools, model_harness_tool_scope.as_ref());
         if thread.executor_kind != "plan_infer" {
-            measurement_tools.push(no_reply_tool_definition());
+            stable_work_tools.push(no_reply_tool_definition());
         }
+        // Pressure measurement uses the ordinary work contract. Explicit
+        // critical/final phase transitions may later narrow the physical
+        // schema because those transitions already invalidate the Context
+        // prefix and rely on tool restriction for protocol safety.
+        let measurement_tools = stable_work_tools.clone();
         let prompt_measurement = self
             .refresh_context_pressure(
                 &mut context,
@@ -11063,16 +11091,15 @@ impl Orchestrator {
             messages.push(message);
         }
 
-        let mut tools = self.tool_definitions.clone();
-        retain_context_bound_capability_tools(&mut tools, &context.capability_bindings);
-        if thread_kind == "delivery" {
-            tools.clear();
-        }
+        // `allowed_tools` is the independent Runtime admission set. During an
+        // ordinary work trajectory it can change without changing the
+        // Provider-visible `stable_work_tools` schema.
+        let mut allowed_tools = stable_work_tools.clone();
         if !objective_control_available {
-            tools.retain(|tool| !is_objective_bound_tool(&tool.name));
+            allowed_tools.retain(|tool| !is_objective_bound_tool(&tool.name));
         }
         if !objective_amend_available {
-            tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
+            allowed_tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
         }
         if effective_phase == "final-reply" {
             tracing::warn!(
@@ -11083,7 +11110,7 @@ impl Orchestrator {
                 "Context is critical and maintenance budget is exhausted; entering reply-only final response"
             );
             retain_final_reply_control_tools(
-                &mut tools,
+                &mut allowed_tools,
                 objective_control_available,
                 objective_amend_available,
             );
@@ -11113,7 +11140,7 @@ impl Orchestrator {
                     "Context pressure is critical; pausing costly external actions until the agent maintains Context"
                 );
                 retain_context_maintenance_tools(
-                    &mut tools,
+                    &mut allowed_tools,
                     objective_control_available,
                     objective_amend_available,
                 );
@@ -11126,21 +11153,25 @@ impl Orchestrator {
                     event_code = "orchestrator.context_transaction.budget_exhausted",
                     "Context-transaction budget is exhausted during ordinary work; preserving the physical work budget"
                 );
-                tools.retain(|tool| tool.name != "context_tx");
+                allowed_tools.retain(|tool| tool.name != "context_tx");
             }
             if context_tx_cooldown {
                 tracing::info!(
                     session_id,
                     event_code = "orchestrator.context_transaction.cooldown_started",
-                    "Standalone context_tx succeeded; hiding context_tx for this cooldown"
+                    "Standalone context_tx succeeded; disabling context_tx execution for this cooldown without changing the ordinary work schema"
                 );
-                tools.retain(|tool| tool.name != "context_tx");
+                allowed_tools.retain(|tool| tool.name != "context_tx");
             }
         }
-        restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
-        restrict_tools_to_scope(&mut tools, model_harness_tool_scope.as_ref());
-        if thread.executor_kind != "plan_infer" {
-            tools.push(no_reply_tool_definition());
+        restrict_tools_to_scope(&mut allowed_tools, plan_infer_tools.as_ref());
+        restrict_tools_to_scope(&mut allowed_tools, model_harness_tool_scope.as_ref());
+        if thread.executor_kind != "plan_infer"
+            && !allowed_tools
+                .iter()
+                .any(|tool| tool.name == NO_REPLY_TOOL_NAME)
+        {
+            allowed_tools.push(no_reply_tool_definition());
         }
         if recovering_completion_intent {
             let (assistant_call, call, output) = self
@@ -11171,8 +11202,10 @@ impl Orchestrator {
                 tool_call_id: None,
                 tool_calls: None,
             });
-            tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+            allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
         }
+        let mut tools =
+            provider_tools_for_phase(&stable_work_tools, &allowed_tools, effective_phase.as_str());
         // A Context-required coordinated Evaluation is the first evaluation
         // step for an ordinary user root. Dispatch it before a Runtime-owned
         // Harness entry so the Dashboard routing switch cannot be bypassed by
@@ -11264,7 +11297,7 @@ impl Orchestrator {
                 }
             }
         }
-        let mut allowed_tool_names = tools
+        let mut allowed_tool_names = allowed_tools
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
@@ -11828,22 +11861,33 @@ impl Orchestrator {
                         )?,
                     ];
                     protocol_messages = base_protocol_messages.clone();
-                    tools = self.tool_definitions.clone();
-                    retain_context_bound_capability_tools(&mut tools, &context.capability_bindings);
+                    let mut recovery_allowed_tools = self.tool_definitions.clone();
+                    retain_context_bound_capability_tools(
+                        &mut recovery_allowed_tools,
+                        &context.capability_bindings,
+                    );
                     if !objective_control_available {
-                        tools.retain(|tool| !is_objective_bound_tool(&tool.name));
+                        recovery_allowed_tools.retain(|tool| !is_objective_bound_tool(&tool.name));
                     }
                     if !objective_amend_available {
-                        tools.retain(|tool| !is_dialogue_objective_tool(&tool.name));
+                        recovery_allowed_tools
+                            .retain(|tool| !is_dialogue_objective_tool(&tool.name));
                     }
                     retain_context_maintenance_tools(
-                        &mut tools,
+                        &mut recovery_allowed_tools,
                         objective_control_available,
                         objective_amend_available,
                     );
-                    restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
-                    tools.push(no_reply_tool_definition());
-                    allowed_tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
+                    restrict_tools_to_scope(&mut recovery_allowed_tools, plan_infer_tools.as_ref());
+                    recovery_allowed_tools.push(no_reply_tool_definition());
+                    allowed_tool_names = recovery_allowed_tools
+                        .iter()
+                        .map(|tool| tool.name.clone())
+                        .collect();
+                    // Provider-confirmed overflow is a real protocol boundary:
+                    // physically restrict the schema so the model must perform
+                    // Context maintenance before resuming ordinary work.
+                    tools = recovery_allowed_tools;
                     request_prompt_measurement = self
                         .count_projected_prompt_tokens(&context, &protocol_messages, &tools)
                         .await;
@@ -12280,7 +12324,7 @@ impl Orchestrator {
                         completion_prepared = true;
                         effective_phase = "objective-finalization".to_string();
                         tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
-                        allowed_tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
+                        allowed_tool_names = HashSet::from([NO_REPLY_TOOL_NAME.to_string()]);
                         protocol_messages.push(Message {
                             role: "user".to_string(),
                             content: OBJECTIVE_FINALIZATION_PROMPT.to_string(),
@@ -16969,7 +17013,7 @@ impl Orchestrator {
             let guidance = if phase == "critical-maintenance" {
                 "The current Context is in critical-maintenance. Do not repeat this physical tool call; first use context_tx to compact and preserve the latest state required to continue, then wait for the Runtime to provide physical tools again."
             } else {
-                "This tool was not included in the current Function Calling definitions and therefore was not executed. Reassess using the current phase and allowed_tools."
+                "This tool's stable Function Calling schema is visible for prompt-cache continuity, but the tool is not executable in the current phase. Reassess using the current phase and allowed_tools."
             };
             let output = json!({
                 "status": "rejected",
@@ -20711,9 +20755,10 @@ mod tests {
         production_system_prompt_inspection, prompt_cache_seed_requires_rebase,
         prompt_cache_transport_context_commit_after_sequence,
         prompt_cache_transport_contract_digest, prompt_cache_transport_seed,
-        provider_delivery_retry_delay, recover_action_group_from_durable_events,
-        recovered_action_group_settled_event, recovery_owns_activation, render_harness_context,
-        render_system_contract, required_cognitive_coordination_response, restrict_tools_to_scope,
+        provider_delivery_retry_delay, provider_tools_for_phase,
+        recover_action_group_from_durable_events, recovered_action_group_settled_event,
+        recovery_owns_activation, render_harness_context, render_system_contract,
+        required_cognitive_coordination_response, restrict_tools_to_scope,
         retain_context_bound_capability_tools, retain_context_maintenance_tools,
         retain_final_reply_control_tools, retain_pending_continuation_calls, scheduler_audit_event,
         semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
@@ -22550,6 +22595,31 @@ mod tests {
         let mut unbound_final_reply = named_tools(&["exec", "objective_update", "objective_amend"]);
         retain_final_reply_control_tools(&mut unbound_final_reply, false, true);
         assert_eq!(unbound_final_reply[0].name, "objective_amend");
+    }
+
+    #[test]
+    fn ordinary_work_keeps_stable_provider_tools_but_critical_physically_restricts_them() {
+        let stable = named_tools(&[
+            "context_tx",
+            "recall",
+            "exec",
+            "objective_update",
+            "objective_amend",
+            "no_reply",
+        ]);
+        let allowed = named_tools(&["context_tx", "recall", "objective_update", "no_reply"]);
+        let names = |tools: Vec<ToolDefinition>| {
+            tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>()
+        };
+
+        let ordinary = provider_tools_for_phase(&stable, &allowed, "work");
+        assert_eq!(names(ordinary), names(stable.clone()));
+
+        let cooldown = provider_tools_for_phase(&stable, &allowed, "soft-checkpoint");
+        assert_eq!(names(cooldown), names(stable.clone()));
+
+        let critical = provider_tools_for_phase(&stable, &allowed, "critical-maintenance");
+        assert_eq!(names(critical), names(allowed));
     }
 
     #[test]

@@ -930,8 +930,10 @@ pub enum ModelProtocol {
 /// Prompt-cache behavior declared for one physical Provider/model pair.
 ///
 /// This is deliberately endpoint capability, not a task preference. `Auto`
-/// preserves the built-in OpenAI model/version behavior, while explicit
-/// declarations let compatible gateways disable fields they do not forward.
+/// preserves the canonical single-text request and lets the endpoint discover
+/// token prefixes implicitly. Capabilities such as explicit breakpoints must
+/// be declared by the operator because a model name cannot identify the
+/// physical endpoint behind an OpenAI-compatible gateway.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PromptCacheStrategy {

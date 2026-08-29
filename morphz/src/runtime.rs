@@ -10722,6 +10722,7 @@ mod tests {
         path: String,
         expected_rejected: bool,
         observed_result: Arc<AtomicBool>,
+        observed_tool_schemas: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
     }
 
     struct PreflightRejectedExecClient {
@@ -12958,8 +12959,14 @@ mod tests {
         async fn create_completion(
             &self,
             messages: Vec<Message>,
-            _tools: Vec<ToolDefinition>,
+            tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
+            self.observed_tool_schemas.lock().unwrap().push(
+                tools
+                    .iter()
+                    .map(|tool| tool.name.clone())
+                    .collect::<Vec<_>>(),
+            );
             match self.calls.fetch_add(1, Ordering::SeqCst) {
                 0 => Ok(Response {
                     content: String::new(),
@@ -13717,7 +13724,10 @@ mod tests {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 assert!(tools.iter().any(|tool| tool.name == "objective_update"));
-                assert!(!tools.iter().any(|tool| tool.name == "objective_amend"));
+                // Ordinary work requests expose a stable schema even though
+                // Runtime admission allows only objective_update for this
+                // bound Objective.
+                assert!(tools.iter().any(|tool| tool.name == "objective_amend"));
                 assert!(messages
                     .iter()
                     .any(|message| message.content.contains("(objective-contract")));
@@ -15764,11 +15774,13 @@ mod tests {
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
         let observed_result = Arc::new(AtomicBool::new(false));
+        let observed_tool_schemas = Arc::new(std::sync::Mutex::new(Vec::new()));
         let client = Arc::new(ApprovalReadClient {
             calls: AtomicU64::new(0),
             path: fixture.path().to_string_lossy().into_owned(),
             expected_rejected,
             observed_result: Arc::clone(&observed_result),
+            observed_tool_schemas: Arc::clone(&observed_tool_schemas),
         });
         let provider = Arc::new(StaticApprovalProvider {
             decision,
@@ -15825,6 +15837,14 @@ mod tests {
         assert!(observed_result.load(Ordering::SeqCst));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        let schemas = observed_tool_schemas.lock().unwrap();
+        assert_eq!(schemas.len(), 2);
+        assert_eq!(schemas[0], schemas[1]);
+        assert!(schemas[0].iter().any(|name| name == "objective_amend"));
+        assert_eq!(schemas[0].last().map(String::as_str), Some("no_reply"));
+        assert!(schemas[0][..schemas[0].len() - 1]
+            .windows(2)
+            .all(|pair| pair[0] <= pair[1]));
 
         let approvals = runtime
             .inner
@@ -16123,6 +16143,7 @@ mod tests {
             path: fixture.path().to_string_lossy().into_owned(),
             expected_rejected: false,
             observed_result: Arc::clone(&observed_result),
+            observed_tool_schemas: Arc::new(std::sync::Mutex::new(Vec::new())),
         });
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
@@ -16271,6 +16292,7 @@ mod tests {
             path: fixture.path().to_string_lossy().into_owned(),
             expected_rejected: false,
             observed_result: Arc::new(AtomicBool::new(false)),
+            observed_tool_schemas: Arc::new(std::sync::Mutex::new(Vec::new())),
         });
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;

@@ -1,9 +1,17 @@
 # Morphz Provider 可移植 Prompt Cache 边界设计 v1
 
-> 状态：Platform/API 显式断点已实现；Codex OAuth 的高缓存兼容方案已收敛为默认关闭的实验编译特性，使用单条 User Message、一个完整 canonical Context seed 和多个 Structured ContextDelta `input_text` blocks
+> 状态：Platform/API 显式断点已实现；Structured ContextDelta 是默认关闭、按 Provider/模型显式启用的实验编译特性；真实 GPT-5.6 任务已验证其必要收益
 > 日期：2026-08-30
 > 适用范围：Context Encoding、模型请求封装、Provider Adapter、缓存用量与成本观测
 > 前置设计：[Prefix Cache 友好的 Context Encoding 正式布局 v1](morphz_prefix_cache_context_encoding_layout_v1.md)
+
+> **2026-08-30 最终证据更正：** 98.79% 来自无 tools、超长上下文的 synthetic capability
+> probe，不能替代真实 Agent 请求。相同 Terminal-Bench 题的真实 GPT-5.6 请求显示：旧实现
+> 预热后命中 23.81%；固定普通工作轨迹的工具 schema 后为 50.68%；固定工具并启用单 User
+> message、canonical Context seed + Structured ContextDelta blocks 后为 92.93%。所以
+> `implicit-prefix` 能力存在，但默认单 block 真实请求仍未达到 85% 成本线；ContextDelta
+> 继续保持实验性，却已有明确真实任务收益。完整证据见
+> [九模型默认 Structured Context 隐式前缀缓存实验](research/paper_evaluation/prompt_cache_nine_model_default_context_20260830.md)。
 
 ## 0. 2026-08-29 实现更新
 
@@ -25,11 +33,10 @@ Observation 后该断点会移动，因此实际命中长期停留在固定 Syst
    不改变 Context 语义。
 
 确定性请求合同和完整 `morphz` 库回归已通过。API 小样本已证明显式写入、复用和前缀变化
-失效的因果链；Codex 同消息 content-block 线路已有 96.6% 的真实隐式复用证据。真实多步题
-随后证明这条证据不能外推：普通 content block 不是 GPT-5.6 Platform 的隐式断点，而当前
-canonical Context 在 Inbox 后仍有关闭与状态尾项，因此旧请求也不是新请求的严格 item
-前缀。第 2.3 节保留早期 append-only transcript 的历史证据；第 2.4 节记录最终采用的 Structured
-ContextDelta 实验设计与真实单题结果。它们用于验证机制，不替代论文所需的全模型配对成本实验。
+失效的因果链；Codex 同消息 content-block 线路已有 96.6% 的真实隐式复用证据。随后确认这条
+证据只证明受控请求具备缓存能力，不能代表完整生产合同。真实请求还受到 tools 集合/顺序、
+Context block 边界和动态状态影响：稳定 tools 只把预热后命中提高到 50.68%，Structured
+ContextDelta 才把同题提高到 92.93%。第 2.3、2.4 节因此仍是当前实验兼容路径的有效依据。
 
 ## 1. 要解决的问题
 
@@ -851,8 +858,10 @@ ME-08 已报告的 Token 和缓存数据是当时完整系统与当时请求封�
 - 当前只对支持显式字段的 OpenAI Platform Responses GPT-5.6+ 能力边界启用显式断点；
 - ChatGPT Codex OAuth 与 Platform API 是独立能力边界，不能只按模型名合并判断。
 - Codex OAuth 默认继续使用原 canonical Structured Context，不启用 append-only 变体；
-- 高缓存兼容路径是默认关闭的实验编译特性：单条 User Message、完整闭合 Context seed、
+- ContextDelta 路径是默认关闭的实验编译特性：单条 User Message、完整闭合 Context seed、
   Structured ContextDelta blocks；它只能由 Dashboard 对具体 Provider/模型显式启用；
+- 普通 work/soft-checkpoint 内 Provider 可见的 tools 集合、schema 和顺序必须稳定，动态权限由
+  Runtime admission 拒绝；critical-maintenance、final-reply 等真实协议边界继续物理裁剪 tools；
 - 实验路径不得退化成一半 Structured Context、一半普通 assistant/tool transcript，也不得用
   tombstone 代替真实 retire；seed 与 delta 的 retire 必须按 provenance 分别重建。
 
@@ -860,14 +869,15 @@ ME-08 已报告的 Token 和缓存数据是当时完整系统与当时请求封�
 
 - 生产端点明确拒绝缓存字段时，是否允许一次有记录的无缓存降级重试；
 - 完整多模型配对中的真实成本下降和正确率门槛；
-- Anthropic、DeepSeek、Qwen、Gemini 与其他兼容端点的逐模型能力映射。
+- Anthropic 显式 `cache_control` 路线和各兼容端点的重复方差；隐式长前缀首轮映射已覆盖
+  GPT、Qwen、DeepSeek、K3、GLM、Gemini、Grok 与 Claude 九条当前 Proxy 路由。
 
 ## 14. 建议结论
 
-当前建议分端点处理：支持 GPT-5.6 显式字段的 Platform/API 路线继续使用内容块断点；Codex
-OAuth 或其 Proxy 默认保持原 canonical Context。只有用户明确接受实验复杂度并希望降低 Token
-成本时，才在 feature 构建中对具体 Provider/模型启用 canonical Context + Structured
-ContextDelta blocks。
+当前建议分端点处理：所有路线先保持确定性的 tools 合同；支持 GPT-5.6 显式字段的
+Platform/API 路线可使用内容块断点。对缺少可用显式边界且真实任务达不到成本目标的
+ChatGPT/Codex 兼容路线，可在用户明确接受实验复杂度时，对具体 Provider/模型启用 canonical
+Context + Structured ContextDelta blocks；默认仍不启用。
 
 该实验不改变 Event Store、Yao、Mind Frame 或 canonical Context 的权威状态；它改变的是模型
 可见求值表示，因此必须保持完整结构化协议、精确 retire/rebase 和可关闭性。真实单题已证明
