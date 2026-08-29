@@ -5557,13 +5557,13 @@ impl Orchestrator {
                         // to materialize that row.
                         self.bus.dispatch_persisted(event.clone()).await?;
                         session_store.discard_signal_outbox(&event.id).await?;
-                        dispatched = dispatched.saturating_add(1);
+                        redispatched = redispatched.saturating_add(1);
                         continue;
                     }
                     _ => {}
                 }
                 self.bus.dispatch_persisted(event).await?;
-                dispatched = dispatched.saturating_add(1);
+                redispatched = redispatched.saturating_add(1);
             }
             // EventBus business handlers intentionally run asynchronously.
             // Keyset pagination, rather than immediate status observation,
@@ -5572,7 +5572,7 @@ impl Orchestrator {
             // completion during Runtime startup.
             tokio::task::yield_now().await;
         }
-        Ok(dispatched)
+        Ok(redispatched)
     }
 
     /// Recognizes internal Plan tool outputs written by builds predating the
@@ -5893,7 +5893,9 @@ impl Orchestrator {
                 events_by_id.insert(event.id.clone(), event);
             }
         }
-        let mut dispatched = 0usize;
+        // Dispatch is asynchronous: this records accepted redispatches, not
+        // already-materialized Activations.
+        let mut redispatched = 0usize;
         for signal in signals {
             let Some(event) = events_by_id.remove(&signal.event_id) else {
                 tracing::error!(
