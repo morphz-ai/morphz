@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-08-30",
+  "scope": "ME-08 official Codex contemporaneous full-89 run",
+  "method": "read_only_frozen_trial_and_official_verifier_audit",
+  "model_calls": 0,
+  "task_retries": 0,
+  "official_score_before": "74/89",
+  "official_score_after": "74/89",
+  "agent_timeout_count": 3,
+  "verifier_timeout_among_agent_timeouts": 0,
+  "trials": [
+    {
+      "task": "make-doom-for-mips",
+      "trial": "make-doom-for-mips__X8MAfaD",
+      "official_reward": 0,
+      "verifier_passed": 2,
+      "verifier_total": 3,
+      "disposition": "remain_failure"
+    },
+    {
+      "task": "password-recovery",
+      "trial": "password-recovery__hMgv9MB",
+      "official_reward": 0,
+      "verifier_passed": 0,
+      "verifier_total": 2,
+      "disposition": "remain_failure"
+    },
+    {
+      "task": "query-optimize",
+      "trial": "query-optimize__PyHqhe4",
+      "official_reward": 1,
+      "verifier_passed": 6,
+      "verifier_total": 6,
+      "disposition": "already_counted_success"
+    }
+  ]
+}
