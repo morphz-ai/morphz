@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -7,6 +8,11 @@ import {
   resolveDashboardToken,
   type DashboardTokenStorage,
 } from '../src/api/auth.ts'
+
+const authGateSource = readFileSync(
+  new URL('../src/DashboardAuthGate.tsx', import.meta.url),
+  'utf8',
+)
 
 class MemoryStorage implements DashboardTokenStorage {
   private readonly values = new Map<string, string>()
@@ -55,6 +61,11 @@ test('launch token survives Router path replacement and a recreated mobile page 
     ),
     'launch-secret',
   )
+})
+
+test('first authenticated launch opens guided Provider setup when no model is configured', () => {
+  assert.match(authGateSource, /setProviderSetupRequired\(!status\.provider && !status\.model\?\.trim\(\)\)/)
+  assert.match(authGateSource, /<Navigate to="\/providers\/setup" replace \/>/)
 })
 
 test('a new launch URL rotates the persistent browser credential', () => {

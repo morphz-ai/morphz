@@ -644,6 +644,11 @@ struct PendingLoginEnvelope {
     expires_at: DateTime<Utc>,
     callback_state: Option<String>,
     state: Value,
+    /// Token exchange may succeed before the higher-level provider catalog is
+    /// committed. Keep the public result until the SDK explicitly finishes
+    /// the transaction so a transient config-write failure can be retried
+    /// without replaying a one-time authorization code.
+    completed_account: Option<OAuthAccountMetadata>,
 }
 
 pub struct AdapterLoginStart {
@@ -1152,6 +1157,7 @@ impl ProviderAuthManager {
             expires_at: started.expires_at,
             callback_state: callback_state.clone(),
             state: started.state,
+            completed_account: None,
         };
         self.pending_logins
             .write()
@@ -1195,7 +1201,11 @@ impl ProviderAuthManager {
             .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
             .get(login_id)
             .cloned()
-            .ok_or_else(|| format!("OAuth Login '{login_id}' does not exist or is complete"))?;
+            .ok_or_else(|| {
+                format!(
+                    "OAuth Login '{login_id}' is no longer active; it may have expired, been cancelled, completed, or belonged to a Runtime instance that restarted. Start Provider setup again and use only the new authorization link"
+                )
+            })?;
         if pending.expires_at <= Utc::now() {
             if let Ok(mut logins) = self.pending_logins.write() {
                 logins.remove(login_id);
@@ -1205,6 +1215,9 @@ impl ProviderAuthManager {
                 let _ = discard_oauth_callback(state);
             }
             return Err(format!("OAuth Login '{login_id}' has expired"));
+        }
+        if let Some(account) = pending.completed_account.clone() {
+            return Ok(OAuthLoginProgress::Complete { account });
         }
         let account = self.oauth_account(&pending.account_id)?;
         if !oauth_adapters_compatible(&account.auth_adapter, &pending.adapter_id) {
@@ -1228,10 +1241,17 @@ impl ProviderAuthManager {
             }
             AdapterLoginResult::Complete(token) => {
                 self.store_token(&account, &token)?;
+                let metadata = token.public_metadata(&pending.account_id);
+                pending.completed_account = Some(metadata.clone());
+                // Give the SDK a bounded retry window after token exchange.
+                // The provider's one-time code has already been consumed, but
+                // committing the managed catalog may still fail transiently.
+                pending.expires_at =
+                    std::cmp::max(pending.expires_at, Utc::now() + ChronoDuration::minutes(5));
                 self.pending_logins
                     .write()
                     .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?
-                    .remove(login_id);
+                    .insert(login_id.to_string(), pending.clone());
                 if !self.is_transient_account(&pending.account_id) {
                     let _ = self
                         .account_store
@@ -1245,11 +1265,34 @@ impl ProviderAuthManager {
                         )
                         .await;
                 }
-                Ok(OAuthLoginProgress::Complete {
-                    account: token.public_metadata(&pending.account_id),
-                })
+                Ok(OAuthLoginProgress::Complete { account: metadata })
             }
         }
+    }
+
+    /// Commit a completed login after its higher-level provider configuration
+    /// has been persisted. This is intentionally separate from token exchange:
+    /// OAuth authorization codes are one-shot, while filesystem/database
+    /// commits may be safely retried.
+    pub fn finish_login(&self, login_id: &str) -> Result<bool, String> {
+        let mut logins = self
+            .pending_logins
+            .write()
+            .map_err(|_| "OAuth pending login registry lock poisoned".to_string())?;
+        let completed = logins
+            .get(login_id)
+            .is_some_and(|pending| pending.completed_account.is_some());
+        if !completed {
+            return Ok(false);
+        }
+        let pending = logins
+            .remove(login_id)
+            .expect("completed OAuth login must remain present until finish");
+        drop(logins);
+        if let Some(state) = pending.callback_state.as_deref() {
+            let _ = discard_oauth_callback(state);
+        }
+        Ok(true)
     }
 
     pub fn cancel_login(&self, login_id: &str) -> Result<bool, String> {
@@ -1770,7 +1813,6 @@ impl AuthAdapter for CodexOAuthAdapter {
                 state_fingerprint(&returned_state)
             ));
         }
-        discard_oauth_callback(&pending.state)?;
         let response = post_token_form(
             &self.http,
             &self.token_url,
@@ -2719,7 +2761,6 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                 state_fingerprint(verified_state)
             ));
         }
-        discard_oauth_callback(&pending.state)?;
         let response = self
             .exchange(serde_json::json!({
                 "code": code,
@@ -3112,7 +3153,6 @@ impl AuthAdapter for AntigravityOAuthAdapter {
                 state_fingerprint(&returned_state)
             ));
         }
-        discard_oauth_callback(&pending.state)?;
         let response = post_token_form(
             &self.http,
             &self.token_url,
@@ -4068,6 +4108,16 @@ mod tests {
                 .unwrap(),
             OAuthLoginProgress::Complete { .. }
         ));
+        assert!(manager.has_login(&challenge.login_id).unwrap());
+        assert!(matches!(
+            manager
+                .continue_login(&challenge.login_id, OAuthLoginCompletion::Poll)
+                .await
+                .unwrap(),
+            OAuthLoginProgress::Complete { .. }
+        ));
+        assert!(manager.finish_login(&challenge.login_id).unwrap());
+        assert!(!manager.has_login(&challenge.login_id).unwrap());
         assert_eq!(
             manager
                 .materialize_authorization("oauth-account")

@@ -2051,12 +2051,9 @@ impl MorphzSdk {
                 .cloned();
             if let Some(pending) = pending {
                 if let Err(error) = self.finalize_oauth_provider_account(&pending).await {
-                    if let Ok(mut setups) = self.pending_oauth_setups.write() {
-                        setups.remove(login_id);
-                    }
-                    let _ = self
-                        .runtime
-                        .discard_transient_provider_auth_account(&pending.setup.account_id);
+                    // Token exchange has already consumed a one-time provider
+                    // code. Keep both halves of the setup transaction so the
+                    // same completion can retry only the catalog commit.
                     return Err(error);
                 }
                 self.pending_oauth_setups
@@ -2064,6 +2061,9 @@ impl MorphzSdk {
                     .map_err(|_| SdkError::internal("OAuth setup registry lock poisoned"))?
                     .remove(login_id);
             }
+            self.runtime
+                .finish_provider_oauth_login(login_id)
+                .map_err(SdkError::internal)?;
         }
         Ok(progress)
     }

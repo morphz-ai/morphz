@@ -397,6 +397,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   const [busyAccount, setBusyAccount] = useState('')
   const [error, setError] = useState('')
   const [challenge, setChallenge] = useState<OAuthLoginChallenge | null>(null)
+  const [challengePollingSuspended, setChallengePollingSuspended] = useState(false)
   const [challengeLabelOverride, setChallengeLabelOverride] = useState('')
   const [challengeError, setChallengeError] = useState('')
   const [authorizationResponse, setAuthorizationResponse] = useState('')
@@ -470,7 +471,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   }, [refresh])
 
   useEffect(() => {
-    if (!challenge || busyAccount === challenge.account_id) return
+    if (!challenge || challengePollingSuspended || busyAccount === challenge.account_id) return
 
     let cancelled = false
     const loginId = challenge.login_id
@@ -485,6 +486,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
         if (cancelled) return
         if (progress.status === 'complete') {
           setChallenge(current => current?.login_id === loginId ? null : current)
+          setChallengePollingSuspended(false)
           setChallengeError('')
           setError('')
           await refresh()
@@ -508,7 +510,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [api, busyAccount, challenge, refresh])
+  }, [api, busyAccount, challenge, challengePollingSuspended, refresh])
 
   const instances = useMemo(() => Object.entries(snapshot.provider_instances), [snapshot.provider_instances])
   // OAuth setup attempts are never accounts. Old runtimes may still return
@@ -671,6 +673,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
         popup.close()
       }
       setChallenge(next)
+      setChallengePollingSuspended(false)
       setChallengeLabelOverride(label)
       setChallengeError('')
       setAuthorizationResponse('')
@@ -759,6 +762,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
         popup.close()
       }
       setChallenge(next)
+      setChallengePollingSuspended(false)
       setChallengeLabelOverride(label)
       setChallengeError('')
       setAuthorizationResponse('')
@@ -834,12 +838,13 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   const continueLogin = async (submittedResponse?: string) => {
     if (!challenge) return
     const callbackResponse = submittedResponse?.trim() || authorizationResponse.trim()
+    const manualCallback = challenge.flow === 'authorization_code_pkce'
+      && challenge.callback_mode === 'loopback'
+      && Boolean(callbackResponse)
+    if (manualCallback) setChallengePollingSuspended(true)
     setBusyAccount(challenge.account_id)
     setChallengeError('')
     try {
-      const manualCallback = challenge.flow === 'authorization_code_pkce'
-        && challenge.callback_mode === 'loopback'
-        && Boolean(callbackResponse)
       const progress = manualCallback
         ? (await api.command<OAuthCallbackSubmission>(
             '/api/runtime/providers/oauth/callback',
@@ -853,6 +858,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
           )
       if (progress.status === 'complete') {
         setChallenge(null)
+        setChallengePollingSuspended(false)
         setChallengeError('')
         setAuthorizationResponse('')
         setAuthorizationLinkCopied(false)
@@ -917,6 +923,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   const cancelLoginChallenge = () => {
     const loginId = challenge?.login_id
     setChallenge(null)
+    setChallengePollingSuspended(false)
     setChallengeError('')
     setAuthorizationResponse('')
     if (loginId) {

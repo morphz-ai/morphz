@@ -2959,6 +2959,13 @@ impl MorphzRuntime {
             .map_err(Into::into)
     }
 
+    pub fn finish_provider_oauth_login(&self, login_id: &str) -> Result<bool, RuntimeError> {
+        self.inner
+            .provider_auth_manager
+            .finish_login(login_id)
+            .map_err(Into::into)
+    }
+
     pub fn provider_oauth_login_exists(&self, login_id: &str) -> Result<bool, RuntimeError> {
         self.inner
             .provider_auth_manager

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { KeyRound, LoaderCircle, RefreshCw } from 'lucide-react'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { DashboardApiError } from './api/client'
@@ -9,7 +10,9 @@ import { DASHBOARD_API, updateDashboardToken } from './api/runtime'
 
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
+  const location = useLocation()
   const [ready, setReady] = useState(false)
+  const [providerSetupRequired, setProviderSetupRequired] = useState(false)
   const [checking, setChecking] = useState(true)
   const [authenticationRequired, setAuthenticationRequired] = useState(false)
   const [connectionError, setConnectionError] = useState('')
@@ -33,8 +36,9 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
-    void DASHBOARD_API.get('/api/status').then(() => {
+    void DASHBOARD_API.get<{ provider?: string | null; model?: string }>('/api/status').then(status => {
       if (cancelled) return
+      setProviderSetupRequired(!status.provider && !status.model?.trim())
       setReady(true)
       setAuthenticationRequired(false)
       setCredentialError('')
@@ -76,6 +80,9 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setAttempt(current => current + 1)
   }
 
+  if (ready && providerSetupRequired && location.pathname === '/') {
+    return <Navigate to="/providers/setup" replace />
+  }
   if (ready) return children
 
   return (

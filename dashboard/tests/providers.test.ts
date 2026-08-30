@@ -274,4 +274,10 @@ test('remote loopback OAuth submits the browser URL by state and explains both h
     /challenge\.callback_mode === 'loopback'/,
     'manual callback handoff must only be shown for desktop loopback clients',
   )
+  assert.match(
+    providersSource,
+    /if \(manualCallback\) setChallengePollingSuspended\(true\)/,
+    'manual callback submission must stop background polling from overwriting the actionable error',
+  )
+  assert.match(providersSource, /challengePollingSuspended \|\| busyAccount/)
 })
