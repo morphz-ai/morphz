@@ -2758,7 +2758,11 @@ mod tests {
             "edge-background-parent-2",
             "edge-quick-sibling",
         ] {
-            tokio::time::timeout(std::time::Duration::from_secs(1), worker.poll_once())
+            // Keep the harness deadline distinct from the exercised
+            // `wait_ms=1_000` boundary. Using the same one-second deadline for
+            // both made the test depend on which timer won under CI load,
+            // instead of testing whether the worker kept renewing its lease.
+            tokio::time::timeout(std::time::Duration::from_secs(3), worker.poll_once())
                 .await
                 .unwrap_or_else(|_| {
                     panic!("Edge parent command '{expected_job}' occupied its lease")

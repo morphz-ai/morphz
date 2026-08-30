@@ -5428,7 +5428,11 @@ mod tests {
             .get_for_activation("activation-directed-interrupt-stale")
             .is_none());
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // The Evaluation lease itself is intentionally short (120 ms), while
+        // this outer bound only protects the test harness. Leave enough wall
+        // clock margin for a heavily loaded parallel test runner to schedule
+        // the dispatcher after the durable timer becomes due.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 timers.dispatch_due_once().await.unwrap();
                 if evaluations
