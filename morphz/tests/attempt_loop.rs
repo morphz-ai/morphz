@@ -4920,7 +4920,10 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
     assert!(tools_seen[0].contains(&"context_tx".to_string()));
-    assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+    assert!(
+        tools_seen[1].contains(&"context_tx".to_string()),
+        "cooldown must preserve the Provider schema while Runtime admission rejects context_tx"
+    );
     let messages = client.messages_seen();
     assert_eq!(messages.len(), 2);
     assert_eq!(
@@ -4931,6 +4934,9 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
         vec!["system", "user"]
     );
     assert!(messages[1][1].content.contains("(id state)"));
+    assert!(messages[1][1]
+        .content
+        .contains("stable Function Calling schema remains visible"));
     let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     assert_eq!(outputs.len(), 1);
     assert_eq!(
@@ -5427,7 +5433,10 @@ async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attemp
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
     assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
-    assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+    assert!(
+        tools_seen[1].contains(&"context_tx".to_string()),
+        "relieving critical pressure must enter admission cooldown without rewriting the Provider schema"
+    );
 }
 
 #[tokio::test]
@@ -5686,7 +5695,10 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 3);
     assert!(tools_seen[0].contains(&"context_tx".to_string()));
-    assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+    assert!(
+        tools_seen[1].contains(&"context_tx".to_string()),
+        "budget exhaustion must reject execution without destabilizing the Provider schema"
+    );
     assert!(tools_seen[1].contains(&"read".to_string()));
 
     let context = orchestrator
@@ -5967,7 +5979,10 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
     assert!(tools_seen[2].contains(&"context_tx".to_string()));
     assert!(tools_seen[2].contains(&"no_reply".to_string()));
     assert!(tools_seen[3].contains(&"read".to_string()));
-    assert!(!tools_seen[3].contains(&"context_tx".to_string()));
+    assert!(
+        tools_seen[3].contains(&"context_tx".to_string()),
+        "post-maintenance cooldown must preserve the Provider schema"
+    );
     assert!(tools_seen[3].contains(&"no_reply".to_string()));
 
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
@@ -7042,12 +7057,15 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     completion_gate.notify_one();
 
     let replies = tokio::time::timeout(
-        tokio::time::Duration::from_secs(3),
+        // Keep a generous loaded-runner margin while remaining well below the
+        // thirty-second pending-Signal reconciler interval. Completion inside
+        // this bound therefore still proves the direct hand-off path ran.
+        tokio::time::Duration::from_secs(10),
         wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2),
     )
     .await
     .expect(
-        "context maintenance hand-off must not depend on the five-second pending-Signal reconciler",
+        "context maintenance hand-off must not depend on the thirty-second pending-Signal reconciler",
     );
     if replies.len() < 2 {
         let activations = store
