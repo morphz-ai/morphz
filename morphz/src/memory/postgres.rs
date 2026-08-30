@@ -93,6 +93,17 @@ impl PostgresStore {
                     store.migrate_supported_capabilities(),
                 )
                 .await?;
+            // Session Sandbox persistence shipped after the original
+            // directory migration had already been recorded by production
+            // databases. Keep the upgrade in its own immutable migration:
+            // editing migrate_supported_capabilities() only helps fresh
+            // databases and leaves existing deployments without the column.
+            store
+                .run_versioned_migration(
+                    "20260830_01_session_sandbox_mode",
+                    store.migrate_session_sandbox_mode(),
+                )
+                .await?;
             store
                 .run_versioned_migration(
                     "20260826_01_work_assignments",
@@ -403,6 +414,20 @@ impl PostgresStore {
             )"#,
         )
         .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn migrate_session_sandbox_mode(&self) -> Result<(), StoreError> {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sandbox_mode TEXT")
+            .execute(&self.pool)
+            .await?;
+        add_and_validate_postgres_check(
+            &self.pool,
+            "sessions",
+            "sessions_sandbox_mode_domain",
+            "sandbox_mode IN ('workspace-write', 'danger-full-access')",
+        )
         .await?;
         Ok(())
     }

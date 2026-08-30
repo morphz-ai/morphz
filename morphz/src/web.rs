@@ -6293,6 +6293,21 @@ async fn handle_create_session(
         Ok(None) => {}
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
+    // Resolve deterministic identity and parent authorization before creating
+    // a requested Context. Otherwise a rejected Principal provider or foreign
+    // parent can leave an orphan Context even though Session creation fails.
+    if let Err(error) = state.runtime.ensure_principal(principal.clone()).await {
+        return error_response(StatusCode::CONFLICT, error.to_string());
+    }
+    if let Some(parent_session_id) = request.parent_session_id.as_deref() {
+        if let Err(error) = state
+            .sdk
+            .get_session(&principal.principal_id, parent_session_id)
+            .await
+        {
+            return sdk_error_response(error);
+        }
+    }
     let mount = match resolve_context_mount(&state, request.agent_id, request.mount).await {
         Ok(mount) => mount,
         Err((status, error)) => return error_response(status, error),
@@ -8981,6 +8996,102 @@ mod tests {
             "Bearer dashboard-secret".parse().unwrap(),
         );
         headers
+    }
+
+    #[tokio::test]
+    async fn rejected_gateway_preconditions_do_not_leave_new_blank_context() {
+        let (default_state, runtime) = test_state().await;
+        let state = Arc::new(AppState {
+            runtime: runtime.clone(),
+            sdk: MorphzSdk::new(runtime.clone()),
+            broadcast_tx: default_state.broadcast_tx.clone(),
+            auth_token: Some("dashboard-secret".to_string()),
+            gateway_token: Some("gateway-secret".to_string()),
+            default_agent_id: "agent-test".to_string(),
+            default_context_id: "context-test".to_string(),
+            identity: ServerIdentityConfig {
+                mode: ServerIdentityMode::TrustedGateway,
+                provider_id: "morphz-site".to_string(),
+                service_token_env: "MORPHZ_API_TOKEN".to_string(),
+            },
+            core_config_path: default_state.core_config_path.clone(),
+            managed_config_path: default_state.managed_config_path.clone(),
+        });
+
+        let response = handle_create_session(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("principal-web-test")),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("gateway-provider-conflict-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Rejected".to_string()),
+                mount: Some(ContextMountRequest::NewBlankContext {
+                    context_id: Some("gateway-provider-conflict-context".to_string()),
+                    context_title: Some("Must not remain".to_string()),
+                }),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(runtime
+            .get_context("gateway-provider-conflict-context")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .get_session("gateway-provider-conflict-session")
+            .await
+            .unwrap()
+            .is_none());
+
+        let parent = handle_create_session(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-parent-owner")),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("gateway-owned-parent".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Owned parent".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(parent.status(), StatusCode::CREATED);
+
+        let foreign_child = handle_create_session(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-foreign-child")),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("gateway-foreign-child".to_string()),
+                agent_id: None,
+                parent_session_id: Some("gateway-owned-parent".to_string()),
+                title: Some("Rejected child".to_string()),
+                mount: Some(ContextMountRequest::NewBlankContext {
+                    context_id: Some("gateway-foreign-child-context".to_string()),
+                    context_title: Some("Must not remain".to_string()),
+                }),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(foreign_child.status(), StatusCode::FORBIDDEN);
+        assert!(runtime
+            .get_context("gateway-foreign-child-context")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .get_session("gateway-foreign-child")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
