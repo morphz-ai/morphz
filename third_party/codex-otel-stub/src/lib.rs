@@ -36,9 +36,9 @@ impl MetricsClient {
     pub fn counter(
         &self,
         _name: &str,
-        _increment: u64,
+        _increment: i64,
         _tags: &[(&str, &str)],
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }
