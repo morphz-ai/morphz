@@ -2651,6 +2651,15 @@ impl crate::memory::RuntimeStore for PostgresStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
         crate::memory::WorkerCoordinationMode::SharedLeases
     }
+
+    fn storage_pool_metrics(&self) -> Option<crate::memory::StoragePoolMetricsSnapshot> {
+        Some(crate::memory::StoragePoolMetricsSnapshot {
+            backend: "postgres".to_string(),
+            size: self.pool.size(),
+            idle: self.pool.num_idle(),
+            max_connections: self.pool.options().get_max_connections(),
+        })
+    }
 }
 
 fn context_capability_binding_from_pg_row(

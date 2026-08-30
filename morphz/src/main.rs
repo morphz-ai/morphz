@@ -68,6 +68,18 @@ fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError>
             .with_timer(LocalRfc3339Time)
             .with_writer(std::io::sink)
             .try_init()?;
+    } else if std::env::var("MORPHZ_LOG_FORMAT")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("json"))
+    {
+        fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_timer(LocalRfc3339Time)
+            .with_current_span(true)
+            .with_span_list(true)
+            .try_init()?;
     } else {
         fmt()
             .with_env_filter(filter)

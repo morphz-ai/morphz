@@ -7588,6 +7588,14 @@ pub trait WorkAssignmentStore: Send + Sync {
 /// This capability composition keeps Runtime assembly independent from a
 /// concrete database. One implementation must provide every capability so
 /// atomic commits never cross unrelated persistence systems.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoragePoolMetricsSnapshot {
+    pub backend: String,
+    pub size: u32,
+    pub idle: usize,
+    pub max_connections: u32,
+}
+
 pub trait RuntimeStore:
     EventStore
     + TimerStore
@@ -7616,4 +7624,8 @@ pub trait RuntimeStore:
     + Sync
 {
     fn worker_coordination_mode(&self) -> WorkerCoordinationMode;
+
+    fn storage_pool_metrics(&self) -> Option<StoragePoolMetricsSnapshot> {
+        None
+    }
 }

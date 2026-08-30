@@ -110,6 +110,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -1183,11 +1184,13 @@ impl MorphzRuntimeBuilder {
             Arc::new(RwLock::new(resolve_model_context_capacities(&self.config)));
         let provider_catalog_config = self.config.clone();
         let model_prompt_token_limit_overrides = RwLock::new(HashMap::new());
+        let observability = Arc::new(crate::observability::Observability::default());
         let context_engine = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
                 self.config.orchestrator.clone(),
             )
+            .with_observability(Arc::clone(&observability))
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_capability_binding_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::ContextCapabilityBindingStore>
@@ -1631,6 +1634,7 @@ impl MorphzRuntimeBuilder {
                 permissions,
                 sqlite_database_path,
                 storage_label,
+                observability,
                 client: runtime_client,
                 reviewer_client: RwLock::new(separate_reviewer_client),
                 auto_review_provider: built_in_auto_review_provider,
@@ -1863,6 +1867,7 @@ struct RuntimeInner {
     permissions: Arc<PermissionBroker>,
     sqlite_database_path: Option<String>,
     storage_label: String,
+    observability: Arc<crate::observability::Observability>,
     client: Arc<dyn Client>,
     /// Independent automatic-review route, retained so Provider catalog hot
     /// replacement updates both the main and reviewer routers.
@@ -1955,6 +1960,85 @@ pub struct MorphzRuntime {
 impl MorphzRuntime {
     pub fn builder(config: AppConfig, client: Arc<dyn Client>) -> MorphzRuntimeBuilder {
         MorphzRuntimeBuilder::new(config, client)
+    }
+
+    /// Process-local operational telemetry. Durable Events remain the source
+    /// of product truth; this bounded projection exists for latency diagnosis
+    /// and Prometheus export.
+    pub fn observability(&self) -> Arc<crate::observability::Observability> {
+        Arc::clone(&self.inner.observability)
+    }
+
+    pub fn prometheus_metrics(&self) -> String {
+        let mut output = self.inner.observability.prometheus_text();
+        let event_writer = self.inner.orchestrator.durable_event_writer_metrics();
+        let provider = self.inner.orchestrator.model_provider_metrics();
+        let context = self.inner.orchestrator.context_capacity_metrics();
+
+        let _ = writeln!(
+            output,
+            "# HELP morphz_event_writer_queue_depth Durable Event writer requests waiting in process.\n# TYPE morphz_event_writer_queue_depth gauge\nmorphz_event_writer_queue_depth {}",
+            event_writer.queue_depth
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_event_writer_committed_events_total Durable Events committed by the process.\n# TYPE morphz_event_writer_committed_events_total counter\nmorphz_event_writer_committed_events_total {}",
+            event_writer.committed_events
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_event_writer_failed_batches_total Durable Event writer batches that failed.\n# TYPE morphz_event_writer_failed_batches_total counter\nmorphz_event_writer_failed_batches_total {}",
+            event_writer.failed_batches
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_event_writer_contention_retries_total Durable Event writer retries caused by storage contention.\n# TYPE morphz_event_writer_contention_retries_total counter\nmorphz_event_writer_contention_retries_total {}",
+            event_writer.contention_retries
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_model_provider_queue_depth Model requests waiting for local Provider admission.\n# TYPE morphz_model_provider_queue_depth gauge\nmorphz_model_provider_queue_depth {}",
+            provider.queued
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_model_provider_in_flight Model requests holding a local Provider slot.\n# TYPE morphz_model_provider_in_flight gauge\nmorphz_model_provider_in_flight {}",
+            provider.in_flight
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_model_provider_max_in_flight Configured local Provider concurrency limit.\n# TYPE morphz_model_provider_max_in_flight gauge\nmorphz_model_provider_max_in_flight {}",
+            provider.max_in_flight
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_context_encodings_total Context encodings built by the process.\n# TYPE morphz_context_encodings_total counter\nmorphz_context_encodings_total {}",
+            context.context_encodings_total
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_context_events_scanned_total Events scanned while building Context encodings.\n# TYPE morphz_context_events_scanned_total counter\nmorphz_context_events_scanned_total {}",
+            context.events_scanned_total
+        );
+        let _ = writeln!(
+            output,
+            "# HELP morphz_context_projection_load_duration_seconds_total Total wall-clock time spent loading Mind projections.\n# TYPE morphz_context_projection_load_duration_seconds_total counter\nmorphz_context_projection_load_duration_seconds_total {}",
+            context.mind_projection_load_latency_micros_total as f64 / 1_000_000.0
+        );
+        if let Some(pool) = self.inner.store.storage_pool_metrics() {
+            let backend = pool.backend.replace('"', "\\\"");
+            let in_use = usize::try_from(pool.size)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(pool.idle);
+            let _ = writeln!(
+                output,
+                "# HELP morphz_storage_pool_connections Current storage connection-pool state.\n# TYPE morphz_storage_pool_connections gauge\nmorphz_storage_pool_connections{{backend=\"{backend}\",state=\"size\"}} {}\nmorphz_storage_pool_connections{{backend=\"{backend}\",state=\"idle\"}} {}\nmorphz_storage_pool_connections{{backend=\"{backend}\",state=\"in_use\"}} {in_use}\nmorphz_storage_pool_connections{{backend=\"{backend}\",state=\"max\"}} {}",
+                pool.size,
+                pool.idle,
+                pool.max_connections
+            );
+        }
+        output
     }
 
     pub fn provider_catalog_config(&self) -> Result<AppConfig, RuntimeError> {
@@ -9294,13 +9378,24 @@ impl SessionHandle {
             )));
         }
         let principal_id = principal_id.into();
-        if !self
+        let principal_verification_started = std::time::Instant::now();
+        let principal_verified = self
             .runtime
             .inner
             .store
             .verify_session_principal(&self.id, &principal_id)
-            .await?
-        {
+            .await;
+        self.runtime.inner.observability.record_operation(
+            "storage",
+            "verify_session_principal",
+            principal_verification_started.elapsed(),
+            if principal_verified.is_ok() {
+                "ok"
+            } else {
+                "error"
+            },
+        );
+        if !principal_verified? {
             return Err(format!(
                 "Principal '{}' is not bound to Session '{}'; message rejected",
                 principal_id, self.id
@@ -9566,15 +9661,42 @@ impl SessionHandle {
             "chat/user_message".to_string(),
             payload,
         );
+        self.runtime.inner.observability.begin_turn(
+            &event_id,
+            Some(&session.context_id),
+            Some(&self.id),
+        );
+        let claim_started = std::time::Instant::now();
         let claim = self
             .runtime
             .inner
             .store
             .claim_message(&self.id, &client_message_id, &event, dispatch_mode)
             .await;
+        let claim_duration = claim_started.elapsed();
+        let claim_outcome = if claim.is_ok() { "ok" } else { "error" };
+        self.runtime.inner.observability.record_operation(
+            "storage",
+            "claim_message",
+            claim_duration,
+            claim_outcome,
+        );
+        self.runtime.inner.observability.record_turn_stage(
+            &event_id,
+            Some(&session.context_id),
+            Some(&self.id),
+            "ingress.claim_message",
+            claim_duration,
+            claim_outcome,
+            claim.as_ref().err().map(|_| "message_claim_failed"),
+        );
         let claim = match claim {
             Ok(claim) => claim,
             Err(error) => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 return Err(error);
             }
@@ -9583,6 +9705,7 @@ impl SessionHandle {
             MessageClaim::Existing {
                 event_id: existing_event_id,
             } => {
+                self.runtime.inner.observability.discard_turn(&event_id);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Ok(MessageReceipt {
                     event_id: existing_event_id,
@@ -9595,6 +9718,10 @@ impl SessionHandle {
             MessageClaim::Conflict {
                 event_id: existing_event_id,
             } => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
@@ -9605,6 +9732,10 @@ impl SessionHandle {
                 )))
             }
             MessageClaim::InactiveSession => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
@@ -9612,6 +9743,10 @@ impl SessionHandle {
                 )))
             }
             MessageClaim::ForbiddenPrincipal { principal_id } => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Forbidden,
@@ -9622,6 +9757,10 @@ impl SessionHandle {
                 )))
             }
             MessageClaim::InvalidReference { message } => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::InvalidArgument,
@@ -9629,6 +9768,10 @@ impl SessionHandle {
                 )))
             }
             MessageClaim::InactiveReference { session_id } => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Conflict,
@@ -9639,6 +9782,10 @@ impl SessionHandle {
                 session_id,
                 principal_id,
             } => {
+                self.runtime
+                    .inner
+                    .observability
+                    .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 Err(Box::new(MessageIngressError::new(
                     MessageIngressErrorKind::Forbidden,
@@ -9668,7 +9815,26 @@ impl SessionHandle {
                         .notify_dialogue_interruption(&interrupted.activation_id);
                 }
                 let event_id = event.id.clone();
-                self.runtime.inner.bus.dispatch_persisted(event).await?;
+                let dispatch_started = std::time::Instant::now();
+                let dispatch = self.runtime.inner.bus.dispatch_persisted(event).await;
+                let dispatch_duration = dispatch_started.elapsed();
+                let dispatch_outcome = if dispatch.is_ok() { "ok" } else { "error" };
+                self.runtime.inner.observability.record_turn_stage(
+                    &event_id,
+                    Some(&session.context_id),
+                    Some(&self.id),
+                    "ingress.dispatch",
+                    dispatch_duration,
+                    dispatch_outcome,
+                    dispatch.as_ref().err().map(|_| "event_dispatch_failed"),
+                );
+                if dispatch.is_err() {
+                    self.runtime
+                        .inner
+                        .observability
+                        .mark_turn_status(&event_id, crate::observability::TurnTraceStatus::Failed);
+                }
+                dispatch?;
                 Ok(MessageReceipt {
                     event_id,
                     client_message_id,

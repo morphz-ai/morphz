@@ -33,6 +33,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
+use std::time::Instant;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -1346,6 +1347,7 @@ pub struct ContextEngine {
     evaluation_model_policy: Arc<RwLock<EvaluationModelPolicy>>,
     context_locks: DashMap<String, Weak<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
+    observability: Arc<crate::observability::Observability>,
 }
 
 #[derive(Clone, Copy)]
@@ -1427,7 +1429,20 @@ impl ContextEngine {
             evaluation_model_policy: Arc::new(RwLock::new(EvaluationModelPolicy::default())),
             context_locks: DashMap::new(),
             capacity_metrics: ContextCapacityMetrics::default(),
+            observability: Arc::new(crate::observability::Observability::default()),
         }
+    }
+
+    pub fn with_observability(
+        mut self,
+        observability: Arc<crate::observability::Observability>,
+    ) -> Self {
+        self.observability = observability;
+        self
+    }
+
+    pub(crate) fn observability(&self) -> Arc<crate::observability::Observability> {
+        Arc::clone(&self.observability)
     }
 
     pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
@@ -3122,6 +3137,45 @@ impl ContextEngine {
         evaluation_model_alias: Option<&str>,
         include_encoding: bool,
     ) -> Result<ContextView, DynError> {
+        let started = Instant::now();
+        let result = self
+            .build_context_encoding_for_session_inner(
+                context_id,
+                active_session_id,
+                excluded_observation_ids,
+                activation_record,
+                evaluation_model_alias,
+                include_encoding,
+            )
+            .await;
+        let outcome = if result.is_ok() { "ok" } else { "error" };
+        let duration = started.elapsed();
+        self.observability
+            .record_operation("context", "build", duration, outcome);
+        if let Some(activation) = activation_record {
+            self.observability.record_turn_stage(
+                &activation.root_turn_id,
+                Some(context_id),
+                Some(active_session_id),
+                "context.build",
+                duration,
+                outcome,
+                result.as_ref().err().map(|_| "context_build_failed"),
+            );
+        }
+        result
+    }
+
+    async fn build_context_encoding_for_session_inner(
+        &self,
+        context_id: &str,
+        active_session_id: &str,
+        excluded_observation_ids: &HashSet<String>,
+        activation_record: Option<&ThreadActivationRecord>,
+        evaluation_model_alias: Option<&str>,
+        include_encoding: bool,
+    ) -> Result<ContextView, DynError> {
+        let mut phase_started = Instant::now();
         let model_alias = evaluation_model_alias
             .or_else(|| activation_record.and_then(|activation| activation.model_alias.as_deref()));
         let (budget_config, token_budget_policy) = self
@@ -3174,6 +3228,15 @@ impl ContextEngine {
             }
             None => Vec::new(),
         };
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.directory_load",
+            "directory_load",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let current_session_ids = [active_session_id.to_string()];
         let (mut sessions, mut session_working_set) = select_session_working_set(
             &registry_sessions,
@@ -3209,6 +3272,15 @@ impl ContextEngine {
             .filter(|entry| entry.projection == SessionProjection::Full)
             .map(|entry| entry.session.id.clone())
             .collect::<Vec<_>>();
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.session_working_set",
+            "session_working_set",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let (state, events) = match legacy_events {
             Some(events) => {
                 let state = self.load_current_mind(context_id, Some(&events)).await?;
@@ -3261,6 +3333,15 @@ impl ContextEngine {
                 }
             }
         };
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.projection_load",
+            "projection_load",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let delivery_snapshot_ids = activation_record
             .filter(|activation| activation.trigger_kind == "chat/thread_completion_ready")
             .and_then(|activation| {
@@ -3387,6 +3468,15 @@ impl ContextEngine {
                 Vec::new(),
             ),
         };
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.scheduler_graph_load",
+            "scheduler_graph_load",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let activation_signals = match (&self.session_store, activation_record) {
             (Some(store), Some(activation)) => {
                 store.list_activation_signals(&activation.id).await?
@@ -3472,6 +3562,15 @@ impl ContextEngine {
             .filter(|item| activation_record.is_none_or(|current| current.id != item.id))
             .map(|item| concurrent_activation_view(item, &events))
             .collect::<Vec<_>>();
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.activation_causality_load",
+            "activation_causality_load",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let now = Utc::now();
         let background_tasks = if let Some(store) = self.execution_job_store.as_ref() {
             store
@@ -3495,6 +3594,15 @@ impl ContextEngine {
                 .map(|task| background_task_view_from_live(&task, now))
                 .collect::<Vec<_>>()
         };
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.background_tasks_load",
+            "background_tasks_load",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let thread_phases = threads
             .iter()
             .map(|thread| {
@@ -3705,6 +3813,15 @@ impl ContextEngine {
                         .and_then(|principals| principals.first().cloned())
                 }),
         };
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.materialize_view",
+            "materialize_view",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let mut execution_targets = match &self.execution_target_store {
             Some(store) => {
                 store
@@ -3769,6 +3886,15 @@ impl ContextEngine {
             execution_targets.retain(|target| allowed.contains(target.id.as_str()));
             execution_target_access.retain(|access| access.authorization_mode != "scoped_denied");
         }
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.execution_targets_load",
+            "execution_targets_load",
+            phase_started.elapsed(),
+        );
+        phase_started = Instant::now();
         let evaluation_model_policy = self
             .evaluation_model_policy
             .read()
@@ -3812,6 +3938,14 @@ impl ContextEngine {
         } else {
             Default::default()
         };
+        self.record_context_build_phase(
+            activation_record,
+            context_id,
+            active_session_id,
+            "context.render",
+            "render",
+            phase_started.elapsed(),
+        );
 
         Ok(ContextView {
             context_id: context_id.to_string(),
@@ -3848,6 +3982,30 @@ impl ContextEngine {
             sexpr,
             references,
         })
+    }
+
+    fn record_context_build_phase(
+        &self,
+        activation_record: Option<&ThreadActivationRecord>,
+        context_id: &str,
+        active_session_id: &str,
+        stage: &'static str,
+        operation: &'static str,
+        duration: std::time::Duration,
+    ) {
+        self.observability
+            .record_operation("context", operation, duration, "ok");
+        if let Some(activation) = activation_record {
+            self.observability.record_turn_stage(
+                &activation.root_turn_id,
+                Some(context_id),
+                Some(active_session_id),
+                stage,
+                duration,
+                "ok",
+                None,
+            );
+        }
     }
 
     async fn finalize_due_frame_retirements(

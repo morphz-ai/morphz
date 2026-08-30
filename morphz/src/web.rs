@@ -38,9 +38,9 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        DefaultBodyLimit, Path, Query, Request, State,
+        DefaultBodyLimit, MatchedPath, Path, Query, Request, State,
     },
-    http::{header, HeaderMap, Method, StatusCode, Uri},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -151,6 +151,12 @@ struct AttentionAcknowledgementsQuery {
 
 #[derive(Default, serde::Deserialize)]
 struct ProviderAttemptsQuery {
+    token: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ObservabilityQuery {
     token: Option<String>,
     limit: Option<usize>,
 }
@@ -913,7 +919,9 @@ impl Server {
                 header::HeaderName::from_static("x-morphz-principal"),
                 header::HeaderName::from_static("x-morphz-principal-name"),
                 header::HeaderName::from_static("x-morphz-claim-token"),
-            ]);
+                header::HeaderName::from_static("x-morphz-trace-id"),
+            ])
+            .expose_headers([header::HeaderName::from_static("x-morphz-trace-id")]);
 
         let app = Router::new()
             .route("/", get(handle_dashboard_index))
@@ -922,7 +930,13 @@ impl Server {
             .route("/favicon.svg", get(handle_dashboard_favicon))
             .route("/icons.svg", get(handle_dashboard_icons))
             .route("/health", get(|| async { StatusCode::OK }))
+            .route("/metrics", get(handle_prometheus_metrics))
             .route("/api/status", get(handle_status))
+            .route("/api/observability/turns", get(handle_recent_turn_traces))
+            .route(
+                "/api/observability/turns/:root_turn_id",
+                get(handle_turn_trace),
+            )
             .route("/api/runtime/system-prompt", get(handle_get_system_prompt))
             .route("/api/overview", get(handle_get_runtime_overview))
             .route(
@@ -1346,6 +1360,10 @@ impl Server {
             .fallback(handle_dashboard_fallback)
             .layer(DefaultBodyLimit::max(dashboard_body_limit))
             .layer(middleware::from_fn(normalize_api_error_responses))
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&state),
+                observe_http_requests,
+            ))
             .layer(CompressionLayer::new())
             .layer(cors)
             .with_state(Arc::clone(&state));
@@ -1469,6 +1487,58 @@ async fn normalize_api_error_responses(request: Request, next: Next) -> Response
     normalize_api_error_response(&path, next.run(request).await)
 }
 
+async fn observe_http_requests(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let started = std::time::Instant::now();
+    let method = request.method().as_str().to_string();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_string())
+        .unwrap_or_else(|| "__unmatched__".to_string());
+    let trace_id = request
+        .headers()
+        .get("x-morphz-trace-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| valid_trace_id(value))
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| state.runtime.observability().next_trace_id());
+    let mut response = next.run(request).await;
+    let status = response.status();
+    let status_class = format!("{}xx", status.as_u16() / 100);
+    let duration = started.elapsed();
+    state
+        .runtime
+        .observability()
+        .record_http_request(&method, &route, &status_class, duration);
+    if !response.headers().contains_key("x-morphz-trace-id") {
+        if let Ok(value) = HeaderValue::from_str(&trace_id) {
+            response.headers_mut().insert("x-morphz-trace-id", value);
+        }
+    }
+    tracing::info!(
+        trace_id,
+        method,
+        route,
+        status = status.as_u16(),
+        duration_micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
+        event_code = "observability.http_request.completed",
+        "Morphz HTTP request completed"
+    );
+    response
+}
+
+fn valid_trace_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 /// Axum extractor and method-routing rejections happen before a handler can
 /// call `error_response`. Keep those framework-generated failures inside the
 /// same public JSON contract without rewriting successful or already
@@ -1565,6 +1635,61 @@ async fn handle_status(
         identity_provider_id: state.identity.provider_id.clone(),
     })
     .into_response()
+}
+
+async fn handle_prometheus_metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(state.runtime.prometheus_metrics()))
+        .expect("Prometheus metrics response must be valid")
+}
+
+async fn handle_recent_turn_traces(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ObservabilityQuery>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 512);
+    let turns = state.runtime.observability().recent_turns(limit);
+    Json(json!({
+        "turns": turns,
+        "retention": "process_local_bounded",
+        "limit": limit,
+    }))
+    .into_response()
+}
+
+async fn handle_turn_trace(
+    State(state): State<Arc<AppState>>,
+    Path(root_turn_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state.runtime.observability().turn(&root_turn_id) {
+        Some(turn) => Json(turn).into_response(),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            format!("No retained observability timeline exists for turn '{root_turn_id}'"),
+        ),
+    }
 }
 
 async fn handle_get_system_prompt(
@@ -6825,7 +6950,8 @@ async fn handle_send_message(
             } else {
                 StatusCode::ACCEPTED
             };
-            (
+            let trace_id = receipt.event_id.clone();
+            let mut response = (
                 status,
                 Json(json!({
                     "accepted": true,
@@ -6836,7 +6962,11 @@ async fn handle_send_message(
                     "client_message_id": receipt.client_message_id,
                 })),
             )
-                .into_response()
+                .into_response();
+            if let Ok(value) = HeaderValue::from_str(&trace_id) {
+                response.headers_mut().insert("x-morphz-trace-id", value);
+            }
+            response
         }
         Err(error) => sdk_error_response(error),
     }
@@ -8579,6 +8709,63 @@ mod tests {
             value["sdk_contract_version"],
             crate::sdk::SDK_CONTRACT_VERSION
         );
+    }
+
+    #[tokio::test]
+    async fn observability_endpoints_require_operator_auth_and_export_metrics() {
+        let (mut state, runtime) = test_state().await;
+        Arc::get_mut(&mut state).unwrap().auth_token = Some("metrics-secret".to_string());
+        runtime.observability().record_turn_stage(
+            "msg-observability-test",
+            Some("context-test"),
+            Some("session-test"),
+            "context.build",
+            std::time::Duration::from_millis(125),
+            "ok",
+            None,
+        );
+
+        let unauthorized = handle_prometheus_metrics(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer metrics-secret"),
+        );
+        let response = handle_prometheus_metrics(
+            State(Arc::clone(&state)),
+            headers.clone(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(body.contains("morphz_turn_stage_duration_seconds_bucket"));
+        assert!(!body.contains("msg-observability-test"));
+
+        let response = handle_turn_trace(
+            State(state),
+            Path("msg-observability-test".to_string()),
+            headers,
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["root_turn_id"], "msg-observability-test");
+        assert_eq!(value["stages"][0]["stage"], "context.build");
     }
 
     #[tokio::test]
@@ -12795,6 +12982,12 @@ account = "xai-account"
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let trace_id = response
+            .headers()
+            .get("x-morphz-trace-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("accepted message response must expose its root Turn ID")
+            .to_string();
 
         let mut stream_kinds = Vec::new();
         let mut streamed_text = String::new();
@@ -12871,6 +13064,30 @@ account = "xai-account"
         );
         assert_eq!(streamed_text, "session-api-reply");
         assert_eq!(streamed_reasoning_summary, "provider-authored summary");
+        let turn_trace = runtime
+            .observability()
+            .turn(&trace_id)
+            .expect("accepted message must retain a Turn timeline");
+        let observed_stages = turn_trace
+            .stages
+            .iter()
+            .map(|stage| stage.stage.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        for expected in [
+            "ingress.claim_message",
+            "ingress.dispatch",
+            "scheduler.to_activation_running",
+            "context.build",
+            "provider.request_ready",
+            "provider.stream_started",
+            "provider.first_output",
+        ] {
+            assert!(
+                observed_stages.contains(expected),
+                "Turn timeline is missing {expected}: {:?}",
+                turn_trace.stages
+            );
+        }
         let persisted = runtime
             .query_events(QueryFilter {
                 session_id: Some("stream-session".to_string()),

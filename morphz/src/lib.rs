@@ -33,6 +33,7 @@ pub mod local_time;
 pub mod memory;
 pub mod model_input;
 pub mod objective;
+pub mod observability;
 pub mod orchestrator;
 pub mod permission;
 pub mod plan_execution;

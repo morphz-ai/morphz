@@ -2832,6 +2832,7 @@ pub struct Orchestrator {
     registry: Arc<Registry>,
     tool_definitions: Vec<crate::llm::ToolDefinition>,
     context_engine: Arc<ContextEngine>,
+    observability: Arc<crate::observability::Observability>,
     orchestrator_config: OrchestratorConfig,
     model_input_config: crate::config::ModelInputConfig,
     event_writer_metrics: Arc<DurableEventWriterMetrics>,
@@ -3912,6 +3913,7 @@ impl Orchestrator {
         // schemas and invalidate a resumable prefix-cache generation.
         let mut tool_definitions = registry.definitions();
         tool_definitions.sort_by(|left, right| left.name.cmp(&right.name));
+        let observability = context_engine.observability();
         let orchestrator = Arc::new(Self {
             self_ref: std::sync::OnceLock::new(),
             runtime_claimant_id: new_runtime_claimant_id(),
@@ -3923,6 +3925,7 @@ impl Orchestrator {
             registry,
             tool_definitions,
             context_engine,
+            observability,
             orchestrator_config,
             model_input_config,
             event_writer_metrics: Arc::new(DurableEventWriterMetrics::default()),
@@ -8320,6 +8323,7 @@ impl Orchestrator {
             );
             return Ok(None);
         }
+        let admission_started = Instant::now();
         let admission_permit = match self
             .activation_admission
             .acquire(activation_admission_key(&activation, event))
@@ -8342,7 +8346,21 @@ impl Orchestrator {
             }
             Err(error) => return Err(error.into()),
         };
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(&activation.session_id),
+            "scheduler.activation_admission",
+            admission_started.elapsed(),
+            "ok",
+            None,
+        );
+        self.observability.mark_turn_status(
+            &activation.root_turn_id,
+            crate::observability::TurnTraceStatus::InFlight,
+        );
         let lease_expires_at = now + self.activation_lease_duration();
+        let transition_started = Instant::now();
         match self
             .transition_thread_activation(
                 &activation,
@@ -8356,6 +8374,19 @@ impl Orchestrator {
             .await?
         {
             ThreadActivationMutation::Updated(claimed) => {
+                self.observability.record_operation(
+                    "storage",
+                    "activation_to_running",
+                    transition_started.elapsed(),
+                    "ok",
+                );
+                self.observability.record_turn_checkpoint(
+                    &claimed.root_turn_id,
+                    Some(&claimed.context_id),
+                    Some(&claimed.session_id),
+                    "scheduler.to_activation_running",
+                    "ok",
+                );
                 self.arm_activation_lease(&claimed).await?;
                 Ok(Some(AdmittedThreadActivation {
                     record: claimed,
@@ -8419,6 +8450,13 @@ impl Orchestrator {
                 .await
             {
                 Ok(ThreadActivationMutation::Updated(updated)) => {
+                    self.observability.record_turn_checkpoint(
+                        &updated.root_turn_id,
+                        Some(&updated.context_id),
+                        Some(&updated.session_id),
+                        "scheduler.activation_terminal",
+                        status.as_str(),
+                    );
                     if let Err(error) = self.cancel_activation_lease(&updated.id).await {
                         tracing::warn!(event_code = "orchestrator.activation.lease_timer_cancel_failed", activation_id = %updated.id, %error, "Activation is terminal but its lease Timer could not be cancelled");
                     }
@@ -9081,6 +9119,12 @@ impl Orchestrator {
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
+        let trace_route = self.activation_route(attempt_id);
+        let trace_root_turn_id = trace_route.as_ref().map(|route| route.root_turn_id.clone());
+        if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
+            self.observability
+                .begin_turn(root_turn_id, Some(&stream_context_id), Some(session_id));
+        }
         let model_input_usage = crate::model_input::inspect_model_input_messages(&messages)
             .map_err(ModelCompletionError::internal)?;
         let host_model_input_limits = self.model_input_config.request_limits();
@@ -9116,9 +9160,31 @@ impl Orchestrator {
         // semaphore is bounded independently; once admitted, active streaming
         // is governed by Provider idle timeout and an optional hard deadline.
         let queue_deadline = tokio::time::Instant::now() + queue_timeout;
-        let _provider_slot = self
-            .acquire_model_provider_slot(queue_deadline)
-            .await
+        let provider_admission_started = Instant::now();
+        let provider_slot = self.acquire_model_provider_slot(queue_deadline).await;
+        let provider_admission_duration = provider_admission_started.elapsed();
+        let provider_admission_outcome = if provider_slot.is_ok() { "ok" } else { "error" };
+        self.observability.record_operation(
+            "provider",
+            "admission",
+            provider_admission_duration,
+            provider_admission_outcome,
+        );
+        if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
+            self.observability.record_turn_stage(
+                root_turn_id,
+                Some(&stream_context_id),
+                Some(session_id),
+                "provider.admission",
+                provider_admission_duration,
+                provider_admission_outcome,
+                provider_slot
+                    .as_ref()
+                    .err()
+                    .map(|_| "provider_admission_failed"),
+            );
+        }
+        let _provider_slot = provider_slot
             .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         let model_hard_deadline = self
             .orchestrator_config
@@ -9150,6 +9216,7 @@ impl Orchestrator {
         // opening the Provider stream. Retries and recovery can therefore
         // explain exactly which route, endpoint and account were used instead
         // of re-running mutable routing policy after the fact.
+        let provider_binding_started = Instant::now();
         let model_binding = client
             .bind_requested_model_attempt(
                 &ModelRequestContext {
@@ -9161,8 +9228,30 @@ impl Orchestrator {
                 },
                 Some(&request_policy.model_alias),
             )
-            .await
-            .map_err(model_binding_completion_error)?;
+            .await;
+        let provider_binding_duration = provider_binding_started.elapsed();
+        let provider_binding_outcome = if model_binding.is_ok() { "ok" } else { "error" };
+        self.observability.record_operation(
+            "provider",
+            "bind_model_attempt",
+            provider_binding_duration,
+            provider_binding_outcome,
+        );
+        if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
+            self.observability.record_turn_stage(
+                root_turn_id,
+                Some(&stream_context_id),
+                Some(session_id),
+                "provider.bind_model_attempt",
+                provider_binding_duration,
+                provider_binding_outcome,
+                model_binding
+                    .as_ref()
+                    .err()
+                    .map(|_| "provider_binding_failed"),
+            );
+        }
+        let model_binding = model_binding.map_err(model_binding_completion_error)?;
         let bound_provider_resource = client.provider_resource_key_for_binding(&model_binding);
         if bound_provider_resource != admission_resource {
             self.admit_provider_circuit(
@@ -9254,6 +9343,15 @@ impl Orchestrator {
         )
         .await
         .map_err(ModelCompletionError::persistence)?;
+        if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
+            self.observability.record_turn_checkpoint(
+                root_turn_id,
+                Some(&stream_context_id),
+                Some(session_id),
+                "provider.request_ready",
+                "ok",
+            );
+        }
         let reasoning_summary = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator::default()));
         let forward_bus = Arc::clone(&stream_bus);
         let forward_session_id = stream_session_id.clone();
@@ -9263,6 +9361,8 @@ impl Orchestrator {
         let forward_reasoning_summary = Arc::clone(&reasoning_summary);
         let forward_prompt_measurement = prompt_measurement.clone();
         let timeout_prompt_measurement = prompt_measurement.clone();
+        let forward_observability = Arc::clone(&self.observability);
+        let forward_root_turn_id = trace_root_turn_id.clone();
         let stream_forwarder = tokio::spawn(async move {
             let stream_started_at = tokio::time::Instant::now();
             let mut text_delta_count = 0u64;
@@ -9270,7 +9370,56 @@ impl Orchestrator {
             let mut reasoning_summary_delta_count = 0u64;
             let mut reasoning_summary_chars = 0usize;
             let mut first_text_delta_ms = None;
+            let mut provider_started_recorded = false;
+            let mut first_output_recorded = false;
             while let Some(stream_event) = stream_rx.recv().await {
+                if matches!(&stream_event, crate::llm::ModelStreamEvent::Started)
+                    && !provider_started_recorded
+                {
+                    provider_started_recorded = true;
+                    let duration = stream_started_at.elapsed();
+                    forward_observability.record_operation(
+                        "provider",
+                        "stream_open",
+                        duration,
+                        "ok",
+                    );
+                    if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                        forward_observability.record_turn_checkpoint(
+                            root_turn_id,
+                            Some(&forward_context_id),
+                            Some(&forward_session_id),
+                            "provider.stream_started",
+                            "ok",
+                        );
+                    }
+                }
+                let is_first_output = matches!(
+                    &stream_event,
+                    crate::llm::ModelStreamEvent::TextDelta { .. }
+                        | crate::llm::ModelStreamEvent::ReasoningSummaryDelta { .. }
+                        | crate::llm::ModelStreamEvent::ToolCallStarted { .. }
+                        | crate::llm::ModelStreamEvent::ToolArgumentsDelta { .. }
+                );
+                if is_first_output && !first_output_recorded {
+                    first_output_recorded = true;
+                    let duration = stream_started_at.elapsed();
+                    forward_observability.record_operation(
+                        "provider",
+                        "time_to_first_output",
+                        duration,
+                        "ok",
+                    );
+                    if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                        forward_observability.record_turn_checkpoint(
+                            root_turn_id,
+                            Some(&forward_context_id),
+                            Some(&forward_session_id),
+                            "provider.first_output",
+                            "ok",
+                        );
+                    }
+                }
                 match &stream_event {
                     crate::llm::ModelStreamEvent::TextDelta { text } => {
                         text_delta_count = text_delta_count.saturating_add(1);
@@ -9379,9 +9528,43 @@ impl Orchestrator {
                             event_code = "orchestrator.model_stream.completed",
                             "Native model stream completed"
                         );
+                        forward_observability.record_operation(
+                            "provider",
+                            "response_stream",
+                            stream_started_at.elapsed(),
+                            "ok",
+                        );
+                        if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                            forward_observability.record_turn_stage(
+                                root_turn_id,
+                                Some(&forward_context_id),
+                                Some(&forward_session_id),
+                                "provider.stream_completed",
+                                stream_started_at.elapsed(),
+                                "ok",
+                                None,
+                            );
+                        }
                     }
                     crate::llm::ModelStreamEvent::Failed { message } => {
                         forward_reasoning_summary.lock().await.failure = Some(message.clone());
+                        forward_observability.record_operation(
+                            "provider",
+                            "response_stream",
+                            stream_started_at.elapsed(),
+                            "error",
+                        );
+                        if let Some(root_turn_id) = forward_root_turn_id.as_deref() {
+                            forward_observability.record_turn_stage(
+                                root_turn_id,
+                                Some(&forward_context_id),
+                                Some(&forward_session_id),
+                                "provider.stream_completed",
+                                stream_started_at.elapsed(),
+                                "error",
+                                Some("provider_stream_failed"),
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -9427,6 +9610,7 @@ impl Orchestrator {
             )
             .await
         });
+        let provider_request_started = Instant::now();
         let result = if client.supports_async_cancellation() {
             // Protocol-native clients are fully asynchronous. Keeping their
             // future in this task means timeout/cancellation drops the reqwest
@@ -9598,6 +9782,25 @@ impl Orchestrator {
                     .and_then(|value| value)
             }
         };
+        let provider_request_duration = provider_request_started.elapsed();
+        let provider_request_outcome = if result.is_ok() { "ok" } else { "error" };
+        self.observability.record_operation(
+            "provider",
+            "request",
+            provider_request_duration,
+            provider_request_outcome,
+        );
+        if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
+            self.observability.record_turn_stage(
+                root_turn_id,
+                Some(&stream_context_id),
+                Some(session_id),
+                "provider.request",
+                provider_request_duration,
+                provider_request_outcome,
+                result.as_ref().err().map(|_| "provider_request_failed"),
+            );
+        }
         let forward_result = stream_forwarder.await;
         self.remember_prompt_usage_anchor(
             &stream_context_id,
