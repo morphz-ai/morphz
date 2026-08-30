@@ -1,0 +1,40 @@
+{
+  "schema_version": "me08-latest-fixed-runtime-vs-frozen-codex-v1",
+  "comparison_kind": "same-frozen-protocol_noncontemporaneous_task_paired",
+  "task_count": 89,
+  "runtime_commit": "89adf739454da52bce2b35b00fb9e8fa050c5557",
+  "task_registry_sha256": "7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+  "scores": {
+    "morphz": 74,
+    "codex_cli_0_149_1": 74,
+    "accuracy_each": 0.8314606741573034,
+    "wilson_95_ci_each": [0.7403744938895832, 0.8951174592684067]
+  },
+  "paired": {
+    "both_pass": 67,
+    "both_fail": 8,
+    "morphz_only": 7,
+    "codex_only": 7,
+    "morphz_minus_codex": 0.0,
+    "task_bootstrap_95_ci": [-0.07865168539325842, 0.07865168539325842],
+    "exact_two_sided_mcnemar_p": 1.0
+  },
+  "engineering": {
+    "morphz_total_tokens": 67387261,
+    "codex_total_tokens": 83361987,
+    "morphz_tokens_per_task": 757160.2359550562,
+    "codex_tokens_per_task": 936651.5393258428,
+    "morphz_total_token_reduction_fraction": 0.1916314225489969,
+    "morphz_input_cache_rate": 0.29788406773432957,
+    "codex_input_cache_rate": 0.9312268849523388,
+    "morphz_wall_seconds": 6349.929043,
+    "codex_wall_seconds": 7065.15807,
+    "morphz_wall_reduction_fraction": 0.10123330453814753
+  },
+  "sources": {
+    "morphz_formal_and_usage": "../me08_prefix_cache_ab_89adf73_all89_20260830/",
+    "morphz_verifier_recheck": "../me08_prefix_cache_ab_89adf73_verifier_recheck_20260830/",
+    "codex_frozen_full89": "../me08_terminal_bench_full89_contemporaneous_pair_20260827/",
+    "codex_timeout_recheck": "../me08_codex_full89_timeout_recheck_20260830/"
+  }
+}
