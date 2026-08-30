@@ -46,7 +46,7 @@ function tokenFromStorage(storage: DashboardTokenStorage | undefined): string | 
   }
 }
 
-function persistDashboardToken(token: string, stores: DashboardTokenStores): void {
+export function persistDashboardToken(token: string, stores: DashboardTokenStores): void {
   try {
     if (stores.persistent) {
       stores.persistent.setItem(DASHBOARD_TOKEN_STORAGE_KEY, token)

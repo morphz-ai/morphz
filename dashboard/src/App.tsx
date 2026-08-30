@@ -126,8 +126,8 @@ import {
 } from './pages/RuntimeOverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
-import { DashboardApiClient } from './api/client'
-import { resolveDashboardToken } from './api/auth'
+import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
+import { DASHBOARD_API, getDashboardToken } from './api/runtime'
 import { invalidatedQueriesForTopic } from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
 import {
@@ -386,32 +386,6 @@ function MessageThreadReference({
     </div>
   )
 }
-
-const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undefined
-const configuredWsUrl = import.meta.env.VITE_MORPHZ_WS_URL as string | undefined
-const CORE_HTTP_URL = (configuredHttpUrl ?? window.location.origin).replace(/\/$/, '')
-const CORE_WS_URL = configuredWsUrl ?? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
-let dashboardTokenPersistentStorage: Storage | undefined
-try {
-  dashboardTokenPersistentStorage = window.localStorage
-} catch {
-  // Sandboxed/privacy-restricted documents can deny localStorage entirely.
-}
-let dashboardTokenSessionStorage: Storage | undefined
-try {
-  dashboardTokenSessionStorage = window.sessionStorage
-} catch {
-  // Session storage remains an optional same-tab fallback.
-}
-const CORE_TOKEN = resolveDashboardToken(
-  window.location,
-  {
-    persistent: dashboardTokenPersistentStorage,
-    session: dashboardTokenSessionStorage,
-  },
-  import.meta.env.VITE_MORPHZ_TOKEN as string | undefined,
-)
-const DASHBOARD_API = new DashboardApiClient({ baseUrl: CORE_HTTP_URL, token: CORE_TOKEN })
 
 type AccentTheme = 'iris' | 'cyan' | 'coral' | 'mono'
 type AppearanceMode = 'system' | 'dark' | 'light'
@@ -4269,7 +4243,8 @@ export default function App() {
     const connect = () => {
       if (disposed) return
       const params = new URLSearchParams()
-      if (CORE_TOKEN) params.set('token', CORE_TOKEN)
+      const token = getDashboardToken()
+      if (token) params.set('token', token)
       const query = params.size > 0 ? `?${params}` : ''
       socket = new WebSocket(`${CORE_WS_URL}${query}`)
       socket.onopen = () => {
@@ -4532,7 +4507,8 @@ export default function App() {
       if (disposed) return
       setWsStatus('connecting')
       const params = new URLSearchParams({ session_id: selectedSessionId })
-      if (CORE_TOKEN) params.set('token', CORE_TOKEN)
+      const token = getDashboardToken()
+      if (token) params.set('token', token)
       if (observesExactModelRequests(view, cognitionView)) {
         params.set('observe_model_requests', 'true')
       }

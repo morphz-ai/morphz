@@ -85,3 +85,37 @@ test('DashboardApiClient accepts an empty successful command response', async ()
 
   assert.equal(await client.command<void>('/api/cancel', 'POST'), undefined)
 })
+
+test('DashboardApiClient can replace its credential without rebuilding the client', async () => {
+  const authorizations: Array<string | undefined> = []
+  const client = new DashboardApiClient({
+    baseUrl: 'http://runtime.test',
+    token: 'old-secret',
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      authorizations.push((init?.headers as Record<string, string> | undefined)?.Authorization)
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }) as typeof fetch,
+  })
+
+  await client.get('/api/status')
+  client.setToken('new-secret')
+  await client.get('/api/status')
+
+  assert.equal(client.currentToken(), 'new-secret')
+  assert.deepEqual(authorizations, ['Bearer old-secret', 'Bearer new-secret'])
+})
+
+test('DashboardApiClient reports unauthorized responses to the login gate', async () => {
+  let captured: DashboardApiError | undefined
+  const client = new DashboardApiClient({
+    baseUrl: 'http://runtime.test',
+    fetchImpl: (async () => new Response(JSON.stringify({
+      error: { code: 'unauthorized', message: 'Authentication is required' },
+    }), { status: 401 })) as typeof fetch,
+  })
+  client.setUnauthorizedHandler(error => { captured = error })
+
+  await assert.rejects(client.get('/api/status'), DashboardApiError)
+  assert.equal(captured?.status, 401)
+  assert.equal(captured?.message, 'Authentication is required')
+})

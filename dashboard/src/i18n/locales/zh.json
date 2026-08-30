@@ -3,6 +3,17 @@
     "shared": "共享",
     "close": "关闭"
   },
+  "authentication": {
+    "title": "连接 Morphz 运行时",
+    "connecting": "正在验证连接…",
+    "description": "此运行时需要控制台管理凭证。请输入 Token，验证成功后会保存在当前浏览器中。",
+    "tokenLabel": "控制台 Token",
+    "tokenPlaceholder": "粘贴 MORPHZ_DASHBOARD_TOKEN",
+    "invalidToken": "Token 无效或已经变更，请重新输入。",
+    "connect": "验证并连接",
+    "connectionFailed": "无法连接到 Morphz 运行时。",
+    "retry": "重新连接"
+  },
   "navigation": {
     "label": "运行时控制台导航",
     "overview": "总览",

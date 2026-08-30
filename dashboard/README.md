@@ -25,6 +25,11 @@ npm run dev
 
 开发服务器把 `/api`、`/ws` 和 `/health` 代理到 `127.0.0.1:8080`。也可以通过 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 和 `VITE_MORPHZ_TOKEN` 连接其他 Runtime。
 
+Dashboard 可以部署在反向代理子路径。Runtime 读取 `MORPHZ_DASHBOARD_BASE_PATH`（例如
+`/console/`），把该路径写入 HTML 的 `<base>`；静态资源、BrowserRouter、HTTP API 和
+WebSocket 会从同一基路径派生。未配置时保持根路径 `/`。当 Runtime 返回 401 时，Dashboard
+会显示 Token 登录界面；URL query/fragment Token 仍作为自动启动和兼容入口保留。
+
 ## 单二进制交付
 
 ```bash

@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // The Runtime injects the real deployment prefix through <base href>. Keep
+  // emitted asset references relative so the same bundle works at any prefix.
+  base: './',
   plugins: [react()],
   server: {
     host: '0.0.0.0',

@@ -21,6 +21,8 @@ export interface DashboardApiClientOptions {
   fetchImpl?: typeof fetch
 }
 
+export type DashboardUnauthorizedHandler = (error: DashboardApiError) => void
+
 /**
  * The one transport used by Dashboard queries and commands. Domain models are
  * supplied by callers while this class owns URL, authentication and error
@@ -29,11 +31,12 @@ export interface DashboardApiClientOptions {
 export class DashboardApiClient {
   private readonly baseUrl: string
   private readonly fetchImpl: typeof fetch
-  private readonly options: DashboardApiClientOptions
+  private token?: string
+  private unauthorizedHandler?: DashboardUnauthorizedHandler
 
   constructor(options: DashboardApiClientOptions) {
-    this.options = options
     this.baseUrl = options.baseUrl.replace(/\/$/, '')
+    this.token = options.token?.trim() || undefined
     const fetchImpl = options.fetchImpl ?? globalThis.fetch
     // Browser fetch is a host function. Calling a stored reference as
     // `this.fetchImpl(...)` would otherwise bind DashboardApiClient as its
@@ -41,9 +44,21 @@ export class DashboardApiClient {
     this.fetchImpl = (input, init) => fetchImpl(input, init)
   }
 
+  currentToken(): string | undefined {
+    return this.token
+  }
+
+  setToken(token: string | undefined): void {
+    this.token = token?.trim() || undefined
+  }
+
+  setUnauthorizedHandler(handler: DashboardUnauthorizedHandler | undefined): void {
+    this.unauthorizedHandler = handler
+  }
+
   headers(json = false): Record<string, string> {
     const headers: Record<string, string> = {}
-    if (this.options.token) headers.Authorization = `Bearer ${this.options.token}`
+    if (this.token) headers.Authorization = `Bearer ${this.token}`
     if (json) headers['Content-Type'] = 'application/json'
     return headers
   }
@@ -65,7 +80,10 @@ export class DashboardApiClient {
 
   async tryGet<T>(path: string): Promise<T | undefined> {
     const response = await this.response(path)
-    if (!response.ok) return undefined
+    if (!response.ok) {
+      if (response.status === 401) throw await this.errorFromResponse(path, response)
+      return undefined
+    }
     return response.json() as Promise<T>
   }
 
@@ -86,6 +104,10 @@ export class DashboardApiClient {
       if (allowEmpty && !text.trim()) return undefined as T
       return JSON.parse(text) as T
     }
+    throw await this.errorFromResponse(path, response)
+  }
+
+  private async errorFromResponse(path: string, response: Response): Promise<DashboardApiError> {
     let detail = `HTTP ${response.status}`
     try {
       const body = await response.json() as DashboardApiErrorBody
@@ -95,6 +117,8 @@ export class DashboardApiClient {
     } catch {
       // Some gateways return an empty or HTML error response.
     }
-    throw new DashboardApiError(response.status, path, detail)
+    const error = new DashboardApiError(response.status, path, detail)
+    if (response.status === 401) this.unauthorizedHandler?.(error)
+    return error
   }
 }

@@ -3,6 +3,17 @@
     "shared": "shared",
     "close": "Close"
   },
+  "authentication": {
+    "title": "Connect to Morphz Runtime",
+    "connecting": "Verifying the connection…",
+    "description": "This Runtime requires a Dashboard operator credential. Enter the token; after validation it will be stored in this browser.",
+    "tokenLabel": "Dashboard Token",
+    "tokenPlaceholder": "Paste MORPHZ_DASHBOARD_TOKEN",
+    "invalidToken": "The token is invalid or has changed. Enter it again.",
+    "connect": "Verify and connect",
+    "connectionFailed": "Morphz Runtime could not be reached.",
+    "retry": "Reconnect"
+  },
   "navigation": {
     "label": "Runtime Console navigation",
     "overview": "Overview",

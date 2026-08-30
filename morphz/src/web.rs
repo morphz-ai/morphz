@@ -717,6 +717,10 @@ impl Server {
         &self,
         addr_str: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Validate the reverse-proxy mount once during startup. The embedded
+        // HTML reads this value on every request so the same binary can serve
+        // Dashboard at `/` locally and, for example, `/console/` in Cloud.
+        configured_dashboard_base_path()?;
         let dashboard_token = std::env::var("MORPHZ_DASHBOARD_TOKEN")
             .ok()
             .map(|token| token.trim().to_string())
@@ -1388,8 +1392,69 @@ fn embedded_asset(content_type: &'static str, body: &'static [u8]) -> Response {
         .expect("embedded Dashboard response must be valid")
 }
 
+fn invalid_dashboard_base_path(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
+}
+
+fn normalize_dashboard_base_path(value: &str) -> Result<String, std::io::Error> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return Ok("/".to_string());
+    }
+    if !trimmed.starts_with('/') {
+        return Err(invalid_dashboard_base_path(
+            "MORPHZ_DASHBOARD_BASE_PATH must start with '/'",
+        ));
+    }
+    if trimmed.chars().any(|character| {
+        !(character.is_ascii_alphanumeric()
+            || matches!(character, '/' | '-' | '_' | '.' | '~' | '%'))
+    }) {
+        return Err(invalid_dashboard_base_path(
+            "MORPHZ_DASHBOARD_BASE_PATH contains a character that is unsafe in an HTML base URL",
+        ));
+    }
+    if trimmed
+        .split('/')
+        .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err(invalid_dashboard_base_path(
+            "MORPHZ_DASHBOARD_BASE_PATH cannot contain dot segments",
+        ));
+    }
+
+    let mut normalized = String::with_capacity(trimmed.len() + 1);
+    for segment in trimmed.split('/').filter(|segment| !segment.is_empty()) {
+        normalized.push('/');
+        normalized.push_str(segment);
+    }
+    normalized.push('/');
+    Ok(normalized)
+}
+
+fn configured_dashboard_base_path() -> Result<String, std::io::Error> {
+    let value = std::env::var("MORPHZ_DASHBOARD_BASE_PATH").unwrap_or_else(|_| "/".to_string());
+    normalize_dashboard_base_path(&value)
+}
+
+fn dashboard_index_html(base_path: &str) -> String {
+    let index =
+        std::str::from_utf8(DASHBOARD_INDEX).expect("embedded Dashboard index must be valid UTF-8");
+    let replacement = format!("<base href=\"{base_path}\">");
+    if index.contains("<base href=\"/\">") {
+        index.replacen("<base href=\"/\">", &replacement, 1)
+    } else {
+        index.replacen("<base href=\"/\" />", &replacement, 1)
+    }
+}
+
 async fn handle_dashboard_index() -> Response {
-    embedded_asset("text/html; charset=utf-8", DASHBOARD_INDEX)
+    let base_path = configured_dashboard_base_path().unwrap_or_else(|_| "/".to_string());
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(dashboard_index_html(&base_path)))
+        .expect("embedded Dashboard response must be valid")
 }
 
 async fn handle_dashboard_fallback(uri: Uri) -> Response {
@@ -8922,13 +8987,34 @@ mod tests {
     #[test]
     fn embedded_dashboard_assets_form_a_self_contained_entrypoint() {
         let index = std::str::from_utf8(DASHBOARD_INDEX).unwrap();
-        assert!(index.contains("/assets/app.js"));
-        assert!(index.contains("/assets/app.css"));
+        assert!(index.contains("./assets/app.js"));
+        assert!(index.contains("./assets/app.css"));
+        assert!(index.contains("<base href=\"/\" />"));
         assert!(!DASHBOARD_APP_JS.is_empty());
         assert!(!DASHBOARD_APP_CSS.is_empty());
         assert!(std::str::from_utf8(DASHBOARD_FAVICON)
             .unwrap()
             .contains("<svg"));
+    }
+
+    #[test]
+    fn dashboard_base_path_is_normalized_and_injected_into_embedded_html() {
+        assert_eq!(normalize_dashboard_base_path("").unwrap(), "/");
+        assert_eq!(
+            normalize_dashboard_base_path("/console").unwrap(),
+            "/console/"
+        );
+        assert_eq!(
+            normalize_dashboard_base_path("/internal//console///").unwrap(),
+            "/internal/console/"
+        );
+        assert!(normalize_dashboard_base_path("console").is_err());
+        assert!(normalize_dashboard_base_path("/console/../admin").is_err());
+        assert!(normalize_dashboard_base_path("/console/\"bad").is_err());
+
+        let cloud_index = dashboard_index_html("/console/");
+        assert!(cloud_index.contains("<base href=\"/console/\">"));
+        assert!(cloud_index.contains("./assets/app.js"));
     }
 
     #[tokio::test]
