@@ -7280,7 +7280,7 @@ export default function App() {
             {cognitiveCoordinationNetworkAvailable && (
               <div className="coordination-network-selector" ref={cognitiveCoordinationNetworkRef}>
                 <button
-                  className={`theme-button coordination-health-button ${cognitiveCoordinationStatusOpen ? 'is-active' : ''} ${cognitiveCoordinationHealthyPeers > 0 ? 'has-healthy-peers' : ''} ${cognitiveCoordinationStatusError || cognitiveCoordinationHasFailedPeers ? 'has-error' : ''}`}
+                  className={`theme-button coordination-health-button ${cognitiveCoordinationStatusError || cognitiveCoordinationHasFailedPeers ? 'has-error' : ''}`}
                   type="button"
                   aria-expanded={cognitiveCoordinationStatusOpen}
                   title={t('cognitiveCoordination.peerStatus')}

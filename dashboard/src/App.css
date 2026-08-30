@@ -868,12 +868,6 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
   font-style: normal;
   text-align: center;
 }
-.coordination-health-button.has-healthy-peers {
-  border-color: color-mix(in srgb, var(--green) 52%, var(--line));
-  background: color-mix(in srgb, var(--green) 9%, var(--surface));
-  color: var(--green);
-}
-.coordination-health-button.has-healthy-peers > em { background: var(--green-soft); color: var(--green); }
 .coordination-health-button.has-error { border-color: color-mix(in srgb, var(--red) 52%, var(--line)); color: var(--danger-text); }
 .coordination-health-button.has-error > em { background: var(--red-soft); color: var(--danger-text); }
 .theme-selector { position: relative; }

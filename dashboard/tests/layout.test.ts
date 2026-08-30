@@ -153,6 +153,16 @@ test('cognitive coordination separates global Mesh health from its Context routi
   )
   assert.doesNotMatch(
     appSource,
+    /coordination-health-button[^\n]*has-healthy-peers/,
+    'healthy peers are status data and must not make the network-list button look enabled',
+  )
+  assert.doesNotMatch(
+    appCss,
+    /\.coordination-health-button\.has-healthy-peers/,
+    'only the Context coordination toggle may use an enabled-state highlight',
+  )
+  assert.doesNotMatch(
+    appSource,
     /className="composer-policy-controls"[\s\S]*?cognitive-coordination-selector/s,
     'the Context-scoped coordinated-evaluation mode must not be presented as a per-Session composer setting',
   )
