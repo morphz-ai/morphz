@@ -585,6 +585,20 @@ fn display_config_value(key: &str, value: &toml::Value) -> String {
 
 fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
     for (variable, key) in [
+        ("MORPHZ_STORAGE_BACKEND", "storage.backend"),
+        (
+            "MORPHZ_POSTGRES_MAX_CONNECTIONS",
+            "storage.postgres.max_connections",
+        ),
+        ("MORPHZ_SERVER_IDENTITY_MODE", "server.identity.mode"),
+        (
+            "MORPHZ_SERVER_IDENTITY_PROVIDER_ID",
+            "server.identity.provider_id",
+        ),
+        (
+            "MORPHZ_SERVER_IDENTITY_SERVICE_TOKEN_ENV",
+            "server.identity.service_token_env",
+        ),
         ("MORPHZ_LLM_MODEL", "llm.model"),
         ("MORPHZ_LLM_PROVIDER", "llm.provider"),
         ("MORPHZ_WORKSPACE_ROOT", "permissions.workspace_root"),

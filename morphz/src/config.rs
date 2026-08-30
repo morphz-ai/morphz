@@ -3508,6 +3508,30 @@ impl AppConfig {
     /// layers. These are process-local operator choices and therefore outrank
     /// project preferences without mutating any configuration file.
     pub fn apply_runtime_env_overrides(&mut self) -> Result<(), String> {
+        if let Ok(value) = std::env::var("MORPHZ_STORAGE_BACKEND") {
+            self.storage.backend = parse_storage_backend_env(&value)?;
+        }
+        apply_u32_env(
+            "MORPHZ_POSTGRES_MAX_CONNECTIONS",
+            &mut self.storage.postgres.max_connections,
+        )?;
+        if let Ok(value) = std::env::var("MORPHZ_SERVER_IDENTITY_MODE") {
+            self.server.identity.mode = parse_server_identity_mode_env(&value)?;
+        }
+        if let Ok(value) = std::env::var("MORPHZ_SERVER_IDENTITY_PROVIDER_ID") {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err("MORPHZ_SERVER_IDENTITY_PROVIDER_ID cannot be empty".to_string());
+            }
+            self.server.identity.provider_id = value.to_string();
+        }
+        if let Ok(value) = std::env::var("MORPHZ_SERVER_IDENTITY_SERVICE_TOKEN_ENV") {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err("MORPHZ_SERVER_IDENTITY_SERVICE_TOKEN_ENV cannot be empty".to_string());
+            }
+            self.server.identity.service_token_env = value.to_string();
+        }
         if let Ok(model) = std::env::var("MORPHZ_LLM_MODEL") {
             let model = model.trim();
             if model.is_empty() {
@@ -3686,6 +3710,26 @@ impl AppConfig {
             &mut self.orchestrator.session_working_set.max_sessions,
         )?;
         Ok(())
+    }
+}
+
+fn parse_storage_backend_env(value: &str) -> Result<StorageBackend, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sqlite" => Ok(StorageBackend::Sqlite),
+        "postgres" | "postgresql" => Ok(StorageBackend::Postgres),
+        _ => Err(format!(
+            "MORPHZ_STORAGE_BACKEND supports only sqlite or postgres: {value}"
+        )),
+    }
+}
+
+fn parse_server_identity_mode_env(value: &str) -> Result<ServerIdentityMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "default" => Ok(ServerIdentityMode::Default),
+        "trusted_gateway" | "trusted-gateway" => Ok(ServerIdentityMode::TrustedGateway),
+        _ => Err(format!(
+            "MORPHZ_SERVER_IDENTITY_MODE supports only default or trusted-gateway: {value}"
+        )),
     }
 }
 
@@ -4354,6 +4398,29 @@ mod tests {
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
         assert_eq!(cfg.tui.theme, TuiTheme::Cyan);
         assert_eq!(cfg.ui.language, UiLanguage::Auto);
+    }
+
+    #[test]
+    fn cloud_runtime_environment_values_are_strictly_parsed() {
+        assert_eq!(
+            parse_storage_backend_env("postgres").unwrap(),
+            StorageBackend::Postgres
+        );
+        assert_eq!(
+            parse_storage_backend_env("POSTGRESQL").unwrap(),
+            StorageBackend::Postgres
+        );
+        assert!(parse_storage_backend_env("d1").is_err());
+
+        assert_eq!(
+            parse_server_identity_mode_env("trusted_gateway").unwrap(),
+            ServerIdentityMode::TrustedGateway
+        );
+        assert_eq!(
+            parse_server_identity_mode_env("default").unwrap(),
+            ServerIdentityMode::Default
+        );
+        assert!(parse_server_identity_mode_env("anonymous").is_err());
     }
 
     #[test]

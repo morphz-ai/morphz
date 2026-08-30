@@ -264,6 +264,12 @@ allowed_evaluation_models = ["fast", "deep"]
 Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带管理令牌，也可分别用
 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
 
+容器和托管环境可以使用 `MORPHZ_STORAGE_BACKEND=postgres`、
+`MORPHZ_POSTGRES_MAX_CONNECTIONS`、`MORPHZ_SERVER_IDENTITY_MODE=trusted-gateway`、
+`MORPHZ_SERVER_IDENTITY_PROVIDER_ID` 与 `MORPHZ_SERVER_IDENTITY_SERVICE_TOKEN_ENV`
+覆盖对应的宿主控制面配置。PostgreSQL 凭证仍只通过 `MORPHZ_POSTGRES_URL` 提供，
+不会写入普通配置或诊断输出。
+
 面向外部客户端或其他 AI agent 的最小接口、认证、幂等、事件轮询和 WebSocket
 恢复约定，见 [HTTP API：AI Agent 接入契约 v1](docs/http_api_agent_contract_v1.md)。
 

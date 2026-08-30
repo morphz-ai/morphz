@@ -8,6 +8,8 @@ jobs/
 *.db-shm
 *.db-wal
 node_modules/
+website/
+.morphz/
 dashboard/dist/
 !dashboard/dist/
 !dashboard/dist/**

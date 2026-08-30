@@ -3,7 +3,7 @@
 # ==========================================
 # Stage 1: Builder — 编译 Morphz + Executor 工作区
 # ==========================================
-FROM rust:1.91-bookworm AS builder
+FROM rust:1.97.1-bookworm AS builder
 
 # 安装构建期系统依赖（SQLite、OpenSSL 等）
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,26 +14,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 先复制清单以利用 Docker 层缓存
-COPY Cargo.toml Cargo.lock ./
-COPY executor/Cargo.toml ./executor/
-COPY morphz/Cargo.toml ./morphz/
+# Workspace members evolve together. Copying only selected manifests makes the
+# Docker build silently lag behind Cargo.toml as soon as another crate joins the
+# workspace. Build the same checked-out workspace CI sees, while BuildKit cache
+# mounts retain registry and target artifacts across local/Cloudflare builds.
+COPY . .
 
-# 预创建 dummy 源码以缓存依赖编译
-RUN mkdir -p executor/src morphz/src && \
-    echo "pub fn _noop() {}" > executor/src/lib.rs && \
-    echo "fn main() {}" > morphz/src/main.rs
-
-# 预编译依赖（此层在依赖未变时会被缓存）
-RUN cargo build --release --package morphz || true
-
-# 复制真实源码并编译
-COPY executor/src ./executor/src
-COPY morphz/src ./morphz/src
-COPY models ./models
-
-RUN touch executor/src/lib.rs morphz/src/main.rs && \
-    cargo build --release --package morphz
+# Morphz intentionally puts the current libsqlite3-hotbundle ahead of SQLx's
+# older bundled amalgamation. GNU ld rejects the duplicate SQLite symbols by
+# default, unlike the native development linker, so permit the documented
+# first-definition-wins linkage for the Linux release image.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    RUSTFLAGS="-C link-arg=-Wl,--allow-multiple-definition" \
+    cargo build --release --package morphz && \
+    mkdir -p /app/dist && \
+    cp /app/target/release/morphz /app/dist/morphz
 
 # ==========================================
 # Stage 2: Runtime — 最小化运行时镜像
@@ -52,7 +48,7 @@ RUN useradd -r -u 1000 -m -d /home/morphz morphz
 WORKDIR /home/morphz
 
 # 从 builder 复制编译产物
-COPY --from=builder /app/target/release/morphz /usr/local/bin/morphz
+COPY --from=builder /app/dist/morphz /usr/local/bin/morphz
 
 # 复制模型；Provider/凭证配置由 setup 写入宿主挂载的用户配置卷。
 COPY --from=builder /app/models /home/morphz/models
