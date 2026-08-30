@@ -104,7 +104,17 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Install Bubblewrap
-        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          # ubuntu-latest uses Ubuntu 24.04, whose AppArmor default blocks the
+          # unprivileged user namespace that Bubblewrap needs. This is an
+          # ephemeral dedicated runner; enable the kernel facility so the job
+          # exercises Morphz's real mount/network/process boundary.
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid --proc /proc -- /bin/true
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
       - name: Verify sandbox policy contract

@@ -28,12 +28,18 @@ chrono = { version = "0.4", features = ["serde"] }
 iana-time-zone = "0.1"
 dashmap = "5.5"
 futures-util = "0.3"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "json"] }
-# SQLx 0.8.6's `sqlite` feature bundles SQLite 3.46.0. That release contains
-# the WAL-reset race fixed in 3.51.3. Keep SQLx's FFI surface and link a current
-# process-wide amalgamation; startup and a link-level test verify which version
-# actually won symbol resolution.
-libsqlite3-hotbundle = "1.530300.0"
+# Select SQLx's SQLite driver without its older bundled amalgamation;
+# `libsqlite3-hotbundle` below is the single native implementation.
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "_sqlite", "sqlx-sqlite", "postgres", "chrono", "json"] }
+# SQLx 0.8.6's public `sqlite` feature bundles SQLite 3.46.0, which contains
+# the WAL-reset race fixed in 3.51.3. Keep SQLx's FFI surface while making this
+# current process-wide amalgamation the sole native implementation; startup and
+# a link-level test verify the effective version.
+libsqlite3-hotbundle = { version = "1.530300.0", features = ["unlock_notify"] }
+# SQLx's unbundled driver normally generates bindings from the host header,
+# which is too old on supported macOS images. Reuse its audited bundled
+# bindings without enabling its bundled C implementation.
+libsqlite3-sys = { version = "=0.30.1", default-features = false, features = ["bundled_bindings", "unlock_notify"] }
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["compression-gzip", "cors"] }
 tracing = "0.1"
@@ -75,10 +81,12 @@ nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }
 codex-protocol = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
 codex-utils-absolute-path = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
 codex-windows-sandbox = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
-# Codex's audited lock pairs every Rama crate at alpha.4. Without this exact
-# bound Cargo may select stable rama-error 0.3.0, whose API is incompatible
-# with rama-core 0.3.0-alpha.4.
+# Codex's audited lock pairs every Rama crate at alpha.4. Without these exact
+# bounds Cargo may select stable 0.3.0 utility crates whose generated APIs are
+# incompatible with rama-core and rama-http 0.3.0-alpha.4.
 rama-error = "=0.3.0-alpha.4"
+rama-macros = "=0.3.0-alpha.4"
+rama-utils = "=0.3.0-alpha.4"
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",

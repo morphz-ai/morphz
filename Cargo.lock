@@ -4111,11 +4111,14 @@ dependencies = [
  "icu_segmenter",
  "keyring",
  "libsqlite3-hotbundle",
+ "libsqlite3-sys",
  "morphz-cognitive-coordination",
  "nix 0.31.3",
  "portable-pty",
  "pulldown-cmark",
  "rama-error",
+ "rama-macros",
+ "rama-utils",
  "ratatui",
  "reqwest 0.11.27",
  "ring",
@@ -5206,9 +5209,9 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.3.0"
+version = "0.3.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d90ecfc0103cccc2beefe84dac28cccafea616c0243cef021c5fc6a7e92ce624"
+checksum = "ea18a110bcf21e35c5f194168e6914ccea45ffdd0fea51bc4b169fbeafef6428"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5322,12 +5325,11 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.3.0"
+version = "0.3.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c651f73d8cec6a44f9717725640490bbdd43813f337d10c7c72877e316d1471"
+checksum = "bf28b18ba4a57f8334d7992d3f8020194ea359b246ae6f8f98b8df524c7a14ef"
 dependencies = [
  "const_format",
- "memchr",
  "parking_lot",
  "pin-project-lite",
  "rama-macros",
@@ -5336,7 +5338,6 @@ dependencies = [
  "smallvec",
  "smol_str",
  "tokio",
- "tracing",
  "wildcard",
 ]
 

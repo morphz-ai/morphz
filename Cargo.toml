@@ -18,13 +18,7 @@ default-members = ["morphz"]
 # step with `rust-toolchain.toml`.
 rust-version = "1.97.1"
 
-[workspace.lints.rust]
-# `libsqlite3-hotbundle` deliberately links a current SQLite amalgamation
-# alongside the older one SQLx bundles, so duplicate symbols are the mechanism
-# rather than a mistake, and a link-level test asserts which version actually
-# won resolution. Rust 1.97 began surfacing linker stderr through this lint,
-# which would otherwise fail the `-D warnings` build.
-linker_messages = "allow"
+[workspace.lints]
 
 [patch."https://github.com/openai/codex"]
 # The Windows sandbox crate uses Codex OTEL only for optional setup metrics.
