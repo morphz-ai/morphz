@@ -1,0 +1,13 @@
+{
+  "files": [
+    {
+      "bytes": 7147,
+      "path": "/app/parallel_linear.py",
+      "sha256": "3a0923089b7848d9d6b5b4456fe49552c0a42b338218c3d750f153d3178a1965"
+    }
+  ],
+  "model_calls": 0,
+  "post_command": null,
+  "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/torch-tensor-parallelism__nH2sPEr/agent/morphz.db",
+  "source_db_sha256": "e2fe1b6ff18dd62a9e328c1686726ef8bb7fd2f0044e348f7a691f756f5bbb85"
+}

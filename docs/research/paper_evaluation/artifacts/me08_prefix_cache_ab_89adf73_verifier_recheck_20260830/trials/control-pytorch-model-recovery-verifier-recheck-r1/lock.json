@@ -1,0 +1,40 @@
+{
+    "schema_version": 2,
+    "task": {
+        "name": "2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc",
+        "type": "local",
+        "digest": "sha256:2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc",
+        "path": "/root/.cache/harbor/tasks/packages/terminal-bench/pytorch-model-recovery/2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc"
+    },
+    "install_only": false,
+    "timeout_multiplier": 1.0,
+    "agent": {
+        "name": "replay_agent:ReplaySnapshotAgent",
+        "skills": [],
+        "override_timeout_sec": 900.0,
+        "resume_trajectory": false,
+        "extra_allowed_hosts": [],
+        "kwargs": {
+            "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/pytorch-model-recovery__tcSC4PK/agent/morphz.db",
+            "expected_source_db_sha256": "e8a57d0d260dddc25e247ad3454bc9e0bf4430f8814975cdd54a0d6953e335f4",
+            "post_command": "python /app/recover_model.py"
+        },
+        "mcp_servers": []
+    },
+    "skills": [],
+    "environment": {
+        "type": "docker",
+        "force_build": false,
+        "delete": true,
+        "cpu_enforcement_policy": "auto",
+        "memory_enforcement_policy": "auto",
+        "extra_docker_compose": [],
+        "kwargs": {},
+        "extra_allowed_hosts": []
+    },
+    "verifier": {
+        "override_timeout_sec": 3600.0,
+        "disable": false,
+        "environment_mode": "shared"
+    }
+}

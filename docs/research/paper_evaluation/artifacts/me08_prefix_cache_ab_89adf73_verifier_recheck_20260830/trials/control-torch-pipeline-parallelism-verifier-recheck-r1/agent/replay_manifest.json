@@ -1,0 +1,13 @@
+{
+  "files": [
+    {
+      "bytes": 8093,
+      "path": "/app/pipeline_parallel.py",
+      "sha256": "73842b3dcf1ebf2d86722e047953cbd3ba2050fc1856334bc293b2af85868262"
+    }
+  ],
+  "model_calls": 0,
+  "post_command": null,
+  "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/torch-pipeline-parallelism__cQsodgH/agent/morphz.db",
+  "source_db_sha256": "ea73582381071aa22be86140cea97fc4b0e4be755dae11defdae7e5939f8b01f"
+}

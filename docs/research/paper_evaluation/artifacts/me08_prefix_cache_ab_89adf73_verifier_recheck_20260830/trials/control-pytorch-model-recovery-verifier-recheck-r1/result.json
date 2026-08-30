@@ -1,0 +1,114 @@
+{
+    "id": "848708d8-3649-4ad3-9eef-2a29151956e0",
+    "task_name": "terminal-bench/pytorch-model-recovery",
+    "trial_name": "control-pytorch-model-recovery-verifier-recheck-r1",
+    "trial_uri": "file:///opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/trials/control-pytorch-model-recovery-verifier-recheck-r1",
+    "task_id": {
+        "path": "/root/.cache/harbor/tasks/packages/terminal-bench/pytorch-model-recovery/2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc"
+    },
+    "source": null,
+    "task_checksum": "e321c0e7501b3f021cfca26520574b343dff3dee6919f2e9dd5ff9e28ffc3725",
+    "config": {
+        "task": {
+            "path": "/root/.cache/harbor/tasks/packages/terminal-bench/pytorch-model-recovery/2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "control-pytorch-model-recovery-verifier-recheck-r1",
+        "trials_dir": "/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/trials",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "replay_agent:ReplaySnapshotAgent",
+            "import_path": null,
+            "model_name": null,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": 900.0,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/pytorch-model-recovery__tcSC4PK/agent/morphz.db",
+                "expected_source_db_sha256": "e8a57d0d260dddc25e247ad3454bc9e0bf4430f8814975cdd54a0d6953e335f4",
+                "post_command": "python /app/recover_model.py"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": 3600.0,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": null,
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "replay-snapshot",
+        "version": "1.0.0",
+        "model_info": null
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": null,
+    "verifier_environment_mode": "shared",
+    "exception_info": {
+        "exception_type": "RuntimeError",
+        "exception_message": "Snapshot hash mismatch for /app/recover_model.py: event dcb930dd175653480882a25cc66f57b99741f30cac0e3cc729600ecb928bcae1, text ce5966c56c57b02ea3abc627b515062e8baa35b5e26d8898b7b75c178bb1ecf6",
+        "exception_traceback": "Traceback (most recent call last):\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 378, in run\n    await self._run()\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/single_step.py\", line 41, in _run\n    await self._run_agent()\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/single_step.py\", line 77, in _run_agent\n    await self._run_agent_phase(\n  File \"/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py\", line 480, in _run_agent_phase\n    await asyncio.wait_for(\n  File \"/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py\", line 520, in wait_for\n    return await fut\n           ^^^^^^^^^\n  File \"/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/tools/replay_agent.py\", line 99, in run\n    raise RuntimeError(\nRuntimeError: Snapshot hash mismatch for /app/recover_model.py: event dcb930dd175653480882a25cc66f57b99741f30cac0e3cc729600ecb928bcae1, text ce5966c56c57b02ea3abc627b515062e8baa35b5e26d8898b7b75c178bb1ecf6\n",
+        "occurred_at": "2026-08-30T01:31:36.841614Z"
+    },
+    "started_at": "2026-08-30T01:31:35.678435Z",
+    "finished_at": "2026-08-30T01:31:47.406287Z",
+    "environment_setup": {
+        "started_at": "2026-08-30T01:31:35.701604Z",
+        "finished_at": "2026-08-30T01:31:36.636347Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-30T01:31:36.636406Z",
+        "finished_at": "2026-08-30T01:31:36.636467Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-30T01:31:36.636527Z",
+        "finished_at": "2026-08-30T01:31:36.639428Z"
+    },
+    "verifier": null,
+    "step_results": null
+}

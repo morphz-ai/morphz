@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "classification": "post-hoc verifier recheck; supplemental; never spliced into the frozen formal run",
+  "formal_run": {
+    "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+    "server_root": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830",
+    "local_audit_artifact": "../me08_prefix_cache_ab_89adf73_all89_20260830",
+    "runtime_commit": "89adf739454da52bce2b35b00fb9e8fa050c5557",
+    "concurrency": {
+      "control": 8,
+      "treatment": 8,
+      "maximum_total": 16
+    },
+    "frozen_official_scores": {
+      "control": "72/89",
+      "treatment": "71/89"
+    },
+    "preservation_hashes": {
+      "launcher_result.json": "b9e29bc7bea85a141a725b83fd028f25188c626bc7b058ded64d8bbc7b5b7fde",
+      "all_89_cache_ab_summary.json": "c2d2c7b89c7e098c35811f3b80ad47518ce104e023977cdb1d684a75f97663d9",
+      "remote_matches_frozen_local_copy": true
+    },
+    "frozen_paired": {
+      "both_pass": 66,
+      "both_fail": 12,
+      "control_only": 6,
+      "treatment_only": 5,
+      "exact_two_sided_mcnemar_p": 1.0
+    }
+  },
+  "recheck": {
+    "server_root": "/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830",
+    "harbor_version": "0.21.0",
+    "agent": "replay_agent:ReplaySnapshotAgent",
+    "agent_sha256": "e40e1f54eb73486e49b5d40ee099169dde7e03912e56e2092522cfb4453073ce",
+    "model_calls": 0,
+    "execution": "sequential",
+    "original_verifier_timeout_sec": 900,
+    "recheck_verifier_timeout_sec": 3600,
+    "task_and_verifier_digests_unchanged": true,
+    "formal_run_modified": false,
+    "source_trial_databases_modified": false
+  },
+  "task_results": [
+    {
+      "arm": "control",
+      "task": "pytorch-model-recovery",
+      "task_ref": "sha256:2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc",
+      "formal_primary_exception": "VerifierTimeoutError",
+      "formal_reward": 0,
+      "source_db_sha256": "e8a57d0d260dddc25e247ad3454bc9e0bf4430f8814975cdd54a0d6953e335f4",
+      "restored_files": [
+        {
+          "path": "/app/recover_model.py",
+          "sha256": "dcb930dd175653480882a25cc66f57b99741f30cac0e3cc729600ecb928bcae1",
+          "bytes": 5866
+        }
+      ],
+      "post_replay_command": "python /app/recover_model.py",
+      "recheck_trial": "control-pytorch-model-recovery-verifier-recheck-r2",
+      "recheck_reward": 0,
+      "tests_passed": 4,
+      "tests_failed": 1,
+      "verifier_seconds": 252.439797,
+      "classification": "verifier timeout confirmed, but the restored solution is independently incorrect"
+    },
+    {
+      "arm": "control",
+      "task": "torch-pipeline-parallelism",
+      "task_ref": "sha256:db605337c749a872cea7b5b413429b3915bb4c3efe0f7875f0c46ce81bd8c4fb",
+      "formal_primary_exception": "VerifierTimeoutError",
+      "formal_reward": 0,
+      "source_db_sha256": "ea73582381071aa22be86140cea97fc4b0e4be755dae11defdae7e5939f8b01f",
+      "restored_files": [
+        {
+          "path": "/app/pipeline_parallel.py",
+          "sha256": "73842b3dcf1ebf2d86722e047953cbd3ba2050fc1856334bc293b2af85868262",
+          "bytes": 8093
+        }
+      ],
+      "recheck_trial": "control-torch-pipeline-parallelism-verifier-recheck-r1",
+      "recheck_reward": 1,
+      "tests_passed": 4,
+      "tests_failed": 0,
+      "verifier_seconds": 284.876591,
+      "classification": "pure verifier-timeout false negative"
+    },
+    {
+      "arm": "control",
+      "task": "torch-tensor-parallelism",
+      "task_ref": "sha256:f32ce74a5aeb6638480247ab799fe46127bbee631acdd0921b0f394ec49b3684",
+      "formal_primary_exception": "VerifierTimeoutError",
+      "formal_reward": 0,
+      "source_db_sha256": "e2fe1b6ff18dd62a9e328c1686726ef8bb7fd2f0044e348f7a691f756f5bbb85",
+      "restored_files": [
+        {
+          "path": "/app/parallel_linear.py",
+          "sha256": "3a0923089b7848d9d6b5b4456fe49552c0a42b338218c3d750f153d3178a1965",
+          "bytes": 7147
+        }
+      ],
+      "recheck_trial": "control-torch-tensor-parallelism-verifier-recheck-r1",
+      "recheck_reward": 1,
+      "tests_passed": 13,
+      "tests_failed": 0,
+      "verifier_seconds": 297.689224,
+      "classification": "pure verifier-timeout false negative"
+    },
+    {
+      "arm": "structured-deltas",
+      "task": "torch-tensor-parallelism",
+      "task_ref": "sha256:f32ce74a5aeb6638480247ab799fe46127bbee631acdd0921b0f394ec49b3684",
+      "formal_primary_exception": "VerifierTimeoutError",
+      "formal_reward": 0,
+      "source_db_sha256": "06335d08710980194d62d2472f6f7c149f788d7bf06005684ab6a841226235cb",
+      "restored_files": [
+        {
+          "path": "/app/parallel_linear.py",
+          "sha256": "5f36688b25976d13fd0a860eef5b34ca145530b6fe692f6af02f1e5096dda3d3",
+          "bytes": 6256
+        }
+      ],
+      "recheck_trial": "treatment-torch-tensor-parallelism-verifier-recheck-r1",
+      "recheck_reward": 1,
+      "tests_passed": 13,
+      "tests_failed": 0,
+      "verifier_seconds": 297.585561,
+      "classification": "pure verifier-timeout false negative"
+    },
+    {
+      "arm": "structured-deltas",
+      "task": "torch-pipeline-parallelism",
+      "task_ref": "sha256:db605337c749a872cea7b5b413429b3915bb4c3efe0f7875f0c46ce81bd8c4fb",
+      "formal_primary_exception": "AgentTimeoutError",
+      "formal_secondary_observation": "Harbor still invoked the verifier, which also ran for 900 seconds without producing reward.txt",
+      "formal_reward": 0,
+      "source_db_sha256": "fd0bba03051200e1f773199ae9d58cf9b6e75653659116f0b0ea6874d30afd47",
+      "restored_files": [
+        {
+          "path": "/app/pipeline_parallel.py",
+          "sha256": "75ce315aa5df0c8639d847d3840e439f71d452c73e2e182b96f3a0d18c131eef",
+          "bytes": 9025
+        }
+      ],
+      "recheck_trial": "treatment-torch-pipeline-parallelism-final-state-diagnostic-r1",
+      "recheck_reward": 1,
+      "tests_passed": 4,
+      "tests_failed": 0,
+      "verifier_seconds": 287.13366,
+      "classification": "mixed AgentTimeout plus verifier timeout; final deliverable is valid, but this is not a pure verifier-only recovery"
+    }
+  ],
+  "root_cause": {
+    "finding": "The 900-second verifier budget was consumed primarily by per-trial cold installation of uv, Python, PyTorch/CUDA wheels and related packages under 16-way A/B concurrency.",
+    "formal_evidence": "Three verifier-timeout logs ended during multi-gigabyte dependency downloads; treatment tensor reached 12 of 13 tests before the same deadline.",
+    "recheck_evidence": "Sequential rechecks with identical task/verifier digests completed each verifier in 252.44 to 297.69 seconds.",
+    "not_provider_or_runtime": true,
+    "not_a_uniform_solution_failure": true
+  },
+  "score_views": {
+    "frozen_official": {
+      "control": "72/89",
+      "treatment": "71/89",
+      "may_be_overwritten": false
+    },
+    "pure_verifier_timeout_recovered": {
+      "control": "74/89",
+      "treatment": "72/89",
+      "paired": {
+        "both_pass": 67,
+        "both_fail": 10,
+        "control_only": 7,
+        "treatment_only": 5,
+        "exact_two_sided_mcnemar_p": 0.7744140625
+      }
+    },
+    "final_deliverable_diagnostic": {
+      "control": "74/89",
+      "treatment": "73/89",
+      "paired": {
+        "both_pass": 68,
+        "both_fail": 10,
+        "control_only": 6,
+        "treatment_only": 5,
+        "exact_two_sided_mcnemar_p": 1.0
+      }
+    }
+  },
+  "launch_audit": {
+    "failed_pre_verifier_attempts": [
+      "An initial local command failed because the remote Harbor path did not exist locally; no remote trial or model call occurred.",
+      "The first remote attempt failed before Trial.run because Harbor requires a Python module import path rather than a filesystem import path.",
+      "The second remote attempt failed closed before upload because file_change.text is a human-readable commit-and-diff record, not file contents; the recovery agent was corrected to use successful write/edit request bodies and verify their final SHA-256."
+    ],
+    "successful_rechecks": 5,
+    "model_calls": 0,
+    "residual_recheck_processes": 0,
+    "residual_recheck_containers": 0
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "files": [
+    {
+      "bytes": 5866,
+      "path": "/app/recover_model.py",
+      "sha256": "dcb930dd175653480882a25cc66f57b99741f30cac0e3cc729600ecb928bcae1"
+    }
+  ],
+  "model_calls": 0,
+  "post_command": "python /app/recover_model.py",
+  "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/pytorch-model-recovery__tcSC4PK/agent/morphz.db",
+  "source_db_sha256": "e8a57d0d260dddc25e247ad3454bc9e0bf4430f8814975cdd54a0d6953e335f4"
+}

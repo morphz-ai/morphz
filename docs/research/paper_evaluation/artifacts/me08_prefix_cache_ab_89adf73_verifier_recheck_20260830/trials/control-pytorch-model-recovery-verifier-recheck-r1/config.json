@@ -1,0 +1,19 @@
+{
+    "task": {
+        "path": "/root/.cache/harbor/tasks/packages/terminal-bench/pytorch-model-recovery/2e628841cff93290919172398e573e794f34c95d9382b7425adde4364022decc"
+    },
+    "trial_name": "control-pytorch-model-recovery-verifier-recheck-r1",
+    "trials_dir": "/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/trials",
+    "agent": {
+        "name": "replay_agent:ReplaySnapshotAgent",
+        "override_timeout_sec": 900.0,
+        "kwargs": {
+            "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/pytorch-model-recovery__tcSC4PK/agent/morphz.db",
+            "expected_source_db_sha256": "e8a57d0d260dddc25e247ad3454bc9e0bf4430f8814975cdd54a0d6953e335f4",
+            "post_command": "python /app/recover_model.py"
+        }
+    },
+    "verifier": {
+        "override_timeout_sec": 3600.0
+    }
+}

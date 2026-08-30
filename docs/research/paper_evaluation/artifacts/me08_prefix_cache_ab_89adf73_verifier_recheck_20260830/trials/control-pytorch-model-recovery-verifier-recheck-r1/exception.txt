@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py", line 378, in run
+    await self._run()
+  File "/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/single_step.py", line 41, in _run
+    await self._run_agent()
+  File "/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/single_step.py", line 77, in _run_agent
+    await self._run_agent_phase(
+  File "/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py", line 480, in _run_agent_phase
+    await asyncio.wait_for(
+  File "/opt/uv-python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/tools/replay_agent.py", line 99, in run
+    raise RuntimeError(
+RuntimeError: Snapshot hash mismatch for /app/recover_model.py: event dcb930dd175653480882a25cc66f57b99741f30cac0e3cc729600ecb928bcae1, text ce5966c56c57b02ea3abc627b515062e8baa35b5e26d8898b7b75c178bb1ecf6

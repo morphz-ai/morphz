@@ -1,0 +1,18 @@
+{
+    "task": {
+        "path": "/root/.cache/harbor/tasks/packages/terminal-bench/torch-pipeline-parallelism/db605337c749a872cea7b5b413429b3915bb4c3efe0f7875f0c46ce81bd8c4fb"
+    },
+    "trial_name": "control-torch-pipeline-parallelism-verifier-recheck-r1",
+    "trials_dir": "/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/trials",
+    "agent": {
+        "name": "replay_agent:ReplaySnapshotAgent",
+        "override_timeout_sec": 900.0,
+        "kwargs": {
+            "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/torch-pipeline-parallelism__cQsodgH/agent/morphz.db",
+            "expected_source_db_sha256": "ea73582381071aa22be86140cea97fc4b0e4be755dae11defdae7e5939f8b01f"
+        }
+    },
+    "verifier": {
+        "override_timeout_sec": 3600.0
+    }
+}

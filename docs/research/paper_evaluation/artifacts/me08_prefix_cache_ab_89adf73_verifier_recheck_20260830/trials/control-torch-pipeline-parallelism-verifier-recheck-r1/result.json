@@ -1,0 +1,115 @@
+{
+    "id": "b8424f14-63d1-4d1f-8177-729945379074",
+    "task_name": "terminal-bench/torch-pipeline-parallelism",
+    "trial_name": "control-torch-pipeline-parallelism-verifier-recheck-r1",
+    "trial_uri": "file:///opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/trials/control-torch-pipeline-parallelism-verifier-recheck-r1",
+    "task_id": {
+        "path": "/root/.cache/harbor/tasks/packages/terminal-bench/torch-pipeline-parallelism/db605337c749a872cea7b5b413429b3915bb4c3efe0f7875f0c46ce81bd8c4fb"
+    },
+    "source": null,
+    "task_checksum": "31e565558cd22598a3c2069f771d9d0eee26fb843b77f7b03e00ad4c336fbce9",
+    "config": {
+        "task": {
+            "path": "/root/.cache/harbor/tasks/packages/terminal-bench/torch-pipeline-parallelism/db605337c749a872cea7b5b413429b3915bb4c3efe0f7875f0c46ce81bd8c4fb",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "control-torch-pipeline-parallelism-verifier-recheck-r1",
+        "trials_dir": "/opt/morphz-benchmark/verifier-rechecks/me08-prefix-cache-ab-89adf73-20260830/trials",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "replay_agent:ReplaySnapshotAgent",
+            "import_path": null,
+            "model_name": null,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": 900.0,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "source_db": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/jobs/control/2026-08-30__07-00-59/torch-pipeline-parallelism__cQsodgH/agent/morphz.db",
+                "expected_source_db_sha256": "ea73582381071aa22be86140cea97fc4b0e4be755dae11defdae7e5939f8b01f"
+            },
+            "mcp_servers": []
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": 3600.0,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "job_id": null,
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "replay-snapshot",
+        "version": "1.0.0",
+        "model_info": null
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-08-30T01:39:21.290917Z",
+    "finished_at": "2026-08-30T01:44:18.760254Z",
+    "environment_setup": {
+        "started_at": "2026-08-30T01:39:21.306283Z",
+        "finished_at": "2026-08-30T01:39:22.244450Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-08-30T01:39:22.244511Z",
+        "finished_at": "2026-08-30T01:39:22.244568Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-08-30T01:39:22.244628Z",
+        "finished_at": "2026-08-30T01:39:22.402816Z"
+    },
+    "verifier": {
+        "started_at": "2026-08-30T01:39:22.604534Z",
+        "finished_at": "2026-08-30T01:44:07.481125Z"
+    },
+    "step_results": null
+}
