@@ -840,7 +840,8 @@ mod linux {
         // The host root stays read-only so system toolchains remain usable,
         // but user and temporary data-bearing roots are replaced with empty
         // private filesystems. Approved roots are rebound immediately below.
-        for hidden_root in home.iter().chain(temp_dir.iter()) {
+        let hidden_roots = home.iter().chain(temp_dir.iter()).collect::<Vec<_>>();
+        for hidden_root in &hidden_roots {
             arguments.push(os("--tmpfs"));
             arguments.push(hidden_root.as_os_str().to_owned());
         }
@@ -858,6 +859,15 @@ mod linux {
         for root in sort_paths_by_specificity(write_roots) {
             push_mount_target_dirs(&mut arguments, &root);
             push_mount(&mut arguments, "--bind", &root, &root);
+        }
+
+        // A fresh tmpfs hides the host bytes but is writable by default. Make
+        // each private data-bearing root read-only after approved nested mounts
+        // have been installed. Those child bind mounts retain their own write
+        // flag, while sibling paths cannot become an undeclared scratch area.
+        for hidden_root in hidden_roots {
+            arguments.push(os("--remount-ro"));
+            arguments.push(hidden_root.as_os_str().to_owned());
         }
 
         let denied_read_set = denied_reads.iter().cloned().collect::<BTreeSet<_>>();
@@ -1036,6 +1046,14 @@ mod linux {
                 .rposition(|item| item == "--tmpfs")
                 .unwrap();
             assert!(write_index < mask_index);
+            let temp_root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+            let temp_remount_index = arguments
+                .windows(2)
+                .position(|items| {
+                    items[0] == "--remount-ro" && items[1] == temp_root.to_string_lossy().as_ref()
+                })
+                .unwrap();
+            assert!(write_index < temp_remount_index);
             assert!(arguments.contains(&"--unshare-net".to_string()));
             assert!(arguments
                 .windows(2)

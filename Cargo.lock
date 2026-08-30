@@ -1146,7 +1146,6 @@ dependencies = [
 [[package]]
 name = "codex-utils-pty"
 version = "0.0.0"
-source = "git+https://github.com/openai/codex?rev=94cbbddafc1776d5e377bca1b05932c697e82238#94cbbddafc1776d5e377bca1b05932c697e82238"
 dependencies = [
  "anyhow",
  "filedescriptor",

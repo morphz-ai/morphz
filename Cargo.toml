@@ -9,7 +9,7 @@ members = [
     "tools/morphz-cli-docs",
     "yao",
 ]
-exclude = ["third_party/codex-otel-stub"]
+exclude = ["third_party/codex-otel-stub", "third_party/codex-utils-pty"]
 default-members = ["morphz"]
 
 [workspace.package]
@@ -26,3 +26,7 @@ rust-version = "1.97.1"
 # API as a deliberate no-op adapter instead of importing Codex's HTTP/OTEL
 # stack into the product.
 codex-otel = { path = "third_party/codex-otel-stub" }
+# Upstream's pinned Windows PTY implementation crosses a RawHandle boundary
+# with two different c_void aliases. Keep the small crate local until the
+# equivalent ABI fix is available in the Codex revision Morphz consumes.
+codex-utils-pty = { path = "third_party/codex-utils-pty" }
