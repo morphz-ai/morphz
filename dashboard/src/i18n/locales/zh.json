@@ -144,7 +144,7 @@
     "promptCacheTransport": "Prompt Cache 传输",
     "promptCacheAutomatic": "Provider 默认行为",
     "promptCacheStructuredDeltas": "结构化 ContextDelta（实验）",
-    "promptCacheStructuredDeltasHint": "仅实验编译版本可用。在一条 User 消息中发送闭合 Context seed 和有序结构化 delta blocks；仅为缺少显式缓存断点的 ChatGPT/Codex 兼容端点启用。",
+    "promptCacheStructuredDeltasHint": "仅实验编译版本可用的 Provider 中立优化。在一条 User 消息中发送闭合 Context seed 和有序结构化 delta blocks；请根据各模型实测缓存结果分别启用。",
     "modelCapacityHint": "服务目录返回的容量会直接填入；没有返回的字段保持空白。修改后保存为显式配置。",
     "contextWindow": "上下文窗口（输入 + 输出）",
     "maxInput": "最大输入（仅输入）",

@@ -1,0 +1,112 @@
+{
+  "schema_version": "morphz-prefix-cache-nine-model-real-task-token-usage-v1",
+  "date": "2026-08-30",
+  "task": "terminal-bench/cancel-async-tasks",
+  "definitions": {
+    "total_tokens": "input_tokens + output_tokens",
+    "cached_input_tokens": "subset of input_tokens; not added again to total_tokens",
+    "cache_write_input_tokens": "input billing category; not added again to total_tokens",
+    "steady": "all requests except the first request of each model run"
+  },
+  "totals": {
+    "no_delta": {
+      "requests": 50,
+      "input_tokens": 1437342,
+      "output_tokens": 33607,
+      "total_tokens": 1470949,
+      "cached_input_tokens": 753168,
+      "cache_write_input_tokens": 146681,
+      "cache_hit_rate": 0.52400055
+    },
+    "delta": {
+      "requests": 50,
+      "input_tokens": 1401174,
+      "output_tokens": 54019,
+      "total_tokens": 1455193,
+      "cached_input_tokens": 1012116,
+      "cache_write_input_tokens": 66438,
+      "cache_hit_rate": 0.72233427
+    },
+    "no_delta_steady": {
+      "requests": 41,
+      "input_tokens": 1202289,
+      "output_tokens": 27823,
+      "total_tokens": 1230112,
+      "cached_input_tokens": 753168,
+      "cache_write_input_tokens": 106786,
+      "cache_hit_rate": 0.62644506
+    },
+    "delta_steady": {
+      "requests": 41,
+      "input_tokens": 1166245,
+      "output_tokens": 37380,
+      "total_tokens": 1203625,
+      "cached_input_tokens": 893904,
+      "cache_write_input_tokens": 43905,
+      "cache_hit_rate": 0.76648046
+    }
+  },
+  "models": [
+    {
+      "model": "gpt-5.6-sol",
+      "no_delta": {"requests": 4, "input_tokens": 92952, "output_tokens": 925, "total_tokens": 93877, "cached_input_tokens": 38400, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.541760722348},
+      "delta": {"requests": 4, "input_tokens": 91708, "output_tokens": 1255, "total_tokens": 92963, "cached_input_tokens": 65024, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.933743071312}
+    },
+    {
+      "model": "qwen3.8-max-preview",
+      "no_delta": {"requests": 5, "input_tokens": 136115, "output_tokens": 5258, "total_tokens": 141373, "cached_input_tokens": 68608, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.618731117825},
+      "delta": {"requests": 6, "input_tokens": 164081, "output_tokens": 10613, "total_tokens": 174694, "cached_input_tokens": 152320, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.941982962851}
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "no_delta": {"requests": 6, "input_tokens": 173117, "output_tokens": 8884, "total_tokens": 182001, "cached_input_tokens": 111104, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.752466932606},
+      "delta": {"requests": 4, "input_tokens": 108116, "output_tokens": 20220, "total_tokens": 128336, "cached_input_tokens": 93952, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.958250689372}
+    },
+    {
+      "model": "bai-deepseek-v4-flash",
+      "no_delta": {"requests": 7, "input_tokens": 210045, "output_tokens": 5249, "total_tokens": 215294, "cached_input_tokens": 99584, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.539563511844},
+      "delta": {"requests": 6, "input_tokens": 163539, "output_tokens": 7573, "total_tokens": 171112, "cached_input_tokens": 127488, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.760221634737}
+    },
+    {
+      "model": "k3-256k",
+      "no_delta": {"requests": 7, "input_tokens": 182410, "output_tokens": 6447, "total_tokens": 188857, "cached_input_tokens": 136448, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.856714112602},
+      "delta": {"requests": 7, "input_tokens": 181689, "output_tokens": 6992, "total_tokens": 188681, "cached_input_tokens": 172032, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.955832361010}
+    },
+    {
+      "model": "glm-5.3",
+      "no_delta": {"requests": 8, "input_tokens": 218116, "output_tokens": 2586, "total_tokens": 220702, "cached_input_tokens": 167424, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.864565636119},
+      "delta": {"requests": 8, "input_tokens": 219199, "output_tokens": 2452, "total_tokens": 221651, "cached_input_tokens": 208384, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.959633564581}
+    },
+    {
+      "model": "gemini-3.7-flash-high",
+      "no_delta": {"requests": 4, "input_tokens": 103142, "output_tokens": 1164, "total_tokens": 104306, "cached_input_tokens": 0, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.0},
+      "delta": {"requests": 5, "input_tokens": 127406, "output_tokens": 918, "total_tokens": 128324, "cached_input_tokens": 0, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.0}
+    },
+    {
+      "model": "grok-4.6",
+      "no_delta": {"requests": 4, "input_tokens": 105362, "output_tokens": 1346, "total_tokens": 106708, "cached_input_tokens": 62208, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.776319073529},
+      "delta": {"requests": 5, "input_tokens": 134328, "output_tokens": 1589, "total_tokens": 135917, "cached_input_tokens": 48256, "cache_write_input_tokens": 0, "steady_cache_hit_rate": 0.441067844607}
+    },
+    {
+      "model": "claude-opus-5",
+      "no_delta": {"requests": 5, "input_tokens": 216083, "output_tokens": 1748, "total_tokens": 217831, "cached_input_tokens": 69392, "cache_write_input_tokens": 146681, "steady_cache_hit_rate": 0.393856492570},
+      "delta": {"requests": 5, "input_tokens": 211108, "output_tokens": 2407, "total_tokens": 213515, "cached_input_tokens": 144660, "cache_write_input_tokens": 66438, "steady_cache_hit_rate": 0.743536282669}
+    }
+  ],
+  "official_api_equivalent_cost_usd": {
+    "scope": "reference only; actual requests used a local proxy and may be subscription- or credit-billed",
+    "comparable_model_count": 7,
+    "all_requests": {"no_delta": 0.975781092, "delta": 0.816710333, "delta_change_rate": -0.163018899},
+    "steady": {"no_delta": 0.655613956, "delta": 0.583088798, "delta_change_rate": -0.110621742},
+    "excluded_models": ["claude-opus-5", "glm-5.3"],
+    "models": [
+      {"model": "gpt-5.6-sol", "rates_per_million": {"input": 4.0, "cached_input": 0.4, "output": 20.0}, "no_delta": 0.252068, "delta": 0.1578456, "no_delta_steady": 0.16282, "delta_steady": 0.0686656},
+      {"model": "bai-deepseek-v4-flash", "rates_per_million": {"input": 0.22, "cached_input": 0.007, "output": 0.66}, "rate_tier": "off-peak", "no_delta": 0.028462848, "delta": 0.013821816, "no_delta_steady": 0.021708628, "delta_steady": 0.01061624},
+      {"model": "deepseek-v4-pro", "rates_per_million": {"input": 0.66, "cached_input": 0.022, "output": 1.98}, "rate_tier": "off-peak", "no_delta": 0.060963188, "delta": 0.051450784, "no_delta_steady": 0.043717388, "delta_steady": 0.025340084},
+      {"model": "gemini-3.7-flash-high", "rates_per_million": {"input": 0.75, "cached_input": 0.075, "output": 3.75}, "rate_tier": "2026 promotional standard", "no_delta": 0.0817215, "delta": 0.098997, "no_delta_steady": 0.06362925, "delta_steady": 0.08091525},
+      {"model": "grok-4.6", "rates_per_million": {"input": 2.0, "cached_input": 0.5, "output": 6.0}, "no_delta": 0.125488, "delta": 0.205806, "no_delta_steady": 0.074488, "delta_steady": 0.155126},
+      {"model": "qwen3.8-max-preview", "reference_sku": "qwen3.8-max Global", "rates_per_million": {"input": 1.65, "cached_input": 0.206, "output": 4.951}, "no_delta": 0.151552156, "delta": 0.103328533, "no_delta_steady": 0.09672329, "delta_steady": 0.078751024},
+      {"model": "k3-256k", "reference_sku": "kimi-k3", "rates_per_million": {"input": 3.0, "cached_input": 0.3, "output": 15.0}, "no_delta": 0.2755254, "delta": 0.1854606, "no_delta_steady": 0.1925274, "delta_steady": 0.1636746}
+    ]
+  }
+}

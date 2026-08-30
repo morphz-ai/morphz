@@ -1592,7 +1592,7 @@ impl Client for RoutedClient {
     }
 
     fn prefers_structured_delta_cache_transport(&self, requested_model: Option<&str>) -> bool {
-        if !cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+        if !cfg!(feature = "experimental-structured-context-delta-cache") {
             return false;
         }
         let alias = requested_model
@@ -1619,9 +1619,7 @@ impl Client for RoutedClient {
                     .get(&candidate.model)
                     .map(|profile| profile.prompt_cache_strategy)
                     .unwrap_or_default();
-                provider.protocol.effective_for_model(&candidate.model)
-                    == ModelProtocol::OpenaiResponses
-                    && strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
+                strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
             })
     }
 
@@ -2143,7 +2141,7 @@ mod tests {
         let structured = RoutedClient::new(&codex_config, "coding".to_string()).unwrap();
         assert_eq!(
             structured.prefers_structured_delta_cache_transport(Some("coding")),
-            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            cfg!(feature = "experimental-structured-context-delta-cache")
         );
 
         codex_config

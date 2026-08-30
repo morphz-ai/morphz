@@ -3069,9 +3069,9 @@ impl MorphzRuntime {
         }
         Ok(ProviderControlSnapshot {
             generated_at: chrono::Utc::now(),
-            experimental_features: if cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            experimental_features: if cfg!(feature = "experimental-structured-context-delta-cache")
             {
-                vec!["openai-chatgpt-structured-cache".to_string()]
+                vec!["structured-context-delta-cache".to_string()]
             } else {
                 Vec::new()
             },
@@ -12461,7 +12461,7 @@ mod tests {
     #[async_trait::async_trait]
     impl Client for PhysicalBatchClient {
         fn prefers_structured_delta_cache_transport(&self, _requested_model: Option<&str>) -> bool {
-            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            cfg!(feature = "experimental-structured-context-delta-cache")
         }
 
         async fn create_completion(
@@ -12505,7 +12505,7 @@ mod tests {
                 });
             }
             if call == 1 {
-                let complete = if cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+                let complete = if cfg!(feature = "experimental-structured-context-delta-cache") {
                     let deltas = messages
                         .get(1)
                         .and_then(crate::llm::segmented_model_text)
@@ -12556,7 +12556,7 @@ mod tests {
                 });
             }
             if call == 2 {
-                let complete = if cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+                let complete = if cfg!(feature = "experimental-structured-context-delta-cache") {
                     let deltas = messages
                         .get(1)
                         .and_then(crate::llm::segmented_model_text)
@@ -15000,7 +15000,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].len(), 2);
-        if cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+        if cfg!(feature = "experimental-structured-context-delta-cache") {
             assert_eq!(requests[1].len(), 2);
             assert_eq!(requests[2].len(), 2);
             assert_eq!(requests[1][0], requests[2][0]);

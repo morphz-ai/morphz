@@ -67,7 +67,14 @@ fn decode_sse_chunks(payload: &[u8], split_at: usize) -> Vec<String> {
 
 #[test]
 fn openai_chat_uses_the_current_completion_budget_field() {
-    let request = build_openai_chat_request("gpt-test", Some(4096), None, &prompt(), &[]);
+    let request = build_openai_chat_request(
+        "gpt-test",
+        Some(4096),
+        None,
+        &prompt(),
+        &[],
+        PromptCacheWireMode::ImplicitText,
+    );
 
     assert_eq!(request["max_completion_tokens"], 4096);
     assert!(request.get("max_tokens").is_none());
@@ -103,7 +110,14 @@ fn openai_chat_replays_reasoning_content_on_the_assistant_tool_call_message() {
         },
     ];
 
-    let request = build_openai_chat_request("deepseek", None, None, &messages, &[]);
+    let request = build_openai_chat_request(
+        "deepseek",
+        None,
+        None,
+        &messages,
+        &[],
+        PromptCacheWireMode::ImplicitText,
+    );
 
     assert_eq!(request["messages"].as_array().unwrap().len(), 2);
     assert_eq!(
@@ -1010,6 +1024,7 @@ fn gemini_parallel_calls_preserve_native_ids_in_both_directions() {
             tool_result("call-a", 1),
         ],
         &[],
+        PromptCacheWireMode::ImplicitText,
     );
 
     assert_eq!(

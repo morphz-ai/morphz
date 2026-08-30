@@ -2099,11 +2099,11 @@ async fn handle_put_provider_account_models(
         display_aliases.insert(id.clone(), display_alias);
         let prompt_cache_strategy = selection.prompt_cache_strategy.unwrap_or_default();
         if prompt_cache_strategy == crate::config::PromptCacheStrategy::ExperimentalStructuredDeltas
-            && !cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            && !cfg!(feature = "experimental-structured-context-delta-cache")
         {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "experimental-structured-deltas requires a Morphz build with feature experimental-openai-chatgpt-structured-cache",
+                "experimental-structured-deltas requires a Morphz build with feature experimental-structured-context-delta-cache",
             );
         }
         models.insert(

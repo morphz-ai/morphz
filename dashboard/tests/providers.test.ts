@@ -148,7 +148,7 @@ test('provider capacity is copied from catalog fields without speculative copy',
 
 test('structured ContextDelta cache is offered only when the Runtime build exposes it', () => {
   assert.match(providersSource, /experimental_features \?\? \[\]/)
-  assert.match(providersSource, /openai-chatgpt-structured-cache/)
+  assert.match(providersSource, /structured-context-delta-cache/)
   assert.match(providersSource, /experimental-structured-deltas/)
   assert.match(providersSource, /structuredCacheExperimentAvailable &&/)
 })

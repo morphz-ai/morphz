@@ -1163,9 +1163,9 @@ impl ProtocolClient {
     ) -> Result<Self, ProviderError> {
         if provider.models.get(&model).is_some_and(|profile| {
             profile.prompt_cache_strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
-        }) && !cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+        }) && !cfg!(feature = "experimental-structured-context-delta-cache")
         {
-            return Err("prompt_cache_strategy=experimental-structured-deltas requires build feature experimental-openai-chatgpt-structured-cache".into());
+            return Err("prompt_cache_strategy=experimental-structured-deltas requires build feature experimental-structured-context-delta-cache".into());
         }
         let mut headers = HeaderMap::new();
         for (name, value) in &provider.headers {
@@ -1431,14 +1431,20 @@ impl ProtocolClient {
     }
 
     fn prompt_cache_wire_mode(&self, model: &str) -> PromptCacheWireMode {
-        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
-            return PromptCacheWireMode::ImplicitText;
-        }
         let strategy = self
             .model_profiles
             .get(model)
             .map(|profile| profile.prompt_cache_strategy)
             .unwrap_or_default();
+        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
+            return if strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
+                && cfg!(feature = "experimental-structured-context-delta-cache")
+            {
+                PromptCacheWireMode::ImplicitContentBoundaries
+            } else {
+                PromptCacheWireMode::ImplicitText
+            };
+        }
         if strategy == PromptCacheStrategy::Disabled {
             return PromptCacheWireMode::ImplicitText;
         }
@@ -1450,7 +1456,7 @@ impl ProtocolClient {
                     PromptCacheWireMode::ImplicitContentBoundaries
                 }
                 PromptCacheStrategy::ExperimentalStructuredDeltas
-                    if cfg!(feature = "experimental-openai-chatgpt-structured-cache") =>
+                    if cfg!(feature = "experimental-structured-context-delta-cache") =>
                 {
                     PromptCacheWireMode::ImplicitContentBoundaries
                 }
@@ -1481,7 +1487,7 @@ impl ProtocolClient {
                 PromptCacheWireMode::ImplicitMessageBoundaries
             }
             PromptCacheStrategy::ExperimentalStructuredDeltas
-                if cfg!(feature = "experimental-openai-chatgpt-structured-cache") =>
+                if cfg!(feature = "experimental-structured-context-delta-cache") =>
             {
                 PromptCacheWireMode::ImplicitContentBoundaries
             }
@@ -2149,7 +2155,7 @@ impl Client for ProtocolClient {
     }
 
     fn prefers_structured_delta_cache_transport(&self, requested_model: Option<&str>) -> bool {
-        if !cfg!(feature = "experimental-openai-chatgpt-structured-cache") {
+        if !cfg!(feature = "experimental-structured-context-delta-cache") {
             return false;
         }
         let model = requested_model
@@ -2162,8 +2168,7 @@ impl Client for ProtocolClient {
             .get(&model)
             .map(|profile| profile.prompt_cache_strategy)
             .unwrap_or_default();
-        self.protocol_for_model(&model) == ModelProtocol::OpenaiResponses
-            && strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
+        strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
     }
 
     fn supports_async_cancellation(&self) -> bool {
@@ -3534,9 +3539,14 @@ fn build_request_with_prompt_cache(
     prompt_cache_wire_mode: PromptCacheWireMode,
 ) -> Value {
     match protocol {
-        ModelProtocol::OpenaiChat => {
-            build_openai_chat_request(model, max_output_tokens, reasoning_effort, messages, tools)
-        }
+        ModelProtocol::OpenaiChat => build_openai_chat_request(
+            model,
+            max_output_tokens,
+            reasoning_effort,
+            messages,
+            tools,
+            prompt_cache_wire_mode,
+        ),
         ModelProtocol::OpenaiResponses => build_openai_responses_request(
             model,
             max_output_tokens,
@@ -3545,12 +3555,21 @@ fn build_request_with_prompt_cache(
             tools,
             prompt_cache_wire_mode,
         ),
-        ModelProtocol::AnthropicMessages => {
-            build_anthropic_request(model, max_output_tokens, reasoning_effort, messages, tools)
-        }
-        ModelProtocol::GeminiContent => {
-            build_gemini_request(max_output_tokens, reasoning_effort, messages, tools)
-        }
+        ModelProtocol::AnthropicMessages => build_anthropic_request(
+            model,
+            max_output_tokens,
+            reasoning_effort,
+            messages,
+            tools,
+            prompt_cache_wire_mode,
+        ),
+        ModelProtocol::GeminiContent => build_gemini_request(
+            max_output_tokens,
+            reasoning_effort,
+            messages,
+            tools,
+            prompt_cache_wire_mode,
+        ),
     }
 }
 
@@ -3560,6 +3579,7 @@ fn build_openai_chat_request(
     reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
+    prompt_cache_wire_mode: PromptCacheWireMode,
 ) -> Value {
     let mut converted = Vec::new();
     let mut pending_continuation = None;
@@ -3576,11 +3596,20 @@ fn build_openai_chat_request(
             converted.push(json!({"role": "user", "content": content}));
             continue;
         }
-        if segmented_model_text(message).is_some() {
-            converted.push(json!({
-                "role": message.role,
-                "content": model_visible_message_text(message),
-            }));
+        if let Some(segmented) = segmented_model_text(message) {
+            let content = if prompt_cache_wire_mode.emits_content_blocks() {
+                Value::Array(
+                    segmented
+                        .parts
+                        .into_iter()
+                        .filter(|part| !part.text.is_empty())
+                        .map(|part| json!({"type": "text", "text": part.text}))
+                        .collect(),
+                )
+            } else {
+                Value::String(segmented.parts.into_iter().map(|part| part.text).collect())
+            };
+            converted.push(json!({"role": message.role, "content": content}));
             continue;
         }
         let mut converted_message = serde_json::to_value(message).unwrap_or_else(|_| json!({}));
@@ -3836,6 +3865,7 @@ fn build_anthropic_request(
     reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
+    prompt_cache_wire_mode: PromptCacheWireMode,
 ) -> Value {
     let system = messages
         .iter()
@@ -3859,11 +3889,26 @@ fn build_anthropic_request(
             }
             continue;
         }
-        if segmented_model_text(message).is_some() {
-            let text = model_visible_message_text(message);
-            if !text.is_empty() {
-                converted
-                    .push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
+        if let Some(segmented) = segmented_model_text(message) {
+            let content = if prompt_cache_wire_mode.emits_content_blocks() {
+                segmented
+                    .parts
+                    .into_iter()
+                    .filter(|part| !part.text.is_empty())
+                    .map(|part| json!({"type": "text", "text": part.text}))
+                    .collect::<Vec<_>>()
+            } else {
+                let text = segmented
+                    .parts
+                    .into_iter()
+                    .map(|part| part.text)
+                    .collect::<String>();
+                (!text.is_empty())
+                    .then(|| vec![json!({"type": "text", "text": text})])
+                    .unwrap_or_default()
+            };
+            if !content.is_empty() {
+                converted.push(json!({"role": "user", "content": content}));
             }
             continue;
         }
@@ -3963,6 +4008,7 @@ fn build_gemini_request(
     reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
+    prompt_cache_wire_mode: PromptCacheWireMode,
 ) -> Value {
     let system = messages
         .iter()
@@ -3989,10 +4035,26 @@ fn build_gemini_request(
             }
             continue;
         }
-        if segmented_model_text(message).is_some() {
-            let text = model_visible_message_text(message);
-            if !text.is_empty() {
-                contents.push(json!({"role": "user", "parts": [{"text": text}]}));
+        if let Some(segmented) = segmented_model_text(message) {
+            let parts = if prompt_cache_wire_mode.emits_content_blocks() {
+                segmented
+                    .parts
+                    .into_iter()
+                    .filter(|part| !part.text.is_empty())
+                    .map(|part| json!({"text": part.text}))
+                    .collect::<Vec<_>>()
+            } else {
+                let text = segmented
+                    .parts
+                    .into_iter()
+                    .map(|part| part.text)
+                    .collect::<String>();
+                (!text.is_empty())
+                    .then(|| vec![json!({"text": text})])
+                    .unwrap_or_default()
+            };
+            if !parts.is_empty() {
+                contents.push(json!({"role": "user", "parts": parts}));
             }
             continue;
         }
@@ -6602,17 +6664,17 @@ mod tests {
         assert!(!public.prefers_structured_delta_cache_transport(Some("implicit")));
         assert_eq!(
             codex.prefers_structured_delta_cache_transport(Some("structured-deltas")),
-            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            cfg!(feature = "experimental-structured-context-delta-cache")
         );
         // The opt-in is an endpoint declaration, not adapter-name inference;
         // this also supports an OpenAI-compatible Proxy in front of ChatGPT.
         assert_eq!(
             public.prefers_structured_delta_cache_transport(Some("structured-deltas")),
-            cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            cfg!(feature = "experimental-structured-context-delta-cache")
         );
     }
 
-    #[cfg(not(feature = "experimental-openai-chatgpt-structured-cache"))]
+    #[cfg(not(feature = "experimental-structured-context-delta-cache"))]
     #[test]
     fn structured_delta_cache_config_is_rejected_when_feature_is_not_compiled() {
         let mut provider = ProviderConfig {
@@ -6637,10 +6699,10 @@ mod tests {
         .expect("an uncompiled experimental transport must be rejected");
         assert!(error
             .to_string()
-            .contains("experimental-openai-chatgpt-structured-cache"));
+            .contains("experimental-structured-context-delta-cache"));
     }
 
-    #[cfg(feature = "experimental-openai-chatgpt-structured-cache")]
+    #[cfg(feature = "experimental-structured-context-delta-cache")]
     #[test]
     fn structured_delta_cache_opt_in_emits_one_user_item_with_multiple_text_blocks() {
         let mut provider = ProviderConfig {
@@ -6697,6 +6759,68 @@ mod tests {
         assert!(content
             .iter()
             .all(|block| block.get("prompt_cache_breakpoint").is_none()));
+    }
+
+    #[cfg(feature = "experimental-structured-context-delta-cache")]
+    #[test]
+    fn structured_delta_cache_preserves_native_text_blocks_across_protocols() {
+        let message = segmented_text_message(
+            "user",
+            SegmentedModelText {
+                parts: vec![
+                    ModelTextPart {
+                        text: "(context (inbox))".to_string(),
+                        cache_boundary_after: true,
+                        cache_boundary_candidate_after: true,
+                    },
+                    ModelTextPart {
+                        text: "\n(context-delta (inbox-append (observation)))".to_string(),
+                        cache_boundary_after: true,
+                        cache_boundary_candidate_after: true,
+                    },
+                ],
+                prompt_cache_key: Some("structured-cohort".to_string()),
+            },
+        )
+        .unwrap();
+
+        for protocol in [
+            ModelProtocol::OpenaiChat,
+            ModelProtocol::AnthropicMessages,
+            ModelProtocol::GeminiContent,
+        ] {
+            let mut provider = ProviderConfig {
+                protocol,
+                base_url: "https://provider.invalid/v1".to_string(),
+                ..ProviderConfig::default()
+            };
+            provider.models.insert(
+                "model".to_string(),
+                ProviderModelConfig {
+                    prompt_cache_strategy: PromptCacheStrategy::ExperimentalStructuredDeltas,
+                    ..ProviderModelConfig::default()
+                },
+            );
+            let client =
+                ProtocolClient::new(&provider, "model".to_string(), None, &LlmConfig::default())
+                    .unwrap();
+            assert!(client.prefers_structured_delta_cache_transport(Some("model")));
+            let request = client.request_for_model("model", std::slice::from_ref(&message), &[]);
+            let blocks = match protocol {
+                ModelProtocol::OpenaiChat => request.pointer("/messages/0/content"),
+                ModelProtocol::AnthropicMessages => request.pointer("/messages/0/content"),
+                ModelProtocol::GeminiContent => request.pointer("/contents/0/parts"),
+                ModelProtocol::OpenaiResponses => unreachable!(),
+            }
+            .and_then(Value::as_array)
+            .unwrap();
+            assert_eq!(blocks.len(), 2, "protocol={protocol:?}");
+            assert_eq!(blocks[0]["text"], "(context (inbox))");
+            assert!(blocks[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("context-delta"));
+        }
     }
 
     #[test]

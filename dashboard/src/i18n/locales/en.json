@@ -144,7 +144,7 @@
     "promptCacheTransport": "Prompt cache transport",
     "promptCacheAutomatic": "Provider default",
     "promptCacheStructuredDeltas": "Structured ContextDelta (experimental)",
-    "promptCacheStructuredDeltasHint": "Compile-time gated. Sends one User message containing a closed Context seed plus ordered structured delta blocks. Enable only for a ChatGPT/Codex-compatible endpoint that lacks explicit cache breakpoints.",
+    "promptCacheStructuredDeltasHint": "Compile-time gated provider-neutral optimization. Sends one User message containing a closed Context seed plus ordered structured delta blocks. Enable per model after checking its cache results.",
     "modelCapacityHint": "Capacity values returned by the provider are filled in directly. Fields absent from the response stay blank; edits are saved as explicit configuration.",
     "contextWindow": "Context window (input + output)",
     "maxInput": "Maximum input (input only)",

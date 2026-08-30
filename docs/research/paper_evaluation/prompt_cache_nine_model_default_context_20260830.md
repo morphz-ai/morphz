@@ -1,6 +1,7 @@
 # 九模型前缀缓存能力探针与真实任务校正（2026-08-30）
 
-> 状态：九模型 synthetic capability probe 与 GPT/K3 真实 Terminal-Bench 复核完成。能力探针
+> 状态：九模型 synthetic capability probe、默认 Structured Context 真实任务复核，以及同题
+> Structured ContextDelta A/B 均已完成。能力探针
 > 只能回答端点是否可能复用前缀；产品命中率结论以完整 Morphz 请求为准。
 
 ## 结论
@@ -124,8 +125,9 @@ canonical Context seed 保持第一个完整结构化 block，随后每个工具
 
 ## 边界
 
-- 九模型表是 Provider 缓存能力和布局探针，不是回答质量或完整 Agent 任务评测；真实任务表
-  只覆盖 GPT 与 K3，其中 Structured ContextDelta 完整做完同一道题；
+- 前面的九模型表是 Provider 缓存能力和布局探针，不是回答质量或完整 Agent 任务评测；后续
+  同题实验已经让九个模型分别用默认 Context 与 Structured ContextDelta 完整运行，详见
+  `prompt_cache_nine_model_real_task_delta_ab_20260830.md`；
 - 上下文故意做长，以度量稳态能力；短任务的冷启动命中率可以远低于这里的结果；
 - DeepSeek Flash 和 Grok 证明“支持”不等于每次稳定命中，成本预算还需要多次重复和真实任务；
 - Claude 的零结果只表示当前 Proxy/Anthropic Messages 隐式路线未观察到；不排除显式
@@ -140,10 +142,13 @@ canonical Context seed 保持第一个完整结构化 block，随后每个工具
   稳定 schema、确定性排序和本文证据随本报告所在提交一起交付
 - 端点：`http://mini-m4.local:8317/v1`
 - CLIProxyAPI：`7.2.140 HEAD-4c78e40`
-- OpenAI-compatible 八模型协议：`openai-responses`
+- Morphz→Proxy 八模型请求协议：`openai-responses`；Proxy→上游可能发生协议转换，本轮没有
+  抓取或审计最终上游包，不能用这一字段推断 Gemini 等物理 Provider 的最终协议
 - Claude 协议：`anthropic-messages`
 - 有效汇总：
   `docs/research/paper_evaluation/artifacts/prompt_cache_nine_model_default_context_20260830.json`
+- 九模型真实同题 delta A/B：
+  `docs/research/paper_evaluation/prompt_cache_nine_model_real_task_delta_ab_20260830.md`
 - 原始逐请求 JSON 与失败的短探针记录：
   `/private/tmp/morphz-nine-model-cache-20260830/results`
 - 能力探针脚本：

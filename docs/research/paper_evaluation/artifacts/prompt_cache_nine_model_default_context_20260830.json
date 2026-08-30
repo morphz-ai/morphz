@@ -12,6 +12,7 @@
     "recommendation": "stop_and_rerun_on_the_stable_tools_fix"
   },
   "proxy_version": "7.2.140 HEAD-4c78e40",
+  "protocol_observation_boundary": "Protocol labels describe Morphz-to-Proxy request encoding only. Proxy-to-upstream requests were not captured or audited and may be translated to provider-native protocols.",
   "request_shape": {
     "single_user_message": true,
     "single_user_text_block": true,

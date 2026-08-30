@@ -292,7 +292,8 @@ assistant/tool transcript，形成了第二套模型可见上下文结构。该�
 
 ### 2.4 最终实验设计：canonical Context + Structured ContextDelta blocks
 
-最终实现由编译特性 `experimental-openai-chatgpt-structured-cache` 控制，默认构建不包含该能力。
+最终实现由 Provider 中立的编译特性 `experimental-structured-context-delta-cache` 控制，默认构建
+不包含该能力；旧名称 `experimental-openai-chatgpt-structured-cache` 仅保留为兼容别名。
 即使编译进 Runtime，也不会根据 Adapter 名字或 URL 猜测端点身份；Dashboard 只在 Runtime
 公布该实验能力时显示开关，并由用户对具体 Provider/物理模型显式选择
 `experimental-structured-deltas`。这使 API Proxy、反向代理和自定义域名都能被准确配置。
@@ -337,7 +338,7 @@ Context 的权威表示仍然是一棵 canonical S 表达式。缓存断点属�
 删除全部缓存元数据后，各内容块按顺序拼接所得文本必须与当前 canonical Context Message
 逐字节相同。这个等价性是实现的第一项硬性测试。
 
-`experimental-openai-chatgpt-structured-cache` 是明确隔离的例外：它不声称与每轮重建的单棵
+`experimental-structured-context-delta-cache` 是明确隔离的例外：它不声称与每轮重建的单棵
 Context 文本逐字节相同，而是维持同一结构化求值语义——一个完整 Context seed 加一组同样
 采用 S 表达式和 canonical Observation schema 的 ContextDelta。因为这是模型可见表示的实验性
 变化，所以必须同时经过编译特性和 Provider/模型显式配置两道开关，绝不能成为默认退化路径。
@@ -651,9 +652,52 @@ prompt_cache_strategy = "experimental-structured-deltas"
 验证为 HTTP 400。其他协议不会收到 OpenAI Provider-specific 字段。
 
 `experimental-structured-deltas` 只有在构建时启用
-`--features experimental-openai-chatgpt-structured-cache` 才是合法配置；默认构建的保存接口和
+`--features experimental-structured-context-delta-cache` 才是合法配置；默认构建的保存接口和
 Provider 初始化都会拒绝它，而不是静默退化。启用该编译特性后，Dashboard 会显示实验能力，
 但仍由用户对每个 Provider/物理模型显式选择，因而不依赖 `openai-codex` Adapter 名字识别 Proxy。
+
+### 7.1 九模型真实任务产品基线（2026-08-30）
+
+九模型在同一道 `terminal-bench/cancel-async-tasks` 上分别运行默认完整 Context 与实验
+Structured ContextDelta。下表命中率均为排除各轨迹第一次请求后的
+`Σcached_input_tokens / Σinput_tokens`；85% 是当前成本优势的产品参考线，不是模型能力判定线：
+
+| 物理模型 | 默认 Context | ContextDelta | 变化 | 产品指引 |
+| --- | ---: | ---: | ---: | --- |
+| `glm-5.3` | 86.46% | **95.96%** | +9.51 pp | 可开启，进一步降本 |
+| `k3-256k` | 85.67% | **95.58%** | +9.91 pp | 可开启，进一步降本 |
+| `deepseek-v4-pro` | 75.25% | **95.83%** | +20.58 pp | 建议开启 |
+| `qwen3.8-max-preview` | 61.87% | **94.20%** | +32.33 pp | 建议开启 |
+| `gpt-5.6-sol` | 54.18% | **93.37%** | +39.20 pp | 建议开启 |
+| `bai-deepseek-v4-flash` | 53.96% | **76.02%** | +22.07 pp | 有收益但有整段 miss，复测后启用 |
+| `claude-opus-5` | 39.39% | **74.35%** | +34.97 pp | 有收益；继续对照原生显式缓存 |
+| `gemini-3.7-flash-high` | 0% | 0% | 0 pp | 当前真实任务链路异常，先排查再决定 |
+| `grok-4.6` | **77.63%** | 44.11% | -33.53 pp | 当前单 User 多 block 方案不要开启 |
+
+因此 Structured ContextDelta 应当是 **Provider 中立、编译时纳入、默认关闭、按物理模型显式
+启用** 的实验机制，而不是 ChatGPT 专用实现或全局默认。该表是每模型每组一条真实生成轨迹，
+可指导当前产品配置，但不是模型总体均值；答案质量和统计方差仍需独立多 seed 实验。
+
+两组全程各 50 次请求。默认组共 1,470,949 tokens、753,168 cached input；delta 组共
+1,455,193 tokens、1,012,116 cached input。总 token 的轻微下降来自两组生成了不同的工具轨迹和
+请求数，不能解释成缓存命中会减少 usage 记账，也不能据此声称 delta 会减少语义工作量。
+
+Gemini 的零值尤其不能按 Morphz 配置名推导上游协议。已知事实仅为 Morphz 用
+`openai-responses` 向 Proxy 发请求；本轮没有抓取或审计 Proxy→Google 的最终请求，Proxy
+完全可能把它转换成 Google 原生协议。真实任务零值可能来自上游请求形状、缓存行为、Proxy
+转换或 usage 映射；结合相同 Proxy 路线的长文本能力探针曾达到 96.40%，当前只能标记为待隔离
+异常，不能写成 Gemini 或某一种 Google 接口不支持缓存。
+
+可复核产物：
+
+- 真实同题 A/B 与逐请求 usage：
+  `docs/research/paper_evaluation/prompt_cache_nine_model_real_task_delta_ab_20260830.md`
+- 九模型 Token、cache-write 与成本边界：
+  `docs/research/paper_evaluation/prompt_cache_nine_model_real_task_token_usage_20260830.md`
+- 默认结构能力探针与真实任务校正：
+  `docs/research/paper_evaluation/prompt_cache_nine_model_default_context_20260830.md`
+- 对应机器可读 JSON 位于 `docs/research/paper_evaluation/artifacts/`，原始 SQLite、workspace 和
+  日志位置记录在各实验报告末尾。
 
 建议的 Provider 映射如下：
 
@@ -665,7 +709,7 @@ Provider 初始化都会拒绝它，而不是静默退化。启用该编译特�
 | OpenAI Chat Compatible | 默认不启用；只有精确端点声明且探测通过后才映射 | 不能因“OpenAI compatible”就假定支持 Responses 字段 |
 | Anthropic Messages | 把内部边界映射为内容块 `cache_control` | 字段、TTL 和计费方式与 OpenAI 不同 |
 | DeepSeek / Qwen 自动缓存端点 | 不发送显式断点，继续保持稳定字节前缀 | DeepSeek 官方说明为自动前缀缓存；实际兼容端点仍以配置和 Usage 为准 |
-| Gemini implicit caching | 不发送显式断点，保留稳定前缀并读取 Usage | 新模型支持隐式缓存，但不等于支持 OpenAI 字段 |
+| Gemini implicit caching | 不发送显式断点，保留稳定前缀并读取 Usage | Morphz→Proxy 的协议不能证明 Proxy→Google 的最终协议；同时核验转换与 Usage 映射 |
 | Gemini explicit caching | 后续映射为独立 Cached Content 资源 | 涉及资源创建、TTL 和生命周期，不纳入第一阶段 |
 | 未知 Responses Provider | `auto` 保留兼容行为；正式实验前必须探测并冻结 | 不从“它是 Proxy”推断支持或不支持 |
 
@@ -724,15 +768,15 @@ retire 分流、Context transaction rebase 和默认构建拒绝实验配置。
 每种协议验证完整 JSON：
 
 - OpenAI Responses：`input_text` 数组、断点、cache options 和 key 的准确位置；
-- Anthropic：第一阶段拼接为原普通文本，不发送 OpenAI 字段；
+- Anthropic：普通策略拼接为原普通文本；实验 delta 策略保留原生 text block，不发送 OpenAI 字段；
 - DeepSeek / Qwen / Gemini implicit：不出现未知字段；
 - 未知兼容端点：退化为普通文本且内容完全相同；
 - `openai-codex` Adapter 保留 `prompt_cache_key`、同消息 content blocks 和 canonical
   拼接文本，剥离显式 options/breakpoint；普通 Platform Responses Adapter 在 GPT-5.6+
   输出相同块边界和显式断点字段；
 - `disabled` 和普通 implicit Provider 仍发送原单字符串。
-- 实验构建中显式选择 `experimental-structured-deltas` 时，只发送一个 User item；block 0 是
-  完整闭合 Context，后续 blocks 全是 Structured ContextDelta；默认构建明确拒绝该配置。
+- 实验构建中显式选择 `experimental-structured-deltas` 时，各 Adapter 都只发送一个 User item；
+  block 0 是完整闭合 Context，后续 blocks 全是 Structured ContextDelta；默认构建明确拒绝该配置。
 
 不支持字段的 4xx 受控降级尚未实现。
 

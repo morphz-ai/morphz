@@ -11398,7 +11398,7 @@ impl Orchestrator {
             .map(|delta| delta.observation_id.as_str())
             .collect::<HashSet<_>>();
         let transport_shape_is_safe = !bounded_critical_projection
-            && cfg!(feature = "experimental-openai-chatgpt-structured-cache")
+            && cfg!(feature = "experimental-structured-context-delta-cache")
             && !safety_refusal_recovery_active
             && !recovering_completion_intent
             && messages.len() >= 2

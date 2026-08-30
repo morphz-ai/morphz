@@ -1143,7 +1143,7 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
     modelSearchQuery,
   )
   const structuredCacheExperimentAvailable = (snapshot.experimental_features ?? []).includes(
-    'openai-chatgpt-structured-cache',
+    'structured-context-delta-cache',
   )
 
   const saveAccountModels = async () => {
