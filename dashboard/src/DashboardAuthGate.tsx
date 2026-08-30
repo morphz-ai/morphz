@@ -22,7 +22,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setReady(false)
     setChecking(false)
     setConnectionError('')
-    setCredentialError(error.message)
+    setCredentialError(DASHBOARD_API.currentToken() ? error.message : '')
     setAuthenticationRequired(true)
   }, [])
 
