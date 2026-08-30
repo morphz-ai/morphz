@@ -73,6 +73,13 @@ use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
 // amalgamation to the release binary instead of relying on the host library.
 use libsqlite3_hotbundle as _;
+// GNU and MSVC linkers otherwise defer extracting hotbundle's C objects until
+// SQLx's older bundled archive has already satisfied every SQLite reference.
+// Force the current amalgamation into the final image first; the package build
+// script permits the intentionally duplicated ABI symbols on these linkers.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[link(name = "sqlite3", kind = "static", modifiers = "+whole-archive")]
+unsafe extern "C" {}
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Acquire, QueryBuilder, Row, SqlitePool};

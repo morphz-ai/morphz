@@ -191,6 +191,8 @@ jobs:
   dashboard:
     name: Dashboard
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
     defaults:
       run:
         working-directory: dashboard
