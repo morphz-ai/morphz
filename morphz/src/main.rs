@@ -6,10 +6,9 @@ use morphz::harness_package::HarnessPackage;
 use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
-    ExecutionTargetAuthorizationScope, ExecutionTargetKind, ExecutionTargetRegistration,
-    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
-    ObjectiveStatus, QueryFilter, SessionMountKind, SessionRecord, SessionStatus,
-    ThreadControlAction, ThreadMutation,
+    ExecutionTargetAuthorizationScope, ExecutionTargetStatus, NewAgent, NewCognitiveContext,
+    NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter, SessionMountKind, SessionRecord,
+    SessionStatus, ThreadControlAction, ThreadMutation,
 };
 use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
@@ -1321,54 +1320,35 @@ async fn pair_edge_node(runtime: &MorphzRuntime, invocation: &Invocation) -> Res
         .map(str::to_string)
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_else(|| "Morphz Edge Node".to_string());
-    let identity = morphz::edge_node::generate_device_identity()?;
-    let gateway = morphz::edge_node::EdgeGatewayClient::new(server_url)?;
-    let paired = gateway
-        .pair(morphz::sdk::PairExecutionNodeCommand {
-            code: pairing_code.to_string(),
-            node_id: option_value(invocation, "node-id").map(str::to_string),
-            name: node_name,
-            device_key_fingerprint: identity.fingerprint.clone(),
-            device_public_key: identity.public_key.clone(),
-            protocol_version: 1,
-            platform: Some(format!(
-                "{}-{}",
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            )),
-            capabilities: runtime.physical_tool_names(),
-            metadata: serde_json::json!({
-                "client_version": morphz::build_info::VERSION,
-                "transport": "outbound_http_long_poll"
-            }),
-        })
-        .await?;
-    let credentials = morphz::edge_node::EdgeNodeCredentials {
-        server_url: server_url.trim_end_matches('/').to_string(),
-        node_id: paired.node.id.clone(),
-        device_key_fingerprint: identity.fingerprint,
-        device_public_key: identity.public_key,
-        device_private_key_pkcs8: identity.private_key_pkcs8,
-    };
     let path = edge_credential_path(invocation)?;
-    credentials.save(&path)?;
+    let paired = morphz::edge_app::pair_edge_node(
+        runtime,
+        morphz::edge_app::PairEdgeNodeOptions {
+            server_url: server_url.to_string(),
+            pairing_code: pairing_code.to_string(),
+            node_id: option_value(invocation, "node-id").map(str::to_string),
+            node_name,
+            credential_path: path,
+        },
+    )
+    .await?;
     println!(
         "Paired Edge Node '{}' ({})\nCredentials: {}",
         paired.node.name,
         paired.node.id,
-        path.display()
+        paired.credential_path.display()
     );
     Ok(())
 }
 
 fn show_edge_node_status(invocation: &Invocation) -> Result<(), AppError> {
     let path = edge_credential_path(invocation)?;
-    let credentials = morphz::edge_node::EdgeNodeCredentials::load(&path)?;
+    let status = morphz::edge_app::edge_node_status(&path)?;
     println!(
         "Edge Node: {}\nGateway: {}\nCredentials: {}",
-        credentials.node_id,
-        credentials.server_url,
-        path.display()
+        status.node_id,
+        status.server_url,
+        status.credential_path.display()
     );
     Ok(())
 }
@@ -1449,10 +1429,7 @@ async fn revoke_edge_node(
 }
 
 fn list_edge_local_leases(invocation: &Invocation) -> Result<(), AppError> {
-    let credentials =
-        morphz::edge_node::EdgeNodeCredentials::load(&edge_credential_path(invocation)?)?;
-    let store = morphz::edge_node::EdgeLocalCapabilityLeaseStore::for_node(&credentials.node_id);
-    let leases = store.list();
+    let leases = morphz::edge_app::list_edge_local_leases(&edge_credential_path(invocation)?)?;
     if json_output(invocation) {
         println!("{}", serde_json::to_string_pretty(&leases)?);
     } else if leases.is_empty() {
@@ -1481,10 +1458,7 @@ fn revoke_edge_local_lease(invocation: &Invocation) -> Result<(), AppError> {
         .prompt_args()
         .first()
         .ok_or("edge revoke-local-lease 缺少 LEASE_ID")?;
-    let credentials =
-        morphz::edge_node::EdgeNodeCredentials::load(&edge_credential_path(invocation)?)?;
-    let store = morphz::edge_node::EdgeLocalCapabilityLeaseStore::for_node(&credentials.node_id);
-    if !store.revoke(lease_id)? {
+    if !morphz::edge_app::revoke_edge_local_lease(&edge_credential_path(invocation)?, lease_id)? {
         return Err(format!("Provider-local Capability Lease '{lease_id}' 不存在").into());
     }
     println!("Revoked Provider-local Capability Lease: {lease_id}");
@@ -1496,54 +1470,11 @@ async fn rotate_edge_node_key(
     invocation: &Invocation,
 ) -> Result<(), AppError> {
     let path = edge_credential_path(invocation)?;
-    let credentials = morphz::edge_node::EdgeNodeCredentials::load(&path)?;
-    let gateway = morphz::edge_node::EdgeGatewayClient::new(&credentials.server_url)?;
-    let node = gateway
-        .heartbeat_node(
-            &credentials,
-            &morphz::edge_node::EdgeNodeAdvertisement {
-                platform: Some(format!(
-                    "{}-{}",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                )),
-                capabilities: runtime.physical_tool_names(),
-                metadata: serde_json::json!({
-                    "client_version": morphz::build_info::VERSION,
-                    "transport": "outbound_http_long_poll"
-                }),
-                targets: Vec::new(),
-            },
-        )
-        .await?;
-    let identity = morphz::edge_node::generate_device_identity()?;
-    let replacement = morphz::edge_node::EdgeNodeCredentials {
-        server_url: credentials.server_url.clone(),
-        node_id: credentials.node_id.clone(),
-        device_key_fingerprint: identity.fingerprint.clone(),
-        device_public_key: identity.public_key.clone(),
-        device_private_key_pkcs8: identity.private_key_pkcs8.clone(),
-    };
-    let pending_path = path.with_extension("json.rotate-pending");
-    replacement.save(&pending_path)?;
-    if let Err(error) = gateway
-        .rotate_device_key(&credentials, node.revision, &identity)
-        .await
-    {
-        let _ = std::fs::remove_file(&pending_path);
-        return Err(error);
-    }
-    std::fs::rename(&pending_path, &path).map_err(|error| {
-        format!(
-            "服务端密钥已轮换，但本地凭证替换失败；请将 '{}' 恢复为 '{}': {error}",
-            pending_path.display(),
-            path.display()
-        )
-    })?;
+    let status = morphz::edge_app::rotate_edge_node_key(runtime, &path).await?;
     println!(
         "Rotated Edge Node device key: {}\nCredentials: {}",
-        credentials.node_id,
-        path.display()
+        status.node_id,
+        status.credential_path.display()
     );
     Ok(())
 }
@@ -1553,77 +1484,25 @@ async fn run_edge_node(
     app_config: &config::AppConfig,
     invocation: &Invocation,
 ) -> Result<(), AppError> {
-    let credentials =
-        morphz::edge_node::EdgeNodeCredentials::load(&edge_credential_path(invocation)?)?;
-    let target_id = option_value(invocation, "target-id")
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("target-{}-workspace", credentials.node_id));
-    let target_name = option_value(invocation, "target-name")
-        .map(str::to_string)
-        .unwrap_or_else(|| "Edge Workspace".to_string());
-    let worker_count = option_value(invocation, "workers")
-        .map(str::parse::<usize>)
-        .transpose()?
-        .unwrap_or(app_config.edge_execution.max_in_flight_per_node)
-        .clamp(1, app_config.edge_execution.max_in_flight_per_node.max(1));
-    let capabilities = runtime.physical_tool_names();
-    let target = ExecutionTargetRegistration {
-        id: target_id.clone(),
-        owner_principal_id: None,
-        provider_node_id: Some(credentials.node_id.clone()),
-        kind: ExecutionTargetKind::EdgeNode,
-        name: target_name,
-        status: ExecutionTargetStatus::Online,
-        platform: Some(format!(
-            "{}-{}",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        )),
-        workspace_root: Some(app_config.permissions.workspace_root.clone()),
-        capabilities: capabilities.clone(),
-        metadata: serde_json::json!({
-            "backend": "edge_node",
-            "protocol_version": 1,
-            "workspace_identity": target_id,
-        }),
-        policy_digest: runtime.execution_policy_digest(),
-        last_seen_at: Some(Utc::now()),
-    };
-    let gateway = morphz::edge_node::EdgeGatewayClient::new(&credentials.server_url)?;
-    let advertisement = morphz::edge_node::EdgeNodeAdvertisement {
-        platform: target.platform.clone(),
-        capabilities,
-        metadata: serde_json::json!({
-            "client_version": morphz::build_info::VERSION,
-            "transport": "outbound_http_long_poll"
-        }),
-        targets: vec![target],
-    };
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let mut workers = tokio::task::JoinSet::new();
-    for index in 0..worker_count {
-        let worker = morphz::edge_node::EdgeNodeWorker::new(
-            gateway.clone(),
-            credentials.clone(),
-            advertisement.clone(),
-            runtime.clone(),
-            morphz::edge_node::EdgeWorkerConfig {
-                worker_id: format!("{}-{}-{}", credentials.node_id, std::process::id(), index),
-                lease_seconds: app_config.edge_execution.default_command_lease.as_secs(),
-                ..Default::default()
-            },
-        );
-        workers.spawn(worker.run_until_shutdown(shutdown_rx.clone()));
-    }
+    let running = morphz::edge_app::start_edge_node(
+        runtime,
+        app_config,
+        morphz::edge_app::RunEdgeNodeOptions {
+            credential_path: edge_credential_path(invocation)?,
+            target_id: option_value(invocation, "target-id").map(str::to_string),
+            target_name: option_value(invocation, "target-name").map(str::to_string),
+            workers: option_value(invocation, "workers")
+                .map(str::parse::<usize>)
+                .transpose()?,
+        },
+    )
+    .await?;
     println!(
         "Edge Node {} is online; target={} workers={} (Ctrl+C to stop)",
-        credentials.node_id, target_id, worker_count
+        running.node_id, running.target_id, running.worker_count
     );
     tokio::signal::ctrl_c().await?;
-    let _ = shutdown_tx.send(true);
-    while let Some(result) = workers.join_next().await {
-        result??;
-    }
+    running.shutdown().await?;
     Ok(())
 }
 

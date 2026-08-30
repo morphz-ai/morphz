@@ -518,9 +518,15 @@ v1 已将同一组控制面语义暴露给 Rust SDK、HTTP 和 CLI。CLI 使用�
 ```text
 morphz target list|show|enable|disable|authorize|authorizations|revoke-authorization
 morphz edge pairing-code|pair|run|status|nodes|revoke|local-leases|revoke-local-lease
+morphz-edge pair|run|status|rotate-key|local-leases|revoke-local-lease
 morphz execution list|show|output|cancel
 morphz lease list|revoke
 ```
+
+独立的 `morphz-edge` 只承载用户侧 Execution Node 能力；完整 `morphz edge ...`
+入口继续保留并与之共用实现。发放配对码、列出全部节点和远程撤销节点属于服务端
+控制面，因此只在完整 `morphz` 中提供。安装、配对和配置边界见
+[morphz-edge CLI](./morphz_edge_cli.md)。
 
 HTTP 使用 `/api/execution-targets`、`/api/execution-target-authorizations`、`/api/edge/*`、`/api/execution-jobs` 和 `/api/capability-leases`。SDK 是这些产品入口共享的权威校验层；HTTP Handler 不直接操作 Store 或 Worker 内部状态。
 

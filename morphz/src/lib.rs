@@ -15,6 +15,7 @@ pub mod cli;
 pub mod config;
 pub mod context_tools;
 pub mod controllers;
+pub mod edge_app;
 pub mod edge_node;
 pub mod event;
 pub mod execution;
