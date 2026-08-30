@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+#[cfg(unix)]
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::path::{Component, Path};

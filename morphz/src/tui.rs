@@ -121,6 +121,7 @@ fn appearance_from_colorfgbg(value: &str) -> Option<TerminalAppearance> {
     }
 }
 
+#[cfg(any(unix, test))]
 fn appearance_from_background_response(response: &[u8]) -> Option<TerminalAppearance> {
     let response = String::from_utf8_lossy(response);
     let payload = response.rsplit_once("]11;")?.1;
@@ -140,6 +141,7 @@ fn appearance_from_background_response(response: &[u8]) -> Option<TerminalAppear
     })
 }
 
+#[cfg(any(unix, test))]
 fn parse_terminal_rgb_component(component: &str) -> Option<u8> {
     if component.is_empty() || component.len() > 4 {
         return None;
