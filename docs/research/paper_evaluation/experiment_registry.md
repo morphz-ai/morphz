@@ -51,7 +51,7 @@ ME-06 与原始 ME-08 仍保留其历史
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete / incorporated` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 不重复简单样本；扩展只作未来增强 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation；30 条盲化人工校准包已冻结 | `formal-complete / trace-audit-complete / human-packet-ready / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；[`human packet`](./artifacts/me07_evaluator_human_validation_packet_20260827/README.md) | 两名独立人工评分是可选增强项；不得把系统级效果全部归因于 Mind Frame |
-| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 论文冻结结果仍为 Morphz 72/89 对 Codex 74/89。另有 stable-schema Prefix Cache 同期 A/B：冻结正式分 Control 72/89、Treatment 71/89；缓存命中率 29.88%→86.27%，未缓存输入减少 81.27%，完整性 Gate 全过。事后原 verifier 复评确认三个纯评审超时误伤，诊断分 74/89 对 72/89；把混合 Agent+Verifier timeout 的有效最终交付物也计入时为 74/89 对 73/89 | `external-complete / incorporated; cache-gate-complete / verifier-recheck-complete / supplemental` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)；[`prefix-cache A/B`](./artifacts/me08_prefix_cache_ab_89adf73_all89_20260830/RESULT.md)；[`verifier recheck`](./artifacts/me08_prefix_cache_ab_89adf73_verifier_recheck_20260830/RESULT.md) | 论文与正式 raw reward 暂不改写；候选基线复核同时保留冻结分、纯 verifier 恢复分和最终状态诊断分，不得混称 |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 论文冻结结果仍为 Morphz 72/89 对 Codex 74/89。另有 stable-schema Prefix Cache 同期 A/B：冻结正式分 Control 72/89、Treatment 71/89；缓存命中率 29.88%→86.27%，未缓存输入减少 81.27%，完整性 Gate 全过。事后原 verifier 复评确认三个纯评审超时误伤；按 Agent 正式 `deliver` 时限裁决后的诊断分为 74/89 对 72/89。混合超时题虽有截止前正确文件快照，但 `deliver` 晚于 Agent timeout 300.471 秒，不补分 | `external-complete / incorporated; cache-gate-complete / verifier-recheck-complete / supplemental` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)；[`prefix-cache A/B`](./artifacts/me08_prefix_cache_ab_89adf73_all89_20260830/RESULT.md)；[`verifier recheck`](./artifacts/me08_prefix_cache_ab_89adf73_verifier_recheck_20260830/RESULT.md) | 论文与正式 raw reward 暂不改写；候选基线复核同时保留冻结分与按交付时限恢复 verifier 假阴性的诊断分，不得混称 |
 | ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r6 同 Runtime、无 Harness 完整 89 题：共享 Context 70/89，对隔离 Context 72/89；共同通过 65、共同失败 12、仅共享 5、仅隔离 7；差 −2.25pp，95% CI `[−10.11,+5.62]`，精确配对 `p=0.774414`。E3 为 0，总逻辑 Token 为隔离控制的 3.127×；9 个超时异常中 8 个计零。r3/r4/r5 仍因 Harness 污染无效 | `external-complete / supplemental / excluded-from-current-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`r6 result`](./artifacts/me09_shared_context_full_r6_d6e6d80_max_sessions_50_20260828/RESULT.md)；[`r4 historical diagnostic`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md) | r6 已闭合并保留为有效补充实验；当前论文不追改。未来如扩展，须保留零 Harness 与同 Runtime 隔离控制，旧批次不得拼接或补算 |
 
 ## 依赖
@@ -101,9 +101,11 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 - 缺失 reward 的零模型事后复评使用原 task digest、原官方测试与源 Morphz DB 中的最终
   `write/edit` 内容，逐文件核对 SHA-256，并把 verifier 上限从 900 秒放宽到 3600 秒后顺序执行。
   Control pipeline、Control tensor、Treatment tensor 分别 4/4、13/13、13/13 通过；Control
-  model recovery 为 4/5，确认其仍是解答错误。三个纯 verifier timeout 恢复后的诊断分为 74/89
-  对 72/89。Treatment pipeline 虽以 AgentTimeout 为主异常，但超时前的最终交付物在独立复评中
-  4/4 通过；若按最终可验证交付物计，诊断分为 74/89 对 73/89。根因是正式 8+8 并发下 verifier
+  model recovery 为 4/5，确认其仍是解答错误。按 Agent 正式 `thread_outcomes.delivered_at` 裁决，
+  三个 verifier 假阴性恢复后的诊断分为 74/89 对 72/89。Treatment pipeline 的正确文件快照
+  虽在 Agent timeout 前 62.157 秒形成，但正式 `deliver` 晚于 timeout 300.471 秒，因此仍计失败。
+  同时确认 Harbor 在外层 timeout 后没有终止容器内 Agent、却已启动 verifier 的生命周期缺陷。
+  verifier 超时根因是正式 8+8 并发下
   每题冷安装数 GB PyTorch/CUDA 依赖，顺序复评均在 252.44–297.69 秒完成。正式 72/89 对 71/89
   仍保持冻结，不回写或拼接；证据见
   [`artifacts/me08_prefix_cache_ab_89adf73_verifier_recheck_20260830/RESULT.md`](./artifacts/me08_prefix_cache_ab_89adf73_verifier_recheck_20260830/RESULT.md)。

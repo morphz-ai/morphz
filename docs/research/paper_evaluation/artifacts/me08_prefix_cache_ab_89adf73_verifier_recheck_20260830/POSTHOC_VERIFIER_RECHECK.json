@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "classification": "post-hoc verifier recheck; supplemental; never spliced into the frozen formal run",
   "formal_run": {
     "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
@@ -147,9 +147,78 @@
       "tests_passed": 4,
       "tests_failed": 0,
       "verifier_seconds": 287.13366,
-      "classification": "mixed AgentTimeout plus verifier timeout; final deliverable is valid, but this is not a pure verifier-only recovery"
+      "last_file_change_at": "2026-08-29T23:15:05.655570978Z",
+      "formal_agent_timeout_at": "2026-08-29T23:16:07.812154Z",
+      "thread_outcome_delivered_at": "2026-08-29T23:21:08.283705626Z",
+      "delivery_after_timeout_seconds": 300.471,
+      "classification": "true AgentTimeout under delivery-time semantics; the pre-timeout file snapshot passes, but the terminal delivery occurred after the deadline and is not score-eligible"
     }
   ],
+  "delivery_timing_audit": {
+    "adjudication_rule": "A task is delivered only at thread_outcomes.delivered_at. A correct file snapshot before the deadline does not override a terminal delivery after the Agent timeout.",
+    "time_origin_note": "elapsed_seconds uses the source Session user_message event; the mixed case is also compared directly against Harbor's formal AgentTimeout timestamp, so the decision does not depend on the approximate origin.",
+    "trials": [
+      {
+        "arm": "control",
+        "task": "pytorch-model-recovery",
+        "formal_exception": "VerifierTimeoutError",
+        "user_message_at": "2026-08-29T23:12:59.993467771Z",
+        "last_file_change_at": "2026-08-29T23:15:37.149169902Z",
+        "thread_outcome_delivered_at": "2026-08-29T23:16:03.376847067Z",
+        "delivery_elapsed_seconds": 183.383,
+        "delivered_within_900_seconds": true
+      },
+      {
+        "arm": "control",
+        "task": "torch-pipeline-parallelism",
+        "formal_exception": "VerifierTimeoutError",
+        "user_message_at": "2026-08-29T23:01:05.109928768Z",
+        "last_file_change_at": "2026-08-29T23:04:29.998308112Z",
+        "thread_outcome_delivered_at": "2026-08-29T23:07:16.894103166Z",
+        "delivery_elapsed_seconds": 371.785,
+        "delivered_within_900_seconds": true
+      },
+      {
+        "arm": "control",
+        "task": "torch-tensor-parallelism",
+        "formal_exception": "VerifierTimeoutError",
+        "user_message_at": "2026-08-29T23:01:05.216867562Z",
+        "last_file_change_at": "2026-08-29T23:02:46.912154303Z",
+        "thread_outcome_delivered_at": "2026-08-29T23:05:12.060299399Z",
+        "delivery_elapsed_seconds": 246.844,
+        "delivered_within_900_seconds": true
+      },
+      {
+        "arm": "structured-deltas",
+        "task": "torch-pipeline-parallelism",
+        "formal_exception": "AgentTimeoutError",
+        "user_message_at": "2026-08-29T23:01:03.694082497Z",
+        "last_file_change_at": "2026-08-29T23:15:05.655570978Z",
+        "formal_agent_timeout_at": "2026-08-29T23:16:07.812154Z",
+        "thread_outcome_delivered_at": "2026-08-29T23:21:08.283705626Z",
+        "delivery_elapsed_seconds": 1204.589,
+        "delivery_after_timeout_seconds": 300.471,
+        "last_file_change_before_timeout_seconds": 62.157,
+        "delivered_within_900_seconds": false,
+        "score_eligible_after_recheck": false
+      },
+      {
+        "arm": "structured-deltas",
+        "task": "torch-tensor-parallelism",
+        "formal_exception": "VerifierTimeoutError",
+        "user_message_at": "2026-08-29T23:01:03.690423927Z",
+        "last_file_change_at": "2026-08-29T23:02:35.330803161Z",
+        "thread_outcome_delivered_at": "2026-08-29T23:04:55.864468439Z",
+        "delivery_elapsed_seconds": 232.174,
+        "delivered_within_900_seconds": true
+      }
+    ],
+    "lifecycle_finding": {
+      "finding": "After Harbor raised AgentTimeout, the container-side Morphz process continued, completed three more tool calls, and delivered 300.471 seconds later while Harbor had already entered verifier execution.",
+      "classification": "runner cancellation/lifecycle defect, not a false AgentTimeout label under terminal-delivery semantics",
+      "score_effect": "none; the task remains failed because delivery was late"
+    }
+  },
   "root_cause": {
     "finding": "The 900-second verifier budget was consumed primarily by per-trial cold installation of uv, Python, PyTorch/CUDA wheels and related packages under 16-way A/B concurrency.",
     "formal_evidence": "Three verifier-timeout logs ended during multi-gigabyte dependency downloads; treatment tensor reached 12 of 13 tests before the same deadline.",
@@ -163,7 +232,7 @@
       "treatment": "71/89",
       "may_be_overwritten": false
     },
-    "pure_verifier_timeout_recovered": {
+    "delivery_aware_verifier_timeout_recovered": {
       "control": "74/89",
       "treatment": "72/89",
       "paired": {
@@ -172,18 +241,14 @@
         "control_only": 7,
         "treatment_only": 5,
         "exact_two_sided_mcnemar_p": 0.7744140625
-      }
+      },
+      "mixed_agent_timeout_recovered": false
     },
-    "final_deliverable_diagnostic": {
-      "control": "74/89",
-      "treatment": "73/89",
-      "paired": {
-        "both_pass": 68,
-        "both_fail": 10,
-        "control_only": 6,
-        "treatment_only": 5,
-        "exact_two_sided_mcnemar_p": 1.0
-      }
+    "pre_timeout_filesystem_snapshot_forensic_only": {
+      "task": "structured-deltas/torch-pipeline-parallelism",
+      "recheck_reward": 1,
+      "eligible_as_score": false,
+      "reason": "the correct file existed before timeout, but the Agent terminal delivery occurred 300.471 seconds after timeout"
     }
   },
   "launch_audit": {
