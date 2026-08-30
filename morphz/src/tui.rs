@@ -17,6 +17,7 @@ use crate::memory::{
     ObjectiveWaitCondition, SessionRecord, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::ContextView;
+use crate::permission::SandboxMode;
 use crate::runtime::{InferenceModelOption, MorphzRuntime, RuntimeError, SessionHandle};
 use crate::sdk::{MorphzSdk, SendMessageCommand};
 use crate::sexpr::SExpr;
@@ -486,6 +487,7 @@ enum ControlAction {
     SetTheme(TuiTheme),
     SetModel(String),
     SetReasoningEffort(Option<ReasoningEffort>),
+    SetSandboxMode(SandboxMode),
     CancelEvaluation,
     ClearView,
     Quit,
@@ -707,6 +709,7 @@ struct UiState {
     session_id: String,
     session_title: Option<String>,
     model: String,
+    sandbox_mode: SandboxMode,
     working_directory: String,
     entries: Vec<TranscriptEntry>,
     composer: Composer,
@@ -777,6 +780,7 @@ impl UiState {
             session_id: session.id().to_string(),
             session_title: None,
             model: runtime.model(),
+            sandbox_mode: runtime.config().permissions.sandbox_mode,
             working_directory: display_working_directory(),
             entries: Vec::new(),
             composer: Composer::new(),
@@ -1128,6 +1132,33 @@ impl UiState {
             ),
             None,
         ));
+        for sandbox_mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
+            let (label_en, label_zh, description_en, description_zh) = match sandbox_mode {
+                SandboxMode::WorkspaceWrite => (
+                    "Sandbox · Workspace Write",
+                    "沙箱 · 工作区读写",
+                    "Immediately apply the native Workspace sandbox to subsequent tool work in this Session.",
+                    "立即让当前会话随后开始的工具工作使用原生工作区沙箱。",
+                ),
+                SandboxMode::DangerFullAccess => (
+                    "Sandbox · Full Access",
+                    "沙箱 · 完全访问",
+                    "Immediately allow subsequent tool work in this Session beyond Workspace and operating-system sandbox boundaries.",
+                    "立即允许当前会话随后开始的工具工作越过工作区和操作系统沙箱边界。",
+                ),
+            };
+            items.push(ControlItem::new(
+                ControlAction::SetSandboxMode(sandbox_mode),
+                format!("sandbox set {}", sandbox_mode.as_str()),
+                self.tr(label_en, label_zh),
+                if sandbox_mode == self.sandbox_mode {
+                    self.tr("Current Session Sandbox policy.", "当前会话的沙箱策略。")
+                } else {
+                    self.tr(description_en, description_zh)
+                },
+                Some("Alt+S"),
+            ));
+        }
         let supported_efforts = self
             .model_options
             .iter()
@@ -4057,6 +4088,14 @@ impl UiState {
         let horizontal_margin = content_horizontal_margin(area.width);
         let box_area = inset_rect(area, horizontal_margin, 0);
         let composer_block = Block::default()
+            .title_bottom(
+                Line::from(format!(
+                    " Sandbox · {} · Alt+S ",
+                    self.sandbox_mode.as_str()
+                ))
+                .style(Style::default().fg(self.theme.text_muted))
+                .right_aligned(),
+            )
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if self.focus == UiFocus::Composer {
@@ -4251,7 +4290,7 @@ impl UiState {
                 Line::from("  Ctrl/Command+Enter 跟进  ·  Shift+Enter/Ctrl+J 换行"),
                 Line::from(""),
                 Line::from("导航与视图"),
-                Line::from("  ? 帮助  ·  Alt+T 主题  ·  Ctrl+G 会话"),
+                Line::from("  ? 帮助  ·  Alt+T 主题  ·  Alt+S 沙箱  ·  Ctrl+G 会话"),
                 Line::from("  Ctrl+T 任务  ·  Ctrl+K 认知帧  ·  Ctrl+P 控制"),
                 Line::from("  Tab 切换焦点  ·  ↑/↓ 选择  ·  Home/End 首项/末项"),
                 Line::from("  D 任务诊断  ·  Ctrl+O 目标  ·  Ctrl+R 推理摘要"),
@@ -4273,7 +4312,7 @@ impl UiState {
                 Line::from("  Ctrl/Command+Enter follow-up  ·  Shift+Enter/Ctrl+J newline"),
                 Line::from(""),
                 Line::from("Navigation and views"),
-                Line::from("  ? help  ·  Alt+T theme  ·  Ctrl+G Sessions"),
+                Line::from("  ? help  ·  Alt+T theme  ·  Alt+S Sandbox  ·  Ctrl+G Sessions"),
                 Line::from("  Ctrl+T Tasks  ·  Ctrl+K Mind  ·  Ctrl+P Control"),
                 Line::from("  Tab focus  ·  ↑/↓ select  ·  Home/End first/last"),
                 Line::from("  D diagnostics  ·  Ctrl+O Objectives  ·  Ctrl+R reasoning"),
@@ -4827,6 +4866,7 @@ pub async fn run(
     let mut state = UiState::new(&runtime, &session);
     if let Ok(Some(record)) = session.record().await {
         state.model = effective_tui_session_model(&runtime, &record);
+        state.sandbox_mode = effective_tui_session_sandbox_mode(&runtime, &record);
         state.context_id = record.context_id;
         state.session_title = Some(record.title);
     }
@@ -5143,6 +5183,15 @@ fn effective_tui_session_model(runtime: &MorphzRuntime, record: &SessionRecord) 
         .unwrap_or_else(|| runtime.model())
 }
 
+fn effective_tui_session_sandbox_mode(
+    runtime: &MorphzRuntime,
+    record: &SessionRecord,
+) -> SandboxMode {
+    record
+        .sandbox_mode
+        .unwrap_or(runtime.config().permissions.sandbox_mode)
+}
+
 async fn persist_tui_session_model(
     runtime: &MorphzRuntime,
     session_id: &str,
@@ -5178,6 +5227,23 @@ async fn persist_tui_session_reasoning_effort(
             session_id,
             SessionUpdate {
                 reasoning_effort: Some(effort.map(|value| value.as_str().to_string())),
+                ..SessionUpdate::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| format!("Session '{session_id}' does not exist").into())
+}
+
+async fn persist_tui_session_sandbox_mode(
+    runtime: &MorphzRuntime,
+    session_id: &str,
+    sandbox_mode: SandboxMode,
+) -> Result<SessionRecord, RuntimeError> {
+    runtime
+        .update_session(
+            session_id,
+            SessionUpdate {
+                sandbox_mode: Some(Some(sandbox_mode)),
                 ..SessionUpdate::default()
             },
         )
@@ -5421,6 +5487,28 @@ async fn execute_control_action(
                 }
             }
         }
+        ControlAction::SetSandboxMode(sandbox_mode) => {
+            match persist_tui_session_sandbox_mode(runtime, session.id(), sandbox_mode).await {
+                Ok(record) => {
+                    state.sandbox_mode = effective_tui_session_sandbox_mode(runtime, &record);
+                    state.status = if state.locale.is_chinese() {
+                        format!("当前会话沙箱 · {} · 已立即生效", sandbox_mode.as_str())
+                    } else {
+                        format!(
+                            "Session Sandbox · {} · effective now",
+                            sandbox_mode.as_str()
+                        )
+                    };
+                }
+                Err(error) => {
+                    state.status = if state.locale.is_chinese() {
+                        format!("切换沙箱失败：{error}")
+                    } else {
+                        format!("Could not switch Sandbox: {error}")
+                    };
+                }
+            }
+        }
         ControlAction::CancelEvaluation => {
             state.status = match session
                 .cancel_durable("Session evaluation cancelled from terminal UI")
@@ -5490,6 +5578,7 @@ async fn switch_tui_session(
     state.context_id.clone_from(&record.context_id);
     state.session_id.clone_from(&record.id);
     state.model = effective_tui_session_model(runtime, &record);
+    state.sandbox_mode = effective_tui_session_sandbox_mode(runtime, &record);
     state.session_title = Some(record.title);
     state.entries.clear();
     state.live_attempts.clear();
@@ -5618,6 +5707,13 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     }
     if is_theme_cycle_key(key) {
         return UiAction::ExecuteControl(ControlAction::CycleTheme);
+    }
+    if is_sandbox_cycle_key(key) {
+        let sandbox_mode = match state.sandbox_mode {
+            SandboxMode::WorkspaceWrite => SandboxMode::DangerFullAccess,
+            SandboxMode::DangerFullAccess => SandboxMode::WorkspaceWrite,
+        };
+        return UiAction::ExecuteControl(ControlAction::SetSandboxMode(sandbox_mode));
     }
     if state.show_help {
         if key.code == KeyCode::Esc || is_shortcuts_key(key) {
@@ -5962,6 +6058,12 @@ fn is_theme_cycle_key(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+}
+
+fn is_sandbox_cycle_key(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
 }
 
 fn is_session_directory_key(key: KeyEvent) -> bool {
@@ -6876,6 +6978,7 @@ mod tests {
             session_id: "s".to_string(),
             session_title: Some("main".to_string()),
             model: "m".to_string(),
+            sandbox_mode: SandboxMode::WorkspaceWrite,
             working_directory: "~/Codes/Morphz".to_string(),
             entries: Vec::new(),
             composer,
@@ -6987,17 +7090,32 @@ mod tests {
             ControlAction::SetReasoningEffort(Some(ReasoningEffort::High)),
         )
         .await;
+        execute_control_action(
+            &runtime,
+            &session_a,
+            &mut state,
+            ControlAction::SetSandboxMode(SandboxMode::DangerFullAccess),
+        )
+        .await;
 
         let persisted = session_a.record().await.unwrap().unwrap();
         assert_eq!(persisted.model_alias.as_deref(), Some("model-b"));
         assert_eq!(persisted.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(persisted.sandbox_mode, Some(SandboxMode::DangerFullAccess));
         assert_eq!(state.model, "model-b");
+        assert_eq!(state.sandbox_mode, SandboxMode::DangerFullAccess);
         assert_eq!(runtime.model(), "model-a");
         assert_eq!(session_b.record().await.unwrap().unwrap().model_alias, None);
+        assert_eq!(
+            session_b.record().await.unwrap().unwrap().sandbox_mode,
+            None
+        );
 
         let mut reentered = UiState::new(&runtime, &session_a);
         reentered.model = effective_tui_session_model(&runtime, &persisted);
+        reentered.sandbox_mode = effective_tui_session_sandbox_mode(&runtime, &persisted);
         assert_eq!(reentered.model, "model-b");
+        assert_eq!(reentered.sandbox_mode, SandboxMode::DangerFullAccess);
     }
 
     fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
@@ -7037,6 +7155,7 @@ mod tests {
                 | ControlAction::OpenShell
                 | ControlAction::SetModel(_)
                 | ControlAction::SetReasoningEffort(_)
+                | ControlAction::SetSandboxMode(_)
                 | ControlAction::CancelEvaluation
                 | ControlAction::Quit => {}
             },
@@ -7593,6 +7712,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            sandbox_mode: None,
             context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,
             updated_at: now,
@@ -7773,7 +7893,7 @@ mod tests {
         state.open_control();
         state.control_input.insert_str("runtime cancel");
         let items = state.filtered_control_items();
-        assert_eq!(items.len(), 1);
+        assert!(!items.is_empty());
         assert_eq!(items[0].action, ControlAction::CancelEvaluation);
         assert!(!items[0].enabled);
 

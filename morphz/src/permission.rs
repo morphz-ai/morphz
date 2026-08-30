@@ -6,6 +6,7 @@ use crate::sandbox::SandboxPathPattern;
 use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ tokio::task_local! {
     /// ExecutionJob claim. It is a task-local capability, never a reusable
     /// profile mutation.
     pub static CURRENT_DURABLE_APPROVAL: Option<DurableApprovalGrant>;
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +103,24 @@ pub enum PermissionMode {
 pub enum SandboxMode {
     WorkspaceWrite,
     DangerFullAccess,
+}
+
+impl SandboxMode {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "workspace-write" | "workspace_write" | "workspace" => Ok(Self::WorkspaceWrite),
+            "danger-full-access" | "danger_full_access" | "full-access" | "full_access"
+            | "full" => Ok(Self::DangerFullAccess),
+            other => Err(format!("unsupported Sandbox mode '{other}'")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,6 +446,10 @@ pub struct PermissionBroker {
     profile: Arc<PermissionProfile>,
     approval: Arc<dyn ApprovalProvider>,
     auto_review_model: std::sync::RwLock<Option<String>>,
+    /// Durable Session policy projected into the live authorization boundary.
+    /// The startup Profile remains the fallback for Sessions without an
+    /// override and for work that is not causally attached to a Session.
+    session_sandbox_modes: std::sync::RwLock<HashMap<String, SandboxMode>>,
 }
 
 impl PermissionBroker {
@@ -435,31 +459,85 @@ impl PermissionBroker {
             profile,
             approval,
             auto_review_model,
+            session_sandbox_modes: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
-    pub fn profile(&self) -> &Arc<PermissionProfile> {
-        &self.profile
+    pub fn set_session_sandbox_mode(&self, session_id: &str, mode: Option<SandboxMode>) {
+        let mut modes = self
+            .session_sandbox_modes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match mode {
+            Some(mode) => {
+                modes.insert(session_id.to_string(), mode);
+            }
+            None => {
+                modes.remove(session_id);
+            }
+        }
+    }
+
+    pub fn session_sandbox_mode(&self, session_id: &str) -> Option<SandboxMode> {
+        self.session_sandbox_modes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session_id)
+            .copied()
+    }
+
+    pub fn profile(&self) -> Arc<PermissionProfile> {
+        let requested = crate::tool::CURRENT_SESSION_ID
+            .try_with(|session_id| self.session_sandbox_mode(session_id))
+            .ok()
+            .flatten();
+        self.profile_with_sandbox_mode(requested)
+    }
+
+    pub fn profile_for_session(&self, session_id: &str) -> Arc<PermissionProfile> {
+        self.profile_with_sandbox_mode(self.session_sandbox_mode(session_id))
+    }
+
+    fn profile_with_sandbox_mode(&self, requested: Option<SandboxMode>) -> Arc<PermissionProfile> {
+        let Some(requested) = requested.filter(|mode| *mode != self.profile.sandbox_mode) else {
+            return Arc::clone(&self.profile);
+        };
+        let mut profile = self.profile.as_ref().clone();
+        profile.mode = PermissionMode::Custom;
+        profile.sandbox_mode = requested;
+        // Full access necessarily permits network. Returning to a Workspace
+        // sandbox restores the startup Profile's explicit network choice when
+        // it was itself sandboxed; a full-access startup has no evidence that
+        // network was intentionally enabled for its restricted form, so fail
+        // closed there.
+        profile.network = match requested {
+            SandboxMode::DangerFullAccess => true,
+            SandboxMode::WorkspaceWrite => {
+                self.profile.sandbox_mode == SandboxMode::WorkspaceWrite && self.profile.network
+            }
+        };
+        Arc::new(profile)
     }
 
     pub fn policy_digest(&self) -> String {
+        let profile = self.profile();
         let auto_review_model = self
             .auto_review_model
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         let material = serde_json::json!({
-            "mode": self.profile.mode,
-            "sandbox_mode": self.profile.sandbox_mode,
-            "approval_policy": self.profile.approval_policy,
-            "reviewer": self.profile.reviewer,
+            "mode": profile.mode,
+            "sandbox_mode": profile.sandbox_mode,
+            "approval_policy": profile.approval_policy,
+            "reviewer": profile.reviewer,
             "auto_review_model": auto_review_model,
-            "workspace_root": self.profile.workspace_root,
-            "read_roots": self.profile.read_roots,
-            "write_roots": self.profile.write_roots,
-            "protected_paths": self.profile.protected_paths,
-            "network": self.profile.network,
-            "shell_environment_policy": self.profile.shell_environment_policy,
+            "workspace_root": profile.workspace_root,
+            "read_roots": profile.read_roots,
+            "write_roots": profile.write_roots,
+            "protected_paths": profile.protected_paths,
+            "network": profile.network,
+            "shell_environment_policy": profile.shell_environment_policy,
         });
         let bytes = serde_json::to_vec(&material).unwrap_or_default();
         format!("policy_{:x}", Sha256::digest(bytes))
@@ -480,7 +558,7 @@ impl PermissionBroker {
     }
 
     pub fn pending_approval_status(&self) -> ApprovalStatus {
-        match self.profile.reviewer {
+        match self.profile().reviewer {
             ReviewerKind::User => ApprovalStatus::PendingHuman,
             ReviewerKind::AutoReview | ReviewerKind::Deny => ApprovalStatus::PendingAuto,
         }
@@ -500,14 +578,15 @@ impl PermissionBroker {
         tool: &str,
         operation: &str,
     ) -> Result<(PathBuf, Option<ApprovalRequirement>), PermissionError> {
-        match self.profile.inspect_path(input, access)? {
+        let profile = self.profile();
+        match profile.inspect_path(input, access)? {
             PathDecision::Allowed(path) => Ok((path, None)),
             PathDecision::Denied(reason) => Err(reason.into()),
             PathDecision::NeedsApproval {
                 candidate,
                 resolved_anchor,
             } => {
-                if self.profile.approval_policy == ApprovalPolicy::Never {
+                if profile.approval_policy == ApprovalPolicy::Never {
                     return Err(
                         "the current permission Profile does not allow out-of-bound capabilities"
                             .into(),
@@ -549,10 +628,11 @@ impl PermissionBroker {
         requested: CapabilityDelta,
         justification: String,
     ) -> Result<Option<ApprovalRequirement>, PermissionError> {
-        if requested.is_empty() || self.profile.full_access() {
+        let profile = self.profile();
+        if requested.is_empty() || profile.full_access() {
             return Ok(None);
         }
-        if self.profile.approval_policy == ApprovalPolicy::Never {
+        if profile.approval_policy == ApprovalPolicy::Never {
             return Err(
                 "the current permission Profile does not allow out-of-bound capabilities".into(),
             );
@@ -596,10 +676,11 @@ impl PermissionBroker {
         justification: String,
         context: ApprovalContext,
     ) -> Result<(), PermissionError> {
-        if requested.is_empty() || self.profile.full_access() {
+        let profile = self.profile();
+        if requested.is_empty() || profile.full_access() {
             return Ok(());
         }
-        if self.profile.approval_policy == ApprovalPolicy::Never {
+        if profile.approval_policy == ApprovalPolicy::Never {
             return Err(
                 "the current permission Profile does not allow out-of-bound capabilities".into(),
             );
@@ -937,5 +1018,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(allowed, outside.path());
+    }
+
+    #[tokio::test]
+    async fn session_sandbox_change_is_immediate_and_isolated() {
+        let root = TempDir::new().unwrap();
+        let broker = Arc::new(PermissionBroker::new(
+            Arc::new(profile(root.path())),
+            Arc::new(DenyAllApprovalProvider::new("test reviewer")),
+        ));
+
+        crate::tool::CURRENT_SESSION_ID
+            .scope("session-a".to_string(), {
+                let broker = Arc::clone(&broker);
+                async move {
+                    assert_eq!(broker.profile().sandbox_mode, SandboxMode::WorkspaceWrite);
+                    broker
+                        .set_session_sandbox_mode("session-a", Some(SandboxMode::DangerFullAccess));
+                    // The second check represents a later tool preflight in
+                    // the same live Evaluation: no new Turn is required.
+                    assert!(broker.profile().full_access());
+                }
+            })
+            .await;
+
+        crate::tool::CURRENT_SESSION_ID
+            .scope("session-b".to_string(), async {
+                assert_eq!(broker.profile().sandbox_mode, SandboxMode::WorkspaceWrite);
+            })
+            .await;
+        assert_eq!(broker.profile().sandbox_mode, SandboxMode::WorkspaceWrite);
     }
 }

@@ -38,7 +38,7 @@ use morphz::memory::{
     ThreadKind, ThreadLifecycle, ThreadMutation, ThreadSignalStatus, ThreadStore,
     ThreadSupervision, TimerStore, TransientStorageRetention,
 };
-use morphz::permission::{PermissionMode, ReviewerKind};
+use morphz::permission::{PermissionMode, ReviewerKind, SandboxMode};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
 use morphz::scheduler::{
     KernelResult, NewSchedulerDependency, SchedulerDependencyFilter, SchedulerDependencyKind,
@@ -617,6 +617,7 @@ where
                 status: Some(SessionStatus::Archived),
                 model_alias: Some(Some("session-route-a".to_string())),
                 reasoning_effort: Some(Some("high".to_string())),
+                sandbox_mode: Some(Some(SandboxMode::DangerFullAccess)),
             },
         )
         .await
@@ -625,6 +626,7 @@ where
     assert_eq!(archived.status, SessionStatus::Archived);
     assert_eq!(archived.model_alias.as_deref(), Some("session-route-a"));
     assert_eq!(archived.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(archived.sandbox_mode, Some(SandboxMode::DangerFullAccess));
     let principal_sessions = store
         .list_principal_sessions("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat", true)
         .await
@@ -635,6 +637,7 @@ where
         .expect("Principal Session projection must include the bound Session");
     assert_eq!(projected.model_alias.as_deref(), Some("session-route-a"));
     assert_eq!(projected.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(projected.sandbox_mode, Some(SandboxMode::DangerFullAccess));
     assert_eq!(projected.context_sharing, SessionContextSharing::Isolated);
     let inherited = store
         .update_session(
@@ -644,6 +647,7 @@ where
                 status: None,
                 model_alias: Some(None),
                 reasoning_effort: Some(None),
+                sandbox_mode: Some(None),
             },
         )
         .await
@@ -656,6 +660,10 @@ where
     assert_eq!(
         inherited.reasoning_effort, None,
         "clearing Session reasoning must restore Provider-default inference"
+    );
+    assert_eq!(
+        inherited.sandbox_mode, None,
+        "clearing Session Sandbox must restore the Runtime startup Profile"
     );
     assert!(!store
         .list_context_sessions("conformance-context", false)
@@ -3331,6 +3339,7 @@ where
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
             },
         )
         .await
@@ -3423,6 +3432,7 @@ where
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
             },
         )
         .await
@@ -3770,6 +3780,7 @@ where
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
             },
         )
         .await
@@ -7549,6 +7560,7 @@ where
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
             },
         )
         .await

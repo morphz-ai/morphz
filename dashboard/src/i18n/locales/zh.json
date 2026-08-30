@@ -793,6 +793,12 @@
     "high": "高",
     "max": "最高"
   },
+  "sandbox": {
+    "label": "沙箱",
+    "title": "立即修改当前会话随后开始的工具工作的沙箱策略；已在运行的进程和其他会话不受影响",
+    "workspaceWrite": "工作区读写",
+    "fullAccess": "完全访问"
+  },
   "reasoningSummary": {
     "toggle": "推理摘要",
     "toggleTitle": "显示或收起模型服务商返回的推理摘要；摘要独立保存，绝不会混入回复正文",

@@ -993,6 +993,7 @@ interface SessionRecord {
   status: 'active' | 'archived'
   model_alias?: string | null
   reasoning_effort?: ReasoningEffortSetting | null
+  sandbox_mode?: SandboxModeSetting | null
   context_sharing?: 'shared' | 'isolated'
   attention_state?: string
   attention_revision?: number
@@ -1030,6 +1031,11 @@ function scopedSessionReadPath(path: string, principalId?: string): string {
 }
 
 type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
+type SandboxModeSetting = 'workspace-write' | 'danger-full-access'
+
+function isSandboxModeSetting(value: unknown): value is SandboxModeSetting {
+  return value === 'workspace-write' || value === 'danger-full-access'
+}
 
 interface InferenceModelOption {
   id: string
@@ -3118,6 +3124,7 @@ export default function App() {
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [changingModel, setChangingModel] = useState(false)
+  const [changingSandbox, setChangingSandbox] = useState(false)
   const [contextTokenBudget, setContextTokenBudget] = useState<ContextTokenBudget | null>(null)
   const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
   const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
@@ -6284,6 +6291,33 @@ export default function App() {
     }
   }
 
+  const changeSandboxMode = async (value: string) => {
+    if (changingSandbox || !selectedSessionId || !isSandboxModeSetting(value)) return
+    setChangingSandbox(true)
+    try {
+      const updated = await DASHBOARD_API.command<SessionRecord>(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}`,
+        'PATCH',
+        { sandbox_mode: value },
+      )
+      setSessions(current => current.map(session => session.id === updated.id ? updated : session))
+      setRuntimeOverview(current => current ? {
+        ...current,
+        contexts: current.contexts.map(context => ({
+          ...context,
+          sessions: context.sessions.map(session => (
+            session.session.id === updated.id ? { ...session, session: updated } : session
+          )),
+        })),
+      } : current)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setChangingSandbox(false)
+    }
+  }
+
   const changeContextTokenBudget = async (requestedHardTokenLimit: number | null) => {
     if (!selectedContextId || !contextTokenBudget || changingContextTokenBudget) return
     if (requestedHardTokenLimit !== null
@@ -7067,6 +7101,11 @@ export default function App() {
     && reasoningEffortOptions.includes(selectedSession.reasoning_effort)
     ? selectedSession.reasoning_effort
     : 'default'
+  const selectedSandboxMode = isSandboxModeSetting(selectedSession?.sandbox_mode)
+    ? selectedSession.sandbox_mode
+    : isSandboxModeSetting(status?.sandbox_mode)
+      ? status.sandbox_mode
+      : 'workspace-write'
   const contextBudgetModelLabel = resolveSelectedModelOption(
     modelOptions,
     contextTokenBudget?.model,
@@ -9139,6 +9178,21 @@ export default function App() {
                   {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
                   {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
                   {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
+                </select>
+              </label>
+              <label
+                className={`composer-reasoning-control composer-sandbox-control ${selectedSandboxMode === 'danger-full-access' ? 'is-danger' : ''}`}
+                title={t('sandbox.title')}
+              >
+                <LockKeyhole size={11} />
+                <select
+                  aria-label={t('sandbox.label')}
+                  disabled={changingSandbox || !selectedSessionId}
+                  value={selectedSandboxMode}
+                  onChange={event => void changeSandboxMode(event.target.value)}
+                >
+                  <option value="workspace-write">{t('sandbox.workspaceWrite')}</option>
+                  <option value="danger-full-access">{t('sandbox.fullAccess')}</option>
                 </select>
               </label>
               <div className="context-budget-selector" ref={contextTokenBudgetRef}>

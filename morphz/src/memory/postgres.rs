@@ -593,6 +593,9 @@ impl PostgresStore {
                     CHECK(status IN ('active', 'archived')),
                 model_alias TEXT,
                 reasoning_effort TEXT,
+                sandbox_mode TEXT
+                    CONSTRAINT sessions_sandbox_mode_domain
+                    CHECK(sandbox_mode IN ('workspace-write', 'danger-full-access')),
                 context_sharing TEXT NOT NULL DEFAULT 'shared'
                     CONSTRAINT sessions_context_sharing_domain
                     CHECK(context_sharing IN ('shared', 'isolated')),
@@ -618,6 +621,7 @@ impl PostgresStore {
                ON sessions(context_id, last_activity_at DESC, id)"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
+            r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sandbox_mode TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_sharing TEXT NOT NULL DEFAULT 'shared'"#,
             r#"CREATE TABLE IF NOT EXISTS work_assignments (
                 id TEXT PRIMARY KEY,

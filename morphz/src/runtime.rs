@@ -2390,6 +2390,41 @@ impl MorphzRuntime {
         Ok(())
     }
 
+    async fn publish_session_sandbox_policy_changed(
+        &self,
+        previous: &SessionRecord,
+        current: &SessionRecord,
+    ) -> Result<(), RuntimeError> {
+        let changed = Event::new(
+            format!(
+                "session_sandbox_policy_changed_{}_{}_{}",
+                current.id,
+                current.updated_at.timestamp_micros(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ),
+            "Runtime-SessionSandboxPolicy".to_string(),
+            "runtime_control".to_string(),
+            "runtime/session_sandbox_policy_changed".to_string(),
+            [
+                ("context_id".to_string(), json!(&current.context_id)),
+                ("session_id".to_string(), json!(&current.id)),
+                (
+                    "previous_sandbox_mode".to_string(),
+                    json!(previous.sandbox_mode),
+                ),
+                ("sandbox_mode".to_string(), json!(current.sandbox_mode)),
+                (
+                    "effective_immediately".to_string(),
+                    json!("subsequently_started_tool_operations"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        self.inner.bus.publish(changed).await?;
+        Ok(())
+    }
+
     pub fn auto_review_model(&self) -> Option<String> {
         self.inner.permissions.auto_review_model()
     }
@@ -2482,6 +2517,9 @@ impl MorphzRuntime {
         // routes; archived records remain queryable through the directory and
         // are registered again if the user explicitly reactivates them.
         for session in self.inner.store.list_sessions(false).await? {
+            self.inner
+                .permissions
+                .set_session_sandbox_mode(&session.id, session.sandbox_mode);
             self.inner
                 .orchestrator
                 .register_session_context(&session.id, &session.context_id);
@@ -5498,10 +5536,17 @@ impl MorphzRuntime {
         let previous = self.inner.store.get_session(id).await?;
         let updated = self.inner.store.update_session(id, update).await?;
         if let (Some(previous), Some(current)) = (previous.as_ref(), updated.as_ref()) {
+            self.inner
+                .permissions
+                .set_session_sandbox_mode(&current.id, current.sandbox_mode);
             if previous.model_alias != current.model_alias
                 || previous.reasoning_effort != current.reasoning_effort
             {
                 self.publish_session_evaluation_policy_changed(previous, current)
+                    .await?;
+            }
+            if previous.sandbox_mode != current.sandbox_mode {
+                self.publish_session_sandbox_policy_changed(previous, current)
                     .await?;
             }
         }
@@ -10000,6 +10045,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            sandbox_mode: None,
             context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,
             updated_at: now,

@@ -7020,6 +7020,7 @@ impl Orchestrator {
                                 status: Some(SessionStatus::Archived),
                                 model_alias: None,
                                 reasoning_effort: None,
+                                sandbox_mode: None,
                             },
                         )
                         .await?;
@@ -14900,10 +14901,12 @@ impl Orchestrator {
                 },
             )?;
             attach_execution_join_route(&mut request, None, false)?;
-            let full_access = self
-                .durable_approvals
-                .as_ref()
-                .is_some_and(|services| services.broker.profile().full_access());
+            let full_access = self.durable_approvals.as_ref().is_some_and(|services| {
+                services
+                    .broker
+                    .profile_for_session(&plan.session_id)
+                    .full_access()
+            });
             let requirement = if full_access {
                 None
             } else {
@@ -15006,11 +15009,12 @@ impl Orchestrator {
         attach_execution_join_route(&mut request, None, false)?;
         let requirement = if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
             tool.approval_requirement(&invocation.tool_arguments)?
-        } else if self
-            .durable_approvals
-            .as_ref()
-            .is_some_and(|services| services.broker.profile().full_access())
-        {
+        } else if self.durable_approvals.as_ref().is_some_and(|services| {
+            services
+                .broker
+                .profile_for_session(&plan.session_id)
+                .full_access()
+        }) {
             None
         } else {
             Some(crate::execution_target::remote_target_approval_requirement(
@@ -15865,10 +15869,12 @@ impl Orchestrator {
             )?;
         }
         attach_execution_join_route(&mut request, action_group_id, standalone_signal)?;
-        let full_access = self
-            .durable_approvals
-            .as_ref()
-            .is_some_and(|services| services.broker.profile().full_access());
+        let full_access = self.durable_approvals.as_ref().is_some_and(|services| {
+            services
+                .broker
+                .profile_for_session(session_id)
+                .full_access()
+        });
         let requirement_result = if full_access {
             Ok(None)
         } else if let (Some(transfer), Some(source)) =

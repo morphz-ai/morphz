@@ -278,6 +278,7 @@ struct UpdateSessionRequest {
     status: Option<SessionStatus>,
     model_alias: Option<String>,
     reasoning_effort: Option<String>,
+    sandbox_mode: Option<crate::permission::SandboxMode>,
     context_sharing: Option<crate::memory::SessionContextSharing>,
 }
 
@@ -6432,6 +6433,7 @@ async fn handle_update_session(
         return error_response(StatusCode::BAD_REQUEST, "title must not be empty");
     }
     let context_sharing = request.context_sharing;
+    let sandbox_mode = request.sandbox_mode;
     let model_alias = match request.model_alias {
         None => None,
         Some(model) if model.trim().is_empty() => Some(None),
@@ -6539,7 +6541,10 @@ async fn handle_update_session(
     if operator_authorized
         && title.is_none()
         && status.is_none()
-        && (model_alias.is_some() || reasoning_effort.is_some() || context_sharing.is_some())
+        && (model_alias.is_some()
+            || reasoning_effort.is_some()
+            || sandbox_mode.is_some()
+            || context_sharing.is_some())
     {
         if model_alias.is_some() || reasoning_effort.is_some() {
             if let Err(error) = state
@@ -6552,6 +6557,21 @@ async fn handle_update_session(
                 .await
             {
                 return sdk_error_response(error);
+            }
+        }
+        if let Some(sandbox_mode) = sandbox_mode {
+            if let Err(error) = state
+                .runtime
+                .update_session(
+                    &session_id,
+                    SessionUpdate {
+                        sandbox_mode: Some(Some(sandbox_mode)),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
             }
         }
         return if let Some(sharing) = context_sharing {
@@ -6594,6 +6614,7 @@ async fn handle_update_session(
                 status,
                 model_alias,
                 reasoning_effort,
+                sandbox_mode: sandbox_mode.map(Some),
             },
         )
         .await
@@ -9463,6 +9484,7 @@ mod tests {
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )
@@ -9516,6 +9538,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
                 context_sharing: Some(crate::memory::SessionContextSharing::Isolated),
             }),
         )
@@ -9541,6 +9564,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
                 context_sharing: Some(crate::memory::SessionContextSharing::Shared),
             }),
         )
@@ -9560,6 +9584,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )
@@ -11793,7 +11818,7 @@ account = "xai-account"
     }
 
     #[tokio::test]
-    async fn dashboard_session_model_control_is_scoped_reversible_and_catalog_validated() {
+    async fn dashboard_session_policy_controls_are_scoped_persistent_and_catalog_validated() {
         let (state, runtime) = test_state().await;
         let session_id = "session-model-scope";
         runtime
@@ -11818,6 +11843,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )
@@ -11846,6 +11872,7 @@ account = "xai-account"
                 status: None,
                 model_alias: None,
                 reasoning_effort: Some("high".to_string()),
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )
@@ -11863,6 +11890,33 @@ account = "xai-account"
             Some("high")
         );
 
+        let sandbox = handle_update_session(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: None,
+                reasoning_effort: None,
+                sandbox_mode: Some(crate::permission::SandboxMode::DangerFullAccess),
+                context_sharing: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(sandbox.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .sandbox_mode,
+            Some(crate::permission::SandboxMode::DangerFullAccess)
+        );
+
         let rejected = handle_update_session(
             State(Arc::clone(&state)),
             Path(session_id.to_string()),
@@ -11873,6 +11927,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some("missing-model".to_string()),
                 reasoning_effort: None,
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )
@@ -11900,6 +11955,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some(String::new()),
                 reasoning_effort: Some("provider_default".to_string()),
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )

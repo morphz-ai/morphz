@@ -864,6 +864,11 @@ pub struct SessionRecord {
     /// validated at the Runtime boundary before it reaches persistent state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Optional Sandbox override selected for this Session. `None` inherits
+    /// the Runtime startup Profile. Unlike a request snapshot, this policy is
+    /// consulted again before each subsequently-started tool operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_mode: Option<crate::permission::SandboxMode>,
     /// Whether this Session's conversation history may enter another
     /// Session's automatic Context working set. The current Session always
     /// sees its own history; shared Mind and explicit Recall remain
@@ -1007,6 +1012,9 @@ pub struct SessionUpdate {
     /// `None` leaves the override unchanged. `Some(None)` restores service
     /// inheritance; `Some(Some(level))` freezes a Session-specific level.
     pub reasoning_effort: Option<Option<String>>,
+    /// `None` leaves the policy unchanged. `Some(None)` restores Runtime
+    /// inheritance; `Some(Some(mode))` persists a Session-specific Sandbox.
+    pub sandbox_mode: Option<Option<crate::permission::SandboxMode>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

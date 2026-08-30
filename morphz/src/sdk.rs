@@ -3740,6 +3740,7 @@ impl MorphzSdk {
                     status: None,
                     model_alias,
                     reasoning_effort,
+                    sandbox_mode: None,
                 },
             )
             .await
@@ -4328,6 +4329,7 @@ mod tests {
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
                 reasoning_effort: None,
+                sandbox_mode: None,
             },
         )
         .await

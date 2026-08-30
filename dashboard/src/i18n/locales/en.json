@@ -793,6 +793,12 @@
     "high": "High",
     "max": "Max"
   },
+  "sandbox": {
+    "label": "Sandbox",
+    "title": "Immediately changes this Session's Sandbox policy for subsequently started tool work; already-running processes and other Sessions are unchanged",
+    "workspaceWrite": "Workspace Write",
+    "fullAccess": "Full Access"
+  },
   "reasoningSummary": {
     "toggle": "Reasoning summary",
     "toggleTitle": "Show or collapse the provider's reasoning summary; it is stored separately and never merged into reply text",
