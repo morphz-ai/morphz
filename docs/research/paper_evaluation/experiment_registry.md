@@ -1,6 +1,6 @@
 # Morphz 论文实验总账
 
-> 最后更新：2026-08-29
+> 最后更新：2026-08-30
 > 维护规则：任何状态、协议或结果变化都更新本表；不得删除已执行实验的历史记录。
 
 ## Runtime 基线
@@ -15,7 +15,11 @@ Runtime commit 与同一二进制，因此可与该轮 ME-08 作逐题隔离/共
 `27c85faf224bbdb3980f6433e205d5e120a06ccd5497cfbf7f69e7d56a7bc34c`。ME-08 当前
 Runtime 单臂补充刷新使用 `2b01310107f3d7819eedd5e07d2605ce46803ea8`、二进制 SHA-256
 `e4a500e4ba7f2fae3284728bcdd338f4504884349da975886a8b78fc56ade77d`；该刷新不替换论文
-冻结基线。已完成的
+冻结基线。ME-08 stable-schema Prefix Cache 同期 A/B 使用 Runtime
+`89adf739454da52bce2b35b00fb9e8fa050c5557`：Control 二进制 SHA-256
+`7cb92253d362a5898f10ff8d09499236d1dbfe3ebd29f3b9d0e25fbd7829ca54`，Treatment 二进制
+SHA-256 `ce96ba70261803938bd01c2f1c665ad747bc0d603c51e8d3bd6f0575137ae92d`。该 A/B 是缓存发布
+Gate 与候选基线证据，不静默替换论文冻结结果。已完成的
 ME-06 与原始 ME-08 仍保留其历史
 [`paper-eval-runtime-v4`](./runtime_baseline_v4.md) 基线
 `5e4b0ffcd89245f19d84ec3569605ae27a44e02b`；历史 v3 继续对应
@@ -47,7 +51,7 @@ ME-06 与原始 ME-08 仍保留其历史
 | ME-05 | 九模型跨模型普适性 | RQ5 | P1 | 144/144 完整；严格 98/144；ME-03 语义诊断 104/108 | `pilot-complete / incorporated` | [`p1 result`](./artifacts/me05_nine_model_p1_20260826/RESULT.md) | 不重复简单样本；扩展只作未来增强 |
 | ME-06 | 长期、多 Session、迁移与恢复 | RQ6 | P1 | 两臂均 3/3 fixture、24/24 状态字段、3/3 唯一行动；Morphz 真实执行 40 次 Context 事务，并覆盖跨 Session、版本冲突重读、重启恢复、隔离与因果审计 | `pilot-complete / incorporated` | [`p1.1 result`](./artifacts/me06_long_horizon_p11_20260826/RESULT.md) | 保留满分天花板与三个样本边界，不重复补跑 |
 | ME-07 | STATE-Bench 上 Morphz/Letta/Mem0 公开 Agent 系统验证 | 外部效度/RQ5/RQ6 | P1 | 150 paired cells/450 terminal trials 全部闭合：Morphz 122/150（81.33%）、Letta 93/150（62.00%）、Mem0 96/150（64.00%）；Mind Frame trace Gate 150/150，通过 300 个训练事务形成 144 个活跃 Frame 与 395 条 Relation；30 条盲化人工校准包已冻结 | `formal-complete / trace-audit-complete / human-packet-ready / incorporated` | [`v2 frozen`](./me_07_state_bench_protocol_v2.md)；[`formal result`](./artifacts/me07_public_agent_systems_formal_one_run_20260827/README.md)；[`human packet`](./artifacts/me07_evaluator_human_validation_packet_20260827/README.md) | 两名独立人工评分是可选增强项；不得把系统级效果全部归因于 Mind Frame |
-| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 两个独立完整 89 题相同条件运行、同模型/主机/数据集、并发 8、零重试：Morphz 72/89（80.90%），Codex 74/89（83.15%）；差 −2.25pp，95% CI [−10.11,+5.62]，精确配对 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7% | `external-complete / incorporated` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md) | 正确率、总逻辑词元和墙钟已进入论文；缓存与 API 成本受已确认的显式缓存封装缺陷影响，只作诊断，修复后需在相同工作负载重测 |
+| ME-08 | Terminal-Bench 2.1 完整 89 题外部系统验证 | 外部效度 | P1 | 论文冻结结果仍为 Morphz 72/89 对 Codex 74/89。另有 stable-schema Prefix Cache 同期 A/B：Control 72/89、Treatment 71/89，配对 6:5、精确 `p=1.0`；缓存命中率 29.88%→86.27%，未缓存输入减少 81.27%，完整性 Gate 全过 | `external-complete / incorporated; cache-gate-complete / supplemental` | [`current Runtime full-89`](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)；[`prefix-cache A/B`](./artifacts/me08_prefix_cache_ab_89adf73_all89_20260830/RESULT.md) | 论文冻结数字暂不自动改写；把 Structured Delta 作为新候选基线交论文任务复核，并保留墙钟未改善与一例独有 AgentTimeout 的边界 |
 | ME-09 | 单 Agent、八 Session、共享 Context 的 Terminal-Bench 迁移实验 | 外部效度/RQ6 | P2 | r6 同 Runtime、无 Harness 完整 89 题：共享 Context 70/89，对隔离 Context 72/89；共同通过 65、共同失败 12、仅共享 5、仅隔离 7；差 −2.25pp，95% CI `[−10.11,+5.62]`，精确配对 `p=0.774414`。E3 为 0，总逻辑 Token 为隔离控制的 3.127×；9 个超时异常中 8 个计零。r3/r4/r5 仍因 Harness 污染无效 | `external-complete / supplemental / excluded-from-current-paper` | [`proposal v1`](./me_09_shared_context_terminal_bench_proposal_v1.md)；[`r6 result`](./artifacts/me09_shared_context_full_r6_d6e6d80_max_sessions_50_20260828/RESULT.md)；[`r4 historical diagnostic`](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md) | r6 已闭合并保留为有效补充实验；当前论文不追改。未来如扩展，须保留零 Harness 与同 Runtime 隔离控制，旧批次不得拼接或补算 |
 
 ## 依赖
@@ -77,6 +81,23 @@ ME-05 使用 ME-01/02/03 中冻结的核心子集，不重新设计任务；ME-0
 | Harbor、Terminal-Bench、π-Bench adapter | ME-08 / 通用能力 | F/P | Terminal-Bench 前 40 题四臂结果登记为外部系统能力 Pilot；不替代机制消融或专门记忆验证 |
 
 ## 状态更新记录
+
+### 2026-08-30
+
+- ME-08 stable-schema Prefix Cache 同期 A/B 完整闭合：两臂各 89 个唯一 Terminal-Bench 2.1
+  任务、每题一次、并发 8+8、零重试、无 Harness，178/178 SQLite/Context/Session/轨迹与
+  integrity Gate 全部通过。Control `implicit-prefix` 为 72/89（80.90%），Treatment
+  `experimental-structured-deltas` 为 71/89（79.78%）；共同通过 66、共同失败 12、仅 Control 6、
+  仅 Treatment 5，差 −1.12pp，双侧精确 McNemar `p=1.0`，没有明确正确率回退；
+- Provider 精确字段审计显示整批输入缓存命中率从 29.88% 提高到 86.27%，未缓存输入从
+  46,285,487 降至 8,669,562（−81.27%）。sequence 4+ 为 27.66% 对 88.08%，21 次以上
+  请求的长任务为 26.93% 对 89.56%。Treatment 输出与推理 Token 更多，故输入+输出只减少
+  3.57%，墙钟反而增加 6.55%；缓存命中改善不等于端到端时延必然改善；
+- Control 的三个缺失 reward 均为 VerifierTimeout；Treatment 有一个 AgentTimeout 与一个
+  VerifierTimeout，均按官方 0 保留。两臂各两次 `server_unavailable` 均探针成功并恢复，
+  quota、Runtime boundary failure、Harness binding 均为 0。发布 Gate 判定通过，建议作为新候选
+  基线送论文任务复核，但本次不修改双语论文。冻结证据见
+  [`artifacts/me08_prefix_cache_ab_89adf73_all89_20260830/RESULT.md`](./artifacts/me08_prefix_cache_ab_89adf73_all89_20260830/RESULT.md)。
 
 ### 2026-08-29
 

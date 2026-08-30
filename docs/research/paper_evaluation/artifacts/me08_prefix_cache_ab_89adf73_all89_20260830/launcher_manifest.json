@@ -1,0 +1,71 @@
+{
+  "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+  "validated_at": "2026-08-29T23:00:55.608923+00:00",
+  "task_count_per_arm": 89,
+  "concurrency_per_arm": 8,
+  "maximum_simultaneous_trials": 16,
+  "runtime_commit": "89adf739454da52bce2b35b00fb9e8fa050c5557",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "max",
+  "fallback": false,
+  "harness_mode": "none",
+  "cache_cohort_isolation": "morphz-v3 cache cohort hashes PromptCacheWireMode; control ImplicitText and treatment ImplicitContentBoundaries are distinct",
+  "arms": {
+    "control": {
+      "source_root": "/opt/morphz-benchmark/source-me08-prefix-cache-ab-control-f8ba6bb",
+      "infrastructure_commit": "f8ba6bbdfacdf59dad8e226c48e26909a6237a9b",
+      "binary": "/opt/morphz-benchmark/builds/me08-prefix-cache-ab-89adf73/control/morphz",
+      "binary_sha256": "7cb92253d362a5898f10ff8d09499236d1dbfe3ebd29f3b9d0e25fbd7829ca54",
+      "build_id": "a5460440f8a1e77eb07309b8cdb3d6be8ce71855",
+      "cargo_features": [],
+      "strategy": "implicit-prefix"
+    },
+    "structured-deltas": {
+      "source_root": "/opt/morphz-benchmark/source-me08-prefix-cache-ab-treatment-d5cf619",
+      "infrastructure_commit": "d5cf619101121f9c682585e33d2f418cc95f08c4",
+      "binary": "/opt/morphz-benchmark/builds/me08-prefix-cache-ab-89adf73/treatment/morphz",
+      "binary_sha256": "ce96ba70261803938bd01c2f1c665ad747bc0d603c51e8d3bd6f0575137ae92d",
+      "build_id": "89458177ccb11650823f3126b70d4496330f4035",
+      "cargo_features": [
+        "experimental-openai-chatgpt-structured-cache"
+      ],
+      "strategy": "experimental-structured-deltas"
+    }
+  },
+  "manifests": {
+    "control": {
+      "first_40_sha256": "037ba4f71d7351455fd0275da153bbf4ded3d99ec54125e0aac6fa53d7dd2377",
+      "remaining_49_sha256": "fc68caa0b9e79c46b0c419bbc96b67159d1b9ea073fd31042667afd7f81aef19",
+      "toolchain_lock_sha256": "d50fa42f251916927ac8740d3a80ce3d1993112c5753a6b43310c8b4f8a46c8d",
+      "dataset": {
+        "dataset": "terminal-bench/terminal-bench-2-1",
+        "version": "2.1",
+        "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+        "source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+        "source_archive_sha256": "aa992a8848a1f3ed5191a34fa72ed5700d67dd9f968413a0e0a567b6188cb527",
+        "task_count": 89,
+        "leaderboard_submission_policy_checked_at": "2026-08-20"
+      }
+    },
+    "structured-deltas": {
+      "first_40_sha256": "037ba4f71d7351455fd0275da153bbf4ded3d99ec54125e0aac6fa53d7dd2377",
+      "remaining_49_sha256": "fc68caa0b9e79c46b0c419bbc96b67159d1b9ea073fd31042667afd7f81aef19",
+      "toolchain_lock_sha256": "308d54a7a36cbb2e4e564966a56504cf9b1eef59ba38e916dc2b6c12ca9518c3",
+      "dataset": {
+        "dataset": "terminal-bench/terminal-bench-2-1",
+        "version": "2.1",
+        "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+        "source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+        "source_archive_sha256": "aa992a8848a1f3ed5191a34fa72ed5700d67dd9f968413a0e0a567b6188cb527",
+        "task_count": 89,
+        "leaderboard_submission_policy_checked_at": "2026-08-20"
+      }
+    }
+  },
+  "preflight_passed": {
+    "control": true,
+    "structured-deltas": true
+  },
+  "started_at": "2026-08-29T23:00:55.609176+00:00",
+  "launcher_sha256": "802321d3867211624e4e33b833d4c84c52bc9585d96715f93b5a9d7099cf370a"
+}

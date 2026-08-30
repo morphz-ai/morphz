@@ -1,0 +1,156 @@
+{
+  "descriptive_noncontemporaneous": {
+    "control_vs_frozen_codex_74": {
+      "both_fail": 9,
+      "both_pass": 66,
+      "contemporaneous": false,
+      "discordant_pairs": 14,
+      "exact_two_sided_mcnemar_p": 0.79052734375,
+      "left": "frozen Codex 74/89",
+      "left_only": 8,
+      "left_only_tasks": [
+        "chess-best-move",
+        "dna-assembly",
+        "extract-moves-from-video",
+        "feal-linear-cryptanalysis",
+        "mteb-leaderboard",
+        "pytorch-model-recovery",
+        "torch-tensor-parallelism",
+        "train-fasttext"
+      ],
+      "right": "current control 72/89",
+      "right_minus_left_passes": -2,
+      "right_only": 6,
+      "right_only_tasks": [
+        "feal-differential-cryptanalysis",
+        "gcode-to-text",
+        "hf-model-inference",
+        "kv-store-grpc",
+        "model-extraction-relu-logits",
+        "qemu-alpine-ssh"
+      ],
+      "task_count": 89
+    },
+    "control_vs_preserved_morphz_72": {
+      "both_fail": 11,
+      "both_pass": 66,
+      "contemporaneous": false,
+      "discordant_pairs": 12,
+      "exact_two_sided_mcnemar_p": 1.0,
+      "left": "preserved Morphz d6e6d80 72/89",
+      "left_only": 6,
+      "left_only_tasks": [
+        "configure-git-webserver",
+        "feal-linear-cryptanalysis",
+        "password-recovery",
+        "torch-pipeline-parallelism",
+        "torch-tensor-parallelism",
+        "train-fasttext"
+      ],
+      "right": "current control 72/89",
+      "right_minus_left_passes": 0,
+      "right_only": 6,
+      "right_only_tasks": [
+        "gcode-to-text",
+        "install-windows-3.11",
+        "kv-store-grpc",
+        "model-extraction-relu-logits",
+        "sam-cell-seg",
+        "video-processing"
+      ],
+      "task_count": 89
+    },
+    "treatment_vs_frozen_codex_74": {
+      "both_fail": 11,
+      "both_pass": 67,
+      "contemporaneous": false,
+      "discordant_pairs": 11,
+      "exact_two_sided_mcnemar_p": 0.548828125,
+      "left": "frozen Codex 74/89",
+      "left_only": 7,
+      "left_only_tasks": [
+        "dna-assembly",
+        "extract-moves-from-video",
+        "financial-document-processor",
+        "overfull-hbox",
+        "pytorch-model-recovery",
+        "torch-tensor-parallelism",
+        "video-processing"
+      ],
+      "right": "current treatment 71/89",
+      "right_minus_left_passes": -3,
+      "right_only": 4,
+      "right_only_tasks": [
+        "feal-differential-cryptanalysis",
+        "hf-model-inference",
+        "qemu-alpine-ssh",
+        "raman-fitting"
+      ],
+      "task_count": 89
+    },
+    "treatment_vs_preserved_morphz_72": {
+      "both_fail": 12,
+      "both_pass": 66,
+      "contemporaneous": false,
+      "discordant_pairs": 11,
+      "exact_two_sided_mcnemar_p": 1.0,
+      "left": "preserved Morphz d6e6d80 72/89",
+      "left_only": 6,
+      "left_only_tasks": [
+        "configure-git-webserver",
+        "financial-document-processor",
+        "overfull-hbox",
+        "password-recovery",
+        "torch-pipeline-parallelism",
+        "torch-tensor-parallelism"
+      ],
+      "right": "current treatment 71/89",
+      "right_minus_left_passes": -1,
+      "right_only": 5,
+      "right_only_tasks": [
+        "chess-best-move",
+        "install-windows-3.11",
+        "mteb-leaderboard",
+        "raman-fitting",
+        "sam-cell-seg"
+      ],
+      "task_count": 89
+    }
+  },
+  "interpretation": {
+    "external_references_are_noncontemporaneous": true,
+    "official_raw_reward_only": true,
+    "primary_comparison": "current contemporaneous control versus treatment"
+  },
+  "primary_contemporaneous_ab": {
+    "both_fail": 12,
+    "both_pass": 66,
+    "contemporaneous": true,
+    "discordant_pairs": 11,
+    "exact_two_sided_mcnemar_p": 1.0,
+    "left": "control implicit-prefix",
+    "left_only": 6,
+    "left_only_tasks": [
+      "financial-document-processor",
+      "gcode-to-text",
+      "kv-store-grpc",
+      "model-extraction-relu-logits",
+      "overfull-hbox",
+      "video-processing"
+    ],
+    "left_passes": 72,
+    "right": "treatment experimental-structured-deltas",
+    "right_minus_left_passes": -1,
+    "right_only": 5,
+    "right_only_tasks": [
+      "chess-best-move",
+      "feal-linear-cryptanalysis",
+      "mteb-leaderboard",
+      "raman-fitting",
+      "train-fasttext"
+    ],
+    "right_passes": 71,
+    "task_count": 89
+  },
+  "schema_version": "me08-prefix-cache-paired-comparisons-v1"
+}

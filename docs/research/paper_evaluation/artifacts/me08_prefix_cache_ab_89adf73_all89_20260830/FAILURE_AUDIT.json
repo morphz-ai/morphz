@@ -1,0 +1,182 @@
+{
+  "control": {
+    "missing_reward_files_officially_zero": [
+      "pytorch-model-recovery",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism"
+    ],
+    "official_failure_tasks": [
+      "break-filter-js-from-html",
+      "chess-best-move",
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-moves-from-video",
+      "feal-linear-cryptanalysis",
+      "filter-js-from-html",
+      "make-doom-for-mips",
+      "mteb-leaderboard",
+      "password-recovery",
+      "pytorch-model-recovery",
+      "raman-fitting",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "train-fasttext",
+      "vulnerable-secret"
+    ],
+    "official_failures": 17,
+    "ordinary_zero_reward_tasks": [
+      "chess-best-move",
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-moves-from-video",
+      "feal-linear-cryptanalysis",
+      "filter-js-from-html",
+      "make-doom-for-mips",
+      "mteb-leaderboard",
+      "password-recovery",
+      "raman-fitting",
+      "train-fasttext"
+    ],
+    "primary_agent_timeouts": [],
+    "primary_verifier_timeouts": [
+      "pytorch-model-recovery",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism"
+    ],
+    "provider_application_request_recovered": 2,
+    "provider_failure_awaiting_probe": 2,
+    "provider_probe_succeeded": 2,
+    "provider_server_unavailable_recovered_tasks": [
+      "qemu-alpine-ssh",
+      "regex-chess"
+    ],
+    "safety_recovery_projection_events": 19,
+    "safety_recovery_projection_tasks": {
+      "break-filter-js-from-html": 2,
+      "crack-7z-hash": 2,
+      "feal-linear-cryptanalysis": 13,
+      "vulnerable-secret": 2
+    },
+    "safety_refusal_terminal_tasks": [
+      "break-filter-js-from-html",
+      "vulnerable-secret"
+    ]
+  },
+  "interpretation": {
+    "diagnostics_do_not_replace_official_zero_scores": true,
+    "no_provider_capacity_failure_signal": true,
+    "no_runtime_or_harness_failure_signal": true,
+    "treatment_has_one_unique_agent_timeout": true,
+    "treatment_net_accuracy_difference_tasks": -1,
+    "verifier_timeout_is_not_a_model_capability_failure": true
+  },
+  "official_raw_reward_remains_primary": true,
+  "paired_discordance": {
+    "both_fail": 12,
+    "both_pass": 66,
+    "contemporaneous": true,
+    "discordant_pairs": 11,
+    "exact_two_sided_mcnemar_p": 1.0,
+    "left": "control implicit-prefix",
+    "left_only": 6,
+    "left_only_tasks": [
+      "financial-document-processor",
+      "gcode-to-text",
+      "kv-store-grpc",
+      "model-extraction-relu-logits",
+      "overfull-hbox",
+      "video-processing"
+    ],
+    "left_passes": 72,
+    "right": "treatment experimental-structured-deltas",
+    "right_minus_left_passes": -1,
+    "right_only": 5,
+    "right_only_tasks": [
+      "chess-best-move",
+      "feal-linear-cryptanalysis",
+      "mteb-leaderboard",
+      "raman-fitting",
+      "train-fasttext"
+    ],
+    "right_passes": 71,
+    "task_count": 89
+  },
+  "schema_version": "me08-prefix-cache-ab-failure-audit-v1",
+  "shared_zero_anomaly_counts": {
+    "harness_bindings": 0,
+    "nonempty_agent_stderr_files": 0,
+    "provider_probe_failed": 0,
+    "provider_quota_failures": 0,
+    "provider_retries": 0,
+    "provider_shared_circuit_opened": 0,
+    "runtime_boundary_failures": 0
+  },
+  "structured-deltas": {
+    "missing_reward_files_officially_zero": [
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism"
+    ],
+    "official_failure_tasks": [
+      "break-filter-js-from-html",
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-moves-from-video",
+      "filter-js-from-html",
+      "financial-document-processor",
+      "gcode-to-text",
+      "kv-store-grpc",
+      "make-doom-for-mips",
+      "model-extraction-relu-logits",
+      "overfull-hbox",
+      "password-recovery",
+      "pytorch-model-recovery",
+      "torch-pipeline-parallelism",
+      "torch-tensor-parallelism",
+      "video-processing",
+      "vulnerable-secret"
+    ],
+    "official_failures": 18,
+    "ordinary_zero_reward_tasks": [
+      "configure-git-webserver",
+      "dna-assembly",
+      "dna-insert",
+      "extract-moves-from-video",
+      "filter-js-from-html",
+      "financial-document-processor",
+      "gcode-to-text",
+      "kv-store-grpc",
+      "make-doom-for-mips",
+      "model-extraction-relu-logits",
+      "overfull-hbox",
+      "password-recovery",
+      "pytorch-model-recovery",
+      "video-processing"
+    ],
+    "primary_agent_timeouts": [
+      "torch-pipeline-parallelism"
+    ],
+    "primary_verifier_timeouts": [
+      "torch-tensor-parallelism"
+    ],
+    "provider_application_request_recovered": 2,
+    "provider_failure_awaiting_probe": 2,
+    "provider_probe_succeeded": 2,
+    "provider_server_unavailable_recovered_tasks": [
+      "circuit-fibsqrt",
+      "extract-elf"
+    ],
+    "safety_recovery_projection_events": 6,
+    "safety_recovery_projection_tasks": {
+      "break-filter-js-from-html": 2,
+      "feal-linear-cryptanalysis": 2,
+      "vulnerable-secret": 2
+    },
+    "safety_refusal_terminal_tasks": [
+      "break-filter-js-from-html",
+      "vulnerable-secret"
+    ]
+  }
+}

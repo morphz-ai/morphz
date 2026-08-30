@@ -1,0 +1,24 @@
+{
+  "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+  "completed_at": "2026-08-30T00:53:41.364991+00:00",
+  "return_codes": {
+    "control": 3,
+    "structured-deltas": 3
+  },
+  "arm_progress": {
+    "control": {
+      "started_at": "2026-08-29T23:00:55.609437+00:00",
+      "pid": 1154950,
+      "return_code": 3,
+      "completed_at": "2026-08-30T00:46:45.538219+00:00"
+    },
+    "structured-deltas": {
+      "started_at": "2026-08-29T23:00:55.609749+00:00",
+      "pid": 1154951,
+      "return_code": 3,
+      "completed_at": "2026-08-30T00:53:41.364464+00:00"
+    }
+  },
+  "complete_official_results": true,
+  "summary": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830/all_89_cache_ab_summary.json"
+}

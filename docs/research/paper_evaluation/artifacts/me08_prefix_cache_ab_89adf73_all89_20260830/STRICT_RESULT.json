@@ -1,0 +1,31 @@
+{
+  "all_gates_passed": true,
+  "gates": {
+    "all_178_configs_match_expected": true,
+    "all_178_context_session_identities_isolated": true,
+    "all_178_integrity_records_clean": true,
+    "all_178_sqlite_quick_checks_ok": true,
+    "cache_field_identities_pass": true,
+    "concurrency_8_plus_8": true,
+    "control_strategy_not_structured": true,
+    "exact_89_unique_tasks_per_arm": true,
+    "exact_runtime_commit": true,
+    "integrity_gate_control": true,
+    "integrity_gate_treatment": true,
+    "launcher_preflight_both_arms": true,
+    "official_results_complete": true,
+    "one_attempt_per_task": true,
+    "post_run_binary_identity_verified": true,
+    "resource_samples_present": true,
+    "same_authoritative_task_set": true,
+    "treatment_strategy_active_all_databases": true,
+    "zero_harness_bindings": true
+  },
+  "note": "Integrity and protocol gates pass; official task failures and timeout-derived zeros are preserved and are not erased by this gate.",
+  "official_scores": {
+    "control": "72/89",
+    "structured-deltas": "71/89"
+  },
+  "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+  "schema_version": "me08-prefix-cache-ab-strict-result-v1"
+}

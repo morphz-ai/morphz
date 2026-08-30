@@ -1,0 +1,223 @@
+{
+  "cache_audit_file": "CACHE_AUDIT.json",
+  "failure_audit_file": "FAILURE_AUDIT.json",
+  "frozen_identity": {
+    "arms": {
+      "control": {
+        "binary": "/opt/morphz-benchmark/builds/me08-prefix-cache-ab-89adf73/control/morphz",
+        "binary_sha256": "7cb92253d362a5898f10ff8d09499236d1dbfe3ebd29f3b9d0e25fbd7829ca54",
+        "build_id": "a5460440f8a1e77eb07309b8cdb3d6be8ce71855",
+        "cargo_features": [],
+        "infrastructure_commit": "f8ba6bbdfacdf59dad8e226c48e26909a6237a9b",
+        "source_root": "/opt/morphz-benchmark/source-me08-prefix-cache-ab-control-f8ba6bb",
+        "strategy": "implicit-prefix"
+      },
+      "structured-deltas": {
+        "binary": "/opt/morphz-benchmark/builds/me08-prefix-cache-ab-89adf73/treatment/morphz",
+        "binary_sha256": "ce96ba70261803938bd01c2f1c665ad747bc0d603c51e8d3bd6f0575137ae92d",
+        "build_id": "89458177ccb11650823f3126b70d4496330f4035",
+        "cargo_features": [
+          "experimental-openai-chatgpt-structured-cache"
+        ],
+        "infrastructure_commit": "d5cf619101121f9c682585e33d2f418cc95f08c4",
+        "source_root": "/opt/morphz-benchmark/source-me08-prefix-cache-ab-treatment-d5cf619",
+        "strategy": "experimental-structured-deltas"
+      }
+    },
+    "cache_cohort_isolation": "morphz-v3 cache cohort hashes PromptCacheWireMode; control ImplicitText and treatment ImplicitContentBoundaries are distinct",
+    "concurrency_per_arm": 8,
+    "fallback": false,
+    "harness_mode": "none",
+    "launcher_sha256": "802321d3867211624e4e33b833d4c84c52bc9585d96715f93b5a9d7099cf370a",
+    "manifests": {
+      "control": {
+        "dataset": {
+          "dataset": "terminal-bench/terminal-bench-2-1",
+          "leaderboard_submission_policy_checked_at": "2026-08-20",
+          "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+          "source_archive_sha256": "aa992a8848a1f3ed5191a34fa72ed5700d67dd9f968413a0e0a567b6188cb527",
+          "source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+          "task_count": 89,
+          "version": "2.1"
+        },
+        "first_40_sha256": "037ba4f71d7351455fd0275da153bbf4ded3d99ec54125e0aac6fa53d7dd2377",
+        "remaining_49_sha256": "fc68caa0b9e79c46b0c419bbc96b67159d1b9ea073fd31042667afd7f81aef19",
+        "toolchain_lock_sha256": "d50fa42f251916927ac8740d3a80ce3d1993112c5753a6b43310c8b4f8a46c8d"
+      },
+      "structured-deltas": {
+        "dataset": {
+          "dataset": "terminal-bench/terminal-bench-2-1",
+          "leaderboard_submission_policy_checked_at": "2026-08-20",
+          "registry_ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+          "source_archive_sha256": "aa992a8848a1f3ed5191a34fa72ed5700d67dd9f968413a0e0a567b6188cb527",
+          "source_commit": "7131e4375048a0e408a8fb404b5f499d726b695b",
+          "task_count": 89,
+          "version": "2.1"
+        },
+        "first_40_sha256": "037ba4f71d7351455fd0275da153bbf4ded3d99ec54125e0aac6fa53d7dd2377",
+        "remaining_49_sha256": "fc68caa0b9e79c46b0c419bbc96b67159d1b9ea073fd31042667afd7f81aef19",
+        "toolchain_lock_sha256": "308d54a7a36cbb2e4e564966a56504cf9b1eef59ba38e916dc2b6c12ca9518c3"
+      }
+    },
+    "maximum_simultaneous_trials": 16,
+    "model": "gpt-5.6-sol",
+    "preflight_passed": {
+      "control": true,
+      "structured-deltas": true
+    },
+    "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+    "reasoning_effort": "max",
+    "runtime_commit": "89adf739454da52bce2b35b00fb9e8fa050c5557",
+    "started_at": "2026-08-29T23:00:55.609176+00:00",
+    "task_count_per_arm": 89,
+    "validated_at": "2026-08-29T23:00:55.608923+00:00"
+  },
+  "official_results": {
+    "complete_official_results": true,
+    "control": {
+      "failed": 17,
+      "integrity_gate_passed": true,
+      "passed": 72,
+      "score": 0.8089887640449438,
+      "wilson_95_ci": [
+        0.715227317828824,
+        0.8771804351150649
+      ]
+    },
+    "missing_reward_files_counted_as_official_zero": {
+      "control": 3,
+      "structured-deltas": 2
+    },
+    "paired": {
+      "both_fail": 12,
+      "both_pass": 66,
+      "control_only": 6,
+      "structured_deltas_only": 5,
+      "treatment_minus_control_passes": -1
+    },
+    "return_codes": {
+      "control": 3,
+      "structured-deltas": 3
+    },
+    "structured-deltas": {
+      "failed": 18,
+      "integrity_gate_passed": true,
+      "passed": 71,
+      "score": 0.797752808988764,
+      "wilson_95_ci": [
+        0.7028034801630848,
+        0.8680621726737535
+      ]
+    }
+  },
+  "paired_comparisons_file": "PAIRED_COMPARISONS.json",
+  "post_run_identity_verification": {
+    "control_binary_sha256_verified": true,
+    "control_build_id_verified": true,
+    "control_source_head": "f8ba6bbdfacdf59dad8e226c48e26909a6237a9b",
+    "launcher_sha256_verified": true,
+    "runtime_version_both": "morphz 0.1.0 (git 89adf739454da52bce2b35b00fb9e8fa050c5557)",
+    "source_worktrees_clean": true,
+    "treatment_binary_sha256_verified": true,
+    "treatment_build_id_verified": true,
+    "treatment_source_head": "d5cf619101121f9c682585e33d2f418cc95f08c4"
+  },
+  "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+  "resource_audit": {
+    "captured_at_first": "2026-08-29T23:00:55.619720+00:00",
+    "captured_at_last": "2026-08-30T00:53:28.551872+00:00",
+    "cpu_count": 16,
+    "docker_running_containers": {
+      "max": 18,
+      "mean": 16.58407079646018,
+      "p95": 18.0
+    },
+    "load_15m": {
+      "max": 8.67333984375,
+      "mean": 5.06700687914823,
+      "p95": 8.1593017578125
+    },
+    "load_1m": {
+      "max": 25.6484375,
+      "mean": 5.439085833794247,
+      "p95": 15.391357421875
+    },
+    "load_5m": {
+      "max": 12.0322265625,
+      "mean": 5.370661642699115,
+      "p95": 10.6072998046875
+    },
+    "memory_used_kib": {
+      "max": 10083992,
+      "mean": 5392297.0265486725,
+      "p95": 8083862.0
+    },
+    "sample_count": 226
+  },
+  "schema_version": "me08-prefix-cache-ab-run-audit-v1",
+  "server_run_root": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-ab-89adf73-r1-20260830",
+  "strategy_activation": {
+    "control": {
+      "structured_delta_reused_total": 0,
+      "structured_delta_started_total": 0,
+      "wire_audit_database_coverage": 89,
+      "wire_audit_total": 1408,
+      "wire_outcome_database_coverage": 87,
+      "wire_outcome_total": 1381
+    },
+    "explanation": "Those two tasks terminated through the safety-refusal path before a Provider usage outcome; treatment strategy-start audit still covers all 89 databases.",
+    "structured-deltas": {
+      "structured_delta_reused_database_coverage": 87,
+      "structured_delta_reused_total": 1082,
+      "structured_delta_started_database_coverage": 89,
+      "structured_delta_started_total": 125,
+      "wire_audit_database_coverage": 89,
+      "wire_audit_total": 1323,
+      "wire_outcome_database_coverage": 87,
+      "wire_outcome_total": 1307
+    },
+    "zero_provider_outcome_tasks_both_arms": [
+      "break-filter-js-from-html",
+      "vulnerable-secret"
+    ]
+  },
+  "systemd_unit_final_state": "inactive/completed",
+  "timing": {
+    "control_completed_at": "2026-08-30T00:46:45.538219+00:00",
+    "control_wall_seconds": 6349.929043,
+    "overall_completed_at": "2026-08-30T00:53:41.364991+00:00",
+    "overall_wall_seconds": 6765.755815,
+    "started_at": "2026-08-29T23:00:55.609176+00:00",
+    "treatment_completed_at": "2026-08-30T00:53:41.364464+00:00",
+    "treatment_wall_seconds": 6765.755288
+  },
+  "trial_integrity": {
+    "agent_id_note": "One deterministic Agent ID is reused inside each isolated per-trial database; Context and Session IDs are unique.",
+    "attempts_per_task": 1,
+    "config_files_matching_expected": {
+      "control": 89,
+      "structured-deltas": 89
+    },
+    "context_id_duplicates": 0,
+    "distinct_context_ids_cross_arm": 178,
+    "distinct_session_ids_cross_arm": 178,
+    "exactly_one_agent_context_session_per_database": 178,
+    "harness_binding_events": 0,
+    "integrity_audit_complete": 178,
+    "integrity_disqualified": 0,
+    "integrity_findings": 0,
+    "integrity_records": 178,
+    "isolated_trial_directories": 178,
+    "session_id_duplicates": 0,
+    "sqlite_databases": {
+      "control": 89,
+      "quick_check_ok": 178,
+      "structured-deltas": 89
+    },
+    "task_count_per_arm": 89,
+    "task_name_mismatches": 0,
+    "trajectories": 178,
+    "trajectory_sha256_mismatches": 0,
+    "unique_task_ids_per_arm": 89
+  }
+}

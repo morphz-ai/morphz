@@ -1,0 +1,498 @@
+{
+  "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
+  "completed_at": "2026-08-30T00:53:41.365510+00:00",
+  "official_verifier_raw_reward_is_primary": true,
+  "task_count_per_arm": 89,
+  "attempts_per_task": 1,
+  "concurrency_per_arm": 8,
+  "maximum_simultaneous_trials": 16,
+  "return_codes": {
+    "control": 3,
+    "structured-deltas": 3
+  },
+  "arms": {
+    "control": {
+      "passed": 72,
+      "failed": 17,
+      "score": 0.8089887640449438,
+      "wilson_95_ci": [
+        0.715227317828824,
+        0.8771804351150649
+      ],
+      "integrity_gate_passed": true
+    },
+    "structured-deltas": {
+      "passed": 71,
+      "failed": 18,
+      "score": 0.797752808988764,
+      "wilson_95_ci": [
+        0.7028034801630848,
+        0.8680621726737535
+      ],
+      "integrity_gate_passed": true
+    }
+  },
+  "paired": {
+    "treatment_minus_control_passes": -1,
+    "structured_deltas_only": 5,
+    "control_only": 6,
+    "both_pass": 66,
+    "both_fail": 12
+  },
+  "per_task": [
+    {
+      "task": "caffe-cifar-10",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "circuit-fibsqrt",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "dna-assembly",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "kv-store-grpc",
+      "control": 1,
+      "structured_deltas": 0
+    },
+    {
+      "task": "llm-inference-batching-scheduler",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "log-summary-date-ranges",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "merge-diff-arc-agi-task",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "model-extraction-relu-logits",
+      "control": 1,
+      "structured_deltas": 0
+    },
+    {
+      "task": "mteb-leaderboard",
+      "control": 0,
+      "structured_deltas": 1
+    },
+    {
+      "task": "openssl-selfsigned-cert",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "path-tracing",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "pypi-server",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "pytorch-model-recovery",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "regex-chess",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "regex-log",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "schemelike-metacircular-eval",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "torch-pipeline-parallelism",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "torch-tensor-parallelism",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "write-compressor",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "adaptive-rejection-sampler",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "build-cython-ext",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "build-pov-ray",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "cobol-modernization",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "compile-compcert",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "configure-git-webserver",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "dna-insert",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "extract-elf",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "filter-js-from-html",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "fix-ocaml-gc",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "gcode-to-text",
+      "control": 1,
+      "structured_deltas": 0
+    },
+    {
+      "task": "gpt2-codegolf",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "make-doom-for-mips",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "mcmc-sampling-stan",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "mteb-retrieve",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "nginx-request-logging",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "raman-fitting",
+      "control": 0,
+      "structured_deltas": 1
+    },
+    {
+      "task": "sam-cell-seg",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "train-fasttext",
+      "control": 0,
+      "structured_deltas": 1
+    },
+    {
+      "task": "vulnerable-secret",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "bn-fit-modify",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "break-filter-js-from-html",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "build-pmars",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "cancel-async-tasks",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "chess-best-move",
+      "control": 0,
+      "structured_deltas": 1
+    },
+    {
+      "task": "code-from-image",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "constraints-scheduling",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "count-dataset-tokens",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "crack-7z-hash",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "custom-memory-heap-crash",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "db-wal-recovery",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "distribution-search",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "extract-moves-from-video",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "feal-differential-cryptanalysis",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "feal-linear-cryptanalysis",
+      "control": 0,
+      "structured_deltas": 1
+    },
+    {
+      "task": "financial-document-processor",
+      "control": 1,
+      "structured_deltas": 0
+    },
+    {
+      "task": "fix-code-vulnerability",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "fix-git",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "git-leak-recovery",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "git-multibranch",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "headless-terminal",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "hf-model-inference",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "install-windows-3.11",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "large-scale-text-editing",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "largest-eigenval",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "mailman",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "make-mips-interpreter",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "modernize-scientific-stack",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "multi-source-data-merger",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "overfull-hbox",
+      "control": 1,
+      "structured_deltas": 0
+    },
+    {
+      "task": "password-recovery",
+      "control": 0,
+      "structured_deltas": 0
+    },
+    {
+      "task": "path-tracing-reverse",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "polyglot-c-py",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "polyglot-rust-c",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "portfolio-optimization",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "protein-assembly",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "prove-plus-comm",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "pytorch-model-cli",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "qemu-startup",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "query-optimize",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "reshard-c4-data",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "rstan-to-pystan",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "sanitize-git-repo",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "sparql-university",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "sqlite-db-truncate",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "sqlite-with-gcov",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "tune-mjcf",
+      "control": 1,
+      "structured_deltas": 1
+    },
+    {
+      "task": "video-processing",
+      "control": 1,
+      "structured_deltas": 0
+    },
+    {
+      "task": "winning-avg-corewars",
+      "control": 1,
+      "structured_deltas": 1
+    }
+  ],
+  "host_resources": {
+    "sample_count": 226,
+    "cpu_count": 16,
+    "memory_used_kib_mean": 5392297.0265486725,
+    "memory_used_kib_max": 10083992,
+    "load_1m_mean": 5.439085833794247,
+    "load_1m_max": 25.6484375,
+    "docker_running_containers_max": 18
+  }
+}

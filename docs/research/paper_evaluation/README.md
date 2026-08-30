@@ -1,8 +1,9 @@
 # Morphz 论文实验中心
 
 > 状态：论文证据已闭合（ME-01～ME-08 已在各自证据边界内进入中英文稿；ME-07 三系统
-> 正式批次与 Mind Frame 迁移审计已完成；ME-08 当前证据是两组各自完整 89 题的相同条件配对；
-> ME-09 r6 无 Harness 共享 Context 补充实验已完整闭合，但不追改当前论文）
+> 正式批次与 Mind Frame 迁移审计已完成；ME-08 当前论文证据是两组各自完整 89 题的相同条件
+> 配对，stable-schema Prefix Cache 89×2 A/B 发布 Gate 另已闭合并作为候选基线补充；ME-09 r6
+> 无 Harness 共享 Context 补充实验已完整闭合，但不追改当前论文）
 >
 > 建立日期：2026-08-11
 > 适用论文：*Morphz: Nondeterministic Cognitive Symbol Evaluation over Structured Context*
@@ -31,6 +32,7 @@
 - [ME-07 Benchmark 重选决策](./me_07_benchmark_reselection_decision_20260826.md)：保留初次选择历史；当前 arm/evaluator 以 v2 协议为准；
 - [ME-07 superseded LongMemEval 协议与取消边界](./me_07_longmemeval_v2_small_protocol_v1.md)：未经授权替代模型运行已中止，任何局部结果均不引用；
 - [ME-08 当前 Runtime 完整 89 题结果](./artifacts/me08_current_runtime_d6e6d80_all89_20260828/RESULT.md)：Morphz 72/89（80.90%），Codex 74/89（83.15%），配对差 −2.25pp、95% CI [−10.11,+5.62]、双侧精确 `p=0.791`；Morphz 总逻辑词元少 31.5%、墙钟短 24.7%；本轮缓存与成本数据受已确认的显式缓存封装缺陷影响，仅保留作工程诊断，不进入论文结论；
+- [ME-08 stable-schema Prefix Cache 同期 A/B](./artifacts/me08_prefix_cache_ab_89adf73_all89_20260830/RESULT.md)：Control 72/89、Treatment 71/89，配对 6:5、双侧精确 `p=1.0`；输入缓存命中率 29.88%→86.27%，未缓存输入减少 81.27%，178/178 隔离与完整性 Gate 全过。发布 Gate 通过，作为新候选基线交论文任务复核；墙钟未改善且 Treatment 有一例独有 AgentTimeout，本次不直接修改论文；
 - [ME-08 当前 Runtime 单臂补充刷新](./artifacts/me08_current_runtime_2b01310_all89_20260828/RESULT.md)：无 Harness、隔离 Context、89/89 完整；69/89（77.53%）。Edge/background 与 keep-running 定向任务通过，但 7 个 Agent 超时中暴露 Harbor 外层超时后容器内 Runtime 继续进入 verifier 相位的独立缺陷；仅作工程补充，不替换论文 72/89 对 74/89 的冻结同期配对；
 - [ME-09 r6 无 Harness 共享 Context 完整 89 题结果](./artifacts/me09_shared_context_full_r6_d6e6d80_max_sessions_50_20260828/RESULT.md)：与当前 ME-08 使用同一 Runtime，一个 Agent/共享 Context、八 Session/Target、并发 8、`max_sessions=50`；官方 70/89 对同 Runtime 隔离 Context 72/89，配对差异不显著；115 次 Context transaction、E3 为 0，总逻辑 Token 为 3.127×；9 个超时异常中 8 个计零。89/89 均无 Harness，仅作有效补充实验，不追改当前论文；
 - [ME-09 r4 历史诊断结果](./artifacts/me09_shared_context_full_r4_working_set_one_20260828/RESULT.md)：历史得分 70/89，但 89/89 Evaluation 误绑定 `terminal-task@0.5.0`；与无 Harness 的 ME-08 不是单变量对照，不进入当前论文；
