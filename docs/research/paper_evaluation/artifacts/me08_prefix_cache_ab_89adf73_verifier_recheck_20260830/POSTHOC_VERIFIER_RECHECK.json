@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "classification": "post-hoc verifier recheck; supplemental; never spliced into the frozen formal run",
   "formal_run": {
     "protocol": "me08-terminal-bench-prefix-cache-stable-schema-ab-all89-v2",
@@ -151,12 +151,16 @@
       "formal_agent_timeout_at": "2026-08-29T23:16:07.812154Z",
       "thread_outcome_delivered_at": "2026-08-29T23:21:08.283705626Z",
       "delivery_after_timeout_seconds": 300.471,
-      "classification": "true AgentTimeout under delivery-time semantics; the pre-timeout file snapshot passes, but the terminal delivery occurred after the deadline and is not score-eligible"
+      "nominal_agent_deadline_at": "2026-08-29T23:16:02.691147Z",
+      "last_file_change_before_nominal_deadline_seconds": 57.036,
+      "formal_verifier_started_at": "2026-08-29T23:16:08.033714Z",
+      "last_file_change_before_verifier_start_seconds": 62.378,
+      "classification": "AgentTimeout engineering anomaly with a score-eligible verifier pass: the correct environment existed before the nominal deadline and Harbor scoring is verifier-primary"
     }
   ],
   "delivery_timing_audit": {
-    "adjudication_rule": "A task is delivered only at thread_outcomes.delivered_at. A correct file snapshot before the deadline does not override a terminal delivery after the Agent timeout.",
-    "time_origin_note": "elapsed_seconds uses the source Session user_message event; the mixed case is also compared directly against Harbor's formal AgentTimeout timestamp, so the decision does not depend on the approximate origin.",
+    "adjudication_rule": "Terminal-Bench correctness follows Harbor verifier_result. AgentTimeout is retained as an engineering exception but does not automatically override a verifier reward; thread_outcomes.delivered_at is diagnostic rather than a scoring gate.",
+    "time_origin_note": "delivery_elapsed_seconds uses the source Session user_message event only to diagnose Morphz lifecycle latency. The scoring boundary uses Harbor agent_execution.started_at plus the frozen 900-second timeout and the environment state visible when verifier execution began.",
     "trials": [
       {
         "arm": "control",
@@ -195,12 +199,18 @@
         "user_message_at": "2026-08-29T23:01:03.694082497Z",
         "last_file_change_at": "2026-08-29T23:15:05.655570978Z",
         "formal_agent_timeout_at": "2026-08-29T23:16:07.812154Z",
+        "harbor_agent_execution_started_at": "2026-08-29T23:01:02.691147Z",
+        "nominal_agent_deadline_at": "2026-08-29T23:16:02.691147Z",
         "thread_outcome_delivered_at": "2026-08-29T23:21:08.283705626Z",
+        "formal_verifier_started_at": "2026-08-29T23:16:08.033714Z",
         "delivery_elapsed_seconds": 1204.589,
         "delivery_after_timeout_seconds": 300.471,
-        "last_file_change_before_timeout_seconds": 62.157,
+        "delivery_after_nominal_deadline_seconds": 305.593,
+        "last_file_change_before_nominal_deadline_seconds": 57.036,
+        "last_file_change_before_verifier_start_seconds": 62.378,
         "delivered_within_900_seconds": false,
-        "score_eligible_after_recheck": false
+        "file_changes_after_nominal_deadline": 0,
+        "score_eligible_after_recheck": true
       },
       {
         "arm": "structured-deltas",
@@ -215,9 +225,56 @@
     ],
     "lifecycle_finding": {
       "finding": "After Harbor raised AgentTimeout, the container-side Morphz process continued, completed three more tool calls, and delivered 300.471 seconds later while Harbor had already entered verifier execution.",
-      "classification": "runner cancellation/lifecycle defect, not a false AgentTimeout label under terminal-delivery semantics",
-      "score_effect": "none; the task remains failed because delivery was late"
+      "classification": "runner cancellation/lifecycle defect; preserve AgentTimeout as a diagnostic while keeping verifier-result scoring semantics",
+      "score_effect": "none against the recovered verifier reward because the correct workspace state existed before the nominal deadline and did not change before or during verifier startup"
     }
+  },
+  "harbor_scoring_semantics": {
+    "version": "0.21.0",
+    "installed_source_evidence": [
+      {
+        "path": "/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/single_step.py",
+        "sha256": "02d7ddef0213e84e395ef62dae18a7aad1cc4e31622c239650c7184b436a0583",
+        "relevant_lines": "38-55, 75-115"
+      },
+      {
+        "path": "/opt/harbor-0.21.0/lib/python3.12/site-packages/harbor/trial/trial.py",
+        "sha256": "9510871c99c55661f1a6b584235146d49d2d2dd68a61735f6f4c028c7edf8be6",
+        "relevant_lines": "445-494"
+      }
+    ],
+    "frozen_task_config": {
+      "path": "/root/.cache/harbor/tasks/packages/terminal-bench/torch-pipeline-parallelism/db605337c749a872cea7b5b413429b3915bb4c3efe0f7875f0c46ce81bd8c4fb/task.toml",
+      "sha256": "8b4f9f525c08afbbc4eca9168e46238a61ccb903486773e9ca4da64bb7ffe857",
+      "agent_timeout_sec": 900.0,
+      "verifier_timeout_sec": 900.0
+    },
+    "single_step_control_flow": "SingleStepTrial._run_agent catches AgentTimeoutError, records it, synchronizes agent output, then SingleStepTrial._run continues to collect artifacts and invoke the verifier.",
+    "reward_rule": "verifier_result is the correctness source; AgentTimeoutError does not automatically force reward zero when verifier_result exists",
+    "repository_precedent": {
+      "trial": "terminal_task_harness_v0_3_unseen_20/train-fasttext__MMVEVMM",
+      "result_sha256": "47cd5073f1e2dfb95c3e8e009a43cdd0e17070efc9a8540fc472b983240ec0e1",
+      "exception_type": "AgentTimeoutError",
+      "verifier_reward": 1.0
+    },
+    "contemporaneous_codex_symmetry_audit": {
+      "artifact": "../me08_codex_full89_timeout_recheck_20260830",
+      "result_md_sha256": "fd403f6eab9148d61fe626ad7e3d5f8b03fa7fc4da5a02d72f5c9f597a513eeb",
+      "summary_json_sha256": "8f7d63ca08c779b6f4fabe3e63515aa4ff3bd3dfbc442764b46a30f4b297ba7f",
+      "official_score_before": "74/89",
+      "official_score_after": "74/89",
+      "agent_timeout_count": 3,
+      "verifier_timeout_among_agent_timeouts": 0,
+      "passing_timeout_trial": {
+        "task": "query-optimize",
+        "tests_passed": 6,
+        "tests_total": 6,
+        "official_reward": 1
+      },
+      "rule": "existing official verifier results are respected symmetrically for Codex and Morphz"
+    },
+    "frozen_protocol_override_requiring_pre_deadline_chat_delivery": false,
+    "conclusion": "thread_outcomes.delivered_at cannot be introduced post hoc as a scoring gate that overrides a passing verifier"
   },
   "root_cause": {
     "finding": "The 900-second verifier budget was consumed primarily by per-trial cold installation of uv, Python, PyTorch/CUDA wheels and related packages under 16-way A/B concurrency.",
@@ -232,23 +289,24 @@
       "treatment": "71/89",
       "may_be_overwritten": false
     },
-    "delivery_aware_verifier_timeout_recovered": {
+    "official_verifier_primary_posthoc_recovered": {
+      "control": "74/89",
+      "treatment": "73/89",
+      "paired": {
+        "both_pass": 68,
+        "both_fail": 10,
+        "control_only": 6,
+        "treatment_only": 5,
+        "exact_two_sided_mcnemar_p": 1.0
+      },
+      "mixed_agent_timeout_recovered": true
+    },
+    "delivery_gate_counterfactual_withdrawn": {
       "control": "74/89",
       "treatment": "72/89",
-      "paired": {
-        "both_pass": 67,
-        "both_fail": 10,
-        "control_only": 7,
-        "treatment_only": 5,
-        "exact_two_sided_mcnemar_p": 0.7744140625
-      },
-      "mixed_agent_timeout_recovered": false
-    },
-    "pre_timeout_filesystem_snapshot_forensic_only": {
       "task": "structured-deltas/torch-pipeline-parallelism",
-      "recheck_reward": 1,
       "eligible_as_score": false,
-      "reason": "the correct file existed before timeout, but the Agent terminal delivery occurred 300.471 seconds after timeout"
+      "reason": "no frozen protocol or Harbor 0.21.0 rule requires pre-deadline Morphz chat delivery to override verifier_result"
     }
   },
   "launch_audit": {
