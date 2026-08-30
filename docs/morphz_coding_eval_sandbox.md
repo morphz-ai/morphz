@@ -61,7 +61,7 @@ cargo run -p morphz-evals --bin coding_eval_env -- create v2 /private/tmp/morphz
 - 禁止读取 `/private/tmp` 其他目录，重新开放当前 workspace；
 - cwd、文件工具与 Shell 使用相同 Permission Profile；边界外 cwd 必须显式申请并审批。
 
-这使 Agent 不能通过 `exec` 读取主仓库的用户文件、读取 run 外 manifest，或在 workspace 外创建文件。Seatbelt 只覆盖 macOS 路径；Linux 和 Windows 必须由各自原生 Backend 通过相同攻击契约后才能启用，当前会 fail-closed，不以容器作为默认依赖。
+这使 Agent 不能通过 `exec` 读取主仓库的用户文件、读取 run 外 manifest，或在 workspace 外创建文件。相同 Permission Profile 在 Linux 编译为 Bubblewrap mount/user/PID/IPC/network namespace 策略，在 Windows 编译为固定 Codex revision 的 Restricted Token、ACL/WFP、私有桌面与 Job Object 策略；任一平台缺少已验证的原生后端或 helper 时都会 fail-closed。普通 Linux Docker 容器只能验证 Linux Execution Target/协议，不能替代 Windows 原生安全测试。
 
 ## 固定探针与验证
 

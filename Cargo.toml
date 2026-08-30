@@ -9,6 +9,7 @@ members = [
     "tools/morphz-cli-docs",
     "yao",
 ]
+exclude = ["third_party/codex-otel-stub"]
 default-members = ["morphz"]
 
 [workspace.package]
@@ -24,3 +25,10 @@ rust-version = "1.97.1"
 # won resolution. Rust 1.97 began surfacing linker stderr through this lint,
 # which would otherwise fail the `-D warnings` build.
 linker_messages = "allow"
+
+[patch."https://github.com/openai/codex"]
+# The Windows sandbox crate uses Codex OTEL only for optional setup metrics.
+# Morphz keeps its telemetry boundary independent and supplies the same tiny
+# API as a deliberate no-op adapter instead of importing Codex's HTTP/OTEL
+# stack into the product.
+codex-otel = { path = "third_party/codex-otel-stub" }

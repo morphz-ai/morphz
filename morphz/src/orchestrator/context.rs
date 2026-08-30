@@ -11955,6 +11955,7 @@ mod tests {
                 .unwrap();
         }
 
+        #[allow(clippy::too_many_arguments)]
         async fn append_observation(
             store: &SqliteStore,
             context_id: &str,

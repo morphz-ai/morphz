@@ -10811,10 +10811,7 @@ mod tests {
             .collect::<Vec<_>>();
         for (id, pgid) in ids {
             if pgid > 0 {
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pgid),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
+                let _ = crate::tool::terminate_process_tree(pgid);
             }
             tasks.remove(&id);
         }
@@ -15048,36 +15045,38 @@ mod tests {
         assert_eq!(reply.payload["delivery_kind"], "turn_reply");
         assert!(observed_complete_batch.load(Ordering::SeqCst));
         assert_eq!(client.calls.load(Ordering::SeqCst), 3);
-        let requests = requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0].len(), 2);
-        if cfg!(feature = "experimental-structured-context-delta-cache") {
-            assert_eq!(requests[1].len(), 2);
-            assert_eq!(requests[2].len(), 2);
-            assert_eq!(requests[1][0], requests[2][0]);
-            assert_eq!(requests[1][1].role, "user");
-            assert_eq!(requests[2][1].role, "user");
-            let second = crate::llm::segmented_model_text(&requests[1][1]).unwrap();
-            let third = crate::llm::segmented_model_text(&requests[2][1]).unwrap();
-            assert_eq!(second.parts.len(), 3);
-            assert_eq!(third.parts.len(), 4);
-            assert_eq!(second.parts, third.parts[..second.parts.len()]);
-            assert!(third.parts[1..]
-                .iter()
-                .all(|part| part.text.contains("context-delta")));
-        } else {
-            assert_eq!(requests[1].len(), 5);
-            assert_eq!(requests[2].len(), 4);
-            assert_eq!(requests[1][0], requests[2][0]);
-            assert_eq!(requests[1][2].role, "assistant");
-            assert_eq!(requests[1][2].tool_calls.as_ref().map(Vec::len), Some(2));
-            assert_eq!(requests[1][3].role, "tool");
-            assert_eq!(requests[1][4].role, "tool");
-            assert_eq!(requests[2][2].role, "assistant");
-            assert_eq!(requests[2][2].tool_calls.as_ref().map(Vec::len), Some(1));
-            assert_eq!(requests[2][3].role, "tool");
+        {
+            let requests = requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(requests.len(), 3);
+            assert_eq!(requests[0].len(), 2);
+            if cfg!(feature = "experimental-structured-context-delta-cache") {
+                assert_eq!(requests[1].len(), 2);
+                assert_eq!(requests[2].len(), 2);
+                assert_eq!(requests[1][0], requests[2][0]);
+                assert_eq!(requests[1][1].role, "user");
+                assert_eq!(requests[2][1].role, "user");
+                let second = crate::llm::segmented_model_text(&requests[1][1]).unwrap();
+                let third = crate::llm::segmented_model_text(&requests[2][1]).unwrap();
+                assert_eq!(second.parts.len(), 3);
+                assert_eq!(third.parts.len(), 4);
+                assert_eq!(second.parts, third.parts[..second.parts.len()]);
+                assert!(third.parts[1..]
+                    .iter()
+                    .all(|part| part.text.contains("context-delta")));
+            } else {
+                assert_eq!(requests[1].len(), 5);
+                assert_eq!(requests[2].len(), 4);
+                assert_eq!(requests[1][0], requests[2][0]);
+                assert_eq!(requests[1][2].role, "assistant");
+                assert_eq!(requests[1][2].tool_calls.as_ref().map(Vec::len), Some(2));
+                assert_eq!(requests[1][3].role, "tool");
+                assert_eq!(requests[1][4].role, "tool");
+                assert_eq!(requests[2][2].role, "assistant");
+                assert_eq!(requests[2][2].tool_calls.as_ref().map(Vec::len), Some(1));
+                assert_eq!(requests[2][3].role, "tool");
+            }
         }
 
         let jobs = runtime
@@ -15890,14 +15889,16 @@ mod tests {
         assert!(observed_result.load(Ordering::SeqCst));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
-        let schemas = observed_tool_schemas.lock().unwrap();
-        assert_eq!(schemas.len(), 2);
-        assert_eq!(schemas[0], schemas[1]);
-        assert!(schemas[0].iter().any(|name| name == "objective_amend"));
-        assert_eq!(schemas[0].last().map(String::as_str), Some("no_reply"));
-        assert!(schemas[0][..schemas[0].len() - 1]
-            .windows(2)
-            .all(|pair| pair[0] <= pair[1]));
+        {
+            let schemas = observed_tool_schemas.lock().unwrap();
+            assert_eq!(schemas.len(), 2);
+            assert_eq!(schemas[0], schemas[1]);
+            assert!(schemas[0].iter().any(|name| name == "objective_amend"));
+            assert_eq!(schemas[0].last().map(String::as_str), Some("no_reply"));
+            assert!(schemas[0][..schemas[0].len() - 1]
+                .windows(2)
+                .all(|pair| pair[0] <= pair[1]));
+        }
 
         let approvals = runtime
             .inner

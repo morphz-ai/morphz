@@ -45,7 +45,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use walkdir::WalkDir;
 
 const MAX_SCHEDULE_OPERATIONS: usize = 32;
@@ -1595,7 +1595,7 @@ impl BackgroundTaskScheduler {
                                 execution_job_id = %job_id,
                                 %error,
                                 event_code = "tool.background_job.remote_cancel_failed",
-                                "The physical background owner could not terminate its process group; retrying"
+                                "The physical background owner could not terminate its managed process tree; retrying"
                             );
                             continue;
                         }
@@ -2081,7 +2081,7 @@ impl BackgroundTaskScheduler {
                 "killed": false,
                 "owner_local": false,
                 "reason": "owned_by_another_runtime",
-                "guidance": "Cancellation intent is durable. The Runtime instance holding the physical process polls this fenced Job and will terminate the process group; observe the terminal ExecutionJob result instead of retrying kill_task."
+                "guidance": "Cancellation intent is durable. The Runtime instance holding the physical process polls this fenced Job and will terminate the managed process tree; observe the terminal ExecutionJob result instead of retrying kill_task."
             }));
         };
         self.cancel(task_id).await;
@@ -2159,16 +2159,11 @@ impl BackgroundTaskScheduler {
                 task.next_wakeup_at = None;
             }
             self.cancel(&task_id).await;
-            match nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pgid),
-                nix::sys::signal::Signal::SIGKILL,
-            ) {
-                Ok(()) | Err(nix::errno::Errno::ESRCH) => {
-                    targeted = targeted.saturating_add(1);
-                }
+            match terminate_process_tree(pgid) {
+                Ok(_) => targeted = targeted.saturating_add(1),
                 Err(error) => {
                     return Err(format!(
-                        "failed to terminate process group {} for Activation '{}': {}; cancellation intent remains persisted",
+                        "failed to terminate managed process tree {} for Activation '{}': {}; cancellation intent remains persisted",
                         pgid, activation_id, error
                     )
                     .into());
@@ -5255,16 +5250,13 @@ fn terminate_local_background_process(task_id: &str) -> Result<Option<(i32, bool
         task.wake_generation = task.wake_generation.wrapping_add(1);
         task.next_wakeup_at = None;
     }
-    match nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(process_group_id),
-        nix::sys::signal::Signal::SIGKILL,
-    ) {
-        Ok(()) => Ok(Some((process_group_id, true))),
-        Err(nix::errno::Errno::ESRCH) => Ok(Some((process_group_id, false))),
-        Err(error) => Err(format!(
-            "force-killing process group {process_group_id} encountered a system error: {error:?}; the cancellation request remains persisted"
-        )),
-    }
+    terminate_process_tree(process_group_id)
+        .map(|killed| Some((process_group_id, killed)))
+        .map_err(|error| {
+            format!(
+                "force-killing managed process tree {process_group_id} encountered a system error: {error}; the cancellation request remains persisted"
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7840,32 +7832,118 @@ pub(crate) fn managed_exec_background_request(
 fn terminate_residual_process_group(
     pgid: i32,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let pgid = nix::unistd::Pid::from_raw(pgid);
-    match nix::sys::signal::killpg(pgid, None) {
-        Ok(()) => {
-            nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL)?;
-            Ok(true)
-        }
-        Err(nix::errno::Errno::ESRCH) => Ok(false),
-        Err(error) => Err(format!("Failed to inspect residual exec process group: {error}").into()),
+    if process_tree_exists(pgid)? {
+        terminate_process_tree(pgid).map_err(Into::into)
+    } else {
+        Ok(false)
     }
 }
 
-/// Fail-closed lifetime guard for one foreground shell process group.
+#[cfg(unix)]
+fn process_tree_exists(process_group_id: i32) -> Result<bool, String> {
+    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(process_group_id), None) {
+        Ok(()) => Ok(true),
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect managed process group {process_group_id}: {error}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn process_tree_exists(process_id: i32) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+
+    let process_id = u32::try_from(process_id)
+        .map_err(|_| format!("managed Windows process ID {process_id} is invalid"))?;
+    const SYNCHRONIZE_PROCESS: u32 = 0x0010_0000;
+    let handle = unsafe { OpenProcess(SYNCHRONIZE_PROCESS, 0, process_id) };
+    if handle == 0 {
+        let error = unsafe { GetLastError() };
+        return if error == ERROR_INVALID_PARAMETER {
+            Ok(false)
+        } else {
+            Err(format!(
+                "failed to inspect managed Windows process {process_id}: OS error {error}"
+            ))
+        };
+    }
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe {
+        CloseHandle(handle);
+    }
+    Ok(wait == WAIT_TIMEOUT)
+}
+
+/// Terminates the operating-system process-tree owner used by one managed exec.
+///
+/// Unix stores a real process-group ID. Windows stores the PID of the Morphz
+/// sandbox runner: closing that client process also closes its Codex command-
+/// runner transport, whose Job Object then terminates every sandbox descendant.
+#[cfg(unix)]
+pub(crate) fn terminate_process_tree(process_group_id: i32) -> Result<bool, String> {
+    match nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(process_group_id),
+        nix::sys::signal::Signal::SIGKILL,
+    ) {
+        Ok(()) => Ok(true),
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(error) => Err(format!(
+            "failed to terminate managed process group {process_group_id}: {error}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn terminate_process_tree(process_id: i32) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    let process_id = u32::try_from(process_id)
+        .map_err(|_| format!("managed Windows process ID {process_id} is invalid"))?;
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, process_id) };
+    if handle == 0 {
+        let error = unsafe { GetLastError() };
+        return if error == ERROR_INVALID_PARAMETER {
+            Ok(false)
+        } else {
+            Err(format!(
+                "failed to open managed Windows process {process_id} for termination: OS error {error}"
+            ))
+        };
+    }
+    let terminated = unsafe { TerminateProcess(handle, 1) };
+    let error = (terminated == 0).then(|| unsafe { GetLastError() });
+    unsafe {
+        CloseHandle(handle);
+    }
+    if let Some(error) = error {
+        Err(format!(
+            "failed to terminate managed Windows process tree {process_id}: OS error {error}"
+        ))
+    } else {
+        Ok(true)
+    }
+}
+
+/// Fail-closed lifetime guard for one foreground managed process tree.
 ///
 /// A physical Tool future can be cancelled by an Objective fence, an Edge
 /// command cancellation or Runtime shutdown. Dropping `tokio::process::Child`
 /// alone is not a sufficient process-tree boundary: descendants may keep
 /// running after the shell exits. Keeping this guard in the same future makes
-/// cancellation terminate the whole process group even when normal async
+/// cancellation terminate the whole descendant tree even when normal async
 /// cleanup code is never polled again.
-struct ProcessGroupGuard {
+struct ManagedProcessTreeGuard {
     pgid: i32,
     armed: bool,
     task_id: Option<String>,
 }
 
-impl ProcessGroupGuard {
+impl ManagedProcessTreeGuard {
     fn new(pgid: i32) -> Self {
         Self {
             pgid,
@@ -7883,15 +7961,12 @@ impl ProcessGroupGuard {
     }
 }
 
-impl Drop for ProcessGroupGuard {
+impl Drop for ManagedProcessTreeGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(self.pgid),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+        let _ = terminate_process_tree(self.pgid);
         if let Some(task_id) = self.task_id.as_deref() {
             get_tasks_map().remove(task_id);
         }
@@ -7904,13 +7979,20 @@ impl Drop for ProcessGroupGuard {
 /// such as OpenSSH may bypass stdin and open the process's controlling
 /// `/dev/tty` directly for host-key or password prompts. A detached session
 /// makes that open fail immediately, while null stdin gives ordinary prompt
-/// readers EOF. `setsid` also creates the process group that
-/// `ProcessGroupGuard` owns, so cancellation can still terminate the complete
-/// descendant tree.
-fn configure_noninteractive_process(command: &mut tokio::process::Command) {
-    command
-        .stdin(std::process::Stdio::null())
-        .env("SSH_ASKPASS_REQUIRE", "never");
+/// readers EOF. On Unix, `setsid` also creates the process group owned by the
+/// guard. On Windows, CREATE_NEW_PROCESS_GROUP identifies the trusted runner;
+/// closing its Codex transport terminates the runner-owned Job Object tree.
+fn configure_noninteractive_process(
+    command: &mut tokio::process::Command,
+    trusted_startup_stdin: bool,
+) {
+    if trusted_startup_stdin {
+        command.stdin(std::process::Stdio::piped());
+    } else {
+        command.stdin(std::process::Stdio::null());
+    }
+    command.env("SSH_ASKPASS_REQUIRE", "never");
+    #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {
             if nix::libc::setsid() == -1 {
@@ -7919,6 +8001,8 @@ fn configure_noninteractive_process(command: &mut tokio::process::Command) {
             Ok(())
         });
     }
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
 }
 
 #[derive(Deserialize)]
@@ -8287,13 +8371,14 @@ impl Tool for ExecuteCommandTool {
             EnforcementStatus::Unavailable => "unavailable",
         }
         .to_string();
+        let startup_stdin = prepared.startup_stdin.clone();
         let mut cmd = prepared.into_tokio_command();
         cmd.current_dir(&exec_cwd)
             .env("TMPDIR", &sandbox_tmp)
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        configure_noninteractive_process(&mut cmd);
+        configure_noninteractive_process(&mut cmd, startup_stdin.is_some());
         if profile.shell_environment_policy == ShellEnvironmentPolicy::RemoveSensitive {
             for (key, _) in std::env::vars() {
                 if is_sensitive_environment_name(&key) {
@@ -8453,8 +8538,29 @@ impl Tool for ExecuteCommandTool {
                 return Err(error.into());
             }
         };
-        let pid = child.id().ok_or("Failed to obtain process ID")? as i32;
-        let mut process_group_guard = ProcessGroupGuard::new(pid);
+        if let Some(payload) = startup_stdin {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or("trusted sandbox helper did not expose its startup request pipe")?;
+            if let Err(error) = async {
+                stdin.write_all(&payload).await?;
+                stdin.shutdown().await
+            }
+            .await
+            {
+                let _ = child.kill().await;
+                return Err(format!(
+                    "failed to deliver the private sandbox startup request: {error}"
+                )
+                .into());
+            }
+        }
+        let raw_pid = child.id().ok_or("Failed to obtain process ID")?;
+        let pid = i32::try_from(raw_pid).map_err(|_| {
+            format!("spawned process ID {raw_pid} exceeds Morphz's durable process-owner range")
+        })?;
+        let mut process_tree_guard = ManagedProcessTreeGuard::new(pid);
 
         let task_id = durable_task_id.unwrap_or_else(|| {
             format!(
@@ -8464,7 +8570,7 @@ impl Tool for ExecuteCommandTool {
             )
         });
         let archive_path = artifact_dir.join(format!("{}.log", task_id));
-        process_group_guard.track_task(&task_id);
+        process_tree_guard.track_task(&task_id);
         // Publish the live PGID immediately after spawn. Objective cancellation
         // can now always find this process even while archive/pipes/background
         // attachment are still being prepared.
@@ -8514,10 +8620,7 @@ impl Tool for ExecuteCommandTool {
                 if let Some(mut task) = tasks.get_mut(&task_id) {
                     task.status = BackgroundTaskStatus::KillRequested;
                 }
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
+                let _ = terminate_process_tree(pid);
                 let _ = child.wait().await;
                 tasks.remove(&task_id);
                 return Err(error);
@@ -8535,10 +8638,7 @@ impl Tool for ExecuteCommandTool {
                     if let Some(mut task) = tasks.get_mut(&task_id) {
                         task.status = BackgroundTaskStatus::KillRequested;
                     }
-                    let _ = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(pid),
-                        nix::sys::signal::Signal::SIGKILL,
-                    );
+                    let _ = terminate_process_tree(pid);
                     let _ = child.wait().await;
                     tasks.remove(&task_id);
                     return Err(error);
@@ -8548,10 +8648,7 @@ impl Tool for ExecuteCommandTool {
         let archive = match std::fs::File::create(&archive_path) {
             Ok(archive) => archive,
             Err(error) => {
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
+                let _ = terminate_process_tree(pid);
                 let _ = child.wait().await;
                 tasks.remove(&task_id);
                 return Err(format!(
@@ -8642,7 +8739,7 @@ impl Tool for ExecuteCommandTool {
             Some(Ok(exit_status_res)) => {
                 // The command completed within the synchronous interval.
                 tasks.remove(&task_id);
-                process_group_guard.disarm();
+                process_tree_guard.disarm();
                 // `/bin/sh -c 'command &'` can exit while descendants keep running. The lexical
                 // guard above catches normal cases; this process-group check is the fail-closed
                 // backstop for dynamically constructed shell commands.
@@ -8664,13 +8761,13 @@ impl Tool for ExecuteCommandTool {
                     .then(|| boundary_remediation(permission_request_available, effective_network));
                 if residual_processes_terminated {
                     return Err(format!(
-                        "exec detected child processes still alive after the shell process exited and terminated the entire remaining process group. Self-backgrounding is prohibited; let the foreground command run past wait_ms so the Runtime can manage it.\n--- Captured output ---\n{output_str}"
+                        "exec detected child processes still alive after the shell process exited and terminated the remaining managed process tree. Self-backgrounding is prohibited; let the foreground command run past wait_ms so the Runtime can manage it.\n--- Captured output ---\n{output_str}"
                     )
                     .into());
                 }
                 if !output_drained {
                     return Err(format!(
-                        "exec shell exited but inherited output pipes remained open. A detached descendant escaped the managed process group; self-daemonizing commands are prohibited because their completion cannot be tracked safely. Run the service in the foreground and let wait_ms hand it off to the Runtime.\n--- Captured output ---\n{output_str}"
+                        "exec shell exited but inherited output pipes remained open. A detached descendant escaped the managed process tree; self-daemonizing commands are prohibited because their completion cannot be tracked safely. Run the service in the foreground and let wait_ms hand it off to the Runtime.\n--- Captured output ---\n{output_str}"
                     )
                     .into());
                 }
@@ -8708,10 +8805,7 @@ impl Tool for ExecuteCommandTool {
                             if let Err(error) =
                                 scheduler.attach_execution_job(&task_id, parent).await
                             {
-                                let _ = nix::sys::signal::killpg(
-                                    nix::unistd::Pid::from_raw(pid),
-                                    nix::sys::signal::Signal::SIGKILL,
-                                );
+                                let _ = terminate_process_tree(pid);
                                 let _ = child.wait().await;
                                 let _ = drain_exec_output_monitors(
                                     &mut stdout_task,
@@ -8721,7 +8815,7 @@ impl Tool for ExecuteCommandTool {
                                 .await;
                                 tasks.remove(&task_id);
                                 return Err(format!(
-                                    "background process could not be handed off to a persistent ExecutionJob, so its process group was terminated: {error}"
+                                    "background process could not be handed off to a persistent ExecutionJob, so its managed process tree was terminated: {error}"
                                 )
                                 .into());
                             }
@@ -8760,7 +8854,7 @@ impl Tool for ExecuteCommandTool {
                 let background_scheduler_cleanup = self.background_scheduler.clone();
                 tokio::spawn(async move {
                     let wait_res = child.wait().await;
-                    process_group_guard.disarm();
+                    process_tree_guard.disarm();
                     let residual_cleanup = terminate_residual_process_group(pid);
                     let output_drained = drain_exec_output_monitors(
                         &mut stdout_task,
@@ -8778,12 +8872,12 @@ impl Tool for ExecuteCommandTool {
                     };
                     let output_str = buffer_cleanup.get_all();
                     let residual_note = if !output_drained {
-                        "\n[Runtime stopped waiting for inherited output pipes after the managed shell exited. A self-daemonized descendant escaped the managed process group, so this execution was failed instead of leaving its Activation permanently running.]"
+                        "\n[Runtime stopped waiting for inherited output pipes after the managed shell exited. A self-daemonized descendant escaped the managed process tree, so this execution was failed instead of leaving its Activation permanently running.]"
                     } else {
                         match residual_cleanup {
-                        Ok(true) => "\n[Runtime terminated an unmanaged child process group left after the shell exited. Do not self-background processes in exec commands.]",
+                        Ok(true) => "\n[Runtime terminated an unmanaged child process tree left after the shell exited. Do not self-background processes in exec commands.]",
                         Ok(false) => "",
-                        Err(_) => "\n[Runtime could not confirm that the process group was fully cleaned up after the shell exited.]",
+                        Err(_) => "\n[Runtime could not confirm that the managed process tree was fully cleaned up after the shell exited.]",
                         }
                     };
                     if durable_background_attached {
@@ -9409,9 +9503,8 @@ impl Tool for KillTaskTool {
             if let Some(scheduler) = &self.background_scheduler {
                 scheduler.cancel(&args.task_id).await;
             }
-            let pgid = nix::unistd::Pid::from_raw(-task_pgid); // A negative PID targets the entire process group.
-            match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
-                Ok(_) => Ok(serde_json::json!({
+            match terminate_process_tree(task_pgid) {
+                Ok(true) => Ok(serde_json::json!({
                     "kind": "background_task_kill",
                     "task_id": args.task_id,
                     "status": "kill_requested",
@@ -9420,29 +9513,32 @@ impl Tool for KillTaskTool {
                     "guidance": "The process-exit event carries the final killed state and exit code."
                 })
                 .to_string()),
-                Err(e) => {
-                    if e == nix::errno::Errno::ESRCH {
-                        if let Some(mut task) = tasks.get_mut(&args.task_id) {
-                            task.status = BackgroundTaskStatus::Failed;
-                            task.ended_at = Some(chrono::Utc::now());
-                            task.exit_code = Some(-1);
-                            task.next_wakeup_at = None;
-                        }
-                        Ok(serde_json::json!({
-                            "kind": "background_task_kill",
-                            "task_id": args.task_id,
-                            "status": "failed",
-                            "process_group_id": task_pgid,
-                            "killed": false,
-                            "reason": "process_group_not_found"
-                        })
-                        .to_string())
-                    } else {
-                        if let Some(mut task) = tasks.get_mut(&args.task_id) {
-                            task.status = BackgroundTaskStatus::Running;
-                        }
-                        Err(format!("Force-killing process group {} encountered an operating-system error: {:?}", task_pgid, e).into())
+                Ok(false) => {
+                    if let Some(mut task) = tasks.get_mut(&args.task_id) {
+                        task.status = BackgroundTaskStatus::Failed;
+                        task.ended_at = Some(chrono::Utc::now());
+                        task.exit_code = Some(-1);
+                        task.next_wakeup_at = None;
                     }
+                    Ok(serde_json::json!({
+                        "kind": "background_task_kill",
+                        "task_id": args.task_id,
+                        "status": "failed",
+                        "process_group_id": task_pgid,
+                        "killed": false,
+                        "reason": "process_tree_not_found"
+                    })
+                    .to_string())
+                }
+                Err(error) => {
+                    if let Some(mut task) = tasks.get_mut(&args.task_id) {
+                        task.status = BackgroundTaskStatus::Running;
+                    }
+                    Err(format!(
+                        "Force-killing managed process tree {} encountered an operating-system error: {}",
+                        task_pgid, error
+                    )
+                    .into())
                 }
             }
         } else {
@@ -9949,6 +10045,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn noninteractive_child_probe() {
         if std::env::var_os("MORPHZ_NONINTERACTIVE_CHILD_PROBE").is_none() {
@@ -9975,6 +10072,7 @@ mod tests {
         assert_eq!(std::env::var("SSH_ASKPASS_REQUIRE").as_deref(), Ok("never"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn noninteractive_process_has_no_input_or_controlling_terminal() {
         let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
@@ -9985,7 +10083,7 @@ mod tests {
             .env("MORPHZ_NONINTERACTIVE_CHILD_PROBE", "1")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        configure_noninteractive_process(&mut command);
+        configure_noninteractive_process(&mut command, false);
 
         let output = tokio::time::timeout(std::time::Duration::from_secs(2), command.output())
             .await
@@ -13160,10 +13258,7 @@ Body
             let prepared = prepare_managed_shell_command(command, false).unwrap();
             assert!(prepared.background, "{command}");
             assert_eq!(prepared.background_source, Some("normalized_shell_async"));
-            assert_eq!(
-                prepared.command.as_bytes().len() + 1,
-                command.as_bytes().len()
-            );
+            assert_eq!(prepared.command.len() + 1, command.len());
         }
 
         for command in [
@@ -13348,7 +13443,7 @@ Body
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn exec_with_jailed_profile_fails_closed_without_native_linux_sandbox() {
+    async fn exec_with_jailed_profile_uses_bubblewrap_or_fails_closed_when_missing() {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("crate-a")).unwrap();
         let security = jailed_security(tmp.path());
@@ -13359,7 +13454,7 @@ Body
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let tool = ExecuteCommandTool::new_with_configs(bus, background, security, 30);
 
-        let error = tool
+        let result = tool
             .execute(
                 &serde_json::json!({
                     "command": "pwd",
@@ -13367,17 +13462,28 @@ Body
                 })
                 .to_string(),
             )
-            .await
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(
-            message.contains("native Linux sandbox Backend is not implemented"),
-            "unexpected Linux sandbox error: {message}"
-        );
-        assert!(
-            message.contains("fail_closed=true refuses fallback to an unsandboxed Shell"),
-            "Linux jailed execution must not fall back to an unconfined Shell: {message}"
-        );
+            .await;
+        let report = NativeSandbox::for_current_platform().report();
+        match report.status {
+            EnforcementStatus::Enforced => {
+                let output = result.expect("Bubblewrap-backed exec should run");
+                assert!(
+                    output.contains("crate-a"),
+                    "unexpected exec result: {output}"
+                );
+            }
+            EnforcementStatus::Unavailable => {
+                let message = result.unwrap_err().to_string();
+                assert!(
+                    message.contains("Bubblewrap"),
+                    "unexpected error: {message}"
+                );
+                assert!(
+                    message.contains("fail_closed=true"),
+                    "Linux jailed execution must not fall back to an unconfined Shell: {message}"
+                );
+            }
+        }
     }
 
     #[test]

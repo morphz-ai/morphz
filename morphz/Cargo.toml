@@ -36,7 +36,6 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 libsqlite3-hotbundle = "1.530300.0"
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["compression-gzip", "cors"] }
-nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time"] }
 toml = "0.8"
@@ -66,6 +65,21 @@ tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25.1"
 yao-lang = { path = "../yao" }
 morphz-cognitive-coordination = { path = "../experiments/morphz-cognitive-coordination", optional = true, default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+# Pinned to one audited upstream revision. Only the Windows target resolves
+# this dependency; macOS/Linux builds do not carry the Windows subsystem.
+codex-protocol = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+codex-utils-absolute-path = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+codex-windows-sandbox = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

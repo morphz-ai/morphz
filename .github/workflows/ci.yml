@@ -94,6 +94,86 @@ jobs:
       - name: Verify one-shot approval boundary
         run: cargo test -p morphz tool::tests::exec_ -- --nocapture
 
+  native-sandbox-linux:
+    name: Native Sandbox (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Verify sandbox policy contract
+        run: cargo test -p morphz sandbox::tests -- --nocapture
+      - name: Verify native Bubblewrap attack boundary
+        env:
+          MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
+        run: cargo test -p morphz sandbox::linux::tests -- --nocapture
+      - name: Verify exec permission boundary
+        run: cargo test -p morphz tool::tests::exec_ -- --nocapture
+
+  native-sandbox-windows:
+    name: Native Sandbox (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Build Morphz and the pinned Codex sandbox helpers
+        run: |
+          cargo build -p morphz --bin morphz --bin morphz-edge --bin morphz-windows-sandbox-runner
+          cargo build -p codex-windows-sandbox --bins
+          cargo test -p morphz --lib --no-run
+      - name: Stage the complete helper bundle beside the Rust test executable
+        shell: pwsh
+        run: |
+          $helpers = @(
+            "morphz-windows-sandbox-runner.exe",
+            "codex-command-runner.exe",
+            "codex-windows-sandbox-setup.exe"
+          )
+          foreach ($helper in $helpers) {
+            $source = Join-Path "target/debug" $helper
+            if (-not (Test-Path $source)) {
+              throw "Missing required Windows sandbox helper: $source"
+            }
+            Copy-Item $source "target/debug/deps/$helper" -Force
+          }
+      - name: Verify native Windows filesystem, network, and process-tree boundaries
+        shell: pwsh
+        run: |
+          $env:MORPHZ_RUN_WINDOWS_SANDBOX_ATTACK_TEST = "1"
+          cargo test -p morphz sandbox::windows::tests -- --nocapture --test-threads=1
+      - name: Assemble installable Windows bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "target/morphz-windows-bundle" | Out-Null
+          $binaries = @(
+            "morphz.exe",
+            "morphz-edge.exe",
+            "morphz-windows-sandbox-runner.exe",
+            "codex-command-runner.exe",
+            "codex-windows-sandbox-setup.exe"
+          )
+          foreach ($binary in $binaries) {
+            Copy-Item "target/debug/$binary" "target/morphz-windows-bundle/$binary" -Force
+          }
+          Compress-Archive -Path "target/morphz-windows-bundle/*" -DestinationPath "target/morphz-windows-x86_64.zip" -Force
+      - name: Upload verified Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: morphz-windows-x86_64
+          path: target/morphz-windows-x86_64.zip
+          if-no-files-found: error
+
   build:
     name: Release Build
     runs-on: ubuntu-latest

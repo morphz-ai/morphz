@@ -142,6 +142,10 @@ pub struct ShellRequest {
 pub struct PreparedCommand {
     pub program: OsString,
     pub arguments: Vec<OsString>,
+    /// Optional private startup payload consumed by a trusted wrapper before
+    /// it launches the untrusted command. This avoids operating-system argv
+    /// limits without exposing the payload to the child command line.
+    pub startup_stdin: Option<Vec<u8>>,
     pub report: BackendReport,
 }
 
@@ -223,6 +227,7 @@ impl NativeSandbox {
         PreparedCommand {
             program: platform_shell_program(),
             arguments: platform_shell_arguments(command),
+            startup_stdin: None,
             report: BackendReport::unavailable(
                 self.backend.report().backend,
                 "the native sandbox is explicitly disabled by configuration; the command has no operating-system isolation",
@@ -319,18 +324,12 @@ fn platform_backend() -> Arc<dyn SandboxBackend> {
 
 #[cfg(target_os = "linux")]
 fn platform_backend() -> Arc<dyn SandboxBackend> {
-    Arc::new(UnsupportedNativeBackend::new(
-        BackendKind::LinuxNative,
-        "the native Linux sandbox Backend is not implemented and validated on a real host",
-    ))
+    Arc::new(linux::LinuxBubblewrapBackend)
 }
 
 #[cfg(windows)]
 fn platform_backend() -> Arc<dyn SandboxBackend> {
-    Arc::new(UnsupportedNativeBackend::new(
-        BackendKind::WindowsNative,
-        "the native Windows sandbox Backend is not implemented and validated on a real host",
-    ))
+    Arc::new(windows::WindowsCodexBackend)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -373,6 +372,7 @@ impl SandboxBackend for UnsupportedNativeBackend {
         Ok(PreparedCommand {
             program: platform_shell_program(),
             arguments: platform_shell_arguments(&request.command),
+            startup_stdin: None,
             report: self.report(),
         })
     }
@@ -432,6 +432,7 @@ mod macos {
                 return Ok(PreparedCommand {
                     program: platform_shell_program(),
                     arguments: platform_shell_arguments(&request.command),
+                    startup_stdin: None,
                     report,
                 });
             }
@@ -446,6 +447,7 @@ mod macos {
                     OsString::from("-c"),
                     OsString::from(&request.command),
                 ],
+                startup_stdin: None,
                 report,
             })
         }
@@ -657,6 +659,899 @@ mod macos {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use glob::{MatchOptions, Pattern};
+    use std::collections::BTreeSet;
+    use walkdir::WalkDir;
+
+    const STANDARD_BWRAP_PATHS: &[&str] = &[
+        "/usr/bin/bwrap",
+        "/bin/bwrap",
+        "/usr/local/bin/bwrap",
+        "/snap/bin/bwrap",
+    ];
+
+    pub struct LinuxBubblewrapBackend;
+
+    impl SandboxBackend for LinuxBubblewrapBackend {
+        fn report(&self) -> BackendReport {
+            match find_bwrap(None) {
+                Some(path) => BackendReport::enforced(
+                    BackendKind::LinuxNative,
+                    format!(
+                        "Linux Bubblewrap is available through '{}'",
+                        path.display()
+                    ),
+                ),
+                None => BackendReport::unavailable(
+                    BackendKind::LinuxNative,
+                    "Bubblewrap (bwrap) is not installed; install the distribution's bubblewrap package before using workspace-write sandboxing",
+                ),
+            }
+        }
+
+        fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+            let Some(bwrap) = find_bwrap(Some(&request.cwd)) else {
+                if request.policy.fail_closed {
+                    return Err(SandboxError::new(
+                        "Linux Bubblewrap is unavailable and fail_closed=true; install the distribution's bubblewrap package instead of running the command without operating-system isolation",
+                    ));
+                }
+                return Ok(PreparedCommand {
+                    program: platform_shell_program(),
+                    arguments: platform_shell_arguments(&request.command),
+                    startup_stdin: None,
+                    report: self.report(),
+                });
+            };
+            let arguments = build_bwrap_arguments(request)?;
+            Ok(PreparedCommand {
+                program: bwrap.into_os_string(),
+                arguments,
+                startup_stdin: None,
+                report: BackendReport::enforced(
+                    BackendKind::LinuxNative,
+                    "Bubblewrap enforces mount, user, PID, IPC, capability, and optional network-namespace isolation",
+                ),
+            })
+        }
+    }
+
+    fn find_bwrap(untrusted_root: Option<&Path>) -> Option<PathBuf> {
+        let path_candidates = std::env::var_os("PATH")
+            .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for candidate in STANDARD_BWRAP_PATHS.iter().map(PathBuf::from).chain(
+            path_candidates
+                .into_iter()
+                .filter(|directory| directory.is_absolute())
+                .map(|directory| directory.join("bwrap")),
+        ) {
+            let Ok(candidate) = std::fs::canonicalize(candidate) else {
+                continue;
+            };
+            if !candidate.is_file() {
+                continue;
+            }
+            if untrusted_root.is_some_and(|root| {
+                std::fs::canonicalize(root).is_ok_and(|root| candidate.starts_with(root))
+            }) {
+                continue;
+            }
+            if !bwrap_is_usable(&candidate) {
+                continue;
+            }
+            return Some(candidate);
+        }
+        None
+    }
+
+    fn bwrap_is_usable(candidate: &Path) -> bool {
+        std::process::Command::new(candidate)
+            .args([
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev",
+                "/dev",
+                "--unshare-user",
+                "--unshare-pid",
+                "--proc",
+                "/proc",
+                "--",
+                "/bin/true",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn build_bwrap_arguments(request: &ShellRequest) -> Result<Vec<OsString>, SandboxError> {
+        let cwd = std::fs::canonicalize(&request.cwd).map_err(|error| {
+            SandboxError::new(format!(
+                "failed to resolve Linux sandbox cwd '{}': {error}",
+                request.cwd.display()
+            ))
+        })?;
+        let mut read_roots = canonical_roots(&request.policy.read_roots, "read")?;
+        let write_roots = canonical_roots(&request.policy.write_roots, "write")?;
+        if write_roots.is_empty() {
+            return Err(SandboxError::new(
+                "Linux Bubblewrap policy requires at least one write root",
+            ));
+        }
+        if !read_roots
+            .iter()
+            .chain(write_roots.iter())
+            .any(|root| cwd.starts_with(root))
+        {
+            return Err(SandboxError::new(format!(
+                "Linux sandbox cwd '{}' is outside every approved read/write root",
+                cwd.display()
+            )));
+        }
+
+        let denied_reads = resolve_denied_paths(
+            &request.policy.denied_read_paths,
+            &request.policy.denied_read_patterns,
+            "read",
+        )?;
+        let denied_writes = resolve_denied_paths(
+            &request.policy.denied_write_paths,
+            &request.policy.denied_write_patterns,
+            "write",
+        )?;
+
+        // Keep the same developer-tool compatibility carve-outs as the
+        // macOS backend. The rest of HOME is hidden below.
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .and_then(|path| std::fs::canonicalize(path).ok());
+        if let Some(home) = &home {
+            for toolchain_root in [home.join(".cargo"), home.join(".rustup")] {
+                if let Ok(toolchain_root) = std::fs::canonicalize(toolchain_root) {
+                    push_unique(&mut read_roots, toolchain_root);
+                }
+            }
+        }
+        let temp_dir = std::fs::canonicalize(std::env::temp_dir()).ok();
+
+        let mut arguments = vec![
+            os("--new-session"),
+            os("--die-with-parent"),
+            os("--ro-bind"),
+            os("/"),
+            os("/"),
+            os("--dev"),
+            os("/dev"),
+            os("--unshare-user"),
+            os("--unshare-pid"),
+            os("--unshare-ipc"),
+        ];
+        if request.policy.network == NetworkPolicy::Deny {
+            arguments.push(os("--unshare-net"));
+        }
+        arguments.extend([os("--proc"), os("/proc"), os("--cap-drop"), os("ALL")]);
+
+        // The host root stays read-only so system toolchains remain usable,
+        // but user and temporary data-bearing roots are replaced with empty
+        // private filesystems. Approved roots are rebound immediately below.
+        for hidden_root in home.iter().chain(temp_dir.iter()) {
+            arguments.push(os("--tmpfs"));
+            arguments.push(hidden_root.as_os_str().to_owned());
+        }
+
+        // Read-only grants are mounted first; a later writable grant for the
+        // same or a narrower path intentionally wins.
+        for root in sort_paths_by_specificity(read_roots) {
+            push_mount_target_dirs(&mut arguments, &root);
+            push_mount(&mut arguments, "--ro-bind", &root, &root);
+        }
+
+        // The root filesystem starts read-only. Re-open only explicitly
+        // writable roots, then layer protected paths over those mounts so a
+        // broad workspace grant cannot override a narrower denial.
+        for root in sort_paths_by_specificity(write_roots) {
+            push_mount_target_dirs(&mut arguments, &root);
+            push_mount(&mut arguments, "--bind", &root, &root);
+        }
+
+        let denied_read_set = denied_reads.iter().cloned().collect::<BTreeSet<_>>();
+        for path in denied_writes {
+            if denied_read_set.contains(&path) {
+                continue;
+            }
+            push_mount(&mut arguments, "--ro-bind", &path, &path);
+        }
+        for path in denied_reads {
+            mask_path(&mut arguments, &path)?;
+        }
+
+        arguments.extend([
+            os("--chdir"),
+            cwd.into_os_string(),
+            os("--"),
+            platform_shell_program(),
+            os("-c"),
+            OsString::from(&request.command),
+        ]);
+        Ok(arguments)
+    }
+
+    fn resolve_denied_paths(
+        literal_paths: &[PathBuf],
+        patterns: &[SandboxPathPattern],
+        kind: &str,
+    ) -> Result<Vec<PathBuf>, SandboxError> {
+        let mut paths = denied_roots(literal_paths, kind)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        for rule in patterns {
+            let root = std::fs::canonicalize(&rule.root).map_err(|error| {
+                SandboxError::new(format!(
+                    "failed to resolve sandbox denied {kind} pattern root '{}': {error}",
+                    rule.root.display()
+                ))
+            })?;
+            let pattern = Pattern::new(&rule.glob).map_err(|error| {
+                SandboxError::new(format!(
+                    "invalid sandbox denied {kind} glob '{}': {error}",
+                    rule.glob
+                ))
+            })?;
+            let options = MatchOptions {
+                require_literal_separator: true,
+                require_literal_leading_dot: false,
+                case_sensitive: true,
+            };
+            for entry in WalkDir::new(&root).follow_links(false) {
+                let entry = entry.map_err(|error| {
+                    SandboxError::new(format!(
+                        "failed to enumerate sandbox denied {kind} pattern below '{}': {error}",
+                        root.display()
+                    ))
+                })?;
+                let Ok(relative) = entry.path().strip_prefix(&root) else {
+                    continue;
+                };
+                if relative.as_os_str().is_empty() || !pattern.matches_path_with(relative, options)
+                {
+                    continue;
+                }
+                let canonical = std::fs::canonicalize(entry.path()).map_err(|error| {
+                    SandboxError::new(format!(
+                        "failed to resolve sandbox denied {kind} match '{}': {error}",
+                        entry.path().display()
+                    ))
+                })?;
+                paths.insert(canonical);
+            }
+        }
+        Ok(sort_paths_by_specificity(paths.into_iter().collect()))
+    }
+
+    fn sort_paths_by_specificity(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        paths.sort_by(|left, right| {
+            left.components()
+                .count()
+                .cmp(&right.components().count())
+                .then_with(|| left.cmp(right))
+        });
+        paths.dedup();
+        paths
+    }
+
+    fn mask_path(arguments: &mut Vec<OsString>, path: &Path) -> Result<(), SandboxError> {
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            SandboxError::new(format!(
+                "failed to inspect Linux sandbox protected path '{}': {error}",
+                path.display()
+            ))
+        })?;
+        if metadata.is_dir() {
+            arguments.extend([os("--perms"), os("000"), os("--tmpfs")]);
+            arguments.push(path.as_os_str().to_owned());
+            arguments.push(os("--remount-ro"));
+            arguments.push(path.as_os_str().to_owned());
+        } else {
+            // The original bytes become unreachable. `/dev/null` remains
+            // readable as an empty file so programs probing optional config do
+            // not receive a fabricated copy of the protected content.
+            push_mount(arguments, "--ro-bind", Path::new("/dev/null"), path);
+        }
+        Ok(())
+    }
+
+    fn push_mount(arguments: &mut Vec<OsString>, operation: &str, source: &Path, target: &Path) {
+        arguments.push(os(operation));
+        arguments.push(source.as_os_str().to_owned());
+        arguments.push(target.as_os_str().to_owned());
+    }
+
+    fn push_mount_target_dirs(arguments: &mut Vec<OsString>, target: &Path) {
+        let mut parents = target.ancestors().skip(1).collect::<Vec<_>>();
+        parents.reverse();
+        for parent in parents {
+            if parent == Path::new("/") {
+                continue;
+            }
+            arguments.push(os("--dir"));
+            arguments.push(parent.as_os_str().to_owned());
+        }
+    }
+
+    fn os(value: &str) -> OsString {
+        OsString::from(value)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::process::Command;
+
+        fn argument_strings(arguments: Vec<OsString>) -> Vec<String> {
+            arguments
+                .into_iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect()
+        }
+
+        #[test]
+        fn bubblewrap_policy_reopens_only_write_roots_then_masks_protected_paths() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            std::fs::create_dir_all(workspace.join(".git")).unwrap();
+            std::fs::write(workspace.join(".env"), "SECRET=value\n").unwrap();
+            let mut policy = SandboxPolicy::workspace(&workspace);
+            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git"));
+            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git/**"));
+            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+            let arguments = argument_strings(
+                build_bwrap_arguments(&ShellRequest {
+                    command: "true".to_string(),
+                    cwd: workspace.clone(),
+                    policy,
+                })
+                .unwrap(),
+            );
+
+            assert!(arguments.windows(3).any(|items| {
+                items
+                    == [
+                        "--bind",
+                        workspace.to_string_lossy().as_ref(),
+                        workspace.to_string_lossy().as_ref(),
+                    ]
+            }));
+            let write_index = arguments
+                .windows(3)
+                .position(|items| items.first().is_some_and(|item| item == "--bind"))
+                .unwrap();
+            let mask_index = arguments
+                .iter()
+                .rposition(|item| item == "--tmpfs")
+                .unwrap();
+            assert!(write_index < mask_index);
+            assert!(arguments.contains(&"--unshare-net".to_string()));
+            assert!(arguments
+                .windows(2)
+                .any(|items| items == ["--cap-drop", "ALL"]));
+            assert!(Pattern::new("**/.env")
+                .unwrap()
+                .matches_path(Path::new(".env")));
+        }
+
+        #[test]
+        fn native_bubblewrap_blocks_outside_writes_and_protected_content() {
+            let Some(bwrap) = find_bwrap(None) else {
+                assert!(
+                    std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none(),
+                    "Bubblewrap is missing or unusable, but the native Linux sandbox attack test is required"
+                );
+                eprintln!("skipping native Bubblewrap attack test because bwrap is unavailable");
+                return;
+            };
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            let outside = temp.path().join("outside.txt");
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(workspace.join(".env"), "SECRET=value\n").unwrap();
+            let mut policy = SandboxPolicy::workspace(&workspace);
+            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+            let request = ShellRequest {
+                command: format!(
+                    "printf allowed > allowed.txt; if printf denied > '{}'; then exit 10; fi; test ! -s .env; python3 -c 'import socket; s=socket.socket(); s.settimeout(0.2); s.connect((\"1.1.1.1\", 53))' >/dev/null 2>&1 && exit 11 || true",
+                    outside.display()
+                ),
+                cwd: workspace.clone(),
+                policy,
+            };
+            let arguments = build_bwrap_arguments(&request).unwrap();
+            let status = Command::new(bwrap)
+                .args(arguments)
+                .current_dir(&workspace)
+                .status()
+                .unwrap();
+
+            assert!(status.success());
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
+                "allowed"
+            );
+            assert!(!outside.exists());
+            assert_eq!(
+                std::fs::read_to_string(workspace.join(".env")).unwrap(),
+                "SECRET=value\n"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use super::*;
+    use codex_protocol::config_types::WindowsSandboxLevel;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::permissions::NetworkSandboxPolicy;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use glob::{MatchOptions, Pattern};
+    use serde::{Deserialize, Serialize};
+    use std::collections::{BTreeSet, HashMap};
+    use walkdir::WalkDir;
+
+    const RUNNER_EXE: &str = "morphz-windows-sandbox-runner.exe";
+    const COMMAND_RUNNER_EXE: &str = "codex-command-runner.exe";
+    const SETUP_EXE: &str = "codex-windows-sandbox-setup.exe";
+    const CODEX_WINDOWS_REVISION: &str = "94cbbddafc1776d5e377bca1b05932c697e82238";
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct WindowsLaunchRequest {
+        cwd: PathBuf,
+        read_roots: Vec<PathBuf>,
+        write_roots: Vec<PathBuf>,
+        denied_read_paths: Vec<PathBuf>,
+        denied_write_paths: Vec<PathBuf>,
+        network: NetworkPolicy,
+        command: String,
+        morphz_home: PathBuf,
+    }
+
+    pub struct WindowsCodexBackend;
+
+    impl SandboxBackend for WindowsCodexBackend {
+        fn report(&self) -> BackendReport {
+            match helper_bundle(None) {
+                Ok(bundle) => BackendReport::enforced(
+                    BackendKind::WindowsNative,
+                    format!(
+                        "Windows restricted-token, ACL, WFP, private-desktop, and Job Object helpers are available at '{}' (Codex revision {CODEX_WINDOWS_REVISION})",
+                        bundle.runner.display()
+                    ),
+                ),
+                Err(error) => BackendReport::unavailable(BackendKind::WindowsNative, error),
+            }
+        }
+
+        fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+            let bundle = helper_bundle(Some(&request.cwd)).map_err(SandboxError::new)?;
+            let cwd = std::fs::canonicalize(&request.cwd).map_err(|error| {
+                SandboxError::new(format!(
+                    "failed to resolve Windows sandbox cwd '{}': {error}",
+                    request.cwd.display()
+                ))
+            })?;
+            let read_roots = canonical_roots(&request.policy.read_roots, "read")?;
+            let write_roots = canonical_roots(&request.policy.write_roots, "write")?;
+            if write_roots.is_empty() {
+                return Err(SandboxError::new(
+                    "Windows workspace sandbox requires at least one write root",
+                ));
+            }
+            if !read_roots
+                .iter()
+                .chain(write_roots.iter())
+                .any(|root| cwd.starts_with(root))
+            {
+                return Err(SandboxError::new(format!(
+                    "Windows sandbox cwd '{}' is outside every approved read/write root",
+                    cwd.display()
+                )));
+            }
+
+            let denied_read_paths = resolve_denied_paths(
+                &request.policy.denied_read_paths,
+                &request.policy.denied_read_patterns,
+                "read",
+            )?;
+            let denied_write_paths = resolve_denied_paths(
+                &request.policy.denied_write_paths,
+                &request.policy.denied_write_patterns,
+                "write",
+            )?;
+            let morphz_home = crate::config::morphz_home_dir().ok_or_else(|| {
+                SandboxError::new(
+                    "Windows sandbox cannot resolve MORPHZ_HOME; set MORPHZ_HOME or a normal Windows user profile before using workspace-write mode",
+                )
+            })?;
+            let morphz_home = absolute_lexical_path(&morphz_home)?;
+            let launch = WindowsLaunchRequest {
+                cwd,
+                read_roots,
+                write_roots,
+                denied_read_paths,
+                denied_write_paths,
+                network: request.policy.network,
+                command: request.command.clone(),
+                morphz_home,
+            };
+            let encoded = serde_json::to_string(&launch).map_err(|error| {
+                SandboxError::new(format!(
+                    "failed to encode Windows sandbox launch request: {error}"
+                ))
+            })?;
+            Ok(PreparedCommand {
+                program: bundle.runner.into_os_string(),
+                arguments: Vec::new(),
+                startup_stdin: Some(encoded.into_bytes()),
+                report: BackendReport::enforced(
+                    BackendKind::WindowsNative,
+                    "Windows command is delegated to a restricted token with ACL/WFP policy and a Job Object process-tree boundary",
+                ),
+            })
+        }
+    }
+
+    struct HelperBundle {
+        runner: PathBuf,
+    }
+
+    fn helper_bundle(untrusted_root: Option<&Path>) -> Result<HelperBundle, String> {
+        let current = std::env::current_exe()
+            .map_err(|error| format!("failed to resolve the Morphz executable: {error}"))?;
+        let directory = current.parent().ok_or_else(|| {
+            format!(
+                "Morphz executable '{}' has no parent directory",
+                current.display()
+            )
+        })?;
+        let runner = directory.join(RUNNER_EXE);
+        let command_runner = directory.join(COMMAND_RUNNER_EXE);
+        let setup = directory.join(SETUP_EXE);
+        for helper in [&runner, &command_runner, &setup] {
+            if !helper.is_file() {
+                return Err(format!(
+                    "Windows sandbox helper '{}' is missing; install the complete Morphz Windows bundle rather than copying only morphz.exe",
+                    helper.display()
+                ));
+            }
+            if untrusted_root.is_some_and(|root| {
+                std::fs::canonicalize(root)
+                    .ok()
+                    .zip(std::fs::canonicalize(helper).ok())
+                    .is_some_and(|(root, helper)| helper.starts_with(root))
+            }) {
+                return Err(format!(
+                    "Windows sandbox helper '{}' is inside the untrusted command root",
+                    helper.display()
+                ));
+            }
+        }
+        Ok(HelperBundle { runner })
+    }
+
+    fn resolve_denied_paths(
+        literal_paths: &[PathBuf],
+        patterns: &[SandboxPathPattern],
+        kind: &str,
+    ) -> Result<Vec<PathBuf>, SandboxError> {
+        let mut paths = denied_roots(literal_paths, kind)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        for rule in patterns {
+            let root = std::fs::canonicalize(&rule.root).map_err(|error| {
+                SandboxError::new(format!(
+                    "failed to resolve Windows denied {kind} pattern root '{}': {error}",
+                    rule.root.display()
+                ))
+            })?;
+            let pattern = Pattern::new(&rule.glob).map_err(|error| {
+                SandboxError::new(format!(
+                    "invalid Windows denied {kind} glob '{}': {error}",
+                    rule.glob
+                ))
+            })?;
+            let options = MatchOptions {
+                require_literal_separator: true,
+                require_literal_leading_dot: false,
+                case_sensitive: false,
+            };
+            for entry in WalkDir::new(&root).follow_links(false) {
+                let entry = entry.map_err(|error| {
+                    SandboxError::new(format!(
+                        "failed to enumerate Windows denied {kind} pattern below '{}': {error}",
+                        root.display()
+                    ))
+                })?;
+                let Ok(relative) = entry.path().strip_prefix(&root) else {
+                    continue;
+                };
+                if relative.as_os_str().is_empty() || !pattern.matches_path_with(relative, options)
+                {
+                    continue;
+                }
+                paths.insert(absolute_lexical_path(entry.path())?);
+            }
+        }
+        let mut paths = paths.into_iter().collect::<Vec<_>>();
+        paths.sort_by(|left, right| {
+            left.components()
+                .count()
+                .cmp(&right.components().count())
+                .then_with(|| left.cmp(right))
+        });
+        Ok(paths)
+    }
+
+    fn absolute(path: &Path, label: &str) -> Result<AbsolutePathBuf, String> {
+        AbsolutePathBuf::from_absolute_path(path).map_err(|error| {
+            format!(
+                "Windows sandbox {label} must be an absolute path ('{}'): {error:?}",
+                path.display()
+            )
+        })
+    }
+
+    pub async fn run_helper_from_process_arguments() -> Result<i32, String> {
+        use std::io::Read as _;
+
+        let mut request = Vec::new();
+        std::io::stdin()
+            .take(16 * 1024 * 1024)
+            .read_to_end(&mut request)
+            .map_err(|error| format!("failed to read Windows sandbox launch request: {error}"))?;
+        if request.is_empty() {
+            return Err("missing Windows sandbox launch request on stdin".to_string());
+        }
+        let request: WindowsLaunchRequest = serde_json::from_slice(&request)
+            .map_err(|error| format!("invalid Windows sandbox launch request: {error}"))?;
+        let cwd = absolute(&request.cwd, "cwd")?;
+        let workspace_roots = request
+            .write_roots
+            .iter()
+            .map(|root| absolute(root, "workspace root"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let denied_read_paths = request
+            .denied_read_paths
+            .iter()
+            .map(|path| absolute(path, "denied read path"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let denied_write_paths = request
+            .denied_write_paths
+            .iter()
+            .map(|path| absolute(path, "denied write path"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let network = match request.network {
+            NetworkPolicy::Deny => NetworkSandboxPolicy::Restricted,
+            NetworkPolicy::Allow => NetworkSandboxPolicy::Enabled,
+        };
+        let permission_profile = PermissionProfile::workspace_write_with(
+            workspace_roots.as_slice(),
+            network,
+            /*exclude_tmpdir_env_var*/ true,
+            /*exclude_slash_tmp*/ true,
+        );
+        let mut env_map = std::env::vars().collect::<HashMap<_, _>>();
+        if request.network == NetworkPolicy::Deny {
+            // Codex can deliberately permit a loopback proxy inside its
+            // restricted network identity. Morphz's NetworkPolicy::Deny is
+            // stricter: no proxy or local-binding escape is part of this
+            // command's capability set.
+            let denied_proxy_names = [
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "WS_PROXY",
+                "WSS_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "ws_proxy",
+                "wss_proxy",
+                "CODEX_WINDOWS_SANDBOX_PROXY_PORTS",
+                "CODEX_NETWORK_ALLOW_LOCAL_BINDING",
+            ];
+            env_map.retain(|name, _| {
+                !denied_proxy_names
+                    .iter()
+                    .any(|denied| name.eq_ignore_ascii_case(denied))
+            });
+        }
+        let spawned = codex_windows_sandbox::spawn_windows_sandbox_session_for_level(
+            codex_windows_sandbox::WindowsSandboxSessionRequest {
+                permission_profile: &permission_profile,
+                workspace_roots: workspace_roots.as_slice(),
+                codex_home: &request.morphz_home,
+                command: vec![
+                    "cmd.exe".to_string(),
+                    "/D".to_string(),
+                    "/S".to_string(),
+                    "/C".to_string(),
+                    request.command,
+                ],
+                cwd: cwd.as_path(),
+                env_map,
+                windows_sandbox_level: WindowsSandboxLevel::Elevated,
+                proxy_enforced: false,
+                network_proxy_restricting_sid: None,
+                proxy_settings_mode:
+                    codex_windows_sandbox::WindowsSandboxProxySettingsMode::Reconcile,
+                timeout_ms: None,
+                read_roots_override: Some(request.read_roots.as_slice()),
+                read_roots_include_platform_defaults: true,
+                write_roots_override: Some(request.write_roots.as_slice()),
+                deny_read_paths_override: denied_read_paths.as_slice(),
+                deny_write_paths_override: denied_write_paths.as_slice(),
+                tty: false,
+                stdin_open: false,
+                use_private_desktop: true,
+            },
+        )
+        .await
+        .map_err(|error| format!("Windows sandbox launch failed: {error:#}"))?;
+        Ok(codex_windows_sandbox::forward_sandbox_session_stdio(spawned).await)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::io::Write as _;
+
+        fn spawn_prepared(prepared: PreparedCommand, cwd: &Path) -> std::process::Child {
+            let mut command = std::process::Command::new(prepared.program);
+            command
+                .args(prepared.arguments)
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn().unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(prepared.startup_stdin.as_deref().unwrap())
+                .unwrap();
+            child
+        }
+
+        fn execute_prepared(prepared: PreparedCommand, cwd: &Path) -> std::process::Output {
+            spawn_prepared(prepared, cwd).wait_with_output().unwrap()
+        }
+
+        #[test]
+        fn denied_pattern_resolution_is_case_insensitive_on_windows() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            std::fs::create_dir_all(workspace.join("Nested")).unwrap();
+            std::fs::write(workspace.join("Nested/.ENV"), "SECRET=value").unwrap();
+            let resolved = resolve_denied_paths(
+                &[],
+                &[SandboxPathPattern::new(&workspace, "**/.env")],
+                "read",
+            )
+            .unwrap();
+            assert_eq!(resolved.len(), 1);
+            assert!(resolved[0].ends_with(".ENV"));
+        }
+
+        #[test]
+        fn native_windows_sandbox_blocks_outside_and_protected_access() {
+            if std::env::var_os("MORPHZ_RUN_WINDOWS_SANDBOX_ATTACK_TEST").is_none() {
+                eprintln!(
+                    "skipping native Windows sandbox attack test; set MORPHZ_RUN_WINDOWS_SANDBOX_ATTACK_TEST=1 after installing the helper bundle"
+                );
+                return;
+            }
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            let outside = temp.path().join("outside.txt");
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(workspace.join(".env"), "SECRET=value\r\n").unwrap();
+            let mut policy = SandboxPolicy::workspace(&workspace);
+            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+            let sandbox = NativeSandbox::with_backend(Arc::new(WindowsCodexBackend));
+
+            let allowed = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: "echo allowed>allowed.txt".to_string(),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let allowed = execute_prepared(allowed, &workspace);
+            assert!(
+                allowed.status.success(),
+                "allowed command failed: {}",
+                String::from_utf8_lossy(&allowed.stderr)
+            );
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("allowed.txt"))
+                    .unwrap()
+                    .trim(),
+                "allowed"
+            );
+
+            let outside_write = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: format!("echo denied>\"{}\"", outside.display()),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let outside_write = execute_prepared(outside_write, &workspace);
+            assert!(!outside_write.status.success());
+            assert!(!outside.exists());
+
+            let protected_read = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: "type .env".to_string(),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let protected_read = execute_prepared(protected_read, &workspace);
+            assert!(!protected_read.status.success());
+            assert!(!String::from_utf8_lossy(&protected_read.stdout).contains("SECRET=value"));
+
+            let network = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$client = New-Object Net.Sockets.TcpClient; $client.Connect('1.1.1.1', 53)\"".to_string(),
+                    cwd: workspace.clone(),
+                    policy,
+                })
+                .unwrap();
+            let network = execute_prepared(network, &workspace);
+            assert!(!network.status.success());
+
+            let escaped = workspace.join("escaped.txt");
+            let ready = workspace.join("runner-ready.txt");
+            let managed_tree = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Set-Content -Path runner-ready.txt -Value ready; Start-Sleep -Seconds 4; Set-Content -Path escaped.txt -Value escaped\"".to_string(),
+                    cwd: workspace.clone(),
+                    policy: SandboxPolicy::workspace(&workspace),
+                })
+                .unwrap();
+            let mut managed_tree = spawn_prepared(managed_tree, &workspace);
+            let process_id = i32::try_from(managed_tree.id()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !ready.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            assert!(
+                ready.exists(),
+                "sandboxed process did not reach its ready point"
+            );
+            assert!(crate::tool::terminate_process_tree(process_id).unwrap());
+            let _ = managed_tree.wait();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            assert!(
+                !escaped.exists(),
+                "terminating the Windows sandbox runner must close the transport and terminate its Job Object descendants"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+pub async fn run_windows_sandbox_helper() -> Result<i32, String> {
+    windows::run_helper_from_process_arguments().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,6 +1567,7 @@ mod tests {
             Ok(PreparedCommand {
                 program: OsString::from("recording-shell"),
                 arguments: vec![OsString::from(&request.command)],
+                startup_stdin: None,
                 report: self.report(),
             })
         }

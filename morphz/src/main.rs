@@ -22,6 +22,7 @@ use morphz::provider::{list_provider_models, probe_provider};
 use morphz::runtime::{
     MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
 };
+use morphz::sandbox::{EnforcementStatus, NativeSandbox};
 use morphz::sdk::{
     AuthorizeExecutionTargetCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
     ExactHarnessRef, ExecutionJobQuery, MorphzSdk, ObjectiveRequestOrigin, SdkErrorCode,
@@ -3860,6 +3861,16 @@ fn doctor(runtime: &MorphzRuntime, app_config: &config::AppConfig) -> Result<(),
         "[ok] sandbox: {:?}, approval: {:?}",
         app_config.permissions.preset().0,
         app_config.permissions.preset().1
+    );
+    let native_sandbox = NativeSandbox::for_current_platform().report();
+    let native_label = match native_sandbox.status {
+        EnforcementStatus::Enforced => "ok",
+        EnforcementStatus::Unavailable => "missing",
+    };
+    println!(
+        "[{native_label}] native sandbox backend: {} ({})",
+        native_sandbox.backend.as_str(),
+        native_sandbox.notes.join("; ")
     );
     if let Some(provider) = app_config.llm.provider.as_deref() {
         match build_configured_client(app_config, Some(provider), None) {

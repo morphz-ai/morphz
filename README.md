@@ -309,7 +309,7 @@ npm run build
 
 每条消息都支持三种持久化调度语义：`interrupt` 会替换尚未跨越 Execution 边界的在途 DialogueTurn，并按 Event Sequence 合并尚未回复的输入；`parallel` 会立即建立独立 DialogueTurn 并与前一轮并发求值；`follow_up` 会等待前一轮完成且结果交付后再求值。Dashboard 中 Enter 使用配置默认值，Option/Alt+Enter 并发发送，Ctrl/Command+Enter 跟进发送，也可从发送按钮菜单显式选择。`orchestrator.interrupt_dialogue_on_new_message = true` 时默认使用 `interrupt`，设为 `false` 时默认使用 `follow_up`；对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`。独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
 
-`exec` 会把相同的路径、protected paths 和网络权限编译到操作系统原生沙箱：macOS Seatbelt 已经过真实越权测试；Linux 与 Windows 后端尚未实机实现，启用沙箱时会 fail-closed。高层模式为 `request_approval`、`auto_review`、`full_access` 和 `custom`；完全访问会关闭文件边界与 OS 沙箱并显示启动警告，但敏感环境变量是否传给 Shell 仍由独立环境策略控制。完整设计和当前边界见 [统一沙箱执行与可插拔审批架构](docs/morphz_sandbox_execution_and_approval_architecture.md)。
+`exec` 会把相同的路径、protected paths 和网络权限编译到操作系统原生沙箱：macOS 使用 Seatbelt；Linux 使用 Bubblewrap，缺少或不能运行 `bwrap` 时 fail-closed；Windows 使用固定 OpenAI Codex revision 的 Restricted Token、ACL/Capability SID、WFP、私有桌面与 Job Object，并要求安装包含三个 sandbox helper 的完整 Morphz Windows bundle。三平台安全声明都以各自原生攻击 CI 为门禁，交叉编译或 Linux 容器不能替代 Windows 验证。高层模式为 `request_approval`、`auto_review`、`full_access` 和 `custom`；完全访问会关闭文件边界与 OS 沙箱并显示启动警告，但敏感环境变量是否传给 Shell 仍由独立环境策略控制。完整设计和当前边界见 [统一沙箱执行与可插拔审批架构](docs/morphz_sandbox_execution_and_approval_architecture.md)。
 
 ## 目录说明
 

@@ -1,8 +1,8 @@
 # Morphz 统一沙箱执行与可插拔审批架构
 
 > 英文名称：Unified Sandbox Execution and Pluggable Approval Architecture
-> 状态：统一 Permission Profile/Broker、macOS 沙箱、AI/人工审批闭环已实现；Linux/Windows 待各自实机验证
-> 更新时间：2026-07-13
+> 状态：统一 Permission Profile/Broker、macOS Seatbelt、Linux Bubblewrap、Windows Codex 原生沙箱以及 AI/人工审批闭环已实现；三平台原生攻击 CI 是发布门禁
+> 更新时间：2026-08-31
 > 适用范围：当前实现聚焦本地 Shell；接口未来可覆盖文件、网络、浏览器、MCP 及其他现实副作用工具
 > 相关文档：[`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md) 定义 Runtime 对现实约束的责任；[`morphz_sandbox_design.md`](morphz_sandbox_design.md) 和 [`sandbox_and_serverless_deep_dive.md`](sandbox_and_serverless_deep_dive.md) 保留早期 WASM、容器与远程沙箱研究。本文重新定义统一执行与审批边界，作为后续实现基线。
 
@@ -23,7 +23,7 @@ Morphz 的 Agent 会读取文件、修改代码、执行命令、访问网络，
 
 Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间取得平衡；但自动审批只是默认的 `Approval Provider`，不是默认放行，也不会替代操作系统沙箱、确定性策略和人工审批。
 
-### 1.1 当前实现边界（2026-07-13）
+### 1.1 当前实现边界（2026-08-31）
 
 已经进入代码并完成本机验证的部分：
 
@@ -32,6 +32,9 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 - `request_approval`、`auto_review`、`full_access`、`custom` 四种产品模式；
 - 统一的 `SandboxBackend`、`SandboxPolicy`、`ShellRequest` 和后端能力报告；
 - macOS `Seatbelt` 后端，约束 Shell 及其后代进程；
+- Linux `Bubblewrap` 后端：只读宿主根、显式 read/write rebind、HOME/临时目录遮蔽、user/PID/IPC/network namespace 和 capability drop；缺少或不能运行 `bwrap` 时 fail-closed；
+- Windows 后端直接复用固定 OpenAI Codex revision 的 Restricted Token、ACL/Capability SID、WFP、私有桌面与 Job Object 实现；Morphz 发布包同时携带 sandbox runner、command runner 和 setup helper，缺少任一 helper 时 fail-closed；
+- Unix process group 与 Windows runner/Job Object 共享同一 durable execution owner、取消和后台终态链路；Windows 通过私有 stdin 向可信 runner 传递完整策略与启动请求，避免把策略 JSON 复制进外层命令行；真正的 `cmd.exe` 命令仍受 Windows 自身命令行长度上限约束；
 - `exec` 默认进入原生沙箱，网络默认关闭，写入限于工作区和显式额外目录；
 - `require_escalated` 只申请本次命令所需的网络、只读目录和可写目录差量；
 - 可替换的 `ApprovalProvider`，默认主程序接入无工具权限的独立 AI Auto-review 调用；
@@ -40,15 +43,16 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 - CLI 人工审批以及 `/api/approvals` 查询、决定接口；
 - AI 返回 `ask_human` 时自动转入同一个人工审批 Hub；
 - 旧 `[tool_security]` 配置只保留读取迁移，旧路径开关和命令字符串黑名单已退出 Runtime；
-- macOS 真实攻击回归：工作区外写入、后代 Shell 越界、拒绝后启动、一次授权重放和敏感目录申请。
+- 三平台原生 CI 攻击合同：工作区外写入、protected path 读取、网络拒绝和子进程树取消；macOS、Linux 和 Windows 的安全声明只有对应原生 Runner 通过后才成立。
 
 尚未完成的部分：
 
-- Linux 和 Windows 后端；它们在统一接口中存在明确的 `unavailable` 状态，启用沙箱时必须 fail-closed；
 - 可复用前缀规则、完整的结构化命令规范化、域名级网络授权、资源限制和跨重启 Grant；
 - 将同一 Permission Broker 扩展到网络、浏览器、MCP 等其余现实副作用工具。
 
-当前 macOS 策略对**写入和网络**实施强限制；读取策略为了保证编译器和动态链接器可运行，允许读取系统公共路径，但默认拒绝 Home 与临时目录，再显式放行工作区、Cargo/Rustup 和配置的 read roots。因此它还不是“除 read roots 外任何字节都不可读”的最严格文件系统模型。能力报告和后续评测必须如实保留这一边界。
+macOS 与 Linux 为了让编译器和动态链接器可运行，会保留系统公共路径的只读可见性，同时默认遮蔽用户 HOME 与临时数据目录，再显式放行工作区、Cargo/Rustup 和配置的 read roots。Linux/Windows 的 glob protected path 会在每次命令启动时解析已有匹配项；命令在其 writable root 中新建的、此前不存在的同名文件不包含启动前秘密，并会在下一次命令启动时进入保护快照。能力报告和后续评测必须如实保留这些边界，不能描述成“除 read roots 外任何字节都不可读”。
+
+Windows 安装不是单个 `morphz.exe`：`morphz.exe`、`morphz-edge.exe`、`morphz-windows-sandbox-runner.exe`、`codex-command-runner.exe` 与 `codex-windows-sandbox-setup.exe` 构成一个版本一致的发布单元。首次受限执行可能触发系统提权以建立隔离账户、ACL 与 WFP 规则；日常命令随后使用已配置的受限身份。`morphz doctor` 会在 helper 缺失时明确报告 `missing`，而不是静默退回无沙箱执行。
 
 WASM、本地容器、远程容器和远程沙箱不在当前实现范围内。接口不阻止未来重新评估它们，但本阶段不为尚未出现的需求增加实现复杂度。
 
@@ -300,7 +304,7 @@ WASM/WASI 适合执行纯计算、插件、过滤器或仅使用显式 Capabilit
 3. 目标平台原生 Runner 上执行真实越权攻击测试；
 4. 人工或专用环境验证难以稳定自动化的系统版本差异。
 
-当前 CI 新增 macOS 原生沙箱任务；Ubuntu 继续验证公共接口。Linux Backend 落地时增加 Ubuntu 原生攻击任务，Windows Backend 落地时增加 Windows Runner。未完成第 3 层的平台只能标记为 `unavailable`，不能因为第 2 层通过就报告为安全可用。
+CI 分别在 macOS、Ubuntu 和 Windows Runner 上运行原生攻击任务。Ubuntu 安装并实际调用 Bubblewrap；Windows 构建完整 helper bundle，并验证 ACL/WFP 边界以及终止 runner 后 Job Object 后代不会逃逸。未通过第 3 层的平台发布产物只能标记为 `unavailable`，不能因为交叉编译或平台无关测试通过就报告为安全可用。
 
 ## 7. Permission Broker：权限代理
 
@@ -688,12 +692,12 @@ custom            分别配置 sandbox_mode、approval_policy、reviewer 和环�
 - 已建立默认风险策略，并把 `ask_human` 接到人工审批 Hub；
 - 使用真实编码任务评测误批、误拒、打断次数和完成效率。
 
-### Phase 4：Linux 与 Windows 原生后端
+### Phase 4：Linux 与 Windows 原生后端（实现完成，持续以原生 CI 门禁）
 
-- 分别增加 Linux 与 Windows 原生 Backend；
-- 引入后端能力探测和安全等级；
-- 在对应原生 CI/VM 上运行相同攻击契约；
-- 保证相同执行请求在不同 Backend 上具有可比较的安全语义。
+- 已增加 Linux Bubblewrap 与 Windows Codex 原生 Backend；
+- 已引入 helper/能力探测，缺失时 fail-closed；
+- 已在对应原生 CI/VM 定义相同攻击契约；
+- 同一执行请求保持可比较的 read/write/network/取消语义，平台特有实现细节通过 `BackendReport` 审计。
 
 本阶段不包含 WASM、容器与远程执行。
 

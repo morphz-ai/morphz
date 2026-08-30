@@ -1545,6 +1545,7 @@ fn explain_keychain_error(locale: Locale, error: &str) -> String {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -1582,6 +1583,7 @@ mod tests {
         assert_eq!(content.matches("TOKEN=").count(), 1);
         assert!(content.contains("TOKEN=\"updated\""));
         assert!(content.contains("OTHER=\"second\""));
+        #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600

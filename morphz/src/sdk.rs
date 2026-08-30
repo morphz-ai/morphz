@@ -2050,12 +2050,10 @@ impl MorphzSdk {
                 .get(login_id)
                 .cloned();
             if let Some(pending) = pending {
-                if let Err(error) = self.finalize_oauth_provider_account(&pending).await {
-                    // Token exchange has already consumed a one-time provider
-                    // code. Keep both halves of the setup transaction so the
-                    // same completion can retry only the catalog commit.
-                    return Err(error);
-                }
+                // Token exchange has already consumed a one-time provider code. On
+                // failure, keep both halves of the setup transaction so the same
+                // completion can retry only the catalog commit.
+                self.finalize_oauth_provider_account(&pending).await?;
                 self.pending_oauth_setups
                     .write()
                     .map_err(|_| SdkError::internal("OAuth setup registry lock poisoned"))?

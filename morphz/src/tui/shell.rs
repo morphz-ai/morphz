@@ -51,10 +51,16 @@ impl fmt::Debug for EmbeddedShell {
 
 impl EmbeddedShell {
     pub(super) fn spawn(cwd: &Path) -> Result<Self, TuiError> {
+        #[cfg(unix)]
         let shell_path = std::env::var_os("SHELL")
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+        #[cfg(windows)]
+        let shell_path = std::env::var_os("COMSPEC")
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("cmd.exe"));
         let shell_name = shell_path
             .file_name()
             .and_then(|name| name.to_str())

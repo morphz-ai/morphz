@@ -3903,9 +3903,11 @@ fn build_anthropic_request(
                     .into_iter()
                     .map(|part| part.text)
                     .collect::<String>();
-                (!text.is_empty())
-                    .then(|| vec![json!({"type": "text", "text": text})])
-                    .unwrap_or_default()
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![json!({"type": "text", "text": text})]
+                }
             };
             if !content.is_empty() {
                 converted.push(json!({"role": "user", "content": content}));
@@ -4049,9 +4051,11 @@ fn build_gemini_request(
                     .into_iter()
                     .map(|part| part.text)
                     .collect::<String>();
-                (!text.is_empty())
-                    .then(|| vec![json!({"text": text})])
-                    .unwrap_or_default()
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![json!({"text": text})]
+                }
             };
             if !parts.is_empty() {
                 contents.push(json!({"role": "user", "parts": parts}));

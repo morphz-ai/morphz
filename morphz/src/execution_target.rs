@@ -538,6 +538,7 @@ fn validate_managed_ssh_prompt_secret(
     Ok(())
 }
 
+#[cfg(unix)]
 fn create_managed_ssh_secret_pipe(
     directory: &Path,
     name: &str,
@@ -560,6 +561,15 @@ fn create_managed_ssh_secret_pipe(
     }
     pipe.flush()?;
     Ok((path, pipe))
+}
+
+#[cfg(not(unix))]
+fn create_managed_ssh_secret_pipe(
+    _directory: &Path,
+    _name: &str,
+    _secret: &str,
+) -> Result<(PathBuf, std::fs::File), TargetExecutionError> {
+    Err("Managed SSH password/passphrase authentication requires a secure native askpass transport that is not available on this platform; use an SSH key without a passphrase or an Edge Target instead".into())
 }
 
 struct ManagedSshIdentityFile {
