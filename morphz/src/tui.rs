@@ -14,10 +14,10 @@ use crate::i18n::Locale;
 use crate::llm::{ModelStreamEvent, ReasoningEffort};
 use crate::memory::{
     DelegationRecord, DelegationStatus, MessageDispatchMode, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveWaitCondition, SessionRecord, SessionStatus,
+    ObjectiveWaitCondition, SessionRecord, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::ContextView;
-use crate::runtime::{InferenceModelOption, MorphzRuntime, SessionHandle};
+use crate::runtime::{InferenceModelOption, MorphzRuntime, RuntimeError, SessionHandle};
 use crate::sdk::{MorphzSdk, SendMessageCommand};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::{MORPHZ_MACHINE_NAME_EN, MORPHZ_MACHINE_NAME_ZH};
@@ -48,8 +48,13 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 type TuiError = Box<dyn std::error::Error + Send + Sync>;
 
-const USER_MESSAGE_PREFIX: &str = "✨ ";
+const USER_MESSAGE_PREFIX: &str = "❨ᴍ❩ ";
 const COMPOSER_PREFIX: &str = "❯ ";
+const THEME_COLOR_MORPH_TICKS: usize = 8;
+const COGNITIVE_PULSE_TICKS_PER_FRAME: usize = 2;
+const COGNITIVE_PULSE_FRAMES: [&str; 14] = [
+    "·", "·", "∙", "∙", "•", "•", "●", "●", "●", "•", "•", "∙", "∙", "·",
+];
 const REASONING_PREVIEW_LINES: usize = 2;
 const TUI_RECENT_EVENT_ID_CAPACITY: usize = 16_384;
 const MORPHZ_WORDMARK: [&str; 6] = [
@@ -253,6 +258,7 @@ struct Theme {
     text_secondary: Color,
     text_muted: Color,
     brand: Color,
+    motion_palette: [Color; 3],
     wordmark_start: Color,
     wordmark_end: Color,
     focus: Color,
@@ -274,6 +280,7 @@ impl Theme {
             text_secondary: Color::Reset,
             text_muted: Color::DarkGray,
             brand: Color::Reset,
+            motion_palette: [Color::Magenta, Color::Cyan, Color::Red],
             wordmark_start: Color::Reset,
             wordmark_end: Color::Reset,
             focus: Color::Reset,
@@ -295,6 +302,11 @@ impl Theme {
                 text_secondary: Color::Rgb(200, 198, 208),
                 text_muted: Color::Rgb(154, 158, 176),
                 brand: Color::Rgb(165, 140, 255),
+                motion_palette: [
+                    Color::Rgb(165, 140, 255),
+                    Color::Rgb(86, 208, 222),
+                    Color::Rgb(240, 138, 126),
+                ],
                 wordmark_start: Color::Rgb(124, 91, 240),
                 wordmark_end: Color::Rgb(220, 210, 255),
                 focus: Color::Rgb(165, 140, 255),
@@ -311,6 +323,11 @@ impl Theme {
                 text_secondary: Color::Rgb(75, 72, 84),
                 text_muted: Color::Rgb(108, 104, 119),
                 brand: Color::Rgb(103, 72, 194),
+                motion_palette: [
+                    Color::Rgb(103, 72, 194),
+                    Color::Rgb(8, 124, 138),
+                    Color::Rgb(184, 71, 61),
+                ],
                 wordmark_start: Color::Rgb(63, 28, 151),
                 wordmark_end: Color::Rgb(118, 79, 198),
                 focus: Color::Rgb(103, 72, 194),
@@ -329,6 +346,11 @@ impl Theme {
             TuiTheme::Cyan => match appearance {
                 TerminalAppearance::Dark => Self {
                     brand: Color::Rgb(86, 208, 222),
+                    motion_palette: [
+                        Color::Rgb(86, 208, 222),
+                        Color::Rgb(240, 138, 126),
+                        Color::Rgb(165, 140, 255),
+                    ],
                     wordmark_start: Color::Rgb(38, 180, 199),
                     wordmark_end: Color::Rgb(185, 246, 250),
                     focus: Color::Rgb(86, 208, 222),
@@ -337,6 +359,11 @@ impl Theme {
                 },
                 TerminalAppearance::Light => Self {
                     brand: Color::Rgb(8, 124, 138),
+                    motion_palette: [
+                        Color::Rgb(8, 124, 138),
+                        Color::Rgb(184, 71, 61),
+                        Color::Rgb(103, 72, 194),
+                    ],
                     wordmark_start: Color::Rgb(0, 74, 84),
                     wordmark_end: Color::Rgb(8, 124, 138),
                     focus: Color::Rgb(8, 124, 138),
@@ -347,6 +374,11 @@ impl Theme {
             TuiTheme::Coral => match appearance {
                 TerminalAppearance::Dark => Self {
                     brand: Color::Rgb(240, 138, 126),
+                    motion_palette: [
+                        Color::Rgb(240, 138, 126),
+                        Color::Rgb(165, 140, 255),
+                        Color::Rgb(86, 208, 222),
+                    ],
                     wordmark_start: Color::Rgb(220, 93, 82),
                     wordmark_end: Color::Rgb(255, 211, 205),
                     focus: Color::Rgb(240, 138, 126),
@@ -355,6 +387,11 @@ impl Theme {
                 },
                 TerminalAppearance::Light => Self {
                     brand: Color::Rgb(184, 71, 61),
+                    motion_palette: [
+                        Color::Rgb(184, 71, 61),
+                        Color::Rgb(103, 72, 194),
+                        Color::Rgb(8, 124, 138),
+                    ],
                     wordmark_start: Color::Rgb(126, 37, 31),
                     wordmark_end: Color::Rgb(184, 71, 61),
                     focus: Color::Rgb(184, 71, 61),
@@ -365,6 +402,11 @@ impl Theme {
             TuiTheme::Mono => match appearance {
                 TerminalAppearance::Dark => Self {
                     brand: Color::Rgb(210, 211, 218),
+                    motion_palette: [
+                        Color::Rgb(210, 211, 218),
+                        Color::Rgb(255, 255, 255),
+                        Color::Rgb(156, 159, 170),
+                    ],
                     wordmark_start: Color::Rgb(156, 159, 170),
                     wordmark_end: Color::Rgb(255, 255, 255),
                     focus: Color::Rgb(210, 211, 218),
@@ -373,6 +415,11 @@ impl Theme {
                 },
                 TerminalAppearance::Light => Self {
                     brand: Color::Rgb(57, 55, 64),
+                    motion_palette: [
+                        Color::Rgb(57, 55, 64),
+                        Color::Rgb(35, 33, 40),
+                        Color::Rgb(108, 104, 119),
+                    ],
                     wordmark_start: Color::Rgb(35, 33, 40),
                     wordmark_end: Color::Rgb(93, 89, 101),
                     focus: Color::Rgb(57, 55, 64),
@@ -384,6 +431,7 @@ impl Theme {
                 border_subtle: Color::Reset,
                 border_strong: Color::Reset,
                 text_muted: Color::Reset,
+                motion_palette: [Color::Reset; 3],
                 tool: Color::Reset,
                 success: Color::Reset,
                 warning: Color::Reset,
@@ -728,7 +776,7 @@ impl UiState {
             context_id: runtime.identity().context_id.clone(),
             session_id: session.id().to_string(),
             session_title: None,
-            model: runtime.config().llm.model.clone(),
+            model: runtime.model(),
             working_directory: display_working_directory(),
             entries: Vec::new(),
             composer: Composer::new(),
@@ -1061,8 +1109,8 @@ impl UiState {
                         self.tr("Current model route.", "当前模型路由。")
                     } else {
                         self.tr(
-                            "Use this model route for subsequent evaluations.",
-                            "后续求值使用此模型路由。",
+                            "Bind this model route to subsequent evaluations in the current Session.",
+                            "当前会话的后续求值使用此模型路由。",
                         )
                     },
                     None,
@@ -3604,15 +3652,70 @@ impl UiState {
         lines
     }
 
+    fn motion_color(&self) -> Color {
+        let segment = (self.spinner / THEME_COLOR_MORPH_TICKS) % 3;
+        let step = self.spinner % THEME_COLOR_MORPH_TICKS;
+        let from = self.theme.motion_palette[segment];
+        let to = self.theme.motion_palette[(segment + 1) % 3];
+        interpolate_color(from, to, step, THEME_COLOR_MORPH_TICKS - 1)
+    }
+
+    fn user_message_marker_spans(&self, animated: bool) -> Vec<Span<'static>> {
+        // The three existing colored themes form one shared motion palette.
+        // The active theme leads the sequence; Mono follows the same motion in
+        // grayscale. The complete mark changes color as one symmetric glyph;
+        // the palette is temporal, never three simultaneous component colors.
+        let color = if animated {
+            self.motion_color()
+        } else {
+            self.theme.motion_palette[0]
+        };
+        let style = || Style::default().fg(color).add_modifier(Modifier::BOLD);
+        vec![
+            Span::styled("❨", style()),
+            Span::styled("ᴍ", style()),
+            Span::styled("❩ ", style()),
+        ]
+    }
+
+    fn cognitive_activity_spans(&self, trailing_space: bool) -> Vec<Span<'static>> {
+        // A thought condenses inside S-expression brackets instead of a generic
+        // loading wheel rotating. Four dot sizes follow an eased curve with a
+        // short rest at both extremes: 14 frames × 2 ticks × 80 ms ≈ 2.24 s.
+        let pulse = COGNITIVE_PULSE_FRAMES
+            [(self.spinner / COGNITIVE_PULSE_TICKS_PER_FRAME) % COGNITIVE_PULSE_FRAMES.len()];
+        let pulse_modifier = match pulse {
+            "·" => Modifier::DIM,
+            "●" => Modifier::BOLD,
+            _ => Modifier::empty(),
+        };
+        let color = self.motion_color();
+        vec![
+            Span::styled("❨", Style::default().fg(color)),
+            Span::styled(
+                pulse,
+                Style::default().fg(color).add_modifier(pulse_modifier),
+            ),
+            Span::styled(
+                if trailing_space { "❩ " } else { "❩" },
+                Style::default().fg(color),
+            ),
+        ]
+    }
+
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = self.startup_lines(width);
-        for entry in &self.entries {
+        let latest_user_entry = self
+            .entries
+            .iter()
+            .rposition(|entry| entry.kind == EntryKind::User);
+        for (entry_index, entry) in self.entries.iter().enumerate() {
             if entry.kind == EntryKind::Tool {
                 lines.extend(self.tool_activity_lines(&entry.body, entry.detail.as_deref()));
                 continue;
             }
             if entry.kind == EntryKind::Reasoning {
-                lines.extend(self.reasoning_summary_lines(&entry.body, width, None));
+                lines.extend(self.reasoning_summary_lines(&entry.body, width, false));
                 continue;
             }
             if entry.kind == EntryKind::Assistant {
@@ -3649,23 +3752,34 @@ impl UiState {
                 EntryKind::Reasoning | EntryKind::Assistant | EntryKind::Tool => unreachable!(),
             };
             for (index, body_line) in entry.body.lines().enumerate() {
-                let marker = if index == 0 {
-                    marker.to_string()
+                let mut spans = if entry.kind == EntryKind::User {
+                    if index == 0 {
+                        self.user_message_marker_spans(
+                            self.busy && latest_user_entry == Some(entry_index),
+                        )
+                    } else {
+                        vec![Span::raw(
+                            " ".repeat(UnicodeWidthStr::width(USER_MESSAGE_PREFIX)),
+                        )]
+                    }
                 } else {
-                    " ".repeat(UnicodeWidthStr::width(marker))
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
+                    let marker = if index == 0 {
+                        marker.to_string()
+                    } else {
+                        " ".repeat(UnicodeWidthStr::width(marker))
+                    };
+                    vec![Span::styled(
                         marker,
                         Style::default()
                             .fg(marker_color)
                             .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        body_line.to_string(),
-                        Style::default().fg(body_color).add_modifier(modifier),
-                    ),
-                ]));
+                    )]
+                };
+                spans.push(Span::styled(
+                    body_line.to_string(),
+                    Style::default().fg(body_color).add_modifier(modifier),
+                ));
+                lines.push(Line::from(spans));
             }
             lines.push(Line::from(""));
         }
@@ -3674,32 +3788,23 @@ impl UiState {
             .values()
             .filter(|attempt| attempt.is_conversation())
         {
-            let activity = ["◐", "◓", "◑", "◒"][self.spinner % 4];
             if attempt.reasoning_summary.trim().is_empty()
                 && attempt.text.trim().is_empty()
                 && attempt.tools.is_empty()
             {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{activity} "),
-                        Style::default().fg(self.theme.brand),
-                    ),
-                    Span::styled(
-                        self.tr("Thinking…", "正在思考…"),
-                        Style::default()
-                            .fg(self.theme.text_muted)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]));
+                let mut spans = self.cognitive_activity_spans(true);
+                spans.push(Span::styled(
+                    self.tr("Thinking…", "正在思考…"),
+                    Style::default()
+                        .fg(self.theme.text_muted)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+                lines.push(Line::from(spans));
                 lines.push(Line::from(""));
             }
             if !attempt.reasoning_summary.trim().is_empty() && !attempt.reasoning_summary_persisted
             {
-                lines.extend(self.reasoning_summary_lines(
-                    &attempt.reasoning_summary,
-                    width,
-                    Some(activity),
-                ));
+                lines.extend(self.reasoning_summary_lines(&attempt.reasoning_summary, width, true));
             }
             if !attempt.text.trim().is_empty() {
                 lines.extend(self.assistant_message_lines(&attempt.text, width));
@@ -3744,52 +3849,50 @@ impl UiState {
             .collect()
     }
 
-    fn reasoning_summary_lines(
-        &self,
-        summary: &str,
-        width: u16,
-        live_marker: Option<&str>,
-    ) -> Vec<Line<'static>> {
+    fn reasoning_summary_lines(&self, summary: &str, width: u16, live: bool) -> Vec<Line<'static>> {
         let summary = truncate(summary, 4_000);
-        let wrapped = wrap_display_lines(&summary, width.saturating_sub(2).max(1) as usize);
+        let marker_width = if live {
+            UnicodeWidthStr::width("❨●❩ ")
+        } else {
+            UnicodeWidthStr::width("• ")
+        };
+        let wrapped = wrap_display_lines(
+            &summary,
+            width.saturating_sub(marker_width as u16).max(1) as usize,
+        );
         let visible_count = if self.show_reasoning_details {
             wrapped.len()
         } else {
             wrapped.len().min(REASONING_PREVIEW_LINES)
         };
         let hidden_count = wrapped.len().saturating_sub(visible_count);
-        let marker = live_marker.unwrap_or("•");
-        let marker_color = if live_marker.is_some() {
-            self.theme.brand
-        } else {
-            self.theme.text_muted
-        };
         let mut lines = wrapped
             .into_iter()
             .take(visible_count)
             .enumerate()
             .map(|(index, line)| {
-                Line::from(vec![
-                    Span::styled(
-                        if index == 0 {
-                            format!("{marker} ")
-                        } else {
-                            "  ".to_string()
-                        },
-                        Style::default().fg(marker_color),
-                    ),
-                    Span::styled(
-                        line,
-                        Style::default()
-                            .fg(self.theme.text_muted)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ])
+                let mut spans = if index == 0 && live {
+                    self.cognitive_activity_spans(true)
+                } else if index == 0 {
+                    vec![Span::styled(
+                        "• ",
+                        Style::default().fg(self.theme.text_muted),
+                    )]
+                } else {
+                    vec![Span::raw(" ".repeat(marker_width))]
+                };
+                spans.push(Span::styled(
+                    line,
+                    Style::default()
+                        .fg(self.theme.text_muted)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+                Line::from(spans)
             })
             .collect::<Vec<_>>();
         if hidden_count > 0 {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" ".repeat(marker_width)),
                 Span::styled(
                     if self.locale.is_chinese() {
                         format!("…（还有 {hidden_count} 行 · 按 Ctrl+R 展开）")
@@ -3989,16 +4092,6 @@ impl UiState {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let marker = if self.busy {
-            ["◐", "◓", "◑", "◒"][self.spinner % 4]
-        } else {
-            "●"
-        };
-        let marker_color = if self.busy {
-            self.theme.warning
-        } else {
-            self.theme.success
-        };
         let horizontal_margin = content_horizontal_margin(area.width);
         let inner = inset_rect(area, horizontal_margin, 0);
         let columns = Layout::default()
@@ -4052,8 +4145,12 @@ impl UiState {
                 "Ctrl+P 控制 · Ctrl+T 任务 · Ctrl+K 认知",
             )
         };
-        let mut state = vec![
-            Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
+        let mut state = if self.busy {
+            self.cognitive_activity_spans(true)
+        } else {
+            vec![Span::styled("● ", Style::default().fg(self.theme.success))]
+        };
+        state.extend([
             Span::styled(
                 self.status.clone(),
                 Style::default().fg(self.theme.text_secondary),
@@ -4063,7 +4160,7 @@ impl UiState {
                 self.model.clone(),
                 Style::default().fg(self.theme.text_muted),
             ),
-        ];
+        ]);
         if area.width >= 140 {
             let (frames, version, tokens, hard_limit) = self
                 .context_view
@@ -4729,6 +4826,7 @@ pub async fn run(
 ) -> Result<(), TuiError> {
     let mut state = UiState::new(&runtime, &session);
     if let Ok(Some(record)) = session.record().await {
+        state.model = effective_tui_session_model(&runtime, &record);
         state.context_id = record.context_id;
         state.session_title = Some(record.title);
     }
@@ -5038,6 +5136,55 @@ async fn ingest_tui_runtime_event(
     }
 }
 
+fn effective_tui_session_model(runtime: &MorphzRuntime, record: &SessionRecord) -> String {
+    record
+        .model_alias
+        .clone()
+        .unwrap_or_else(|| runtime.model())
+}
+
+async fn persist_tui_session_model(
+    runtime: &MorphzRuntime,
+    session_id: &str,
+    model: &str,
+) -> Result<SessionRecord, RuntimeError> {
+    let model = model.trim();
+    let options = runtime.inference_model_options().await?;
+    if !options.iter().any(|option| option.id == model) {
+        return Err(format!(
+            "model '{model}' is not present in the discovered and enabled model catalog"
+        )
+        .into());
+    }
+    runtime
+        .update_session(
+            session_id,
+            SessionUpdate {
+                model_alias: Some(Some(model.to_string())),
+                ..SessionUpdate::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| format!("Session '{session_id}' does not exist").into())
+}
+
+async fn persist_tui_session_reasoning_effort(
+    runtime: &MorphzRuntime,
+    session_id: &str,
+    effort: Option<ReasoningEffort>,
+) -> Result<SessionRecord, RuntimeError> {
+    runtime
+        .update_session(
+            session_id,
+            SessionUpdate {
+                reasoning_effort: Some(effort.map(|value| value.as_str().to_string())),
+                ..SessionUpdate::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| format!("Session '{session_id}' does not exist").into())
+}
+
 async fn execute_control_action(
     runtime: &MorphzRuntime,
     session: &SessionHandle,
@@ -5236,31 +5383,33 @@ async fn execute_control_action(
                 format!("theme · {}", theme.as_str())
             };
         }
-        ControlAction::SetModel(model) => match runtime.set_model(&model).await {
-            Ok(()) => {
-                state.model = runtime.model();
-                state.status = if state.locale.is_chinese() {
-                    format!("模型 · {}", state.model)
-                } else {
-                    format!("model · {}", state.model)
-                };
+        ControlAction::SetModel(model) => {
+            match persist_tui_session_model(runtime, session.id(), &model).await {
+                Ok(record) => {
+                    state.model = effective_tui_session_model(runtime, &record);
+                    state.status = if state.locale.is_chinese() {
+                        format!("当前会话模型 · {}", state.model)
+                    } else {
+                        format!("Session model · {}", state.model)
+                    };
+                }
+                Err(error) => {
+                    state.status = if state.locale.is_chinese() {
+                        format!("切换模型失败：{error}")
+                    } else {
+                        format!("Could not switch model: {error}")
+                    };
+                }
             }
-            Err(error) => {
-                state.status = if state.locale.is_chinese() {
-                    format!("切换模型失败：{error}")
-                } else {
-                    format!("Could not switch model: {error}")
-                };
-            }
-        },
+        }
         ControlAction::SetReasoningEffort(effort) => {
-            match runtime.set_reasoning_effort(effort).await {
-                Ok(()) => {
+            match persist_tui_session_reasoning_effort(runtime, session.id(), effort).await {
+                Ok(_) => {
                     let value = effort.map(ReasoningEffort::as_str).unwrap_or("default");
                     state.status = if state.locale.is_chinese() {
-                        format!("推理强度 · {value}")
+                        format!("当前会话推理强度 · {value}")
                     } else {
-                        format!("reasoning effort · {value}")
+                        format!("Session reasoning effort · {value}")
                     };
                 }
                 Err(error) => {
@@ -5340,6 +5489,7 @@ async fn switch_tui_session(
     state.agent_id.clone_from(&record.agent_id);
     state.context_id.clone_from(&record.context_id);
     state.session_id.clone_from(&record.id);
+    state.model = effective_tui_session_model(runtime, &record);
     state.session_title = Some(record.title);
     state.entries.clear();
     state.live_attempts.clear();
@@ -6696,8 +6846,27 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
+    use crate::llm::{Client, Message, Response, ToolDefinition};
+    use crate::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
+    use async_trait::async_trait;
     use ratatui::backend::TestBackend;
     use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    struct OfflineTuiClient;
+
+    #[async_trait]
+    impl Client for OfflineTuiClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+            Err("offline".into())
+        }
+    }
 
     fn test_state(composer: Composer) -> UiState {
         UiState {
@@ -6750,6 +6919,85 @@ mod tests {
             theme_kind: TuiTheme::Mono,
             theme: Theme::for_appearance(TuiTheme::Mono, TerminalAppearance::Dark),
         }
+    }
+
+    #[tokio::test]
+    async fn tui_model_selection_is_persisted_per_session_and_restored_on_reentry() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.llm.model = "model-a".to_string();
+        config.llm.models = vec!["model-a".to_string(), "model-b".to_string()];
+        let runtime = MorphzRuntime::builder(config, Arc::new(OfflineTuiClient))
+            .database_path(database.path().to_str().unwrap())
+            .provider_auth_registry(crate::provider::auth::AuthAdapterRegistry::default())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .ensure_agent(NewAgent {
+                id: "agent-tui-model".to_string(),
+                title: "TUI model".to_string(),
+                root_context_id: "context-tui-model".to_string(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: "context-tui-model".to_string(),
+                agent_id: "agent-tui-model".to_string(),
+                title: "TUI model".to_string(),
+            })
+            .await
+            .unwrap();
+        let session_a = runtime
+            .ensure_session(NewSession {
+                id: "session-tui-model-a".to_string(),
+                agent_id: "agent-tui-model".to_string(),
+                context_id: "context-tui-model".to_string(),
+                parent_session_id: None,
+                title: "Session A".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let session_b = runtime
+            .ensure_session(NewSession {
+                id: "session-tui-model-b".to_string(),
+                agent_id: "agent-tui-model".to_string(),
+                context_id: "context-tui-model".to_string(),
+                parent_session_id: None,
+                title: "Session B".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let mut state = UiState::new(&runtime, &session_a);
+        execute_control_action(
+            &runtime,
+            &session_a,
+            &mut state,
+            ControlAction::SetModel("model-b".to_string()),
+        )
+        .await;
+        execute_control_action(
+            &runtime,
+            &session_a,
+            &mut state,
+            ControlAction::SetReasoningEffort(Some(ReasoningEffort::High)),
+        )
+        .await;
+
+        let persisted = session_a.record().await.unwrap().unwrap();
+        assert_eq!(persisted.model_alias.as_deref(), Some("model-b"));
+        assert_eq!(persisted.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(state.model, "model-b");
+        assert_eq!(runtime.model(), "model-a");
+        assert_eq!(session_b.record().await.unwrap().unwrap().model_alias, None);
+
+        let mut reentered = UiState::new(&runtime, &session_a);
+        reentered.model = effective_tui_session_model(&runtime, &persisted);
+        assert_eq!(reentered.model, "model-b");
     }
 
     fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
@@ -7010,11 +7258,13 @@ mod tests {
             ModelStreamEvent::Started,
         ));
         let first_frame = transcript_text(&state);
-        assert!(first_frame.contains("◐ "));
+        assert!(first_frame.contains("❨"));
+        assert!(first_frame.contains("·"));
+        assert!(first_frame.contains("❩ "));
         assert!(first_frame.contains("Thinking…"));
-        state.spinner = 1;
+        state.spinner = 6;
         let next_frame = transcript_text(&state);
-        assert!(next_frame.contains("◓ "));
+        assert!(next_frame.contains("∙"));
         assert!(next_frame.contains("Thinking…"));
         state.on_runtime_event(stream_runtime_event(
             "attempt-chat",
@@ -8086,7 +8336,7 @@ mod tests {
         state.set_theme(TuiTheme::Coral);
         state.push(EntryKind::User, "accented input");
         state.push(EntryKind::Assistant, "plain response");
-        assert_eq!(UnicodeWidthStr::width(USER_MESSAGE_PREFIX), 3);
+        assert_eq!(UnicodeWidthStr::width(USER_MESSAGE_PREFIX), 4);
         assert_eq!(UnicodeWidthStr::width(COMPOSER_PREFIX), 2);
 
         let transcript = state.transcript_lines(120);
@@ -8098,9 +8348,23 @@ mod tests {
                     .any(|span| span.content == "accented input")
             })
             .expect("user line is rendered");
-        assert_eq!(user_line.spans[0].content, USER_MESSAGE_PREFIX);
-        assert_eq!(user_line.spans[0].style.fg, Some(state.theme.brand));
-        assert_eq!(user_line.spans[1].style.fg, Some(state.theme.brand));
+        assert_eq!(user_line.spans[0].content, "❨");
+        assert_eq!(user_line.spans[1].content, "ᴍ");
+        assert_eq!(user_line.spans[2].content, "❩ ");
+        assert_eq!(user_line.spans[3].content, "accented input");
+        assert_eq!(
+            user_line.spans[0].style.fg,
+            Some(state.theme.motion_palette[0])
+        );
+        assert_eq!(
+            user_line.spans[1].style.fg,
+            Some(state.theme.motion_palette[0])
+        );
+        assert_eq!(
+            user_line.spans[2].style.fg,
+            Some(state.theme.motion_palette[0])
+        );
+        assert_eq!(user_line.spans[3].style.fg, Some(state.theme.brand));
         assert!(user_line
             .spans
             .iter()
@@ -8144,12 +8408,6 @@ mod tests {
             .find(|cell| cell.symbol() == "❯")
             .expect("composer marker is rendered");
         assert_eq!(marker_cell.fg, state.theme.focus);
-        assert!(!terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .any(|cell| cell.symbol() == "✨"));
 
         let mut streaming = test_state(Composer::new());
         streaming.set_theme(TuiTheme::Coral);
@@ -8181,6 +8439,114 @@ mod tests {
             .spans
             .iter()
             .all(|span| span.style.fg == Some(streaming.theme.text_primary)));
+    }
+
+    #[test]
+    fn latest_user_message_mark_morphs_as_one_symmetric_theme_colored_glyph() {
+        let mut state = test_state(Composer::new());
+        state.set_theme(TuiTheme::Iris);
+        state.spinner = 0;
+        let initial = state.user_message_marker_spans(true);
+        state.spinner = THEME_COLOR_MORPH_TICKS / 2;
+        let midpoint = state.user_message_marker_spans(true);
+        state.spinner = THEME_COLOR_MORPH_TICKS;
+        let next = state.user_message_marker_spans(true);
+        state.spinner = THEME_COLOR_MORPH_TICKS * 3;
+        let full_cycle = state.user_message_marker_spans(true);
+
+        let marker_text = initial
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(marker_text, USER_MESSAGE_PREFIX);
+        assert_eq!(UnicodeWidthStr::width(marker_text.as_str()), 4);
+
+        for component in 0..3 {
+            assert_eq!(
+                initial[component].style.fg,
+                Some(state.theme.motion_palette[0])
+            );
+            assert_eq!(
+                midpoint[component].style.fg,
+                Some(interpolate_color(
+                    state.theme.motion_palette[0],
+                    state.theme.motion_palette[1],
+                    THEME_COLOR_MORPH_TICKS / 2,
+                    THEME_COLOR_MORPH_TICKS - 1,
+                ))
+            );
+            assert_eq!(
+                next[component].style.fg,
+                Some(state.theme.motion_palette[1])
+            );
+            assert_eq!(full_cycle[component].style.fg, initial[component].style.fg);
+        }
+        assert_eq!(initial[0].style.fg, initial[2].style.fg);
+        assert_eq!(midpoint[0].style.fg, midpoint[2].style.fg);
+        assert_eq!(next[0].style.fg, next[2].style.fg);
+        assert!(initial
+            .iter()
+            .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+
+        let static_marker = state.user_message_marker_spans(false);
+        assert!(static_marker
+            .iter()
+            .all(|span| span.style.fg == Some(state.theme.motion_palette[0])));
+
+        state.set_theme(TuiTheme::NoColor);
+        state.spinner = 0;
+        let no_color = state.user_message_marker_spans(true);
+        assert!(no_color
+            .iter()
+            .all(|span| span.style.fg == Some(Color::Reset)));
+    }
+
+    #[test]
+    fn thinking_uses_a_slow_eased_cognitive_pulse_instead_of_a_rotating_circle() {
+        let mut state = test_state(Composer::new());
+        state.set_theme(TuiTheme::Cyan);
+        let frames = [0, 4, 8, 12, 18, 22, 26, 28]
+            .into_iter()
+            .map(|spinner| {
+                state.spinner = spinner;
+                state
+                    .cognitive_activity_spans(true)
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            frames,
+            [
+                "❨·❩ ",
+                "❨∙❩ ",
+                "❨•❩ ",
+                "❨●❩ ",
+                "❨•❩ ",
+                "❨∙❩ ",
+                "❨·❩ ",
+                "❨·❩ "
+            ]
+        );
+        assert!(frames
+            .iter()
+            .all(|frame| UnicodeWidthStr::width(frame.as_str()) == 4));
+        assert!(frames
+            .iter()
+            .all(|frame| !["◐", "◓", "◑", "◒"].iter().any(|old| frame.contains(old))));
+
+        state.spinner = 0;
+        let quiet = state.cognitive_activity_spans(true);
+        assert!(quiet[1].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(quiet[0].style.fg, quiet[1].style.fg);
+        assert_eq!(quiet[0].style.fg, quiet[2].style.fg);
+        state.spinner = 12;
+        let full = state.cognitive_activity_spans(true);
+        assert!(full[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(full[0].style.fg, full[1].style.fg);
+        assert_eq!(full[0].style.fg, full[2].style.fg);
     }
 
     #[test]
@@ -8322,6 +8688,10 @@ mod tests {
         assert_eq!(iris.brand, Color::Rgb(165, 140, 255));
         assert_eq!(cyan.brand, Color::Rgb(86, 208, 222));
         assert_eq!(coral.brand, Color::Rgb(240, 138, 126));
+        assert_eq!(iris.motion_palette, [iris.brand, cyan.brand, coral.brand]);
+        assert_eq!(cyan.motion_palette, [cyan.brand, coral.brand, iris.brand]);
+        assert_eq!(coral.motion_palette, [coral.brand, iris.brand, cyan.brand]);
+        assert_eq!(mono.motion_palette[0], mono.brand);
         assert_eq!(cyan.success, Color::Rgb(92, 224, 153));
         assert_eq!(cyan.warning, Color::Rgb(240, 193, 100));
         assert_eq!(cyan.error, Color::Rgb(255, 138, 146));
