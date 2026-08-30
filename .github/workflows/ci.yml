@@ -60,7 +60,12 @@ jobs:
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --all --verbose
+        # Runtime tests exercise real SQLite transactions, timers, sockets,
+        # and process groups. Compile in parallel above, but run test cases in
+        # a deterministic order so hosted-runner scheduling cannot manufacture
+        # database-lock and wall-clock failures between otherwise isolated
+        # harnesses. Tests that verify concurrency still spawn it internally.
+        run: cargo test --all --verbose -- --test-threads=1
 
   postgres-conformance:
     name: PostgreSQL Runtime Store
@@ -152,9 +157,58 @@ jobs:
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
       - name: Build Morphz and the pinned Codex sandbox helpers
+        shell: pwsh
         run: |
-          cargo build -p morphz --bin morphz --bin morphz-edge --bin morphz-windows-sandbox-runner
-          cargo build -p codex-windows-sandbox --bins
+          $ErrorActionPreference = "Stop"
+          $staging = Join-Path $PWD "target/windows-sandbox-tools"
+          New-Item -ItemType Directory -Force $staging | Out-Null
+
+          function Build-And-Collect {
+            param(
+              [string[]]$CargoArguments,
+              [string[]]$RequiredTargets
+            )
+
+            $found = @{}
+            & cargo @CargoArguments "--message-format=json-render-diagnostics" | ForEach-Object {
+              $line = $_
+              try {
+                $message = $line | ConvertFrom-Json -ErrorAction Stop
+              } catch {
+                Write-Host $line
+                return
+              }
+
+              if ($message.reason -eq "compiler-message" -and $message.message.rendered) {
+                Write-Host $message.message.rendered
+              }
+              if (
+                $message.reason -eq "compiler-artifact" -and
+                $message.executable -and
+                $RequiredTargets -contains $message.target.name
+              ) {
+                $targetName = $message.target.name
+                Copy-Item $message.executable (Join-Path $staging "$targetName.exe") -Force
+                $found[$targetName] = $true
+              }
+            }
+            if ($LASTEXITCODE -ne 0) {
+              throw "Cargo failed with exit code $LASTEXITCODE"
+            }
+
+            foreach ($targetName in $RequiredTargets) {
+              if (-not $found.ContainsKey($targetName)) {
+                throw "Cargo did not report an executable artifact for $targetName"
+              }
+            }
+          }
+
+          Build-And-Collect `
+            -CargoArguments @("build", "-p", "morphz", "--bin", "morphz", "--bin", "morphz-edge", "--bin", "morphz-windows-sandbox-runner") `
+            -RequiredTargets @("morphz", "morphz-edge", "morphz-windows-sandbox-runner")
+          Build-And-Collect `
+            -CargoArguments @("build", "-p", "codex-windows-sandbox", "--bins") `
+            -RequiredTargets @("codex-command-runner", "codex-windows-sandbox-setup")
           cargo test -p morphz --lib --no-run
       - name: Stage the complete helper bundle beside the Rust test executable
         shell: pwsh
@@ -165,7 +219,7 @@ jobs:
             "codex-windows-sandbox-setup.exe"
           )
           foreach ($helper in $helpers) {
-            $source = Join-Path "target/debug" $helper
+            $source = Join-Path "target/windows-sandbox-tools" $helper
             if (-not (Test-Path $source)) {
               throw "Missing required Windows sandbox helper: $source"
             }
@@ -188,7 +242,7 @@ jobs:
             "codex-windows-sandbox-setup.exe"
           )
           foreach ($binary in $binaries) {
-            Copy-Item "target/debug/$binary" "target/morphz-windows-bundle/$binary" -Force
+            Copy-Item "target/windows-sandbox-tools/$binary" "target/morphz-windows-bundle/$binary" -Force
           }
           Compress-Archive -Path "target/morphz-windows-bundle/*" -DestinationPath "target/morphz-windows-x86_64.zip" -Force
       - name: Upload verified Windows bundle
