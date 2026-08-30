@@ -8,7 +8,11 @@ export function SiteFooter({ locale }: { locale: Locale }) {
     <footer className="site-footer">
       <div className="site-footer__identity">
         <span className="brand brand--footer">
-          <span className="brand__mark" aria-hidden="true"><i>(</i><b>m</b><i>)</i></span> Morphz
+          <span className="brand__name">
+            <span className="brand__paren" aria-hidden="true">(</span>
+            <span>Morphz</span>
+            <span className="brand__paren" aria-hidden="true">)</span>
+          </span>
         </span>
         <p>
           {locale === "zh"

@@ -34,47 +34,34 @@ const copy = {
 export function ContextEvaluationField({ locale }: { locale: Locale }) {
   const t = copy[locale];
   return (
-    <figure className="evaluation-field" aria-labelledby="evaluation-field-title">
+    <figure className="evaluation-field evaluation-field--kinetic" aria-labelledby="evaluation-field-title">
       <figcaption className="evaluation-field__caption">
         <span id="evaluation-field-title">{t.title}</span>
         <span className="evaluation-field__status"><i aria-hidden="true" />{t.status}</span>
       </figcaption>
-      <div className="evaluation-field__body">
-        <div className="evaluation-stage evaluation-stage--input">
-          <span className="evaluation-stage__index">01</span>
-          <div>
-            <p>{t.input}</p>
-            <blockquote>{t.inputBody}</blockquote>
+      <div className="evaluation-field__kinetic-body">
+        <div className="evaluation-field__source">
+          <span>01 · {t.input}</span>
+          <p>{t.inputBody}</p>
+        </div>
+        <div className="evaluation-field__expression" aria-label={t.operator}>
+          <div className="evaluation-field__expression-meta">
+            <span>02 · {t.structure}</span>
+            <span>03 · {t.operator}</span>
           </div>
+          <pre aria-label="S-expression context evaluation"><code>
+            <span className="sexpr-row sexpr-row--root"><b>(</b><strong>evaluate</strong></span>
+            <span className="sexpr-row sexpr-row--depth-1"><b>(</b><em>context</em></span>
+            <span className="sexpr-row sexpr-row--depth-2"><b>(</b><span>frame</span><i>f.12</i><b>)</b></span>
+            <span className="sexpr-row sexpr-row--depth-2"><b>(</b><span>objective</span><i>o.03</i><b>)</b></span>
+            <span className="sexpr-row sexpr-row--depth-2"><b>(</b><span>recall</span><i>r.27</i><b>))</b></span>
+            <span className="sexpr-row sexpr-row--depth-1"><b>(</b><em>observation</em><i>evt.84</i><b>))</b></span>
+          </code></pre>
+          <div className="evaluation-field__expression-progress" aria-hidden="true"><i /></div>
         </div>
-        <div className="evaluation-structure" aria-label={t.structure}>
-          <span className="evaluation-structure__label">02 / {t.structure}</span>
-          <span className="evaluation-node evaluation-node--frame">{t.frame}<small>f.12</small></span>
-          <span className="evaluation-node evaluation-node--objective">{t.objective}<small>o.03</small></span>
-          <span className="evaluation-node evaluation-node--recall">{t.recall}<small>r.27</small></span>
-          <svg className="evaluation-structure__paths" viewBox="0 0 500 170" aria-hidden="true" preserveAspectRatio="none">
-            <path d="M8 86 H108 C146 86 144 28 188 28 H270" />
-            <path d="M108 86 H270" />
-            <path d="M108 86 C146 86 144 144 188 144 H270" />
-            <path className="evaluation-structure__pulse" d="M8 86 H108 C146 86 144 28 188 28 H270" />
-          </svg>
-        </div>
-        <div className="evaluation-operator">
-          <span>03 / {t.operator}</span>
-          <code>
-            <b>(</b>evaluate
-            <br />
-            &nbsp;&nbsp;<em>context</em>
-            <br />
-            &nbsp;&nbsp;<em>observation</em><b>)</b>
-          </code>
-        </div>
-        <div className="evaluation-stage evaluation-stage--commit">
-          <span className="evaluation-stage__index">04</span>
-          <div>
-            <p>{t.commit}</p>
-            <strong>{t.commitBody}</strong>
-          </div>
+        <div className="evaluation-field__commit">
+          <span>04 · {t.commit}</span>
+          <p>{t.commitBody}</p>
         </div>
       </div>
       <div className="evaluation-field__continuity">

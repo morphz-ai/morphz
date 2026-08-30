@@ -1,6 +1,8 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
+import { CognitiveField } from "./CognitiveField";
 import { ContextEvaluationField } from "./ContextEvaluationField";
+import { LandingMotion } from "./LandingMotion";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
 
@@ -128,65 +130,84 @@ export function LandingPage({ locale }: { locale: Locale }) {
   const evidenceHref = (kind: string) => kind === "blog" ? blog : kind === "research" ? research : kind === "source" ? source : docs;
 
   return (
-    <main>
-      <SiteHeader locale={locale} />
-      <section className="hero-spec">
-        <div className="hero-spec__edition"><span>{t.edition}</span><span aria-hidden="true">S-EXPR COGNITIVE MACHINE</span></div>
-        <div className="hero-spec__copy">
+    <main className="landing-shell">
+      <LandingMotion />
+      <SiteHeader locale={locale} immersive />
+      <section className="hero-immersive">
+        <CognitiveField />
+        <div className="hero-immersive__edition">
+          <span>{t.edition}</span>
+          <span><i aria-hidden="true" /> S-EXPRESSION COGNITIVE MACHINE</span>
+        </div>
+        <div className="hero-immersive__copy" data-reveal>
           <p className="eyebrow">{t.eyebrow}</p>
-          <h1>{t.title.map((line, index) => <span className={index === 2 ? "hero-spec__accent" : ""} key={line}>{line}</span>)}</h1>
-          <p className="hero-spec__lead">{t.lead}</p>
-          <div className="hero-spec__actions">
-            <Link className="text-action text-action--primary" href={blog}>{t.idea}<span aria-hidden="true">↗</span></Link>
-            <Link className="text-action" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
-            <a className="text-action" href={source}>{t.source}<span aria-hidden="true">↗</span></a>
+          <h1>
+            {t.title.map((line, index) => (
+              <span className={index === 2 ? "hero-immersive__accent" : ""} key={line}>
+                {line}
+              </span>
+            ))}
+          </h1>
+          <p className="hero-immersive__lead">{t.lead}</p>
+          <div className="hero-immersive__actions">
+            <Link className="hero-action hero-action--primary" href={blog}>{t.idea}<span aria-hidden="true">↗</span></Link>
+            <Link className="hero-action" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
+            <a className="hero-action hero-action--quiet" href={source}>{t.source}<span aria-hidden="true">↗</span></a>
           </div>
         </div>
-        <ContextEvaluationField locale={locale} />
+        <div className="hero-immersive__evaluation" data-reveal>
+          <ContextEvaluationField locale={locale} />
+        </div>
+        <div className="hero-immersive__scroll" aria-hidden="true"><i /> SCROLL TO EVALUATE</div>
       </section>
 
-      <section className="site-section boundary-section">
-        <header className="chapter-heading">
+      <section className="site-section landing-section boundary-section boundary-stage">
+        <header className="chapter-heading" data-reveal>
           <p className="chapter-heading__index">{t.boundaryIndex}</p>
           <h2>{t.boundaryTitle}</h2>
           <p>{t.boundaryLead}</p>
         </header>
-        <div className="boundary-equation" aria-label="model and runtime boundary">
-          <article><span>{t.modelLabel}</span><h3>{t.modelTitle}</h3><p>{t.modelBody}</p></article>
-          <div className="boundary-equation__operator" aria-hidden="true"><span>LLM</span><i>⇄</i><span>RUNTIME</span></div>
-          <article><span>{t.runtimeLabel}</span><h3>{t.runtimeTitle}</h3><p>{t.runtimeBody}</p></article>
+        <div className="boundary-equation boundary-equation--kinetic" aria-label="model and runtime boundary" data-reveal>
+          <article><span>{t.modelLabel}</span><h3>{t.modelTitle}</h3><p>{t.modelBody}</p><b aria-hidden="true">∿</b></article>
+          <div className="boundary-equation__operator" aria-hidden="true"><span>MODEL</span><i><b>⇄</b></i><span>RUNTIME</span></div>
+          <article><span>{t.runtimeLabel}</span><h3>{t.runtimeTitle}</h3><p>{t.runtimeBody}</p><b aria-hidden="true">⌁</b></article>
         </div>
       </section>
 
-      <section className="site-section sequence-section">
-        <header className="chapter-heading chapter-heading--compact">
+      <section className="site-section landing-section sequence-section sequence-stage">
+        <header className="chapter-heading chapter-heading--compact sequence-stage__heading" data-reveal>
           <p className="chapter-heading__index">{t.sequenceIndex}</p><h2>{t.sequenceTitle}</h2><p>{t.sequenceLead}</p>
         </header>
         <ol className="evaluation-sequence">
           {t.sequence.map(([title, description], index) => (
-            <li key={title}><span>0{index + 1}</span><div><h3>{title}</h3><p>{description}</p></div><i aria-hidden="true" /></li>
+            <li key={title} data-reveal style={{ transitionDelay: `${index * 70}ms` }}>
+              <span>0{index + 1}</span><div><h3>{title}</h3><p>{description}</p></div><i aria-hidden="true" />
+              <code aria-hidden="true">{index === 0 ? "observation" : index === 1 ? "context" : index === 2 ? "evaluate" : "commit"}</code>
+            </li>
           ))}
         </ol>
       </section>
 
-      <section className="site-section phenomena-section">
-        <header className="chapter-heading">
+      <section className="site-section landing-section phenomena-section phenomena-stage">
+        <header className="chapter-heading" data-reveal>
           <p className="chapter-heading__index">{t.phenomenaIndex}</p><h2>{t.phenomenaTitle}</h2>
         </header>
         <div className="phenomena-list">
           {t.phenomena.map(([title, description, trace], index) => (
-            <article key={title}><span>0{index + 1}</span><h3>{title}</h3><p>{description}</p><code>{trace}</code></article>
+            <article key={title} data-reveal style={{ transitionDelay: `${index * 80}ms` }}>
+              <span>0{index + 1}</span><h3>{title}</h3><p>{description}</p><code>{trace}</code><i aria-hidden="true" />
+            </article>
           ))}
         </div>
       </section>
 
-      <section className="site-section evidence-section">
-        <header className="chapter-heading">
+      <section className="site-section landing-section evidence-section evidence-stage">
+        <header className="chapter-heading" data-reveal>
           <p className="chapter-heading__index">{t.evidenceIndex}</p><h2>{t.evidenceTitle}</h2><p>{t.evidenceLead}</p>
         </header>
         <div className="evidence-index">
           {t.evidence.map(([label, title, description, kind], index) => (
-            <a href={evidenceHref(kind)} key={label}>
+            <a href={evidenceHref(kind)} key={label} data-reveal style={{ transitionDelay: `${index * 55}ms` }}>
               <span className="evidence-index__number">0{index + 1}</span><span className="evidence-index__label">{label}</span>
               <strong>{title}</strong><p>{description}</p><i aria-hidden="true">↗</i>
             </a>
@@ -194,23 +215,23 @@ export function LandingPage({ locale }: { locale: Locale }) {
         </div>
       </section>
 
-      <section className="site-section run-section">
-        <div className="run-section__copy">
+      <section className="site-section landing-section run-section run-stage">
+        <div className="run-section__copy" data-reveal>
           <p className="chapter-heading__index">{t.runIndex}</p><h2>{t.runTitle}</h2><p>{t.runLead}</p>
           <Link className="text-action text-action--primary" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
         </div>
-        <div className="run-sheet" aria-label={t.copyLabel}>
+        <div className="run-sheet" aria-label={t.copyLabel} data-reveal>
           <div><span>{t.copyLabel}</span><span>macOS · Linux</span></div>
           <pre><code><b>01</b> cargo build --release{"\n"}<b>02</b> ./target/release/morphz setup{"\n"}<b>03</b> ./target/release/morphz</code></pre>
           <footer><span>{t.preview}</span><p>{t.previewBody}</p></footer>
         </div>
       </section>
 
-      <section className="site-section reading-section">
-        <h2>{t.docsTitle}</h2>
+      <section className="site-section landing-section reading-section reading-stage">
+        <h2 data-reveal>{t.docsTitle}</h2>
         <div className="reading-index">
           {t.docsCards.map(([title, description, slug], index) => (
-            <Link href={`${docs}/${slug}`} key={slug}><span>0{index + 1}</span><h3>{title}</h3><p>{description}</p><i aria-hidden="true">→</i></Link>
+            <Link href={`${docs}/${slug}`} key={slug} data-reveal style={{ transitionDelay: `${index * 60}ms` }}><span>0{index + 1}</span><h3>{title}</h3><p>{description}</p><i aria-hidden="true">→</i></Link>
           ))}
         </div>
       </section>

@@ -28,7 +28,7 @@ const copy = {
   },
 };
 
-export function SiteHeader({ locale, otherLanguageHref }: { locale: Locale; otherLanguageHref?: string }) {
+export function SiteHeader({ locale, otherLanguageHref, immersive = false }: { locale: Locale; otherLanguageHref?: string; immersive?: boolean }) {
   const t = copy[locale];
   const home = locale === "zh" ? "/" : "/en";
   const docs = locale === "zh" ? "/docs" : "/en/docs";
@@ -36,11 +36,14 @@ export function SiteHeader({ locale, otherLanguageHref }: { locale: Locale; othe
   const otherLanguage = otherLanguageHref ?? (locale === "zh" ? "/en" : "/");
 
   return (
-    <header className="site-header">
+    <header className={`site-header${immersive ? " site-header--immersive" : ""}`}>
       <div className="site-header__inner">
         <Link className="brand" href={home} aria-label={t.home}>
-          <span className="brand__mark" aria-hidden="true"><i>(</i><b>m</b><i>)</i></span>
-          <span className="brand__name">Morphz</span>
+          <span className="brand__name">
+            <span className="brand__paren" aria-hidden="true">(</span>
+            <span>Morphz</span>
+            <span className="brand__paren" aria-hidden="true">)</span>
+          </span>
           <small>{t.runtime}</small>
         </Link>
         <nav className="site-nav" aria-label={t.navigation}>
