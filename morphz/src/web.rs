@@ -10813,9 +10813,15 @@ mod tests {
             id: "codex-device-oauth",
             flow: OAuthFlowKind::DeviceCode,
         }));
-        let (state, runtime) = test_state_at_with_workers_auth_and_secrets(
+        let config = AppConfig::default();
+        let client = Arc::new(crate::provider::routing::RoutedClient::empty(
+            config.llm.clone(),
+        ));
+        let (state, runtime) = test_state_at_with_config_client_auth_and_secrets(
             &database_path,
             false,
+            config,
+            client,
             Some(registry),
             Some(secret_store),
         )

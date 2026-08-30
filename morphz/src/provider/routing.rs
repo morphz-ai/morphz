@@ -122,36 +122,37 @@ impl EffectiveProviderCatalog {
         }
 
         if model_routes.is_empty() {
-            let provider_id = app
-                .llm
-                .provider
-                .as_ref()
-                .ok_or("no model Provider is selected; run `morphz setup` first")?;
-            if !provider_instances.contains_key(provider_id) {
-                return Err(format!("Provider Instance '{provider_id}' is not defined"));
-            }
-            let mut models = app.llm.models.clone();
-            if !models.iter().any(|model| model == &app.llm.model) {
-                models.push(app.llm.model.clone());
-            }
-            for model in models.into_iter().filter(|model| !model.trim().is_empty()) {
-                model_routes.insert(
-                    model.clone(),
-                    ModelRouteConfig {
-                        display_alias: None,
-                        aliases: Vec::new(),
-                        candidates: vec![ModelRouteCandidateConfig {
-                            provider: provider_id.clone(),
-                            model: model.clone(),
-                            priority: 0,
-                            account: None,
-                            capabilities: Vec::new(),
-                        }],
-                        affinity: ModelRouteAffinity::Context,
-                        selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
-                        fallback: false,
-                    },
-                );
+            if let Some(provider_id) = app.llm.provider.as_ref() {
+                if !provider_instances.contains_key(provider_id) {
+                    return Err(format!("Provider Instance '{provider_id}' is not defined"));
+                }
+                let mut models = app.llm.models.clone();
+                if !models.iter().any(|model| model == &app.llm.model) {
+                    models.push(app.llm.model.clone());
+                }
+                for model in models.into_iter().filter(|model| !model.trim().is_empty()) {
+                    model_routes.insert(
+                        model.clone(),
+                        ModelRouteConfig {
+                            display_alias: None,
+                            aliases: Vec::new(),
+                            candidates: vec![ModelRouteCandidateConfig {
+                                provider: provider_id.clone(),
+                                model: model.clone(),
+                                priority: 0,
+                                account: None,
+                                capabilities: Vec::new(),
+                            }],
+                            affinity: ModelRouteAffinity::Context,
+                            selection: ModelRouteSelection::AvailableLeastRecentlyUsed,
+                            fallback: false,
+                        },
+                    );
+                }
+            } else if !app.llm.model.trim().is_empty()
+                || app.llm.models.iter().any(|model| !model.trim().is_empty())
+            {
+                return Err("no model Provider is selected; run `morphz setup` first".to_string());
             }
         }
 
@@ -1513,7 +1514,15 @@ impl Client for RoutedClient {
         let catalog = EffectiveProviderCatalog::from_config(config)?;
         Self::validate_agent_model_allowlist(&catalog, &config.llm)?;
         let selected = self.alias()?;
-        if catalog.resolve_route(&selected).is_err() {
+        if catalog.model_routes.is_empty() {
+            // OAuth setup authenticates an account before the operator imports
+            // and selects any model. Keep that control-plane-only catalog live
+            // while making the data-plane selection explicitly unconfigured.
+            *self
+                .selected_alias
+                .write()
+                .map_err(|_| "Model Route selection lock is poisoned".to_string())? = String::new();
+        } else if catalog.resolve_route(&selected).is_err() {
             let fallback = if !config.llm.model.trim().is_empty()
                 && catalog.resolve_route(config.llm.model.trim()).is_ok()
             {
@@ -2396,6 +2405,52 @@ mod tests {
         assert_eq!(binding.auth_account_id, "oauth-account");
         assert_eq!(binding.physical_model, "physical-oauth-model");
         assert_eq!(binding.endpoint, "https://api.example.test/v1");
+    }
+
+    #[tokio::test]
+    async fn empty_first_run_client_keeps_authenticated_accounts_before_model_selection() {
+        let client = RoutedClient::empty(LlmConfig::default());
+        let mut account_only = routed_config();
+        account_only.llm = LlmConfig::default();
+        account_only.model_routes.clear();
+
+        client.replace_provider_catalog(&account_only).unwrap();
+        assert_eq!(client.model().as_deref(), Some(""));
+        let catalog = client.catalog().unwrap();
+        assert_eq!(catalog.provider_instances.len(), 1);
+        assert_eq!(catalog.auth_accounts.len(), 2);
+        assert!(catalog.model_routes.is_empty());
+
+        let mut configured = account_only;
+        configured.llm.model = "coding".to_string();
+        configured.model_routes.insert(
+            "coding-primary".to_string(),
+            ModelRouteConfig {
+                aliases: vec!["coding".to_string()],
+                candidates: vec![ModelRouteCandidateConfig {
+                    provider: "direct".to_string(),
+                    model: "physical-model-alpha".to_string(),
+                    priority: 10,
+                    ..ModelRouteCandidateConfig::default()
+                }],
+                affinity: ModelRouteAffinity::Context,
+                ..ModelRouteConfig::default()
+            },
+        );
+
+        client.replace_provider_catalog(&configured).unwrap();
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-first-account".to_string(),
+                session_id: "session-first-account".to_string(),
+                attempt_id: "attempt-first-account".to_string(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(client.model().as_deref(), Some("coding"));
+        assert_eq!(binding.route_id, "coding-primary");
     }
 
     #[tokio::test]
