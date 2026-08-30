@@ -2061,9 +2061,9 @@ impl NodePairingCodeError {
 impl std::fmt::Display for NodePairingCodeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self.kind {
-            NodePairingCodeErrorKind::Invalid => "Node pairing code 无效",
-            NodePairingCodeErrorKind::Used => "Node pairing code 已使用",
-            NodePairingCodeErrorKind::Expired => "Node pairing code 已过期",
+            NodePairingCodeErrorKind::Invalid => "Node pairing code is invalid",
+            NodePairingCodeErrorKind::Used => "Node pairing code has already been used",
+            NodePairingCodeErrorKind::Expired => "Node pairing code has expired",
         })
     }
 }

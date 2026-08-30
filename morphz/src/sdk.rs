@@ -4049,7 +4049,10 @@ mod tests {
             NodePairingCodeError::new(crate::memory::NodePairingCodeErrorKind::Used),
         ));
         assert_eq!(credential_error.code, SdkErrorCode::Unauthorized);
-        assert_eq!(credential_error.message, "Node pairing code 已使用");
+        assert_eq!(
+            credential_error.message,
+            "Node pairing code has already been used"
+        );
 
         let contention = classify_node_pairing_store_error(Box::new(std::io::Error::other(
             "error returned from database: (code: 5) database is locked",
