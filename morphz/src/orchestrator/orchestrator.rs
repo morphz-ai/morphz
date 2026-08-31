@@ -41,8 +41,8 @@ use crate::memory::{
     NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveStatus,
     ObjectiveWaitCondition, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
     PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
-    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord,
+    SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
     ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter,
     ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSupervision,
     ThreadSupervisorKind,
@@ -7961,10 +7961,27 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Thread Activation requires a persistent SessionStore")?;
-        let mut session = session_store
-            .get_session(session_id)
-            .await?
-            .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
+        let asserted_principal_id = (event.event_type == TYPE_USER_MESSAGE)
+            .then(|| {
+                event
+                    .payload
+                    .get("principal_id")
+                    .and_then(|value| value.as_str())
+            })
+            .flatten();
+        let (session, principal_verified) =
+            tokio::try_join!(session_store.get_session(session_id), async {
+                match asserted_principal_id {
+                    Some(principal_id) => {
+                        session_store
+                            .verify_session_principal(session_id, principal_id)
+                            .await
+                    }
+                    None => Ok(true),
+                }
+            },)?;
+        let mut session =
+            session.ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
 
         // A user-message Principal is an ingress authentication fact, not a
         // model-supplied routing hint.  SessionHandle already performs this
@@ -7974,15 +7991,8 @@ impl Orchestrator {
         // Events without a Principal remain readable as unattributed facts;
         // an explicit, conflicting Principal is never evaluated.
         if event.event_type == TYPE_USER_MESSAGE {
-            if let Some(principal_id) = event
-                .payload
-                .get("principal_id")
-                .and_then(|value| value.as_str())
-            {
-                if !session_store
-                    .verify_session_principal(session_id, principal_id)
-                    .await?
-                {
+            if let Some(principal_id) = asserted_principal_id {
+                if !principal_verified {
                     return Err(format!(
                         "User Message Event '{}' claims Principal '{}', which is not bound to Session '{}'; Activation creation was rejected",
                         event.id, principal_id, session_id
@@ -8344,35 +8354,12 @@ impl Orchestrator {
             self.activation_admission.forget(&activation.id);
             return Ok(None);
         }
-        let runnable_check_started = Instant::now();
-        let activation_runnable = activation.status != ThreadActivationStatus::Queued
-            || session_store
-                .dialogue_turn_activation_runnable(&activation.id)
-                .await?;
-        self.observability.record_turn_stage(
-            &activation.root_turn_id,
-            Some(&activation.context_id),
-            Some(&activation.session_id),
-            "scheduler.dialogue_runnable_check",
-            runnable_check_started.elapsed(),
-            "ok",
-            None,
-        );
-        if !activation_runnable {
-            // The Signal batch is durably queued behind the Session's current
-            // DialogueTurn. Do not place it in the process-local admission
-            // window yet: doing so would repeatedly win a global permit only
-            // to lose the per-Session CAS. Releasing the current turn's permit
-            // notifies the refill loop, which will select this oldest queued
-            // turn once it is actually runnable.
-            tracing::debug!(
-                activation_id = %activation.id,
-                session_id = %activation.session_id,
-                event_code = "orchestrator.dialogue_turn.queued_behind_session_turn",
-                "DialogueTurn is durably queued until the preceding turn leaves the Session dialogue channel"
-            );
-            return Ok(None);
-        }
+        // Runnable selection and the queued->running mutation are one durable
+        // Session-lane transaction in `update_thread_activation`. A separate
+        // preflight query here duplicated the same predecessor/running/oldest
+        // checks without adding authority and widened the race between check
+        // and mutation. A losing transition remains queued and is selected by
+        // the normal refill after the current lane owner releases it.
         self.observability.record_turn_stage_since_boundary(
             &activation.root_turn_id,
             Some(&activation.context_id),
@@ -8570,19 +8557,9 @@ impl Orchestrator {
         activation: &ThreadActivationRecord,
         context_version: u64,
     ) -> Result<(), DynError> {
-        let session_store = self
-            .context_engine
-            .session_store()
-            .ok_or("Thread Activation requires a persistent SessionStore")?;
         let mut last_conflict = None;
+        let mut current = activation.clone();
         for retry in 0..5u64 {
-            let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
-                return Err(format!(
-                    "Thread Activation '{}' disappeared while recording its snapshot",
-                    activation.id
-                )
-                .into());
-            };
             if current.status.is_terminal()
                 || current.context_snapshot_version == Some(context_version)
             {
@@ -8626,13 +8603,19 @@ impl Orchestrator {
                     )
                     .into());
                 }
-                ThreadActivationMutation::Conflict { current } => {
+                ThreadActivationMutation::Conflict {
+                    current: conflict_current,
+                } => {
                     // Lease heartbeats and concurrent tool-result wakes advance
                     // the Activation revision without changing the Context
                     // snapshot. Reload the latest record and retry the CAS
                     // instead of turning a healthy execution into an internal
                     // terminal failure.
-                    last_conflict = Some(current.revision);
+                    last_conflict = Some(conflict_current.revision);
+                    // The mutation returns the authoritative current row, so a
+                    // separate reload before retry would only add another
+                    // database round trip.
+                    current = conflict_current;
                 }
                 ThreadActivationMutation::NotFound => {
                     return Err(format!(
@@ -8659,19 +8642,9 @@ impl Orchestrator {
         activation: &ThreadActivationRecord,
         context_version: u64,
     ) -> Result<(), DynError> {
-        let session_store = self
-            .context_engine
-            .session_store()
-            .ok_or("Thread Activation requires a persistent SessionStore")?;
         let mut last_conflict = None;
+        let mut current = activation.clone();
         for retry in 0..5u64 {
-            let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
-                return Err(format!(
-                    "Thread Activation '{}' disappeared while rebinding its snapshot after maintenance",
-                    activation.id
-                )
-                .into());
-            };
             if current.status.is_terminal()
                 || current.context_snapshot_version == Some(context_version)
             {
@@ -8711,8 +8684,11 @@ impl Orchestrator {
                 {
                     return Ok(());
                 }
-                ThreadActivationMutation::Conflict { current } => {
-                    last_conflict = Some(current.revision);
+                ThreadActivationMutation::Conflict {
+                    current: conflict_current,
+                } => {
+                    last_conflict = Some(conflict_current.revision);
+                    current = conflict_current;
                 }
                 ThreadActivationMutation::NotFound => {
                     return Err(format!(
@@ -9137,7 +9113,6 @@ impl Orchestrator {
         session_id: &str,
         attempt_id: &str,
     ) -> Result<EffectiveModelRequestPolicy, DynError> {
-        let route = self.activation_route(attempt_id);
         let session_store = self
             .context_engine
             .session_store()
@@ -9146,15 +9121,25 @@ impl Orchestrator {
             .get_session(session_id)
             .await?
             .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
+        Ok(self.effective_model_request_policy_from_session(&session, attempt_id))
+    }
+
+    fn effective_model_request_policy_from_session(
+        &self,
+        session: &SessionRecord,
+        attempt_id: &str,
+    ) -> EffectiveModelRequestPolicy {
+        let route = self.activation_route(attempt_id);
         let model_alias = route
             .as_ref()
             .and_then(|route| route.explicit_model_alias.clone())
-            .or(session.model_alias)
+            .or_else(|| session.model_alias.clone())
             .or_else(|| self.client.model())
             .or_else(|| route.as_ref().map(|route| route.model_alias.clone()))
             .unwrap_or_else(|| "direct".to_string());
         let reasoning_effort = session
             .reasoning_effort
+            .clone()
             .or_else(|| {
                 self.client
                     .reasoning_effort()
@@ -9162,10 +9147,10 @@ impl Orchestrator {
             })
             .or_else(|| route.map(|route| route.reasoning_effort))
             .unwrap_or_else(|| "provider_default".to_string());
-        Ok(EffectiveModelRequestPolicy {
+        EffectiveModelRequestPolicy {
             model_alias,
             reasoning_effort,
-        })
+        }
     }
 
     async fn request_model_completion_with_policy(
@@ -10689,10 +10674,29 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let recovery_scan_started = Instant::now();
         let attempt_id = activation.id.clone();
-        let mut persisted_assistant_call = self
-            .context_engine
-            .find_event(&activation.context_id, &format!("call_{}", activation.id))
-            .await?;
+        // The fresh-turn path used to read the assistant-call boundary, final
+        // boundary, trigger Event, and root Event serially. They are immutable
+        // Event facts and therefore safe to resolve concurrently. Reuse the
+        // resulting snapshots throughout activation policy and prompt setup;
+        // repeated point reads add no authority but are very expensive for a
+        // remote PostgreSQL store.
+        let assistant_call_event_id = format!("call_{}", activation.id);
+        let final_response_event_id = format!("call_{}_final", activation.id);
+        let (mut persisted_assistant_call, persisted_final_response, trigger_event) = tokio::try_join!(
+            self.context_engine
+                .find_event(&activation.context_id, &assistant_call_event_id),
+            self.context_engine
+                .find_event(&activation.context_id, &final_response_event_id),
+            self.context_engine
+                .find_event(&activation.context_id, &activation.trigger_event_id),
+        )?;
+        let root_event = if activation.root_turn_id == activation.trigger_event_id {
+            trigger_event.clone()
+        } else {
+            self.context_engine
+                .find_event(&activation.context_id, &activation.root_turn_id)
+                .await?
+        };
         if persisted_assistant_call.is_none() {
             if let Some(parent_activation_id) = activation.parent_activation_id.as_deref() {
                 persisted_assistant_call = self
@@ -10711,11 +10715,7 @@ impl Orchestrator {
         // which selected the physical tools. Resolve that exact durable link
         // before falling back to routing hints carried by the trigger Event.
         if persisted_assistant_call.is_none() {
-            if let Some(trigger) = self
-                .context_engine
-                .find_event(&activation.context_id, &activation.trigger_event_id)
-                .await?
-            {
+            if let Some(trigger) = trigger_event.as_ref() {
                 if let Some(group_id) = trigger
                     .payload
                     .get("action_group_id")
@@ -10748,13 +10748,6 @@ impl Orchestrator {
                 }
             }
         }
-        let persisted_final_response = self
-            .context_engine
-            .find_event(
-                &activation.context_id,
-                &format!("call_{}_final", activation.id),
-            )
-            .await?;
         let persisted_physical_plan = persisted_assistant_call
             .as_ref()
             .is_some_and(event_contains_physical_tool_plan);
@@ -10768,17 +10761,13 @@ impl Orchestrator {
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false)
             });
-        let root_dispatch_mode = self
-            .context_engine
-            .find_event(&activation.context_id, &activation.root_turn_id)
-            .await?
-            .and_then(|event| {
-                event
-                    .payload
-                    .get("dispatch_mode")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-            });
+        let root_dispatch_mode = root_event.as_ref().and_then(|event| {
+            event
+                .payload
+                .get("dispatch_mode")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        });
         self.observability.record_turn_stage(
             &activation.root_turn_id,
             Some(&activation.context_id),
@@ -10820,28 +10809,27 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Thread requires a persistent SessionStore")?;
-        let mut thread = session_store
-            .get_thread_by_root(&activation.root_turn_id)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Root Turn '{}' is missing its Thread",
-                    activation.root_turn_id
-                )
-            })?;
+        let (thread_record, session_record) = tokio::try_join!(
+            session_store.get_thread_by_root(&activation.root_turn_id),
+            session_store.get_session(session_id),
+        )?;
+        let mut thread = thread_record.ok_or_else(|| {
+            format!(
+                "Root Turn '{}' is missing its Thread",
+                activation.root_turn_id
+            )
+        })?;
+        let session_record =
+            session_record.ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
         let initial_objective_closure_review = activation.trigger_event_id
             == activation.root_turn_id
-            && self
-                .context_engine
-                .find_event(&activation.context_id, &activation.root_turn_id)
-                .await?
-                .is_some_and(|event| {
-                    event
-                        .payload
-                        .get("objective_phase")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("closure-review")
-                });
+            && root_event.as_ref().is_some_and(|event| {
+                event
+                    .payload
+                    .get("objective_phase")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("closure-review")
+            });
         // A physical assistant plan is the durable boundary at which the
         // current DialogueTurn becomes an Execution Thread. Gate ownership is
         // intentionally irrelevant: Context-maintenance continuations remain
@@ -10882,36 +10870,25 @@ impl Orchestrator {
             }
         }
         let thread_kind = thread.kind.as_str();
-        let trigger_model_alias = self
-            .context_engine
-            .find_event(&activation.context_id, &activation.trigger_event_id)
-            .await?
-            .and_then(|event| {
-                event
-                    .payload
-                    .get("model_alias")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .filter(|model| !model.is_empty())
-                    .map(ToOwned::to_owned)
-            });
-        let trigger_reasoning_effort = self
-            .context_engine
-            .find_event(&activation.context_id, &activation.trigger_event_id)
-            .await?
-            .and_then(|event| {
-                event
-                    .payload
-                    .get("reasoning_effort")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::trim)
-                    .filter(|effort| !effort.is_empty())
-                    .map(ToOwned::to_owned)
-            });
-        let session_record = session_store.get_session(session_id).await?;
-        let session_model_alias = session_record
-            .as_ref()
-            .and_then(|session| session.model_alias.clone());
+        let trigger_model_alias = trigger_event.as_ref().and_then(|event| {
+            event
+                .payload
+                .get("model_alias")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(ToOwned::to_owned)
+        });
+        let trigger_reasoning_effort = trigger_event.as_ref().and_then(|event| {
+            event
+                .payload
+                .get("reasoning_effort")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
+                .map(ToOwned::to_owned)
+        });
+        let session_model_alias = session_record.model_alias.clone();
         let desired_model_alias = activation
             .model_alias
             .clone()
@@ -10923,12 +10900,27 @@ impl Orchestrator {
             // fixed physical route, so freeze the stable internal route name
             // instead of preventing the Evaluation from ever reaching it.
             .unwrap_or_else(|| "direct".to_string());
+        let desired_reasoning_effort = activation
+            .reasoning_effort
+            .clone()
+            .or_else(|| trigger_reasoning_effort.clone())
+            .or_else(|| session_record.reasoning_effort.clone())
+            .or_else(|| {
+                self.client
+                    .reasoning_effort()
+                    .map(|effort| effort.as_str().to_string())
+            })
+            .unwrap_or_else(|| "provider_default".to_string());
         let bound_activation = session_store
-            .bind_thread_activation_model(&activation.id, &desired_model_alias)
+            .bind_thread_activation_request_policy(
+                &activation.id,
+                &desired_model_alias,
+                &desired_reasoning_effort,
+            )
             .await?
             .ok_or_else(|| {
                 format!(
-                    "Thread Activation '{}' disappeared while binding its model",
+                    "Thread Activation '{}' disappeared while binding its request policy",
                     activation.id
                 )
             })?;
@@ -10938,30 +10930,6 @@ impl Orchestrator {
                 activation.id
             )
         })?;
-        let desired_reasoning_effort = activation
-            .reasoning_effort
-            .clone()
-            .or_else(|| trigger_reasoning_effort.clone())
-            .or_else(|| {
-                session_record
-                    .as_ref()
-                    .and_then(|session| session.reasoning_effort.clone())
-            })
-            .or_else(|| {
-                self.client
-                    .reasoning_effort()
-                    .map(|effort| effort.as_str().to_string())
-            })
-            .unwrap_or_else(|| "provider_default".to_string());
-        let bound_activation = session_store
-            .bind_thread_activation_reasoning_effort(&activation.id, &desired_reasoning_effort)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Thread Activation '{}' disappeared while binding its reasoning policy",
-                    activation.id
-                )
-            })?;
         let activation_reasoning_effort = bound_activation.reasoning_effort.ok_or_else(|| {
             format!(
                 "Thread Activation '{}' failed to persist its reasoning policy",
@@ -10969,9 +10937,8 @@ impl Orchestrator {
             )
         })?;
         let delivery_thread_ids = if thread_kind == "delivery" {
-            self.context_engine
-                .find_event(&activation.context_id, &activation.trigger_event_id)
-                .await?
+            trigger_event
+                .as_ref()
                 .and_then(|event| {
                     event
                         .payload
@@ -11079,17 +11046,17 @@ impl Orchestrator {
         // ContextDelta encoder before the ordinary one-shot continuation path
         // excludes the same outputs from the canonical Context message.
         let prompt_cache_context_observations = context.observations.clone();
-        let mut continuation = self
-            .tool_continuation_for_trigger(
+        let (mut continuation, attachment_message) = tokio::try_join!(
+            self.tool_continuation_for_trigger(
                 session_id,
                 Some(&activation.root_turn_id),
                 Some(&activation.trigger_event_id),
                 &context.state.retired,
                 &prompt_cache_context_observations,
-            )
-            .await?;
+            ),
+            self.model_attachment_message(activation),
+        )?;
         let continuation_messages = continuation.messages.clone();
-        let attachment_message = self.model_attachment_message(activation).await?;
         if !continuation.delivered_output_ids.is_empty() {
             context = self
                 .context_engine
@@ -11134,7 +11101,11 @@ impl Orchestrator {
             route.context_snapshot_version = Some(context.state.version);
         }
         let request_policy_started = Instant::now();
-        let context_tx_receipt = self.context_tx_receipt(&context).await?;
+        let (context_tx_receipt, harness_activation, loaded_safety_refusal_recovery_state) = tokio::try_join!(
+            self.context_tx_receipt(&context),
+            self.harness_mount_for_activation(&context_id, activation),
+            self.load_safety_refusal_recovery_state(&context_id, session_id),
+        )?;
         let objective_control_available = self
             .objective_evaluations
             .get_for_activation(&activation.id)
@@ -11148,9 +11119,6 @@ impl Orchestrator {
         let objective_amend_available = !objective_control_available
             && thread.kind == ThreadKind::DialogueTurn
             && activation.trigger_kind == "chat/user_message";
-        let harness_activation = self
-            .harness_mount_for_activation(&context_id, activation)
-            .await?;
         let harness_context = harness_activation
             .as_ref()
             .map(|(_, _, rendered)| rendered.clone());
@@ -11194,10 +11162,7 @@ impl Orchestrator {
         let mut safety_refusal_recovery_limit = None;
         let mut safety_refusal_recovery_canary = None;
         let mut safety_refusal_recovery_active = false;
-        if let Some(state) = self
-            .load_safety_refusal_recovery_state(&context_id, session_id)
-            .await?
-        {
+        if let Some(state) = loaded_safety_refusal_recovery_state {
             if state.model_alias != activation_model_alias {
                 tracing::debug!(
                     context_id = %context_id,
@@ -11548,18 +11513,14 @@ impl Orchestrator {
         // successor Activation, which performs the local synthesis exactly
         // once.
         if activation.trigger_event_id == activation.root_turn_id {
-            let root = self
-                .context_engine
-                .find_event(&activation.context_id, &activation.root_turn_id)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "required coordination is missing root request Event '{}'",
-                        activation.root_turn_id
-                    )
-                })?;
+            let root = root_event.as_ref().ok_or_else(|| {
+                format!(
+                    "required coordination is missing root request Event '{}'",
+                    activation.root_turn_id
+                )
+            })?;
             if let Some(response) =
-                required_cognitive_coordination_response(&root, &activation.root_turn_id)
+                required_cognitive_coordination_response(root, &activation.root_turn_id)
             {
                 tracing::info!(
                     context_id = %activation.context_id,
@@ -11723,9 +11684,8 @@ impl Orchestrator {
                 );
             }
         }
-        let initial_request_policy = self
-            .effective_model_request_policy(session_id, &attempt_id)
-            .await?;
+        let initial_request_policy =
+            self.effective_model_request_policy_from_session(&session_record, &attempt_id);
         self.observability.record_turn_stage(
             &activation.root_turn_id,
             Some(&context_id),
@@ -11930,6 +11890,11 @@ impl Orchestrator {
             .physical_continuations
             .gt(&0)
             .then(|| initial_request_policy.model_alias.clone());
+        // `initial_request_policy` was resolved immediately before entering
+        // this request loop. Re-reading the same Session before its first
+        // iteration cannot observe an intervening Runtime action and used to
+        // add one redundant remote round trip to every Evaluation.
+        let mut first_request_policy = Some(initial_request_policy.clone());
         let mut interrupted_public_text = String::new();
         let mut completion_prepared = recovering_completion_intent;
         let (
@@ -11946,9 +11911,13 @@ impl Orchestrator {
                 format!("{attempt_id}_response_retry_{request_index}")
             };
             let request_policy_resolve_started = Instant::now();
-            let request_policy = self
-                .effective_model_request_policy(session_id, &model_attempt_id)
-                .await?;
+            let request_policy = match first_request_policy.take() {
+                Some(policy) => policy,
+                None => {
+                    self.effective_model_request_policy(session_id, &model_attempt_id)
+                        .await?
+                }
+            };
             self.observability.record_turn_stage(
                 &activation.root_turn_id,
                 Some(&context_id),

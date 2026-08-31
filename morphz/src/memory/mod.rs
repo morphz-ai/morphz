@@ -6291,6 +6291,15 @@ pub trait ActivationStore: Send + Sync {
         id: &str,
         reasoning_effort: &str,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically freezes both physical request-policy coordinates and returns
+    /// the authoritative Activation. The first non-empty value for each
+    /// coordinate wins independently.
+    async fn bind_thread_activation_request_policy(
+        &self,
+        id: &str,
+        model_alias: &str,
+        reasoning_effort: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Exact Activation parents for an already-selected scheduler aggregate.
     async fn list_thread_activations_by_ids(
         &self,

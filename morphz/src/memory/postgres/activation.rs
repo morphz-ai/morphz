@@ -141,6 +141,366 @@ pub(super) async fn migrate_thread_signal_notifications(pool: &PgPool) -> Result
     Ok(())
 }
 
+/// Install server-side fast paths for scheduler mutations whose correctness
+/// depends on several ordered SQL statements. Keeping the transaction logic in
+/// PostgreSQL preserves the same row-lock authority while collapsing many
+/// client/server round trips into one. Every function is deliberately
+/// conservative: a replay, continuation, queued dialogue batch, or any route
+/// ambiguity returns `handled = false` and the caller executes the full Rust
+/// path.
+pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), StoreError> {
+    sqlx::query(
+        "DROP FUNCTION IF EXISTS morphz_try_claim_fresh_dialogue_activation_v1(TEXT, TEXT, BIGINT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, BIGINT, TEXT)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"CREATE OR REPLACE FUNCTION morphz_try_claim_fresh_dialogue_activation_v1(
+             p_signal_id TEXT,
+             p_thread_id TEXT,
+             p_thread_generation BIGINT,
+             p_event_id TEXT,
+             p_principal_id TEXT,
+             p_signal_sequence BIGINT,
+             p_signal_kind TEXT,
+             p_activation_id TEXT,
+             p_agent_id TEXT,
+             p_context_id TEXT,
+             p_session_id TEXT,
+             p_trigger_sequence BIGINT,
+             p_root_turn_id TEXT,
+             p_max_signals BIGINT,
+             p_now TEXT
+           ) RETURNS TABLE(handled BOOLEAN, activation_snapshot JSONB)
+           LANGUAGE plpgsql AS $function$
+           DECLARE
+             candidate threads%ROWTYPE;
+             outbox_status TEXT;
+             outbox_signal_id TEXT;
+           BEGIN
+             IF p_signal_kind <> 'chat/user_message' OR p_max_signals < 1 THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN;
+             END IF;
+
+             -- The Session row is the cross-worker dialogue-lane mutex. The
+             -- following statements receive fresh READ COMMITTED snapshots
+             -- after this lock, unlike one large data-modifying CTE.
+             PERFORM id FROM sessions WHERE id = p_session_id FOR UPDATE;
+             IF NOT FOUND THEN
+               RAISE EXCEPTION 'Session % does not exist', p_session_id;
+             END IF;
+
+             SELECT * INTO candidate FROM threads WHERE id = p_thread_id FOR UPDATE;
+             IF NOT FOUND
+                OR candidate.root_turn_id <> p_root_turn_id
+                OR candidate.generation <> p_thread_generation
+                OR candidate.agent_id <> p_agent_id
+                OR candidate.context_id <> p_context_id
+                OR candidate.session_id <> p_session_id
+                OR candidate.kind <> 'dialogue_turn'
+                OR candidate.status <> 'open'
+                OR candidate.control_state <> 'active'
+                OR candidate.initiating_principal_id IS DISTINCT FROM p_principal_id THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN;
+             END IF;
+
+             -- Replays and an already queued compatible DialogueTurn need the
+             -- complete idempotency/batching path.
+             IF EXISTS (SELECT 1 FROM thread_signals WHERE event_id = p_event_id)
+                OR EXISTS (
+                  SELECT 1
+                  FROM thread_activations queued
+                  JOIN threads queued_thread
+                    ON queued_thread.root_turn_id = queued.root_turn_id
+                   AND queued_thread.generation = queued.generation
+                  WHERE queued.session_id = p_session_id
+                    AND queued.status = 'queued'
+                    AND queued.trigger_kind = 'chat/user_message'
+                    AND queued_thread.kind = 'dialogue_turn'
+                    AND queued_thread.status = 'open'
+                    AND queued_thread.control_state = 'active'
+                    AND queued.initiating_principal_id IS NOT DISTINCT FROM p_principal_id
+                    AND (
+                      SELECT COUNT(*) FROM activation_signals links
+                      WHERE links.activation_id = queued.id
+                    ) < p_max_signals
+                )
+                OR EXISTS (
+                  SELECT 1 FROM thread_activations
+                  WHERE root_turn_id = p_root_turn_id
+                    AND generation = p_thread_generation
+                    AND status IN ('queued', 'running')
+                )
+                OR EXISTS (
+                  SELECT 1 FROM thread_signals
+                  WHERE thread_id = p_thread_id AND status = 'pending'
+                ) THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN;
+             END IF;
+
+             SELECT status, signal_id INTO outbox_status, outbox_signal_id
+             FROM signal_outbox WHERE event_id = p_event_id FOR UPDATE;
+             IF FOUND AND outbox_status = 'materialized'
+                AND outbox_signal_id IS DISTINCT FROM p_signal_id THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN;
+             END IF;
+
+             INSERT INTO thread_signals
+               (id, thread_id, thread_generation, event_id, principal_id,
+                sequence, kind, parent_activation_id, status, created_at)
+             VALUES
+               (p_signal_id, p_thread_id, p_thread_generation, p_event_id,
+                p_principal_id, p_signal_sequence, p_signal_kind, NULL,
+                'pending', p_now);
+
+             UPDATE signal_outbox
+                SET status = 'materialized', signal_id = p_signal_id,
+                    resolved_at = p_now
+              WHERE event_id = p_event_id AND status = 'pending';
+
+             INSERT INTO thread_activations
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, trigger_event_id, trigger_sequence,
+                trigger_kind, parent_activation_id, root_turn_id,
+                admission_rank, status, created_at, updated_at)
+             VALUES
+               (p_activation_id, 1, p_thread_generation, p_agent_id,
+                p_context_id, p_session_id, p_principal_id, p_event_id,
+                p_trigger_sequence, p_signal_kind, NULL, p_root_turn_id,
+                0, 'queued', p_now, p_now);
+
+             INSERT INTO context_cognitive_clocks
+               (context_id, tick, last_signal_batch_id, revision)
+             VALUES (p_context_id, 1, p_activation_id, 1)
+             ON CONFLICT(context_id) DO UPDATE SET
+               tick = context_cognitive_clocks.tick + 1,
+               last_signal_batch_id = EXCLUDED.last_signal_batch_id,
+               revision = context_cognitive_clocks.revision + 1
+             WHERE context_cognitive_clocks.last_signal_batch_id
+                   IS DISTINCT FROM EXCLUDED.last_signal_batch_id;
+
+             INSERT INTO activation_signals (activation_id, signal_id, ordinal)
+             VALUES (p_activation_id, p_signal_id, 0);
+             UPDATE thread_signals
+                SET status = 'claimed', claimed_at = p_now
+              WHERE id = p_signal_id AND status = 'pending';
+
+             RETURN QUERY
+               SELECT TRUE, to_jsonb(claimed)
+                 FROM thread_activations claimed
+                WHERE claimed.id = p_activation_id;
+           END;
+           $function$"#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "DROP FUNCTION IF EXISTS morphz_update_thread_activation_v1(TEXT, BIGINT, TEXT, TEXT, TEXT, BIGINT, TEXT)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"CREATE OR REPLACE FUNCTION morphz_update_thread_activation_v1(
+             p_id TEXT,
+             p_expected_revision BIGINT,
+             p_status TEXT,
+             p_claimed_by TEXT,
+             p_lease_expires_at TEXT,
+             p_context_snapshot_version BIGINT,
+             p_now TEXT
+           ) RETURNS TABLE(mutation TEXT, activation_snapshot JSONB)
+           LANGUAGE plpgsql AS $function$
+           DECLARE
+             current_revision BIGINT;
+             current_status TEXT;
+             current_session_id TEXT;
+             current_root_turn_id TEXT;
+             current_kind TEXT;
+             root_payload JSONB;
+             predecessor_id TEXT;
+             running_other TEXT;
+             oldest_queued TEXT;
+             updated_id TEXT;
+             snapshot JSONB;
+           BEGIN
+             SELECT activation.revision, activation.status,
+                    activation.session_id, activation.root_turn_id,
+                    thread.kind, COALESCE(root_event.payload, '{}'::jsonb)
+               INTO current_revision, current_status, current_session_id,
+                    current_root_turn_id, current_kind, root_payload
+               FROM thread_activations activation
+               JOIN threads thread
+                 ON thread.root_turn_id = activation.root_turn_id
+                AND thread.generation = activation.generation
+               LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
+              WHERE activation.id = p_id;
+             IF NOT FOUND THEN
+               RETURN QUERY SELECT 'not_found'::TEXT, NULL::JSONB;
+               RETURN;
+             END IF;
+
+             IF p_status = 'running'
+                AND current_status = 'queued'
+                AND current_kind = 'dialogue_turn'
+                AND COALESCE(root_payload ->> 'dispatch_mode', '') <> 'parallel' THEN
+               PERFORM id FROM sessions WHERE id = current_session_id FOR UPDATE;
+
+               -- Refresh every decision input after acquiring the Session
+               -- lane mutex. Each PL/pgSQL statement receives a new READ
+               -- COMMITTED snapshot, preserving the former transaction's
+               -- cross-worker serialization in one client round trip.
+               SELECT activation.revision, activation.status,
+                      activation.root_turn_id, thread.kind,
+                      COALESCE(root_event.payload, '{}'::jsonb)
+                 INTO current_revision, current_status, current_root_turn_id,
+                      current_kind, root_payload
+                 FROM thread_activations activation
+                 JOIN threads thread
+                   ON thread.root_turn_id = activation.root_turn_id
+                  AND thread.generation = activation.generation
+                 LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
+                WHERE activation.id = p_id;
+               IF NOT FOUND THEN
+                 RETURN QUERY SELECT 'not_found'::TEXT, NULL::JSONB;
+                 RETURN;
+               END IF;
+               IF current_revision <> p_expected_revision
+                  OR current_status <> 'queued'
+                  OR current_kind <> 'dialogue_turn' THEN
+                 SELECT to_jsonb(current) || jsonb_build_object(
+                          'status', CASE WHEN current.status = 'completed'
+                                         THEN 'succeeded' ELSE current.status END
+                        ) INTO snapshot
+                   FROM thread_activations current WHERE current.id = p_id;
+                 RETURN QUERY SELECT 'conflict'::TEXT, snapshot;
+                 RETURN;
+               END IF;
+
+               predecessor_id := root_payload ->> 'after_thread_id';
+               IF predecessor_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM threads
+                     WHERE id = predecessor_id
+                       AND (status = 'open'
+                            OR delivery_status IN ('pending', 'deferred'))
+                  ) THEN
+                 SELECT to_jsonb(current) || jsonb_build_object(
+                          'status', CASE WHEN current.status = 'completed'
+                                         THEN 'succeeded' ELSE current.status END
+                        ) INTO snapshot
+                   FROM thread_activations current WHERE current.id = p_id;
+                 RETURN QUERY SELECT 'conflict'::TEXT, snapshot;
+                 RETURN;
+               END IF;
+
+               SELECT activation.id INTO running_other
+                 FROM thread_activations activation
+                 JOIN threads thread
+                   ON thread.root_turn_id = activation.root_turn_id
+                  AND thread.generation = activation.generation
+                WHERE activation.session_id = current_session_id
+                  AND activation.status = 'running'
+                  AND activation.dialogue_lane_released_at IS NULL
+                  AND activation.id <> p_id
+                  AND activation.root_turn_id <> current_root_turn_id
+                  AND thread.kind = 'dialogue_turn'
+                  AND COALESCE(
+                    (SELECT payload ->> 'dispatch_mode' FROM events
+                      WHERE id = thread.root_turn_id),
+                    ''
+                  ) <> 'parallel'
+                LIMIT 1;
+               IF running_other IS NOT NULL THEN
+                 SELECT to_jsonb(current) || jsonb_build_object(
+                          'status', CASE WHEN current.status = 'completed'
+                                         THEN 'succeeded' ELSE current.status END
+                        ) INTO snapshot
+                   FROM thread_activations current WHERE current.id = p_id;
+                 RETURN QUERY SELECT 'conflict'::TEXT, snapshot;
+                 RETURN;
+               END IF;
+
+               SELECT activation.id INTO oldest_queued
+                 FROM thread_activations activation
+                 JOIN threads thread
+                   ON thread.root_turn_id = activation.root_turn_id
+                  AND thread.generation = activation.generation
+                WHERE activation.session_id = current_session_id
+                  AND activation.status = 'queued'
+                  AND thread.kind = 'dialogue_turn'
+                  AND COALESCE(
+                    (SELECT payload ->> 'dispatch_mode' FROM events
+                      WHERE id = thread.root_turn_id),
+                    ''
+                  ) <> 'parallel'
+                ORDER BY
+                  CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
+                  activation.trigger_sequence,
+                  activation.id
+                LIMIT 1;
+               IF oldest_queued IS DISTINCT FROM p_id THEN
+                 SELECT to_jsonb(current) || jsonb_build_object(
+                          'status', CASE WHEN current.status = 'completed'
+                                         THEN 'succeeded' ELSE current.status END
+                        ) INTO snapshot
+                   FROM thread_activations current WHERE current.id = p_id;
+                 RETURN QUERY SELECT 'conflict'::TEXT, snapshot;
+                 RETURN;
+               END IF;
+             END IF;
+
+             UPDATE thread_activations
+                SET revision = revision + 1,
+                    status = p_status,
+                    claimed_by = p_claimed_by,
+                    lease_expires_at = p_lease_expires_at,
+                    context_snapshot_version = COALESCE(
+                      p_context_snapshot_version,
+                      context_snapshot_version
+                    ),
+                    updated_at = p_now
+              WHERE id = p_id AND revision = p_expected_revision
+              RETURNING id INTO updated_id;
+             IF updated_id IS NULL THEN
+               IF EXISTS (SELECT 1 FROM thread_activations WHERE id = p_id) THEN
+                 SELECT to_jsonb(current) || jsonb_build_object(
+                          'status', CASE WHEN current.status = 'completed'
+                                         THEN 'succeeded' ELSE current.status END
+                        ) INTO snapshot
+                   FROM thread_activations current WHERE current.id = p_id;
+                 RETURN QUERY SELECT 'conflict'::TEXT, snapshot;
+               ELSE
+                 RETURN QUERY SELECT 'not_found'::TEXT, NULL::JSONB;
+               END IF;
+               RETURN;
+             END IF;
+
+             IF p_status IN ('completed', 'cancelled', 'failed') THEN
+               UPDATE thread_signals
+                  SET status = 'acknowledged', acknowledged_at = p_now
+                WHERE id IN (
+                  SELECT signal_id FROM activation_signals
+                   WHERE activation_id = p_id
+                ) AND status = 'claimed';
+             END IF;
+             SELECT to_jsonb(current) || jsonb_build_object(
+                      'status', CASE WHEN current.status = 'completed'
+                                     THEN 'succeeded' ELSE current.status END
+                    ) INTO snapshot
+               FROM thread_activations current WHERE current.id = p_id;
+             RETURN QUERY SELECT 'updated'::TEXT, snapshot;
+           END;
+           $function$"#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 fn parse_activation_status(value: &str) -> Result<ThreadActivationStatus, StoreError> {
     match value {
         "queued" => Ok(ThreadActivationStatus::Queued),
@@ -311,6 +671,51 @@ impl ActivationStore for PostgresStore {
         }
         let max_signals = i64::try_from(max_signals)?;
         let now = now_text();
+
+        if signal.kind == "chat/user_message"
+            && signal.parent_activation_id.is_none()
+            && activation.parent_activation_id.is_none()
+        {
+            let fast = sqlx::query(
+                r#"SELECT result.handled AS fast_handled,
+                          result.activation_snapshot
+                   FROM morphz_try_claim_fresh_dialogue_activation_v1(
+                     $1, $2, $3, $4, $5, $6, $7, $8,
+                     $9, $10, $11, $12, $13, $14, $15
+                   ) result"#,
+            )
+            .bind(&signal.id)
+            .bind(&signal.thread_id)
+            .bind(i64::try_from(signal.thread_generation)?)
+            .bind(&signal.event_id)
+            .bind(&signal.principal_id)
+            .bind(i64::try_from(signal.sequence)?)
+            .bind(&signal.kind)
+            .bind(&activation.id)
+            .bind(&activation.agent_id)
+            .bind(&activation.context_id)
+            .bind(&activation.session_id)
+            .bind(i64::try_from(activation.trigger_sequence)?)
+            .bind(&activation.root_turn_id)
+            .bind(max_signals)
+            .bind(&now)
+            .fetch_one(&self.pool)
+            .await?;
+            if fast.get::<bool, _>("fast_handled") {
+                let snapshot = fast
+                    .try_get::<Option<JsonValue>, _>("activation_snapshot")?
+                    .ok_or("PostgreSQL fresh DialogueTurn fast path returned no Activation")?;
+                let created = serde_json::from_value::<ThreadActivationRecord>(snapshot)?;
+                tracing::debug!(
+                    activation_id = %created.id,
+                    session_id = %created.session_id,
+                    event_code = "memory.postgres.dialogue_turn.fresh_claim_fast_path",
+                    "Claimed one fresh DialogueTurn Signal batch in one PostgreSQL round trip"
+                );
+                return Ok(Some(created));
+            }
+        }
+
         let mut tx = self.pool.begin().await?;
         let candidate_thread_id = signal.thread_id.clone();
         if signal.kind == "chat/user_message" {
@@ -1203,6 +1608,35 @@ impl ActivationStore for PostgresStore {
         let mut event_ids = event_ids.to_vec();
         event_ids.sort();
         event_ids.dedup();
+
+        // Signal claim already binds the ordinary input batch to its
+        // Activation. The request boundary calls this method again to add any
+        // causally visible late inputs. When every requested Event is already
+        // bound, validate the running/generation fence and return the durable
+        // rows in one statement instead of opening a transaction and
+        // repeating route, lock, ordinal, and update queries.
+        let already_bound = sqlx::query(
+            r#"SELECT signals.*
+               FROM thread_activations activation
+               JOIN threads thread
+                 ON thread.root_turn_id = activation.root_turn_id
+                AND thread.generation = activation.generation
+               JOIN activation_signals links ON links.activation_id = activation.id
+               JOIN thread_signals signals ON signals.id = links.signal_id
+               WHERE activation.id = $1
+                 AND activation.status = 'running'
+                 AND signals.status = 'claimed'
+                 AND signals.event_id = ANY($2)
+               ORDER BY array_position($2, signals.event_id)"#,
+        )
+        .bind(activation_id)
+        .bind(&event_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        if already_bound.len() == event_ids.len() {
+            return already_bound.iter().map(signal_from_row).collect();
+        }
+
         let now = now_text();
         let mut tx = self.pool.begin().await?;
 
@@ -1480,6 +1914,45 @@ impl ActivationStore for PostgresStore {
         .execute(&self.pool)
         .await?;
         self.get_thread_activation(id).await
+    }
+
+    async fn bind_thread_activation_request_policy(
+        &self,
+        id: &str,
+        model_alias: &str,
+        reasoning_effort: &str,
+    ) -> Result<Option<ThreadActivationRecord>, StoreError> {
+        let model_alias = model_alias.trim();
+        let reasoning_effort = reasoning_effort.trim();
+        if model_alias.is_empty() {
+            return Err("Activation model alias 不能为空".into());
+        }
+        if reasoning_effort.is_empty() {
+            return Err("Activation reasoning effort must not be empty".into());
+        }
+        let row = sqlx::query(
+            r#"WITH updated AS (
+                 UPDATE thread_activations
+                    SET model_alias = COALESCE(model_alias, $1),
+                        reasoning_effort = COALESCE(reasoning_effort, $2),
+                        updated_at = $3
+                  WHERE id = $4
+                    AND (model_alias IS NULL OR reasoning_effort IS NULL)
+                  RETURNING *
+               )
+               SELECT * FROM updated
+               UNION ALL
+               SELECT * FROM thread_activations
+                WHERE id = $4 AND NOT EXISTS (SELECT 1 FROM updated)
+               LIMIT 1"#,
+        )
+        .bind(model_alias)
+        .bind(reasoning_effort)
+        .bind(now_text())
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(activation_from_row).transpose()
     }
 
     async fn list_thread_activations_by_ids(
@@ -1957,160 +2430,39 @@ impl ActivationStore for PostgresStore {
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
     ) -> Result<ThreadActivationMutation, StoreError> {
-        let now = now_text();
-        let mut tx = self.pool.begin().await?;
-        if status == ThreadActivationStatus::Running {
-            let route = sqlx::query(
-                r#"SELECT activation.session_id, activation.status, thread.kind,
-                          root_event.payload AS root_payload
-                   FROM thread_activations activation
-                   JOIN threads thread
-                     ON thread.root_turn_id = activation.root_turn_id
-                    AND thread.generation = activation.generation
-                   LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
-                   WHERE activation.id = $1"#,
-            )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if let Some(route) = route {
-                let root_payload = route
-                    .get::<Option<JsonValue>, _>("root_payload")
-                    .unwrap_or_else(|| serde_json::json!({}));
-                let parallel = root_payload
-                    .get("dispatch_mode")
-                    .and_then(JsonValue::as_str)
-                    == Some("parallel");
-                let queued_dialogue_turn = route.get::<String, _>("status") == "queued"
-                    && route.get::<String, _>("kind") == "dialogue_turn"
-                    && !parallel;
-                if queued_dialogue_turn {
-                    let session_id = route.get::<String, _>("session_id");
-                    sqlx::query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE")
-                        .bind(&session_id)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                    let blocked_by_follow_up = match root_payload
-                        .get("after_thread_id")
-                        .and_then(JsonValue::as_str)
-                    {
-                        Some(predecessor_id) => {
-                            sqlx::query_scalar::<_, bool>(
-                                r#"SELECT EXISTS(
-                                     SELECT 1 FROM threads
-                                     WHERE id = $1 AND (
-                                       status = 'open'
-                                       OR delivery_status IN ('pending', 'deferred')
-                                     )
-                                   )"#,
-                            )
-                            .bind(predecessor_id)
-                            .fetch_one(&mut *tx)
-                            .await?
-                        }
-                        None => false,
-                    };
-                    let running_other: Option<String> = sqlx::query_scalar(
-                        r#"SELECT activation.id
-                           FROM thread_activations activation
-                           JOIN threads thread
-                             ON thread.root_turn_id = activation.root_turn_id
-                            AND thread.generation = activation.generation
-                           WHERE activation.session_id = $1
-                             AND activation.status = 'running'
-                             AND activation.dialogue_lane_released_at IS NULL
-                             AND activation.id != $2
-                             AND activation.root_turn_id != (
-                               SELECT root_turn_id FROM thread_activations WHERE id = $2
-                             )
-                             AND thread.kind = 'dialogue_turn'
-                             AND COALESCE(
-                               (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = thread.root_turn_id),
-                               ''
-                             ) != 'parallel'
-                           LIMIT 1"#,
-                    )
-                    .bind(&session_id)
-                    .bind(id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    let oldest_queued: Option<String> = sqlx::query_scalar(
-                        r#"SELECT activation.id
-                           FROM thread_activations activation
-                           JOIN threads thread
-                             ON thread.root_turn_id = activation.root_turn_id
-                            AND thread.generation = activation.generation
-                           WHERE activation.session_id = $1
-                             AND activation.status = 'queued'
-                             AND thread.kind = 'dialogue_turn'
-                             AND COALESCE(
-                               (SELECT payload ->> 'dispatch_mode' FROM events WHERE id = thread.root_turn_id),
-                               ''
-                             ) != 'parallel'
-                           ORDER BY
-                             CASE WHEN activation.parent_activation_id IS NOT NULL THEN 0 ELSE 1 END,
-                             activation.trigger_sequence,
-                             activation.id
-                           LIMIT 1"#,
-                    )
-                    .bind(&session_id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    if blocked_by_follow_up
-                        || running_other.is_some()
-                        || oldest_queued.as_deref() != Some(id)
-                    {
-                        tx.commit().await?;
-                        return Ok(match self.get_thread_activation(id).await? {
-                            Some(current) => ThreadActivationMutation::Conflict { current },
-                            None => ThreadActivationMutation::NotFound,
-                        });
-                    }
-                }
-            }
-        }
-        let result = sqlx::query(
-            r#"UPDATE thread_activations SET revision = revision + 1, status = $1,
-               claimed_by = $2, lease_expires_at = $3,
-               context_snapshot_version = COALESCE($4, context_snapshot_version), updated_at = $5
-               WHERE id = $6 AND revision = $7"#,
+        let row = sqlx::query(
+            r#"SELECT result.mutation AS mutation_kind,
+                      result.activation_snapshot
+               FROM morphz_update_thread_activation_v1(
+                 $1, $2, $3, $4, $5, $6, $7
+               ) result"#,
         )
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
         .bind(activation_status_storage(status))
         .bind(claimed_by)
         .bind(
             lease_expires_at.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
         )
         .bind(context_snapshot_version.map(i64::try_from).transpose()?)
-        .bind(&now)
-        .bind(id)
-        .bind(i64::try_from(expected_revision)?)
-        .execute(&mut *tx)
+        .bind(now_text())
+        .fetch_one(&self.pool)
         .await?;
-        if result.rows_affected() == 1 {
-            if status.is_terminal() {
-                sqlx::query(
-                    r#"UPDATE thread_signals SET status = 'acknowledged', acknowledged_at = $1
-                       WHERE id IN (SELECT signal_id FROM activation_signals WHERE activation_id = $2)
-                         AND status = 'claimed'"#,
-                )
-                .bind(&now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            }
-            let row = sqlx::query("SELECT * FROM thread_activations WHERE id = $1")
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await?;
-            let updated = activation_from_row(&row)?;
-            tx.commit().await?;
-            return Ok(ThreadActivationMutation::Updated(updated));
+        let activation = row
+            .try_get::<Option<JsonValue>, _>("activation_snapshot")?
+            .map(serde_json::from_value::<ThreadActivationRecord>)
+            .transpose()?;
+        match row.get::<String, _>("mutation_kind").as_str() {
+            "updated" => Ok(ThreadActivationMutation::Updated(
+                activation.ok_or("PostgreSQL Activation update returned no current row")?,
+            )),
+            "conflict" => Ok(ThreadActivationMutation::Conflict {
+                current: activation
+                    .ok_or("PostgreSQL Activation conflict returned no current row")?,
+            }),
+            "not_found" => Ok(ThreadActivationMutation::NotFound),
+            other => Err(format!("Unknown PostgreSQL Activation mutation '{other}'").into()),
         }
-        tx.commit().await?;
-        Ok(match self.get_thread_activation(id).await? {
-            Some(current) => ThreadActivationMutation::Conflict { current },
-            None => ThreadActivationMutation::NotFound,
-        })
     }
 
     async fn commit_activation_outcome(

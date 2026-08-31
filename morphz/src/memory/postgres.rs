@@ -269,6 +269,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260831_01_scheduler_latency_fast_paths",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260726_01_plan_executions",
                     plan_execution::migrate(&store.pool),
                 )

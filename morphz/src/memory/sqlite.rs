@@ -10700,6 +10700,30 @@ impl ActivationStore for SqliteStore {
         let mut event_ids = event_ids.to_vec();
         event_ids.sort();
         event_ids.dedup();
+        let mut existing_query = QueryBuilder::<sqlx::Sqlite>::new(
+            r#"SELECT signals.*
+               FROM thread_activations activation
+               JOIN threads thread
+                 ON thread.root_turn_id = activation.root_turn_id
+                AND thread.generation = activation.generation
+               JOIN activation_signals links ON links.activation_id = activation.id
+               JOIN thread_signals signals ON signals.id = links.signal_id
+               WHERE activation.id = "#,
+        );
+        existing_query
+            .push_bind(activation_id)
+            .push(" AND activation.status = 'running' AND signals.status = 'claimed' AND signals.event_id IN (");
+        {
+            let mut values = existing_query.separated(", ");
+            for event_id in &event_ids {
+                values.push_bind(event_id);
+            }
+        }
+        existing_query.push(") ORDER BY links.ordinal");
+        let already_bound = existing_query.build().fetch_all(&self.pool).await?;
+        if already_bound.len() == event_ids.len() {
+            return already_bound.iter().map(thread_signal_from_row).collect();
+        }
         let mut contention_retries = 0u64;
         let mut retry_delay = std::time::Duration::from_millis(25);
         loop {
@@ -10872,6 +10896,43 @@ impl ActivationStore for SqliteStore {
         .execute(&self.pool)
         .await?;
         self.get_thread_activation(id).await
+    }
+
+    async fn bind_thread_activation_request_policy(
+        &self,
+        id: &str,
+        model_alias: &str,
+        reasoning_effort: &str,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let model_alias = model_alias.trim();
+        let reasoning_effort = reasoning_effort.trim();
+        if model_alias.is_empty() {
+            return Err("Activation model alias 不能为空".into());
+        }
+        if reasoning_effort.is_empty() {
+            return Err("Activation reasoning effort must not be empty".into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET model_alias = COALESCE(model_alias, ?),
+                   reasoning_effort = COALESCE(reasoning_effort, ?),
+                   updated_at = ?
+               WHERE id = ? AND (model_alias IS NULL OR reasoning_effort IS NULL)"#,
+        )
+        .bind(model_alias)
+        .bind(reasoning_effort)
+        .bind(now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        row.as_ref().map(thread_activation_from_row).transpose()
     }
 
     async fn list_thread_activations_by_ids(

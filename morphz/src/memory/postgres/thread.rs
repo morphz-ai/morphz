@@ -215,7 +215,7 @@ impl ThreadStore for PostgresStore {
     ) -> Result<ThreadRecord, StoreError> {
         thread.supervision.validate(thread.kind)?;
         let now = now_text();
-        sqlx::query(
+        let row = sqlx::query(
             r#"INSERT INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, target_id,
@@ -224,7 +224,12 @@ impl ThreadStore for PostgresStore {
                 delivery_status, created_at, updated_at)
                VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, $10,
                        $11, $12, $13, $14, $15, $16, $17, $18, 'none', $19, $19)
-               ON CONFLICT DO NOTHING"#,
+               ON CONFLICT (root_turn_id) DO UPDATE SET
+                 initiating_principal_id = COALESCE(
+                   threads.initiating_principal_id,
+                   EXCLUDED.initiating_principal_id
+                 )
+               RETURNING *"#,
         )
         .bind(&thread.id)
         .bind(&thread.agent_id)
@@ -245,25 +250,9 @@ impl ThreadStore for PostgresStore {
         .bind(&thread.supervision.thread_group_id)
         .bind(&thread.supervision.completion_contract)
         .bind(now)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        let mut existing = self
-            .get_thread_by_root(&thread.root_turn_id)
-            .await?
-            .ok_or("Thread 并发创建后无法读取")?;
-        if existing.initiating_principal_id.is_none() && thread.initiating_principal_id.is_some() {
-            sqlx::query(
-                "UPDATE threads SET initiating_principal_id = $1 WHERE id = $2 AND initiating_principal_id IS NULL",
-            )
-            .bind(&thread.initiating_principal_id)
-            .bind(&existing.id)
-            .execute(&self.pool)
-            .await?;
-            existing = self
-                .get_thread(&existing.id)
-                .await?
-                .ok_or("Thread Principal 迁移后无法读取")?;
-        }
+        let existing = thread_from_row(&row)?;
         if existing.context_id != thread.context_id
             || existing.session_id != thread.session_id
             || existing.agent_id != thread.agent_id
