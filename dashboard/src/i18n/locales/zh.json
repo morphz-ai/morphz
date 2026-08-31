@@ -934,6 +934,12 @@
     "streaming": "正在生成",
     "waitingForModel": "等待模型求值",
     "awaitingModelRead": "待模型读取",
+    "optimistic": {
+      "sending": "正在发送",
+      "accepted": "已发送，正在同步",
+      "failed": "发送失败",
+      "retry": "重新发送"
+    },
     "reasoningCompleted": "推理已结束 · 等待最终输出",
     "waitingFinalOutput": "推理已经结束，模型尚未产生最终正文或工具调用。",
     "streamFailed": "流式响应失败",

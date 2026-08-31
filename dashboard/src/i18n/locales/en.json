@@ -934,6 +934,12 @@
     "streaming": "Generating",
     "waitingForModel": "Waiting for model evaluation",
     "awaitingModelRead": "Waiting for model to read",
+    "optimistic": {
+      "sending": "Sending",
+      "accepted": "Sent, syncing",
+      "failed": "Send failed",
+      "retry": "Send again"
+    },
     "reasoningCompleted": "Reasoning ended · waiting for final output",
     "waitingFinalOutput": "Reasoning has ended; final text or tool calls have not arrived yet.",
     "streamFailed": "Streaming response failed",

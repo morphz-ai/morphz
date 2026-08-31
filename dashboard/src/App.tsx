@@ -88,6 +88,7 @@ import {
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
 import { resolveSelectedModelOption } from './app/modelSelection'
+import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
 import {
   insertSessionMention,
   rankSessionReferenceCandidates,
@@ -1197,6 +1198,23 @@ interface ComposerSessionReference {
 }
 
 type MessageDispatchMode = 'interrupt' | 'parallel' | 'follow_up'
+
+type OptimisticMessageStatus = 'sending' | 'accepted' | 'failed'
+
+interface OptimisticMessage {
+  id: string
+  clientMessageId: string
+  sessionId: string
+  contextId: string
+  text: string
+  createdAt: string
+  attachments: ComposerAttachment[]
+  references: ComposerSessionReference[]
+  dispatchMode?: MessageDispatchMode
+  status: OptimisticMessageStatus
+  eventId?: string
+  error?: string
+}
 
 interface SelectionPopup {
   x: number
@@ -2572,6 +2590,74 @@ function formatFileSize(bytes: number): string {
   return `${bytes} B`
 }
 
+const OptimisticMessageCard = memo(function OptimisticMessageCard({
+  message,
+  currentContextId,
+  locale,
+  t,
+  onRetry,
+}: {
+  message: OptimisticMessage
+  currentContextId: string
+  locale: string
+  t: TFunction
+  onRetry: (message: OptimisticMessage) => void
+}) {
+  return (
+    <article
+      className={`message-row user optimistic-message is-${message.status}`}
+      data-client-message-id={message.clientMessageId}
+    >
+      <div className="message-body">
+        {message.text.trim()
+          ? <MarkdownBody text={message.text} />
+          : message.attachments.length ? null : t('conversation.noText')}
+      </div>
+      {message.attachments.length > 0 && (
+        <div className="optimistic-message-attachments">
+          {message.attachments.map(attachment => (
+            <span key={attachment.id} title={attachment.name}>
+              <Paperclip size={11} />
+              <strong>{attachment.name}</strong>
+              <small>{formatFileSize(attachment.size)}</small>
+            </span>
+          ))}
+        </div>
+      )}
+      <MessageSessionReferences
+        references={message.references.map(reference => ({
+          kind: 'session',
+          session_id: reference.sessionId,
+          title: reference.title,
+          context_id: reference.contextId,
+        }))}
+        currentContextId={currentContextId}
+        t={t}
+      />
+      <div className={`optimistic-delivery-state is-${message.status}`} role="status" aria-live="polite">
+        {message.status === 'sending'
+          ? <LoaderCircle className="is-spinning" size={11} />
+          : message.status === 'accepted'
+            ? <Check size={11} />
+            : <RefreshCw size={11} />}
+        <span>{t(`conversation.optimistic.${message.status}`)}</span>
+        {message.status === 'failed' && (
+          <button type="button" onClick={() => onRetry(message)}>
+            <RefreshCw size={11} />
+            {t('conversation.optimistic.retry')}
+          </button>
+        )}
+      </div>
+      {message.status === 'failed' && message.error && (
+        <small className="optimistic-delivery-error">{message.error}</small>
+      )}
+      <div className="message-meta">
+        <time className="message-time">{formatTime(message.createdAt, locale)}</time>
+      </div>
+    </article>
+  )
+})
+
 // Keep draft input state below App. A keystroke should only reconcile the
 // composer, not the full event history and every dashboard view.
 const Composer = memo(function Composer({
@@ -3096,6 +3182,7 @@ export default function App() {
   const [appDialog, setAppDialog] = useState<AppDialogRequest | null>(null)
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [sending, setSending] = useState(false)
+  const [optimisticMessages, setOptimisticMessages] = useState<OptimisticMessage[]>([])
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [changingModel, setChangingModel] = useState(false)
   const [changingSandbox, setChangingSandbox] = useState(false)
@@ -4924,6 +5011,14 @@ export default function App() {
     () => eventsSessionId === selectedSessionId ? events : [],
     [events, eventsSessionId, selectedSessionId],
   )
+  const visibleOptimisticMessages = useMemo(
+    () => optimisticMessages.filter(message => (
+      message.sessionId === selectedSessionId
+      && isOptimisticMessagePending(message, sessionEvents)
+    )),
+    [optimisticMessages, selectedSessionId, sessionEvents],
+  )
+
   const liveModelAttempts = visibleLiveModelAttempts(liveModelState, selectedSessionId)
   const schedulerThreads = useMemo(
     () => schedulerSnapshot?.threads ?? [],
@@ -6108,6 +6203,40 @@ export default function App() {
     setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, comment } : q))
   }, [])
 
+  const deliverOptimisticMessage = useCallback(async (message: OptimisticMessage): Promise<void> => {
+    const startedAt = Date.now()
+    setOptimisticMessages(current => current.map(item => item.id === message.id
+      ? { ...item, status: 'sending', error: undefined }
+      : item))
+    setSending(true)
+    setPendingTurn({ startedAt, rootTurnId: null })
+    conversationPinnedToEnd.current = true
+    try {
+      const receipt = await DASHBOARD_API.command<{ event_id?: string }>(
+        `/api/sessions/${encodeURIComponent(message.sessionId)}/messages`,
+        'POST',
+        buildOptimisticMessageRequest(message),
+      )
+      setOptimisticMessages(current => current.map(item => item.id === message.id
+        ? { ...item, status: 'accepted', eventId: receipt.event_id ?? item.eventId, error: undefined }
+        : item))
+      setPendingTurn(current => current?.startedAt === startedAt
+        ? { ...current, rootTurnId: receipt.event_id ?? null }
+        : current)
+      setError('')
+      window.setTimeout(() => void loadSession(message.sessionId, message.contextId), 120)
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : String(reason)
+      setOptimisticMessages(current => current.map(item => item.id === message.id
+        ? { ...item, status: 'failed', error: detail }
+        : item))
+      setPendingTurn(current => current?.startedAt === startedAt ? null : current)
+      setError(detail)
+    } finally {
+      setSending(false)
+    }
+  }, [loadSession])
+
   const sendMessage = useCallback(async (
     draftMessage: string,
     attachments: ComposerAttachment[],
@@ -6130,55 +6259,46 @@ export default function App() {
       : text
     setSending(true)
     conversationPinnedToEnd.current = true
-    let startedAt: number | null = null
     try {
       let targetContext: ContextRecord | null | undefined = selectedContext
       if (!targetContext) {
         targetContext = await createContext()
-        if (!targetContext) return false
+        if (!targetContext) {
+          setSending(false)
+          return false
+        }
       }
       let targetSession: SessionRecord | null | undefined = selectedSession
       if (!targetSession || targetSession.context_id !== targetContext.id) {
         targetSession = await createSession(targetContext)
-        if (!targetSession) return false
+        if (!targetSession) {
+          setSending(false)
+          return false
+        }
       }
-      startedAt = Date.now()
-      setPendingTurn({ startedAt, rootTurnId: null })
-      const receipt = await DASHBOARD_API.command<{ event_id?: string }>(
-        `/api/sessions/${encodeURIComponent(targetSession.id)}/messages`,
-        'POST',
-        {
-          text: composedText,
-          client_message_id: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          attachments: attachments.map(attachment => ({
-            name: attachment.name,
-            media_type: attachment.mediaType,
-            data_base64: attachment.dataBase64,
-          })),
-          references: references.map(reference => ({
-            kind: 'session',
-            session_id: reference.sessionId,
-          })),
-          ...(dispatchMode ? { dispatch_mode: dispatchMode } : {}),
-        },
-      )
-      setPendingTurn(current => current?.startedAt === startedAt
-        ? { ...current, rootTurnId: receipt.event_id ?? null }
-        : current)
+      const optimisticMessage: OptimisticMessage = {
+        id: `optimistic-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        clientMessageId: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        sessionId: targetSession.id,
+        contextId: targetSession.context_id,
+        text: composedText,
+        createdAt: new Date().toISOString(),
+        attachments: attachments.map(attachment => ({ ...attachment, previewUrl: undefined })),
+        references: references.map(reference => ({ ...reference })),
+        dispatchMode,
+        status: 'sending',
+      }
+      setOptimisticMessages(current => [...current, optimisticMessage])
       setQuotes([])
       setError('')
-      window.setTimeout(() => void loadSession(targetSession.id, targetSession.context_id), 120)
+      void deliverOptimisticMessage(optimisticMessage)
       return true
     } catch (reason) {
-      if (startedAt !== null) {
-        setPendingTurn(current => current?.startedAt === startedAt ? null : current)
-      }
       setError(reason instanceof Error ? reason.message : String(reason))
-      return false
-    } finally {
       setSending(false)
+      return false
     }
-  }, [createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending, t])
+  }, [createContext, createSession, deliverOptimisticMessage, quotes, selectedContext, selectedSession, sending, t])
 
   const retryDialogueTurn = useCallback(async (
     failureEvent: MorphzEvent,
@@ -7804,7 +7924,7 @@ export default function App() {
                   }}
                 >
               <div className="message-list" ref={conversationMessageListRef}>
-                {visibleDialogueEvents.length === 0 && dialogueStreamingAttempts.length === 0 && (
+                {visibleDialogueEvents.length === 0 && visibleOptimisticMessages.length === 0 && dialogueStreamingAttempts.length === 0 && (
                   <div className="empty-state conversation-empty">
                     <div className="empty-icon"><MessageSquare size={28} /></div>
                     <strong>{t('conversation.emptyTitle')}</strong>
@@ -8035,6 +8155,16 @@ export default function App() {
                     </article>
                   )
                 })}
+                {visibleOptimisticMessages.map(message => (
+                  <OptimisticMessageCard
+                    key={message.id}
+                    message={message}
+                    currentContextId={selectedContextId}
+                    locale={i18n.language}
+                    t={t}
+                    onRetry={item => void deliverOptimisticMessage(item)}
+                  />
+                ))}
                 {dialogueStreamingAttempts.map(attempt => {
                   const lineage = lineageForLiveAttempt(attempt)
                   const dialogueThread = attempt.threadKind === 'dialogue_turn'

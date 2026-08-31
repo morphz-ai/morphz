@@ -4,6 +4,10 @@ import test from 'node:test'
 
 const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const optimisticMessagesSource = readFileSync(
+  new URL('../src/app/optimisticMessages.ts', import.meta.url),
+  'utf8',
+)
 const runtimeOverviewSource = readFileSync(
   new URL('../src/pages/RuntimeOverviewPage.tsx', import.meta.url),
   'utf8',
@@ -480,7 +484,7 @@ test('the composer exposes all three one-shot message scheduling modes', () => {
     'the send menu must expose interrupt, concurrent and follow-up choices',
   )
   assert.match(
-    appSource,
+    `${appSource}\n${optimisticMessagesSource}`,
     /\.\.\.\(dispatchMode \? \{ dispatch_mode: dispatchMode \} : \{\}\)/,
     'an explicit one-shot choice must cross the HTTP boundary without changing the default configuration',
   )

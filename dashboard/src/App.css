@@ -1354,6 +1354,20 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .message-row.objective-tinted .stream-status:not(.is-failed) { color: color-mix(in srgb, var(--objective-color) 68%, var(--muted)); }
 .message-row.user.objective-tinted .message-body { border-color: color-mix(in srgb, var(--objective-color) 40%, var(--line)); box-shadow: inset 2px 0 0 var(--objective-color); }
 .message-row.user.awaiting-model-read .message-body { border-color: color-mix(in srgb, var(--yellow) 36%, var(--line)); background: linear-gradient(105deg, color-mix(in srgb, var(--yellow-soft) 50%, var(--surface-elevated)), var(--surface-elevated)); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--yellow) 72%, transparent); }
+.message-row.user.optimistic-message .message-body { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.message-row.user.optimistic-message.is-sending .message-body { opacity: .88; }
+.message-row.user.optimistic-message.is-failed .message-body { border-color: color-mix(in srgb, var(--red) 40%, var(--line)); background: color-mix(in srgb, var(--red-soft) 28%, var(--surface-elevated)); }
+.optimistic-message-attachments { display: flex; max-width: min(800px, 85%); flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.optimistic-message-attachments > span { display: inline-flex; min-width: 0; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface-elevated); color: var(--muted); font-size: 9px; }
+.optimistic-message-attachments strong { overflow: hidden; max-width: 220px; color: var(--text-soft); text-overflow: ellipsis; white-space: nowrap; }
+.optimistic-message-attachments small { color: var(--faint); font-family: var(--mono); }
+.optimistic-delivery-state { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; color: var(--faint); font: 600 9px/1.3 var(--mono); }
+.optimistic-delivery-state.is-accepted { color: var(--muted); }
+.optimistic-delivery-state.is-failed { color: var(--red); }
+.optimistic-delivery-state .is-spinning { animation: spin 1s linear infinite; }
+.optimistic-delivery-state button { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--red) 36%, var(--line)); border-radius: 999px; background: var(--surface-elevated); color: var(--text-soft); font: 650 9px/1.2 var(--sans); }
+.optimistic-delivery-state button:hover { border-color: var(--accent); color: var(--accent-strong); }
+.optimistic-delivery-error { max-width: min(800px, 85%); margin-top: 4px; color: color-mix(in srgb, var(--red) 72%, var(--muted)); font: 500 8px/1.45 var(--mono); overflow-wrap: anywhere; }
 .message-input-queue-state { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--yellow) 25%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--yellow-soft) 42%, var(--surface)); color: color-mix(in srgb, var(--yellow) 72%, var(--text-soft)); font: 600 9px/1.3 var(--mono); }
 .message-input-queue-state svg { opacity: .82; }
 .message-row.user { align-items: flex-end; }
