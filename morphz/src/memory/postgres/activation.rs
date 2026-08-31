@@ -181,6 +181,8 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
            DECLARE
              started_at TIMESTAMPTZ := clock_timestamp();
              candidate threads%ROWTYPE;
+             stored_signal thread_signals%ROWTYPE;
+             signal_preexists BOOLEAN := FALSE;
              outbox_status TEXT;
              outbox_signal_id TEXT;
            BEGIN
@@ -214,12 +216,33 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                RETURN;
              END IF;
 
-             -- Replays and an already queued compatible DialogueTurn need the
-             -- complete idempotency/batching path.
-             IF EXISTS (SELECT 1 FROM thread_signals WHERE event_id = p_event_id) THEN
-               RETURN QUERY SELECT FALSE, NULL::JSONB, 'preexisting_signal'::TEXT,
-                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
-               RETURN;
+             -- Normal ingress commits the immutable Event and its pending
+             -- Signal atomically before EventBus dispatch. Adopt that exact
+             -- durable Signal in the fast path; replays, already-claimed
+             -- Signals, and any route mismatch remain on the full path.
+             SELECT * INTO stored_signal
+               FROM thread_signals WHERE event_id = p_event_id FOR UPDATE;
+             signal_preexists := FOUND;
+             IF signal_preexists THEN
+               IF stored_signal.id <> p_signal_id
+                  OR stored_signal.thread_id <> p_thread_id
+                  OR stored_signal.thread_generation <> p_thread_generation
+                  OR stored_signal.kind <> p_signal_kind
+                  OR stored_signal.parent_activation_id IS NOT NULL
+                  OR stored_signal.status <> 'pending'
+                  OR (
+                    p_principal_id IS NOT NULL
+                    AND stored_signal.principal_id IS NOT NULL
+                    AND stored_signal.principal_id <> p_principal_id
+                  ) THEN
+                 RETURN QUERY SELECT FALSE, NULL::JSONB, 'preexisting_signal_conflict'::TEXT,
+                   (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
+                 RETURN;
+               END IF;
+               IF stored_signal.principal_id IS NULL AND p_principal_id IS NOT NULL THEN
+                 UPDATE thread_signals SET principal_id = p_principal_id
+                  WHERE id = p_signal_id AND principal_id IS NULL;
+               END IF;
              END IF;
              IF EXISTS (
                   SELECT 1
@@ -256,6 +279,7 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
              IF EXISTS (
                   SELECT 1 FROM thread_signals
                   WHERE thread_id = p_thread_id AND status = 'pending'
+                    AND id <> p_signal_id
                 ) THEN
                RETURN QUERY SELECT FALSE, NULL::JSONB, 'pending_thread_signal'::TEXT,
                  (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
@@ -271,13 +295,15 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                RETURN;
              END IF;
 
-             INSERT INTO thread_signals
-               (id, thread_id, thread_generation, event_id, principal_id,
-                sequence, kind, parent_activation_id, status, created_at)
-             VALUES
-               (p_signal_id, p_thread_id, p_thread_generation, p_event_id,
-                p_principal_id, p_signal_sequence, p_signal_kind, NULL,
-                'pending', p_now);
+             IF NOT signal_preexists THEN
+               INSERT INTO thread_signals
+                 (id, thread_id, thread_generation, event_id, principal_id,
+                  sequence, kind, parent_activation_id, status, created_at)
+               VALUES
+                 (p_signal_id, p_thread_id, p_thread_generation, p_event_id,
+                  p_principal_id, p_signal_sequence, p_signal_kind, NULL,
+                  'pending', p_now);
+             END IF;
 
              UPDATE signal_outbox
                 SET status = 'materialized', signal_id = p_signal_id,

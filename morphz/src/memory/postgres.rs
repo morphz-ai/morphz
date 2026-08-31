@@ -269,7 +269,7 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
-                    "20260831_02_scheduler_latency_fast_path_telemetry",
+                    "20260831_03_scheduler_latency_fast_path_pending_signal",
                     activation::migrate_latency_fast_paths(&store.pool),
                 )
                 .await?;
