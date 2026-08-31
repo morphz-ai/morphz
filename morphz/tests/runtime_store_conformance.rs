@@ -9896,6 +9896,96 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
 }
 
 #[tokio::test]
+async fn postgres_session_pooler_smoke_when_configured() {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let deadline = std::time::Duration::from_secs(20);
+    eprintln!("postgres smoke: connect");
+    let pool = tokio::time::timeout(
+        deadline,
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(deadline)
+            .connect(&database_url),
+    )
+    .await
+    .expect("PostgreSQL connection timed out")
+    .expect("PostgreSQL connection failed");
+    let value = tokio::time::timeout(
+        deadline,
+        sqlx::query_scalar::<_, i64>("SELECT 1::bigint").fetch_one(&pool),
+    )
+    .await
+    .expect("PostgreSQL SELECT timed out")
+    .expect("PostgreSQL SELECT failed");
+    assert_eq!(value, 1);
+
+    let suffix = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .expect("current timestamp must fit i64");
+    let schema = format!("morphz_smoke_{}_{suffix}", std::process::id());
+    eprintln!("postgres smoke: schema and transaction");
+    tokio::time::timeout(
+        deadline,
+        sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&pool),
+    )
+    .await
+    .expect("CREATE SCHEMA timed out")
+    .expect("CREATE SCHEMA failed");
+    let mut transaction = pool.begin().await.expect("BEGIN failed");
+    let advisory_lock = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(780871)")
+        .fetch_one(&mut *transaction)
+        .await
+        .expect("transaction advisory lock failed");
+    assert!(advisory_lock);
+    sqlx::query(&format!(
+        "CREATE TABLE {schema}.transaction_probe (id bigint PRIMARY KEY)"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .expect("transaction DDL failed");
+    transaction.rollback().await.expect("ROLLBACK failed");
+
+    eprintln!("postgres smoke: LISTEN/NOTIFY");
+    let channel = format!(
+        "morphz_smoke_{}_{}",
+        std::process::id(),
+        suffix.unsigned_abs()
+    );
+    let mut listener =
+        tokio::time::timeout(deadline, sqlx::postgres::PgListener::connect(&database_url))
+            .await
+            .expect("PgListener connection timed out")
+            .expect("PgListener connection failed");
+    tokio::time::timeout(deadline, listener.listen(&channel))
+        .await
+        .expect("LISTEN timed out")
+        .expect("LISTEN failed");
+    tokio::time::timeout(
+        deadline,
+        sqlx::query(&format!("NOTIFY {channel}, 'morphz-smoke'")).execute(&pool),
+    )
+    .await
+    .expect("NOTIFY statement timed out")
+    .expect("NOTIFY statement failed");
+    let notification = tokio::time::timeout(deadline, listener.recv())
+        .await
+        .expect("notification delivery timed out")
+        .expect("notification delivery failed");
+    assert_eq!(notification.payload(), "morphz-smoke");
+
+    eprintln!("postgres smoke: cleanup");
+    tokio::time::timeout(
+        deadline,
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&pool),
+    )
+    .await
+    .expect("DROP SCHEMA timed out")
+    .expect("DROP SCHEMA failed");
+}
+
+#[tokio::test]
 async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when_configured() {
     let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
         return;
