@@ -6,6 +6,23 @@ const ephemeralTopics = new Set([
   'runtime/model_request_snapshot',
 ])
 
+const sessionProjectionTopics = new Set([
+  'chat/reply',
+  'chat/no_reply',
+  'chat/cancelled',
+  'chat/runtime_error',
+  'runtime/session_restored',
+])
+
+const catalogTopics = new Set([
+  'runtime/context_seeded',
+  'runtime/session_restored',
+  'runtime/delegation_result',
+  'runtime/delegation_failed',
+  'runtime/context_archived',
+  'runtime/session_archived',
+])
+
 /**
  * WebSocket events are notifications, not a second Projection. Durable events
  * invalidate shared query models; exact streaming/inspect events remain local
@@ -13,15 +30,11 @@ const ephemeralTopics = new Set([
  */
 export function invalidatedQueriesForTopic(topic: string): AuthoritativeQuery[] {
   if (ephemeralTopics.has(topic)) return []
-  const queries: AuthoritativeQuery[] = ['session', 'overview', 'scheduler', 'events']
-  if (
-    topic === 'runtime/context_seeded'
-    || topic === 'runtime/session_restored'
-    || topic === 'runtime/delegation_result'
-    || topic === 'runtime/delegation_failed'
-    || topic === 'runtime/context_archived'
-    || topic === 'runtime/session_archived'
-  ) {
+  const queries: AuthoritativeQuery[] = []
+  if (sessionProjectionTopics.has(topic) || topic === 'chat/context_tx_committed') {
+    queries.push('session', 'overview', 'scheduler')
+  }
+  if (catalogTopics.has(topic)) {
     queries.push('catalog')
   }
   if (topic === 'chat/context_tx_committed' || topic === 'runtime/context_seeded') {
@@ -36,6 +49,7 @@ export function invalidatedQueriesForTopic(topic: string): AuthoritativeQuery[] 
     || topic === 'runtime/model_reasoning_summary'
     || topic === 'chat/tool_output'
   ) {
+    if (!queries.includes('scheduler')) queries.push('scheduler')
     queries.push('thread')
   }
   if (topic.startsWith('runtime/execution') || topic === 'chat/tool_output') {

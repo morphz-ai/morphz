@@ -128,7 +128,7 @@ import { RuntimePage } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
 import { DASHBOARD_API, getDashboardToken } from './api/runtime'
-import { invalidatedQueriesForTopic } from './app/invalidation'
+import { invalidatedQueriesForTopic, type AuthoritativeQuery } from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
 import {
   autoTintDimension,
@@ -3276,7 +3276,7 @@ export default function App() {
     else request.resolve(typeof value === 'string' ? value : null)
     window.setTimeout(() => request.returnFocus?.focus(), 0)
   }, [])
-  const authoritativeRefreshRef = useRef<(topic: string) => void>(() => {})
+  const authoritativeRefreshRef = useRef<(queries: readonly AuthoritativeQuery[]) => void>(() => {})
 
   useEffect(() => {
     activeViewRef.current = view
@@ -4419,8 +4419,7 @@ export default function App() {
   }, [cognitionView, loadMindTransactions, selectedContextId, view])
 
   useEffect(() => {
-    authoritativeRefreshRef.current = (topic: string) => {
-      const invalidated = invalidatedQueriesForTopic(topic)
+    authoritativeRefreshRef.current = (invalidated: readonly AuthoritativeQuery[]) => {
       if (invalidated.includes('catalog')) void loadCatalog()
       const refreshesSession = invalidated.includes('session')
       if (refreshesSession) void loadSession(selectedSessionId, selectedContextId)
@@ -4475,11 +4474,21 @@ export default function App() {
     let refreshTimer: number | undefined
     let streamTimer: number | undefined
     let pendingStreamEvents: ModelStreamBatchItem[] = []
+    const pendingAuthoritativeQueries = new Set<AuthoritativeQuery>()
     let disposed = false
     const scheduleAuthoritativeRefresh = (topic: string) => {
+      for (const query of invalidatedQueriesForTopic(topic)) {
+        pendingAuthoritativeQueries.add(query)
+      }
+      if (pendingAuthoritativeQueries.size === 0) return
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
       refreshTimer = window.setTimeout(
-        () => authoritativeRefreshRef.current(topic),
+        () => {
+          refreshTimer = undefined
+          const queries = Array.from(pendingAuthoritativeQueries)
+          pendingAuthoritativeQueries.clear()
+          authoritativeRefreshRef.current(queries)
+        },
         750,
       )
     }
@@ -4699,6 +4708,7 @@ export default function App() {
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
       if (streamTimer !== undefined) window.clearTimeout(streamTimer)
+      pendingAuthoritativeQueries.clear()
       pendingStreamEvents = []
       socket?.close()
     }
