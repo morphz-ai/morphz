@@ -783,6 +783,7 @@ impl ActivationStore for PostgresStore {
                     execution_path: format!(
                         "{fast_execution_path};server_duration_micros={server_duration_micros}"
                     ),
+                    fresh_activation: true,
                 });
             }
             execution_path = format!(
@@ -947,6 +948,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: None,
                 execution_path,
+                fresh_activation: false,
             });
         }
         if stored_signal.thread_id != signal.thread_id {
@@ -1037,6 +1039,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: Some(existing),
                 execution_path,
+                fresh_activation: false,
             });
         }
 
@@ -1090,6 +1093,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: Some(existing),
                 execution_path,
+                fresh_activation: false,
             });
         }
 
@@ -1179,6 +1183,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: None,
                 execution_path,
+                fresh_activation: false,
             });
         }
         if thread.control_state == crate::memory::ThreadControlState::Paused {
@@ -1186,6 +1191,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: None,
                 execution_path,
+                fresh_activation: false,
             });
         }
         sqlx::query(
@@ -1237,6 +1243,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: Some(existing),
                 execution_path,
+                fresh_activation: false,
             });
         }
         if sqlx::query_scalar::<_, bool>(
@@ -1253,6 +1260,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: None,
                 execution_path,
+                fresh_activation: false,
             });
         }
         let pending = sqlx::query(
@@ -1268,6 +1276,7 @@ impl ActivationStore for PostgresStore {
             return Ok(ThreadSignalBatchClaim {
                 activation: None,
                 execution_path,
+                fresh_activation: false,
             });
         }
         let primary = signal_from_row(&pending[0])?;
@@ -1409,6 +1418,7 @@ impl ActivationStore for PostgresStore {
         Ok(ThreadSignalBatchClaim {
             activation: Some(created),
             execution_path,
+            fresh_activation: false,
         })
     }
 

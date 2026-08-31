@@ -1779,6 +1779,11 @@ pub struct NewThreadSignal {
 pub struct ThreadSignalBatchClaim {
     pub activation: Option<ThreadActivationRecord>,
     pub execution_path: String,
+    /// True only when the Store proved that this claim created a brand-new
+    /// DialogueTurn Activation from exactly one fresh user-message Signal.
+    /// Callers may use this proof to skip recovery-only reads; it is never a
+    /// substitute for the durable Activation itself.
+    pub fresh_activation: bool,
 }
 
 /// Stable scheduler identity for the one mailbox Signal caused by an
@@ -6143,6 +6148,7 @@ pub trait ActivationStore: Send + Sync {
                 .claim_thread_signal_batch(signal, activation, max_signals)
                 .await?,
             execution_path: "store_general".to_string(),
+            fresh_activation: false,
         })
     }
     async fn list_signal_outbox(

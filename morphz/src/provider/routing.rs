@@ -385,6 +385,7 @@ pub struct RoutedClient {
     account_store: RwLock<Option<Arc<dyn ProviderAccountStateStore>>>,
     auth_manager: RwLock<Option<Arc<ProviderAuthManager>>>,
     clients: Mutex<HashMap<String, Arc<ProtocolClient>>>,
+    prompt_counters: Mutex<HashMap<String, Arc<ProtocolClient>>>,
 }
 
 impl RoutedClient {
@@ -422,6 +423,7 @@ impl RoutedClient {
             account_store: RwLock::new(None),
             auth_manager: RwLock::new(None),
             clients: Mutex::new(HashMap::new()),
+            prompt_counters: Mutex::new(HashMap::new()),
         }
     }
 
@@ -437,6 +439,7 @@ impl RoutedClient {
             account_store: RwLock::new(None),
             auth_manager: RwLock::new(None),
             clients: Mutex::new(HashMap::new()),
+            prompt_counters: Mutex::new(HashMap::new()),
         })
     }
 
@@ -589,6 +592,82 @@ impl RoutedClient {
             .read()
             .map(|catalog| catalog.clone())
             .map_err(|_| "Provider routing table lock is poisoned".to_string())
+    }
+
+    /// Builds the protocol's local Prompt counter without crossing the
+    /// request-binding boundary. In particular, this path deliberately does
+    /// not consult or mutate the durable Provider account store and does not
+    /// materialize OAuth credentials. Counting serializes a request locally;
+    /// authentication is relevant only when the real attempt is bound.
+    fn local_prompt_counter(
+        &self,
+        requested_model: Option<&str>,
+        scope: &str,
+    ) -> Result<Arc<ProtocolClient>, ProviderError> {
+        let alias = requested_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .map_or_else(|| self.alias(), Ok)?;
+        let catalog = self.catalog()?;
+        let (route_id, route) = catalog.resolve_route(&alias)?;
+        let request = ModelRequestContext {
+            context_id: scope.to_string(),
+            session_id: scope.to_string(),
+            attempt_id: format!("measurement:{scope}"),
+            objective_id: None,
+            required_capabilities: Vec::new(),
+        };
+        let (candidate, _) =
+            self.select_candidate_and_account_local(&catalog, route_id, route, &request)?;
+        let provider = catalog
+            .provider_instances
+            .get(&candidate.provider)
+            .expect("validated route provider");
+        let cache_key = format!(
+            "{}:{}:{}:{}",
+            candidate.provider, provider.adapter, candidate.model, route_id
+        );
+        if let Some(client) = self
+            .prompt_counters
+            .lock()
+            .map_err(|_| "Prompt counter cache lock is poisoned")?
+            .get(&cache_key)
+            .cloned()
+        {
+            return Ok(client);
+        }
+        let physical = ProviderConfig {
+            protocol: provider.protocol,
+            base_url: provider.base_url.clone(),
+            credential: None,
+            models: provider.models.clone(),
+            headers: provider.headers.clone(),
+            // Sensitive transport headers are unnecessary for local request
+            // serialization and resolving them here would violate the Client
+            // token-counter contract.
+            env_headers: BTreeMap::new(),
+        };
+        let llm = self
+            .llm
+            .read()
+            .map_err(|_| "LLM configuration lock is poisoned")?
+            .clone();
+        let client = Arc::new(ProtocolClient::new_with_adapter(
+            &physical,
+            &provider.adapter,
+            candidate.model,
+            None,
+            &llm,
+        )?);
+        let mut counters = self
+            .prompt_counters
+            .lock()
+            .map_err(|_| "Prompt counter cache lock is poisoned")?;
+        Ok(counters
+            .entry(cache_key)
+            .or_insert_with(|| Arc::clone(&client))
+            .clone())
     }
 
     fn candidate_accounts<'a>(
@@ -748,23 +827,28 @@ impl RoutedClient {
         account_id: &str,
         config: &AuthAccountConfig,
     ) -> Result<DurableAccountAvailability, ModelAttemptBindingError> {
-        let account_state =
-            store
-                .get_provider_account_state(account_id)
-                .await
-                .map_err(|error| {
-                    ModelAttemptBindingError::runtime(format!(
-                        "failed to read Provider Account '{account_id}' state: {error}"
-                    ))
-                })?;
-        let route_state = store
-            .get_provider_route_account_state(route_id, account_id)
-            .await
-            .map_err(|error| {
-                ModelAttemptBindingError::runtime(format!(
-                    "failed to read Model Route '{route_id}' Provider Account '{account_id}' state: {error}"
-                ))
-            })?;
+        let (account_state, route_state) = tokio::try_join!(
+            async {
+                store
+                    .get_provider_account_state(account_id)
+                    .await
+                    .map_err(|error| {
+                        ModelAttemptBindingError::runtime(format!(
+                            "failed to read Provider Account '{account_id}' state: {error}"
+                        ))
+                    })
+            },
+            async {
+                store
+                    .get_provider_route_account_state(route_id, account_id)
+                    .await
+                    .map_err(|error| {
+                        ModelAttemptBindingError::runtime(format!(
+                            "failed to read Model Route '{route_id}' Provider Account '{account_id}' state: {error}"
+                        ))
+                    })
+            },
+        )?;
         let last_used = route_state
             .as_ref()
             .and_then(|state| state.last_used_at)
@@ -1554,6 +1638,10 @@ impl Client for RoutedClient {
             .lock()
             .map_err(|_| "Provider Client cache lock is poisoned".to_string())?
             .clear();
+        self.prompt_counters
+            .lock()
+            .map_err(|_| "Prompt counter cache lock is poisoned".to_string())?
+            .clear();
         if let Ok(mut state) = self.state.lock() {
             state.affinity.clear();
         }
@@ -1666,6 +1754,10 @@ impl Client for RoutedClient {
         self.clients
             .lock()
             .map_err(|_| "Provider Client cache lock is poisoned".to_string())?
+            .clear();
+        self.prompt_counters
+            .lock()
+            .map_err(|_| "Prompt counter cache lock is poisoned".to_string())?
             .clear();
         Ok(())
     }
@@ -1929,17 +2021,19 @@ impl Client for RoutedClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<Option<PromptTokenCount>, ProviderError> {
-        let binding = self
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: scope.to_string(),
-                session_id: scope.to_string(),
-                attempt_id: format!("measurement:{scope}"),
-                objective_id: None,
-                required_capabilities: Vec::new(),
-            })
-            .await?;
-        self.protocol_client(&binding)
-            .await?
+        self.local_prompt_counter(None, scope)?
+            .count_prompt_tokens(scope, messages, tools)
+            .await
+    }
+
+    async fn count_prompt_tokens_for_requested_model(
+        &self,
+        scope: &str,
+        requested_model: Option<&str>,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<Option<PromptTokenCount>, ProviderError> {
+        self.local_prompt_counter(requested_model, scope)?
             .count_prompt_tokens(scope, messages, tools)
             .await
     }
@@ -2107,6 +2201,60 @@ mod tests {
             },
         );
         app
+    }
+
+    #[tokio::test]
+    async fn routed_prompt_measurement_is_local_and_honors_the_requested_alias() {
+        let mut config = routed_config();
+        config.model_routes.insert(
+            "review-primary".to_string(),
+            ModelRouteConfig {
+                aliases: vec!["review".to_string()],
+                candidates: vec![ModelRouteCandidateConfig {
+                    provider: "direct".to_string(),
+                    model: "physical-model-review".to_string(),
+                    priority: 10,
+                    ..ModelRouteCandidateConfig::default()
+                }],
+                ..ModelRouteConfig::default()
+            },
+        );
+        config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .models
+            .insert(
+                "physical-model-review".to_string(),
+                ProviderModelConfig::default(),
+            );
+        let client = RoutedClient::new(&config, "coding".to_string()).unwrap();
+        let first_counter = client
+            .local_prompt_counter(Some("review"), "measurement-scope")
+            .unwrap();
+        let reused_counter = client
+            .local_prompt_counter(Some("review"), "another-scope")
+            .unwrap();
+        assert!(Arc::ptr_eq(&first_counter, &reused_counter));
+        let count = client
+            .count_prompt_tokens_for_requested_model(
+                "measurement-scope",
+                Some("review"),
+                &[Message {
+                    role: "user".to_string(),
+                    content: "measure locally".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(count.model, "physical-model-review");
+        assert!(count.tokens > 0);
     }
 
     #[test]

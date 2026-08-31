@@ -2158,6 +2158,10 @@ fn model_binding_completion_error(error: ModelAttemptBindingError) -> ModelCompl
 
 struct AdmittedThreadActivation {
     record: ThreadActivationRecord,
+    /// Store-backed proof that this is a brand-new, one-Signal DialogueTurn.
+    /// It permits recovery-only reads to be skipped without weakening the
+    /// general scheduler path used by retries and continuations.
+    fresh_activation: bool,
     /// Dropping this permit is the physical transition back out of the
     /// single-node running set.  It must span terminal persistence.
     _permit: ActivationAdmissionPermit,
@@ -7592,6 +7596,7 @@ impl Orchestrator {
             );
             return Ok(());
         };
+        let fresh_activation = admitted.fresh_activation;
         let activation = admitted.record;
         let activation_admission = Arc::new(ActivationAdmissionSlot::new(admitted._permit));
 
@@ -7706,24 +7711,26 @@ impl Orchestrator {
                 (None, None, None)
             }
             result = async {
-            if let Some(thread) = self
-                .context_engine
-                .session_store()
-                .ok_or("Thread requires a persistent SessionStore")?
-                .get_thread_by_root(&activation.root_turn_id)
-                .await?
-            {
-                if thread.lifecycle.is_terminal() {
-                    tracing::debug!(
-                        root_turn_id = %activation.root_turn_id,
-                        event_id = %event.id,
-                        event_code = "orchestrator.mailbox_wake.thread_terminal",
-                        "Suppressed a late mailbox wake for a terminal Thread"
-                    );
-                    return Ok(());
+            if !fresh_activation {
+                if let Some(thread) = self
+                    .context_engine
+                    .session_store()
+                    .ok_or("Thread requires a persistent SessionStore")?
+                    .get_thread_by_root(&activation.root_turn_id)
+                    .await?
+                {
+                    if thread.lifecycle.is_terminal() {
+                        tracing::debug!(
+                            root_turn_id = %activation.root_turn_id,
+                            event_id = %event.id,
+                            event_code = "orchestrator.mailbox_wake.thread_terminal",
+                            "Suppressed a late mailbox wake for a terminal Thread"
+                        );
+                        return Ok(());
+                    }
                 }
             }
-            self.run_attempt(&session_id, &activation).await
+            self.run_attempt(&session_id, &activation, fresh_activation).await
             } => (Some(result), None, None),
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
@@ -8185,6 +8192,7 @@ impl Orchestrator {
         // That transition is performed in run_attempt from the persisted plan,
         // never inferred from a process-local gate.
         let existing_thread = session_store.get_thread_by_root(&root_turn_id).await?;
+        let thread_preexisted = existing_thread.is_some();
         let requested_target_id = if event.event_type == TYPE_USER_MESSAGE {
             event
                 .payload
@@ -8239,25 +8247,59 @@ impl Orchestrator {
             })
         };
         let ensure_thread_started = Instant::now();
-        let thread = session_store
-            .ensure_thread(NewThread {
-                id: stable_thread_id(&root_turn_id),
-                agent_id: session.agent_id.clone(),
-                context_id: session.context_id.clone(),
-                session_id: session.id.clone(),
-                initiating_principal_id: initiating_principal_id.clone(),
-                root_turn_id: root_turn_id.clone(),
-                kind: initial_thread_kind,
-                executor_kind: if plan_execution_id.is_some() {
-                    "plan_infer".to_string()
-                } else {
-                    "self".to_string()
-                },
-                executor_id: plan_execution_id,
-                target_id: initial_target_id,
-                supervision,
-            })
-            .await?;
+        let new_thread = NewThread {
+            id: stable_thread_id(&root_turn_id),
+            agent_id: session.agent_id.clone(),
+            context_id: session.context_id.clone(),
+            session_id: session.id.clone(),
+            initiating_principal_id: initiating_principal_id.clone(),
+            root_turn_id: root_turn_id.clone(),
+            kind: initial_thread_kind,
+            executor_kind: if plan_execution_id.is_some() {
+                "plan_infer".to_string()
+            } else {
+                "self".to_string()
+            },
+            executor_id: plan_execution_id,
+            target_id: initial_target_id,
+            supervision,
+        };
+        let thread = if event.event_type == TYPE_USER_MESSAGE {
+            // Normal user ingress creates the root Thread in the same durable
+            // transaction as the Event. Re-running `ensure_thread` here was a
+            // redundant database round trip. The scheduler may trust that
+            // fact only after proving every immutable routing field matches;
+            // direct/trusted Event publishers without that Thread retain the
+            // authoritative `ensure_thread` fallback below.
+            match existing_thread {
+                Some(existing)
+                    if existing.id == new_thread.id
+                        && existing.agent_id == new_thread.agent_id
+                        && existing.context_id == new_thread.context_id
+                        && existing.session_id == new_thread.session_id
+                        && existing.initiating_principal_id
+                            == new_thread.initiating_principal_id
+                        && existing.root_turn_id == new_thread.root_turn_id
+                        && existing.kind == new_thread.kind
+                        && existing.executor_kind == new_thread.executor_kind
+                        && existing.executor_id == new_thread.executor_id
+                        && existing.target_id == new_thread.target_id
+                        && existing.supervision == new_thread.supervision =>
+                {
+                    existing
+                }
+                Some(existing) => {
+                    return Err(format!(
+                        "User Message Event '{}' resolved to incompatible existing Thread '{}'",
+                        event.id, existing.id
+                    )
+                    .into());
+                }
+                None => session_store.ensure_thread(new_thread).await?,
+            }
+        } else {
+            session_store.ensure_thread(new_thread).await?
+        };
         self.observability.record_turn_stage(
             &root_turn_id,
             Some(&session.context_id),
@@ -8273,71 +8315,92 @@ impl Orchestrator {
         // prevents the old timer from manufacturing a second wake while that
         // legitimate signal waits for admission. The timeout Event itself is
         // already owned by the claimed Timer and must not cancel itself.
-        let cancel_wait_started = Instant::now();
-        if event
-            .payload
-            .get("wake_kind")
-            .and_then(serde_json::Value::as_str)
-            != Some("thread_wait_timeout")
-        {
-            if let Err(error) = self.cancel_thread_wait(&thread.id).await {
-                tracing::warn!(
-                    thread_id = %thread.id,
-                    event_id = %event.id,
-                    %error,
-                    event_code = "orchestrator.thread_wait.cancel_failed",
-                    "A real Thread signal arrived but its fallback wait Timer could not be cancelled"
-                );
-            }
-        }
-        self.observability.record_turn_stage(
-            &root_turn_id,
-            Some(&session.context_id),
-            Some(&session.id),
-            "scheduler.cancel_thread_wait",
-            cancel_wait_started.elapsed(),
-            "ok",
-            None,
-        );
         let activation_id = stable_thread_activation_id(&event.id);
         let signal_id = crate::memory::stable_thread_signal_id(&event.id);
-        let claim_signal_started = Instant::now();
-        let claim = session_store
-            .claim_thread_signal_batch_observed(
-                NewThreadSignal {
-                    id: signal_id,
-                    thread_id: thread.id,
-                    thread_generation: thread.generation,
-                    event_id: event.id.clone(),
-                    principal_id: initiating_principal_id.clone(),
-                    sequence: trigger_sequence,
-                    kind: event.topic.clone(),
-                    parent_activation_id: parent_activation_id.clone(),
-                },
-                NewThreadActivation {
-                    id: activation_id,
-                    agent_id: session.agent_id.clone(),
-                    context_id: session.context_id.clone(),
-                    session_id: session.id.clone(),
-                    initiating_principal_id,
-                    trigger_event_id: event.id.clone(),
-                    trigger_sequence,
-                    trigger_kind: event.topic.clone(),
-                    parent_activation_id,
-                    root_turn_id: root_turn_id.clone(),
-                },
-                crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
-            )
-            .await?;
-        self.observability.record_turn_stage(
-            &root_turn_id,
-            Some(&session.context_id),
-            Some(&session.id),
-            "scheduler.claim_signal_batch",
-            claim_signal_started.elapsed(),
-            "ok",
-            Some(claim.execution_path.as_str()),
-        );
+        // Cancellation and durable signal claim are independent operations.
+        // Start both immediately: the real signal still races the fallback
+        // timer at routing time, while neither database round trip serially
+        // delays the other.
+        let cancel_wait = async {
+            let started = Instant::now();
+            let result = if thread_preexisted
+                && event
+                    .payload
+                    .get("wake_kind")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("thread_wait_timeout")
+            {
+                self.cancel_thread_wait(&thread.id).await
+            } else {
+                Ok(())
+            };
+            self.observability.record_turn_stage(
+                &root_turn_id,
+                Some(&session.context_id),
+                Some(&session.id),
+                "scheduler.cancel_thread_wait",
+                started.elapsed(),
+                if result.is_ok() { "ok" } else { "error" },
+                None,
+            );
+            result
+        };
+        let claim_signal = async {
+            let started = Instant::now();
+            let result = session_store
+                .claim_thread_signal_batch_observed(
+                    NewThreadSignal {
+                        id: signal_id,
+                        thread_id: thread.id.clone(),
+                        thread_generation: thread.generation,
+                        event_id: event.id.clone(),
+                        principal_id: initiating_principal_id.clone(),
+                        sequence: trigger_sequence,
+                        kind: event.topic.clone(),
+                        parent_activation_id: parent_activation_id.clone(),
+                    },
+                    NewThreadActivation {
+                        id: activation_id,
+                        agent_id: session.agent_id.clone(),
+                        context_id: session.context_id.clone(),
+                        session_id: session.id.clone(),
+                        initiating_principal_id,
+                        trigger_event_id: event.id.clone(),
+                        trigger_sequence,
+                        trigger_kind: event.topic.clone(),
+                        parent_activation_id,
+                        root_turn_id: root_turn_id.clone(),
+                    },
+                    crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
+                )
+                .await;
+            let detail = result
+                .as_ref()
+                .ok()
+                .map(|claim| claim.execution_path.as_str());
+            self.observability.record_turn_stage(
+                &root_turn_id,
+                Some(&session.context_id),
+                Some(&session.id),
+                "scheduler.claim_signal_batch",
+                started.elapsed(),
+                if result.is_ok() { "ok" } else { "error" },
+                detail,
+            );
+            result
+        };
+        let (cancel_result, claim_result) = tokio::join!(cancel_wait, claim_signal);
+        if let Err(error) = cancel_result {
+            tracing::warn!(
+                thread_id = %thread.id,
+                event_id = %event.id,
+                %error,
+                event_code = "orchestrator.thread_wait.cancel_failed",
+                "A real Thread signal arrived but its fallback wait Timer could not be cancelled"
+            );
+        }
+        let claim = claim_result?;
+        let fresh_activation = claim.fresh_activation;
         let Some(activation) = claim.activation else {
             return Ok(None);
         };
@@ -8438,6 +8501,7 @@ impl Orchestrator {
                 self.arm_activation_lease(&claimed).await?;
                 Ok(Some(AdmittedThreadActivation {
                     record: claimed,
+                    fresh_activation,
                     _permit: admission_permit,
                 }))
             }
@@ -10043,6 +10107,7 @@ impl Orchestrator {
         context: &mut ContextView,
         messages: &mut [Message],
         tools: &[crate::llm::ToolDefinition],
+        requested_model: Option<&str>,
         context_message_prefix: &str,
         context_overlay: EvaluationContextOverlay<'_>,
     ) -> Result<Option<PromptTokenCount>, DynError> {
@@ -10055,7 +10120,12 @@ impl Orchestrator {
         let token_scope = format!("{}:{}", context.context_id, context.active_session_id);
         let measurement = tokio::time::timeout_at(measurement_deadline, async {
             self.client
-                .count_prompt_tokens(&token_scope, messages, tools)
+                .count_prompt_tokens_for_requested_model(
+                    &token_scope,
+                    requested_model,
+                    messages,
+                    tools,
+                )
                 .await
         })
         .await;
@@ -10346,18 +10416,10 @@ impl Orchestrator {
         &self,
         session_id: &str,
         activation: &ThreadActivationRecord,
+        persisted_boundary: Option<&Event>,
     ) -> Result<bool, DynError> {
         let assistant_event_id = format!("call_{}", activation.id);
-        let final_event_id = format!("call_{}_final", activation.id);
-        let assistant_call = self
-            .context_engine
-            .find_event(&activation.context_id, &final_event_id)
-            .await?
-            .or(self
-                .context_engine
-                .find_event(&activation.context_id, &assistant_event_id)
-                .await?);
-        let Some(assistant_call) = assistant_call else {
+        let Some(assistant_call) = persisted_boundary else {
             return Ok(false);
         };
         if assistant_call.topic != "chat/assistant_call" {
@@ -10643,13 +10705,19 @@ impl Orchestrator {
         &'a self,
         session_id: &'a str,
         activation: &'a ThreadActivationRecord,
+        fresh_activation: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DynError>> + Send + 'a>>
     {
         Box::pin(async move {
             let mut refresh_context_snapshot = false;
             loop {
                 match self
-                    .run_attempt_inner(session_id, activation, refresh_context_snapshot)
+                    .run_attempt_inner(
+                        session_id,
+                        activation,
+                        refresh_context_snapshot,
+                        fresh_activation,
+                    )
                     .await
                 {
                     Err(error)
@@ -10671,6 +10739,7 @@ impl Orchestrator {
         session_id: &str,
         activation: &ThreadActivationRecord,
         refresh_context_snapshot: bool,
+        fresh_activation: bool,
     ) -> Result<(), DynError> {
         let recovery_scan_started = Instant::now();
         let attempt_id = activation.id.clone();
@@ -10690,6 +10759,13 @@ impl Orchestrator {
             self.context_engine
                 .find_event(&activation.context_id, &activation.trigger_event_id),
         )?;
+        // Preserve this Activation's own recovery boundary before resolving a
+        // parent assistant plan for continuation semantics. Recovery used to
+        // perform the same two point reads again inside
+        // `resume_persisted_activation`, adding authority-free remote RTTs.
+        let persisted_current_boundary = persisted_final_response
+            .clone()
+            .or_else(|| persisted_assistant_call.clone());
         let root_event = if activation.root_turn_id == activation.trigger_event_id {
             trigger_event.clone()
         } else {
@@ -10992,7 +11068,11 @@ impl Orchestrator {
         };
         if (!recovering_completion_intent || persisted_final_response.is_some())
             && self
-                .resume_persisted_activation(session_id, activation)
+                .resume_persisted_activation(
+                    session_id,
+                    activation,
+                    persisted_current_boundary.as_ref(),
+                )
                 .await?
         {
             if let Some(lease) = dialogue_lease.as_mut() {
@@ -11046,16 +11126,37 @@ impl Orchestrator {
         // ContextDelta encoder before the ordinary one-shot continuation path
         // excludes the same outputs from the canonical Context message.
         let prompt_cache_context_observations = context.observations.clone();
-        let (mut continuation, attachment_message) = tokio::try_join!(
-            self.tool_continuation_for_trigger(
-                session_id,
-                Some(&activation.root_turn_id),
-                Some(&activation.trigger_event_id),
-                &context.state.retired,
-                &prompt_cache_context_observations,
-            ),
-            self.model_attachment_message(activation),
-        )?;
+        let fresh_trigger_has_attachments = fresh_activation
+            && trigger_event.as_ref().is_some_and(|event| {
+                event
+                    .payload
+                    .get("attachments")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|items| !items.is_empty())
+                    || !model_visible_attachment_references(&serde_json::Value::Object(
+                        event.payload.clone(),
+                    ))
+                    .is_empty()
+            });
+        let (mut continuation, attachment_message) = if fresh_activation {
+            let attachment_message = if fresh_trigger_has_attachments {
+                self.model_attachment_message(activation).await?
+            } else {
+                None
+            };
+            (ToolContinuationEnvelope::default(), attachment_message)
+        } else {
+            tokio::try_join!(
+                self.tool_continuation_for_trigger(
+                    session_id,
+                    Some(&activation.root_turn_id),
+                    Some(&activation.trigger_event_id),
+                    &context.state.retired,
+                    &prompt_cache_context_observations,
+                ),
+                self.model_attachment_message(activation),
+            )?
+        };
         let continuation_messages = continuation.messages.clone();
         if !continuation.delivered_output_ids.is_empty() {
             context = self
@@ -11281,6 +11382,7 @@ impl Orchestrator {
                 &mut context,
                 &mut measurement_messages,
                 &measurement_tools,
+                Some(&activation_model_alias),
                 context_message_prefix,
                 measurement_overlay,
             )
@@ -11801,9 +11903,15 @@ impl Orchestrator {
             }
         }
         let mut base_protocol_messages = messages;
-        let restored_reasoning = self
-            .restore_reasoning_continuation_state(&context_id, session_id, &activation.id)
-            .await?;
+        let restored_reasoning = if fresh_activation {
+            DurableReasoningContinuationState {
+                provider_continuation_chain_complete: true,
+                ..Default::default()
+            }
+        } else {
+            self.restore_reasoning_continuation_state(&context_id, session_id, &activation.id)
+                .await?
+        };
         let mut protocol_messages = base_protocol_messages.clone();
         // New records persist the exact physical model that owns the opaque
         // continuation. Legacy records predate request-boundary switching, so

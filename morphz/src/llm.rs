@@ -1098,6 +1098,21 @@ pub trait Client: Send + Sync {
         Ok(None)
     }
 
+    /// Measures a Prompt for an explicitly requested logical model without
+    /// binding an Evaluation attempt. The default preserves direct-client
+    /// behavior; routed clients override this to resolve the logical route
+    /// entirely in memory. Token measurement is advisory and must never
+    /// mutate durable account affinity or perform remote authentication.
+    async fn count_prompt_tokens_for_requested_model(
+        &self,
+        scope: &str,
+        _requested_model: Option<&str>,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<Option<PromptTokenCount>, Box<dyn std::error::Error + Send + Sync>> {
+        self.count_prompt_tokens(scope, messages, tools).await
+    }
+
     async fn create_completion(
         &self,
         messages: Vec<Message>,
