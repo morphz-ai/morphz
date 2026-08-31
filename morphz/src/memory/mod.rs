@@ -760,6 +760,58 @@ pub struct ContextEncodingProjectionSnapshot {
     pub events: Vec<crate::event::Event>,
 }
 
+/// Storage-level selection contract for the Session portion of one Context
+/// build.  The Runtime must never load the complete Session registry merely to
+/// apply these predicates in memory.  Additional ownership or tenant scopes
+/// belong here so every backend can push them into its bounded query.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextRuntimeSessionFilter {
+    /// When present, restricts automatic Session projection to Sessions with
+    /// at least one active binding to one of these Principal IDs. This is one
+    /// optional predicate among an extensible set, not the Runtime default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextRuntimeDirectoryRequest {
+    pub context_id: String,
+    pub active_session_id: String,
+    pub active_after: DateTime<Utc>,
+    pub max_full_sessions: usize,
+    pub max_metadata_sessions: usize,
+    /// Empty by default: the Agent can project Sessions from every Principal
+    /// mounted to this Context. Product-specific views may opt into one or
+    /// more storage-level predicates without changing the shared default.
+    #[serde(default)]
+    pub session_filter: ContextRuntimeSessionFilter,
+}
+
+impl ContextRuntimeDirectoryRequest {
+    pub fn normalized(mut self) -> Self {
+        self.max_full_sessions = self.max_full_sessions.max(1);
+        self.max_metadata_sessions = self.max_metadata_sessions.max(1);
+        if let Some(principal_ids) = &mut self.session_filter.principal_ids {
+            principal_ids.sort();
+            principal_ids.dedup();
+        }
+        self
+    }
+}
+
+/// Counts computed inside the same bounded directory query. They describe
+/// Sessions inside the caller's visibility scope; a Principal filter must not
+/// leak the number or state of Sessions outside that scope.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextRuntimeSessionExclusions {
+    pub archived: usize,
+    pub retired: usize,
+    pub isolated: usize,
+    pub outside_window: usize,
+    pub over_count: usize,
+    pub metadata_over_count: usize,
+}
+
 /// One statement-consistent directory snapshot consumed by Context Encoding.
 ///
 /// These records used to be loaded through seven independent Store calls. On
@@ -780,6 +832,7 @@ pub struct ContextRuntimeDirectorySnapshot {
     /// the bounded observation projection is loaded. `None` is supported only
     /// for lazy migration of a legacy Event-only Context.
     pub mind: Option<MindProjectionRecord>,
+    pub session_exclusions: ContextRuntimeSessionExclusions,
     pub sessions: Vec<SessionRecord>,
     pub objectives: Vec<ObjectiveRecord>,
     pub work_assignments: Vec<WorkAssignmentRecord>,
@@ -794,6 +847,7 @@ impl ContextRuntimeDirectorySnapshot {
         context: CognitiveContextRecord,
         cognitive_clock: ContextCognitiveClock,
         mind: Option<MindProjectionRecord>,
+        session_exclusions: ContextRuntimeSessionExclusions,
         sessions: Vec<SessionRecord>,
         objectives: Vec<ObjectiveRecord>,
         work_assignments: Vec<WorkAssignmentRecord>,
@@ -807,6 +861,7 @@ impl ContextRuntimeDirectorySnapshot {
             &context,
             &cognitive_clock,
             &mind,
+            &session_exclusions,
             &sessions,
             &objectives,
             &work_assignments,
@@ -820,6 +875,7 @@ impl ContextRuntimeDirectorySnapshot {
             context,
             cognitive_clock,
             mind,
+            session_exclusions,
             sessions,
             objectives,
             work_assignments,
@@ -968,7 +1024,7 @@ pub trait ContextRuntimeSnapshotStore: Send + Sync {
 
     async fn read_context_runtime_directory_snapshot(
         &self,
-        context_id: &str,
+        request: &ContextRuntimeDirectoryRequest,
     ) -> Result<Option<ContextRuntimeDirectorySnapshot>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Reads the exact bounded scheduler graph used by one Context build from

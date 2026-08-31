@@ -16,9 +16,9 @@ use morphz::memory::{
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStatus, CapabilityLeaseStore,
     CognitiveClockStore, ContextActivationCausalitySnapshot, ContextExecutionResourcesSnapshot,
-    ContextRuntimeDirectorySnapshot, ContextRuntimeSchedulerSnapshot, DelegationFilter,
-    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
-    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
+    ContextRuntimeDirectoryRequest, ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionFilter,
+    DelegationFilter, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
+    DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
     ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
     ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
@@ -9464,42 +9464,49 @@ where
         .await
         .unwrap()
         .expect("conformance Context must exist");
-    let expected = ContextRuntimeDirectorySnapshot::from_components(
-        context,
-        store.get_context_cognitive_clock(context_id).await.unwrap(),
-        store.get_mind_projection(context_id).await.unwrap(),
-        store.list_context_sessions(context_id, true).await.unwrap(),
-        store
-            .list_context_objectives(context_id, false)
-            .await
-            .unwrap(),
-        store
-            .list_context_work_assignments(context_id, None, false, 32)
-            .await
-            .unwrap(),
-        store
-            .list_context_capability_bindings(context_id)
-            .await
-            .unwrap(),
-        store
-            .list_context_thread_activations(context_id, false)
-            .await
-            .unwrap(),
-        store
-            .list_context_principal_bindings(context_id)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let request = ContextRuntimeDirectoryRequest {
+        context_id: context_id.to_string(),
+        active_session_id: "conformance-session".to_string(),
+        active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+        max_full_sessions: 50,
+        max_metadata_sessions: 50,
+        session_filter: ContextRuntimeSessionFilter::default(),
+    };
     let actual = store
-        .read_context_runtime_directory_snapshot(context_id)
+        .read_context_runtime_directory_snapshot(&request)
         .await
         .unwrap()
         .expect("directory snapshot must exist");
-    assert_eq!(actual, expected);
+    assert_eq!(actual.context, context);
+    assert_eq!(
+        actual.cognitive_clock,
+        store.get_context_cognitive_clock(context_id).await.unwrap()
+    );
+    assert_eq!(
+        actual.mind,
+        store.get_mind_projection(context_id).await.unwrap()
+    );
+    assert!(actual.sessions.len() <= 100);
+    assert!(actual
+        .sessions
+        .iter()
+        .any(|session| session.id == "conformance-session"));
+    let selected_ids = actual
+        .sessions
+        .iter()
+        .map(|session| session.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(actual
+        .principal_bindings
+        .iter()
+        .all(|binding| selected_ids.contains(binding.session_id.as_str())));
     assert_eq!(
         store
-            .read_context_runtime_directory_snapshot("missing-context")
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: "missing-context".to_string(),
+                active_session_id: "missing-session".to_string(),
+                ..request
+            })
             .await
             .unwrap(),
         None

@@ -129,10 +129,20 @@ context_id
 current_session_id
 evaluation_started_at
 context_token_budget
-Session Registry
-Session Attention State
+active_window
+max_sessions
+optional Session predicates
 active Objective / Tool Task / pending input metadata
 ```
+
+SQLite 与 PostgreSQL 必须在存储查询中执行 Session 候选筛选、排序和数量限制；Runtime
+只接收本次 Full Projection 与有界 metadata-only 投影，不得先加载完整 Session Registry
+再在进程内过滤。数据库可以扫描满足索引前缀的候选行来计算排除计数，但返回与反序列化的
+Session 行数必须由请求上限约束。
+
+可选 Session predicates 是查询能力，不是默认产品政策。例如调用方未来可以显式传入
+Principal 范围以构建某类隔离视图；默认值不按 Principal 过滤，同一 Agent Context 仍可
+同时投影来自不同 Principal 的 Session，这也是 Shared Mind 多主体协作的既有语义。
 
 ### 5.2 候选集
 
@@ -145,6 +155,9 @@ AND last_activity_at >= evaluation_started_at - active_window
 ```
 
 当前 Session 是例外：它必须先完成自动 restore，再无条件进入候选集，不受时间窗口限制。
+
+当前默认策略是最近 `24h`、最多 `50` 个 Full Projection Session。Principal、来源、任务
+类型等后续条件必须继续扩展为存储层可组合谓词，不能退回“全量读取后过滤”。
 
 ### 5.3 确定性排序
 

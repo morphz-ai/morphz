@@ -6,8 +6,9 @@ use crate::event::{
 use crate::llm::{model_visible_message_text, ModelAttemptBinding};
 use crate::memory::{
     CognitiveClockStore, ContextCapabilityBindingRecord, ContextCapabilityBindingStore,
-    ContextCognitiveClock, ContextRuntimeSnapshotStore, DeliveryStatus, EventAppend, EventStore,
-    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
+    ContextCognitiveClock, ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter,
+    ContextRuntimeSnapshotStore, DeliveryStatus, EventAppend, EventStore, ExecutionJobFilter,
+    ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetRecord, ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord,
@@ -3204,13 +3205,33 @@ impl ContextEngine {
         include_encoding: bool,
     ) -> Result<ContextView, DynError> {
         let mut phase_started = Instant::now();
+        let evaluation_started_at = Utc::now();
+        let active_window_seconds =
+            i64::try_from(self.config.session_working_set.active_window.as_secs())
+                .unwrap_or(i64::MAX);
+        let directory_request = ContextRuntimeDirectoryRequest {
+            context_id: context_id.to_string(),
+            active_session_id: active_session_id.to_string(),
+            active_after: evaluation_started_at - chrono::Duration::seconds(active_window_seconds),
+            max_full_sessions: self.config.session_working_set.max_sessions,
+            // Running work outside the conversational window remains visible
+            // as compact control metadata, but that exception must itself be
+            // bounded rather than reintroducing an unbounded Session registry.
+            max_metadata_sessions: self.config.session_working_set.max_sessions,
+            // Principal/tenant visibility is an explicit Store predicate. The
+            // current product policy shares all Sessions mounted to the
+            // Context; a future caller can supply Runtime-verified Principals
+            // without changing the query contract or filtering in memory.
+            session_filter: ContextRuntimeSessionFilter::default(),
+        }
+        .normalized();
         let model_alias = evaluation_model_alias
             .or_else(|| activation_record.and_then(|activation| activation.model_alias.as_deref()));
         let mut directory_snapshot = match &self.runtime_snapshot_store {
             Some(store) => {
                 let command_started = Instant::now();
                 let result = store
-                    .read_context_runtime_directory_snapshot(context_id)
+                    .read_context_runtime_directory_snapshot(&directory_request)
                     .await;
                 self.observability.record_storage_command(
                     store.storage_backend_name(),
@@ -3243,7 +3264,7 @@ impl ContextEngine {
             if let Some(store) = &self.runtime_snapshot_store {
                 let command_started = Instant::now();
                 let result = store
-                    .read_context_runtime_directory_snapshot(context_id)
+                    .read_context_runtime_directory_snapshot(&directory_request)
                     .await;
                 self.observability.record_storage_command(
                     store.storage_backend_name(),
@@ -3335,11 +3356,22 @@ impl ContextEngine {
         let (mut sessions, mut session_working_set) = select_session_working_set(
             &registry_sessions,
             &current_session_ids,
-            Utc::now(),
+            evaluation_started_at,
             &self.config.session_working_set,
             &objectives,
             &active_activations,
         );
+        if let Some(snapshot) = &directory_snapshot {
+            session_working_set.excluded.archived = snapshot.session_exclusions.archived;
+            session_working_set.excluded.retired = snapshot.session_exclusions.retired;
+            session_working_set.excluded.isolated = snapshot.session_exclusions.isolated;
+            session_working_set.excluded.outside_window =
+                snapshot.session_exclusions.outside_window;
+            session_working_set.excluded.over_count = snapshot
+                .session_exclusions
+                .over_count
+                .saturating_add(snapshot.session_exclusions.metadata_over_count);
+        }
         let principal_bindings = match (&directory_snapshot, &self.session_store) {
             (Some(snapshot), _) => snapshot.principal_bindings.clone(),
             (None, Some(store)) => store.list_context_principal_bindings(context_id).await?,

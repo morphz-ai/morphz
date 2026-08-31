@@ -2,12 +2,13 @@ use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ActivationStore, CognitiveClockStore, ContextCapabilityBindingStore,
-    ContextRuntimeSnapshotStore, DeliveryIngressStore, EventStore, ExecutionJobStore,
-    ExecutionTargetAuthorizationStore, ExecutionTargetStore, MessageClaim, MessageDispatchMode,
-    MindProjectionStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession,
-    NewThreadActivation, ObjectiveStore, RecallProjectionStore, SessionDirectoryStore,
-    SessionMountKind, SessionProjectionStore, SessionStore, ThreadActivationStatus,
-    WorkAssignmentStore, WorkerCoordinationMode,
+    ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
+    DeliveryIngressStore, EventStore, ExecutionJobStore, ExecutionTargetAuthorizationStore,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, MindProjectionStore, NewAgent,
+    NewCognitiveContext, NewPrincipal, NewSession, NewThreadActivation, ObjectiveStore,
+    RecallProjectionStore, SessionAttentionState, SessionAttentionUpdate, SessionContextSharing,
+    SessionDirectoryStore, SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore,
+    SessionUpdate, ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
 };
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
@@ -138,13 +139,177 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         let directory = store
-            .read_context_runtime_directory_snapshot(&context_id)
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: context_id.clone(),
+                active_session_id: session_id.clone(),
+                active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 50,
+                max_metadata_sessions: 50,
+                session_filter: ContextRuntimeSessionFilter::default(),
+            })
             .await
             .unwrap()
             .unwrap();
         assert_eq!(directory.sessions.len(), 1);
         assert_eq!(statements.load(Ordering::Relaxed), 1);
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        let principal_a = format!("pg-budget-principal-a-{suffix}");
+        let principal_b = format!("pg-budget-principal-b-{suffix}");
+        for scoped_principal_id in [&principal_a, &principal_b] {
+            store
+                .ensure_principal(NewPrincipal {
+                    id: scoped_principal_id.clone(),
+                    provider_id: "test".to_string(),
+                    assurance: "verified".to_string(),
+                    display_name: None,
+                })
+                .await
+                .unwrap();
+        }
+        for index in 0..80 {
+            let scoped_principal_id = if index % 2 == 0 {
+                &principal_a
+            } else {
+                &principal_b
+            };
+            store
+                .create_session_for_principal(
+                    NewSession {
+                        id: format!("pg-budget-scale-session-{suffix}-{index:03}"),
+                        agent_id: agent_id.clone(),
+                        context_id: context_id.clone(),
+                        parent_session_id: None,
+                        title: format!("Postgres Scale Session {index:03}"),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    },
+                    scoped_principal_id,
+                )
+                .await
+                .unwrap();
+        }
+        let old_session_id = format!("pg-budget-old-session-{suffix}");
+        let archived_session_id = format!("pg-budget-archived-session-{suffix}");
+        let retired_session_id = format!("pg-budget-retired-session-{suffix}");
+        let isolated_session_id = format!("pg-budget-isolated-session-{suffix}");
+        for id in [
+            &old_session_id,
+            &archived_session_id,
+            &retired_session_id,
+            &isolated_session_id,
+        ] {
+            store
+                .create_session_for_principal(
+                    NewSession {
+                        id: id.clone(),
+                        agent_id: agent_id.clone(),
+                        context_id: context_id.clone(),
+                        parent_session_id: None,
+                        title: id.clone(),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    },
+                    &principal_a,
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .touch_session(
+                &old_session_id,
+                chrono::Utc::now() - chrono::Duration::hours(48),
+            )
+            .await
+            .unwrap();
+        store
+            .update_session(
+                &archived_session_id,
+                SessionUpdate {
+                    status: Some(SessionStatus::Archived),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .update_session_attention(SessionAttentionUpdate {
+                session_id: retired_session_id,
+                context_id: context_id.clone(),
+                expected_revision: 0,
+                state: SessionAttentionState::Retired,
+                reason: Some("postgres-statement-budget-test".to_string()),
+                changed_at: chrono::Utc::now(),
+                event_id: format!("pg-budget-retired-event-{suffix}"),
+            })
+            .await
+            .unwrap();
+        store
+            .set_session_context_sharing(&isolated_session_id, SessionContextSharing::Isolated)
+            .await
+            .unwrap();
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        let bounded = store
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: context_id.clone(),
+                active_session_id: session_id.clone(),
+                active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 7,
+                max_metadata_sessions: 3,
+                session_filter: ContextRuntimeSessionFilter::default(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bounded.sessions.len(), 7);
+        assert!(bounded
+            .sessions
+            .iter()
+            .any(|session| session.id == session_id));
+        let unscoped_principals = bounded
+            .principal_bindings
+            .iter()
+            .map(|binding| binding.principal_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(unscoped_principals.contains(principal_a.as_str()));
+        assert!(unscoped_principals.contains(principal_b.as_str()));
+        assert_eq!(bounded.session_exclusions.outside_window, 1);
+        assert_eq!(bounded.session_exclusions.archived, 1);
+        assert_eq!(bounded.session_exclusions.retired, 1);
+        assert_eq!(bounded.session_exclusions.isolated, 1);
+        assert_eq!(bounded.session_exclusions.over_count, 74);
+        assert_eq!(statements.load(Ordering::Relaxed), 1);
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        // Principal scope is an opt-in storage predicate for callers that
+        // need it. The Runtime default above is deliberately unscoped so one
+        // Agent Context can retain Sessions from different Principals.
+        let principal_scoped = store
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: context_id.clone(),
+                active_session_id: session_id.clone(),
+                active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 7,
+                max_metadata_sessions: 3,
+                session_filter: ContextRuntimeSessionFilter {
+                    principal_ids: Some(vec![principal_id.clone()]),
+                },
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            principal_scoped
+                .sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![session_id.as_str()]
+        );
+        assert_eq!(principal_scoped.session_exclusions.over_count, 0);
+        assert!(principal_scoped
+            .principal_bindings
+            .iter()
+            .all(|binding| binding.principal_id == principal_id));
 
         let event_id = format!("pg-budget-event-{suffix}");
         let message = Event::new(

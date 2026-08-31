@@ -90,6 +90,12 @@ steady Context 因而固定为四条语句，Activation Context 为五条。Dire
 构成前两段依赖阶段；Scheduler、可选 Causality 和 Resources 随后并行读取，所以关键路径
 只有三段串行数据库阶段。
 
+Directory 的“有界”同时约束语句数和返回基数：Session 的时间窗口、当前 Session 优先级、
+Full Projection 数量上限和有界 metadata-only 例外均在 SQLite/PostgreSQL 查询内执行，
+不会把 Context 下全部 Session 拉入 Runtime 再过滤。默认查询不按 Principal 隔离；可选
+Principal 范围只是调用方显式请求的存储谓词，因此不会破坏一个 Shared Mind 同时服务
+多个 Principal 的语义。
+
 每个组件快照内部是单语句一致的。组件之间可能观察到不同提交时刻，因此本次只以 revision
 支持比较、审计和未来缓存 fencing，不宣称跨组件全局事务一致性。
 
@@ -144,7 +150,8 @@ p95 不超过 250 ms、PostgreSQL p95 不超过 500 ms；它们是防止本地/C
 - Parallel 消息恰好一次进入 Session Projection；
 - forged route 被拒绝且事务不留下 Event；
 - 未绑定 source 与不支持 reference 同时出现时，授权错误优先级保持一致；
-- Directory、Scheduler、Causality、Resources 快照逐字段等价于原细粒度 Store API；
+- Directory、Scheduler、Causality、Resources 快照满足既有模型语义；Directory 另外验证
+  高基数 Session Registry 只返回配置上限、默认跨 Principal、显式 Principal 谓词可选；
 - Interrupt、Follow-up、Activation 唯一所有权、lease/revision fencing 与两进程竞争；
 - Model Attempt、background wake、execution job、approval grant 与 Runtime 重启恢复；
 - Mind retirement、successor、stale CAS 和恢复恰好一次。

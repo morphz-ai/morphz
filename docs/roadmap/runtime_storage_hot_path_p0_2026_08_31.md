@@ -72,6 +72,11 @@ P0 保持以下约束，并通过 SQLite/PostgreSQL 共用 conformance suite 验
 N+1。快照间仍是独立的权威读取，不宣称它们构成一个跨语句的全局 MVCC Snapshot；
 其 revision 用于审计、比较和后续缓存 fencing。
 
+Directory 请求携带 `active_session_id`、时间截止点、Full/metadata-only 数量上限和可选
+Session 谓词。SQLite 与 PostgreSQL 在语句内完成筛选、确定性排序和截断，Runtime 不再
+读取完整 Session Registry 后过滤。Principal 范围是可选谓词：默认不传，保持同一 Agent
+Context 跨 Principal 可见；只有产品入口明确要求隔离视图时才显式传入。
+
 Context 的 steady-state 读取分为三段关键路径：
 
 1. Directory；

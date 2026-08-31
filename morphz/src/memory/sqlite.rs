@@ -17,8 +17,9 @@ use crate::memory::{
     CognitiveClockStore, CognitiveContextRecord, ContextActivationCausalitySnapshot,
     ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
     ContextCapabilityBindingStore, ContextCognitiveClock, ContextEncodingProjectionSnapshot,
-    ContextExecutionResourcesSnapshot, ContextRuntimeDirectorySnapshot,
-    ContextRuntimeSchedulerSnapshot, ContextRuntimeSnapshotStore, ContextSessionCount,
+    ContextExecutionResourcesSnapshot, ContextRuntimeDirectoryRequest,
+    ContextRuntimeDirectorySnapshot, ContextRuntimeSchedulerSnapshot,
+    ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore, ContextSessionCount,
     ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
     DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
     DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
@@ -3964,14 +3965,130 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
 
     async fn read_context_runtime_directory_snapshot(
         &self,
-        context_id: &str,
+        request: &ContextRuntimeDirectoryRequest,
     ) -> Result<Option<ContextRuntimeDirectorySnapshot>, Box<dyn std::error::Error + Send + Sync>>
     {
+        let request = request.clone().normalized();
+        let context_id = request.context_id.as_str();
+        let active_session_id = request.active_session_id.as_str();
+        let active_after = request.active_after.to_rfc3339();
+        let max_full_sessions = i64::try_from(request.max_full_sessions)?;
+        let max_metadata_sessions = i64::try_from(request.max_metadata_sessions)?;
+        let principal_ids = request
+            .session_filter
+            .principal_ids
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         // Every scalar subquery belongs to this one SQLite statement snapshot.
         // `json(...)` marks nested JSON values so arrays contain objects rather
         // than escaped JSON strings.
         let row = sqlx::query(
             r#"WITH
+               scoped_sessions AS MATERIALIZED (
+                 SELECT s.*,
+                        sm.attention_state AS mount_attention_state,
+                        sm.attention_revision AS mount_attention_revision,
+                        sm.attention_reason AS mount_attention_reason,
+                        sm.attention_changed_at AS mount_attention_changed_at,
+                        sm.attention_event_id AS mount_attention_event_id
+                 FROM sessions s
+                 JOIN session_mounts sm
+                   ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                 WHERE s.context_id = ?1
+                   AND (
+                     ?6 IS NULL
+                     OR EXISTS (
+                       SELECT 1
+                       FROM session_principal_bindings visible_binding
+                       WHERE visible_binding.session_id = s.id
+                         AND visible_binding.unbound_at IS NULL
+                         AND visible_binding.principal_id IN (
+                           SELECT CAST(value AS TEXT) FROM json_each(?6)
+                         )
+                     )
+                   )
+               ),
+               active_policy AS (
+                 SELECT COALESCE(MAX(
+                   CASE WHEN id = ?2 AND context_sharing = 'isolated' THEN 1 ELSE 0 END
+                 ), 0) AS current_is_isolated
+                 FROM scoped_sessions
+               ),
+               classified_sessions AS MATERIALIZED (
+                 SELECT s.*,
+                   CASE
+                     WHEN s.id = ?2 THEN NULL
+                     WHEN policy.current_is_isolated != 0 OR s.context_sharing = 'isolated'
+                       THEN 'isolated'
+                     WHEN s.status = 'archived' THEN 'archived'
+                     WHEN s.mount_attention_state = 'retired' THEN 'retired'
+                     WHEN s.last_activity_at < ?3 THEN 'outside_window'
+                     ELSE NULL
+                   END AS exclusion_reason
+                 FROM scoped_sessions s
+                 CROSS JOIN active_policy policy
+               ),
+               full_session_ids AS MATERIALIZED (
+                 SELECT id
+                 FROM classified_sessions
+                 WHERE exclusion_reason IS NULL
+                 ORDER BY CASE WHEN id = ?2 THEN 0 ELSE 1 END,
+                          last_activity_at DESC, id
+                 LIMIT ?4
+               ),
+               metadata_candidate_ids AS MATERIALIZED (
+                 SELECT s.id, s.last_activity_at
+                 FROM classified_sessions s
+                 CROSS JOIN active_policy policy
+                 WHERE NOT EXISTS (
+                         SELECT 1 FROM full_session_ids selected_full
+                         WHERE selected_full.id = s.id
+                       )
+                   AND NOT (
+                     s.id <> ?2
+                     AND (policy.current_is_isolated != 0 OR s.context_sharing = 'isolated')
+                   )
+                   AND (
+                     EXISTS (
+                       SELECT 1 FROM thread_activations activation
+                       WHERE activation.session_id = s.id
+                         AND activation.status IN ('queued', 'running')
+                     )
+                     OR EXISTS (
+                       SELECT 1 FROM objectives objective
+                       WHERE objective.context_id = ?1
+                         AND objective.coordinator_session_id = s.id
+                         AND objective.status IN ('active', 'paused', 'blocked')
+                     )
+                   )
+               ),
+               metadata_session_ids AS MATERIALIZED (
+                 SELECT id
+                 FROM metadata_candidate_ids
+                 ORDER BY last_activity_at DESC, id
+                 LIMIT ?5
+               ),
+               selected_session_ids AS MATERIALIZED (
+                 SELECT id, 0 AS projection_order FROM full_session_ids
+                 UNION ALL
+                 SELECT id, 1 AS projection_order FROM metadata_session_ids
+               ),
+               session_selection_counts AS (
+                 SELECT
+                   SUM(CASE WHEN exclusion_reason = 'archived' THEN 1 ELSE 0 END) AS archived,
+                   SUM(CASE WHEN exclusion_reason = 'retired' THEN 1 ELSE 0 END) AS retired,
+                   SUM(CASE WHEN exclusion_reason = 'isolated' THEN 1 ELSE 0 END) AS isolated,
+                   SUM(CASE WHEN exclusion_reason = 'outside_window' THEN 1 ELSE 0 END)
+                     AS outside_window,
+                   MAX(
+                     SUM(CASE WHEN exclusion_reason IS NULL THEN 1 ELSE 0 END) - ?4,
+                     0
+                   ) AS over_count,
+                   MAX((SELECT COUNT(*) FROM metadata_candidate_ids) - ?5, 0)
+                     AS metadata_over_count
+                 FROM classified_sessions
+               ),
                session_rows AS (
                  SELECT json_object(
                    'id', s.id, 'agent_id', s.agent_id, 'context_id', s.context_id,
@@ -3980,17 +4097,15 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'reasoning_effort', s.reasoning_effort, 'sandbox_mode', s.sandbox_mode,
                    'context_sharing', s.context_sharing, 'created_at', s.created_at,
                    'updated_at', s.updated_at, 'last_activity_at', s.last_activity_at,
-                   'attention_state', sm.attention_state,
-                   'attention_revision', sm.attention_revision,
-                   'attention_reason', sm.attention_reason,
-                   'attention_changed_at', sm.attention_changed_at,
-                   'attention_event_id', sm.attention_event_id
+                   'attention_state', s.mount_attention_state,
+                   'attention_revision', s.mount_attention_revision,
+                   'attention_reason', s.mount_attention_reason,
+                   'attention_changed_at', s.mount_attention_changed_at,
+                   'attention_event_id', s.mount_attention_event_id
                  ) AS value
-                 FROM sessions s
-                 JOIN session_mounts sm
-                   ON sm.session_id = s.id AND sm.unmounted_at IS NULL
-                 WHERE s.context_id = ?
-                 ORDER BY s.last_activity_at DESC, s.id
+                 FROM selected_session_ids selected
+                 JOIN scoped_sessions s ON s.id = selected.id
+                 ORDER BY selected.projection_order, s.last_activity_at DESC, s.id
                ),
                objective_rows AS (
                  SELECT json_object(
@@ -4014,10 +4129,18 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'time_used_seconds', time_used_seconds,
                    'created_at', created_at, 'updated_at', updated_at
                  ) AS value
-                 FROM objectives
-                 WHERE context_id = ?
-                   AND status IN ('active', 'paused', 'blocked')
-                 ORDER BY updated_at DESC, id
+                 FROM objectives objective
+                 WHERE objective.context_id = ?1
+                   AND objective.status IN ('active', 'paused', 'blocked')
+                   AND (
+                     ?6 IS NULL
+                     OR EXISTS (
+                       SELECT 1 FROM selected_session_ids selected
+                       WHERE selected.id = objective.coordinator_session_id
+                          OR selected.id = objective.delivery_session_id
+                     )
+                   )
+                 ORDER BY objective.updated_at DESC, objective.id
                ),
                assignment_rows AS (
                  SELECT json_object(
@@ -4031,9 +4154,17 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'lease_expires_at', lease_expires_at, 'revision', revision,
                    'created_at', created_at, 'updated_at', updated_at
                  ) AS value
-                 FROM work_assignments
-                 WHERE context_id = ? AND status IN ('queued', 'running')
-                 ORDER BY updated_at DESC, id
+                 FROM work_assignments assignment
+                 WHERE assignment.context_id = ?1
+                   AND assignment.status IN ('queued', 'running')
+                   AND (
+                     ?6 IS NULL
+                     OR EXISTS (
+                       SELECT 1 FROM selected_session_ids selected
+                       WHERE selected.id = assignment.session_id
+                     )
+                   )
+                 ORDER BY assignment.updated_at DESC, assignment.id
                  LIMIT 32
                ),
                capability_rows AS (
@@ -4043,7 +4174,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'revision', revision, 'updated_at', updated_at
                  ) AS value
                  FROM context_capability_bindings
-                 WHERE context_id = ?
+                 WHERE context_id = ?1
                  ORDER BY capability_id
                ),
                activation_rows AS (
@@ -4063,9 +4194,17 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'dialogue_lane_released_at', dialogue_lane_released_at,
                    'created_at', created_at, 'updated_at', updated_at
                  ) AS value
-                 FROM thread_activations
-                 WHERE context_id = ? AND status IN ('queued', 'running')
-                 ORDER BY created_at, id
+                 FROM thread_activations activation
+                 WHERE activation.context_id = ?1
+                   AND activation.status IN ('queued', 'running')
+                   AND (
+                     ?6 IS NULL
+                     OR EXISTS (
+                       SELECT 1 FROM selected_session_ids selected
+                       WHERE selected.id = activation.session_id
+                     )
+                   )
+                 ORDER BY activation.created_at, activation.id
                ),
                principal_binding_rows AS (
                  SELECT json_object(
@@ -4073,8 +4212,8 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'bound_at', b.bound_at, 'unbound_at', b.unbound_at
                  ) AS value
                  FROM session_principal_bindings b
-                 JOIN sessions s ON s.id = b.session_id
-                 WHERE s.context_id = ? AND b.unbound_at IS NULL
+                 JOIN selected_session_ids selected ON selected.id = b.session_id
+                 WHERE b.unbound_at IS NULL
                  ORDER BY b.session_id, b.principal_id
                )
                SELECT
@@ -4126,6 +4265,14 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    AS mind_projection_hash,
                  COALESCE((SELECT json_group_array(json(value)) FROM session_rows), '[]')
                    AS sessions_json,
+                 (SELECT json_object(
+                    'archived', COALESCE(archived, 0),
+                    'retired', COALESCE(retired, 0),
+                    'isolated', COALESCE(isolated, 0),
+                    'outside_window', COALESCE(outside_window, 0),
+                    'over_count', COALESCE(over_count, 0),
+                    'metadata_over_count', COALESCE(metadata_over_count, 0)
+                  ) FROM session_selection_counts) AS session_exclusions_json,
                  COALESCE((SELECT json_group_array(json(value)) FROM objective_rows), '[]')
                    AS objectives_json,
                  COALESCE((SELECT json_group_array(json(value)) FROM assignment_rows), '[]')
@@ -4137,15 +4284,14 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  COALESCE((SELECT json_group_array(json(value)) FROM principal_binding_rows), '[]')
                    AS principal_bindings_json
                FROM cognitive_contexts c
-               WHERE c.id = ?"#,
+               WHERE c.id = ?1"#,
         )
         .bind(context_id)
-        .bind(context_id)
-        .bind(context_id)
-        .bind(context_id)
-        .bind(context_id)
-        .bind(context_id)
-        .bind(context_id)
+        .bind(active_session_id)
+        .bind(active_after)
+        .bind(max_full_sessions)
+        .bind(max_metadata_sessions)
+        .bind(principal_ids)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -4180,6 +4326,10 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
             sqlite_snapshot_component(&row, "context_json")?,
             sqlite_snapshot_component(&row, "cognitive_clock_json")?,
             mind,
+            sqlite_snapshot_component::<ContextRuntimeSessionExclusions>(
+                &row,
+                "session_exclusions_json",
+            )?,
             sqlite_snapshot_component(&row, "sessions_json")?,
             sqlite_snapshot_component(&row, "objectives_json")?,
             sqlite_snapshot_component(&row, "work_assignments_json")?,

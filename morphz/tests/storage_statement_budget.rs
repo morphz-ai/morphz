@@ -2,12 +2,13 @@ use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActivationStore, CognitiveClockStore, ContextCapabilityBindingStore,
-    ContextRuntimeSnapshotStore, DeliveryIngressStore, EventStore, ExecutionJobStore,
-    ExecutionTargetAuthorizationStore, ExecutionTargetStore, MessageClaim, MessageDispatchMode,
-    MindProjectionStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession,
-    NewThreadActivation, ObjectiveStore, RecallProjectionStore, SessionDirectoryStore,
-    SessionMountKind, SessionProjectionStore, SessionStore, ThreadActivationStatus,
-    WorkAssignmentStore, WorkerCoordinationMode,
+    ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
+    DeliveryIngressStore, EventStore, ExecutionJobStore, ExecutionTargetAuthorizationStore,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, MindProjectionStore, NewAgent,
+    NewCognitiveContext, NewPrincipal, NewSession, NewThreadActivation, ObjectiveStore,
+    RecallProjectionStore, SessionAttentionState, SessionAttentionUpdate, SessionContextSharing,
+    SessionDirectoryStore, SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore,
+    SessionUpdate, ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
 };
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
@@ -132,7 +133,14 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         let snapshot = store
-            .read_context_runtime_directory_snapshot("statement-budget-context")
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: "statement-budget-context".to_string(),
+                active_session_id: "statement-budget-session".to_string(),
+                active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 50,
+                max_metadata_sessions: 50,
+                session_filter: ContextRuntimeSessionFilter::default(),
+            })
             .await
             .unwrap()
             .unwrap();
@@ -143,6 +151,160 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             "the complete Runtime directory must remain one physical statement"
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        for principal_id in ["statement-budget-principal-a", "statement-budget-principal-b"] {
+            store
+                .ensure_principal(NewPrincipal {
+                    id: principal_id.to_string(),
+                    provider_id: "test".to_string(),
+                    assurance: "verified".to_string(),
+                    display_name: None,
+                })
+                .await
+                .unwrap();
+        }
+        for index in 0..80 {
+            let principal_id = if index % 2 == 0 {
+                "statement-budget-principal-a"
+            } else {
+                "statement-budget-principal-b"
+            };
+            store
+                .create_session_for_principal(
+                    NewSession {
+                        id: format!("statement-budget-scale-session-{index:03}"),
+                        agent_id: "statement-budget-agent".to_string(),
+                        context_id: "statement-budget-context".to_string(),
+                        parent_session_id: None,
+                        title: format!("Scale Session {index:03}"),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    },
+                    principal_id,
+                )
+                .await
+                .unwrap();
+        }
+        for id in [
+            "statement-budget-old-session",
+            "statement-budget-archived-session",
+            "statement-budget-retired-session",
+            "statement-budget-isolated-session",
+        ] {
+            store
+                .create_session_for_principal(
+                    NewSession {
+                        id: id.to_string(),
+                        agent_id: "statement-budget-agent".to_string(),
+                        context_id: "statement-budget-context".to_string(),
+                        parent_session_id: None,
+                        title: id.to_string(),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    },
+                    "statement-budget-principal-a",
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .touch_session(
+                "statement-budget-old-session",
+                chrono::Utc::now() - chrono::Duration::hours(48),
+            )
+            .await
+            .unwrap();
+        store
+            .update_session(
+                "statement-budget-archived-session",
+                SessionUpdate {
+                    status: Some(SessionStatus::Archived),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .update_session_attention(SessionAttentionUpdate {
+                session_id: "statement-budget-retired-session".to_string(),
+                context_id: "statement-budget-context".to_string(),
+                expected_revision: 0,
+                state: SessionAttentionState::Retired,
+                reason: Some("statement-budget-test".to_string()),
+                changed_at: chrono::Utc::now(),
+                event_id: "statement-budget-retired-event".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .set_session_context_sharing(
+                "statement-budget-isolated-session",
+                SessionContextSharing::Isolated,
+            )
+            .await
+            .unwrap();
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        let bounded = store
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: "statement-budget-context".to_string(),
+                active_session_id: "statement-budget-session".to_string(),
+                active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 7,
+                max_metadata_sessions: 3,
+                session_filter: ContextRuntimeSessionFilter::default(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bounded.sessions.len(), 7);
+        assert!(bounded
+            .sessions
+            .iter()
+            .any(|session| session.id == "statement-budget-session"));
+        let unscoped_principals = bounded
+            .principal_bindings
+            .iter()
+            .map(|binding| binding.principal_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(unscoped_principals.contains("statement-budget-principal-a"));
+        assert!(unscoped_principals.contains("statement-budget-principal-b"));
+        assert_eq!(bounded.session_exclusions.outside_window, 1);
+        assert_eq!(bounded.session_exclusions.archived, 1);
+        assert_eq!(bounded.session_exclusions.retired, 1);
+        assert_eq!(bounded.session_exclusions.isolated, 1);
+        assert_eq!(bounded.session_exclusions.over_count, 74);
+        assert_eq!(statements.load(Ordering::Relaxed), 1);
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        // Principal scope is an opt-in storage predicate for callers that
+        // need it. The Runtime default above is deliberately unscoped so one
+        // Agent Context can retain Sessions from different Principals.
+        let principal_scoped = store
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: "statement-budget-context".to_string(),
+                active_session_id: "statement-budget-session".to_string(),
+                active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 7,
+                max_metadata_sessions: 3,
+                session_filter: ContextRuntimeSessionFilter {
+                    principal_ids: Some(vec!["statement-budget-principal".to_string()]),
+                },
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            principal_scoped
+                .sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["statement-budget-session"]
+        );
+        assert_eq!(principal_scoped.session_exclusions.over_count, 0);
+        assert!(principal_scoped
+            .principal_bindings
+            .iter()
+            .all(|binding| binding.principal_id == "statement-budget-principal"));
 
         let message = Event::new(
             "statement-budget-event".to_string(),

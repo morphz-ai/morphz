@@ -13,7 +13,8 @@ use crate::memory::{
     ContextActivationCausalitySnapshot, ContextCapabilityBindingMutation,
     ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
     ContextEncodingProjectionSnapshot, ContextExecutionResourcesSnapshot,
-    ContextRuntimeDirectorySnapshot, ContextRuntimeSchedulerSnapshot, ContextRuntimeSnapshotStore,
+    ContextRuntimeDirectoryRequest, ContextRuntimeDirectorySnapshot,
+    ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore,
     EventAppend, EventStore, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
     MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer,
     NewThread, NewWorkAssignment, ObjectiveCompletionIntent, ObjectiveMutation,
@@ -2735,13 +2736,118 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
 
     async fn read_context_runtime_directory_snapshot(
         &self,
-        context_id: &str,
+        request: &ContextRuntimeDirectoryRequest,
     ) -> Result<Option<ContextRuntimeDirectorySnapshot>, StoreError> {
+        let request = request.clone().normalized();
+        let context_id = request.context_id.as_str();
+        let active_session_id = request.active_session_id.as_str();
+        let active_after = request.active_after.to_rfc3339();
+        let max_full_sessions = i64::try_from(request.max_full_sessions)?;
+        let max_metadata_sessions = i64::try_from(request.max_metadata_sessions)?;
+        let principal_ids = request.session_filter.principal_ids.clone();
         // PostgreSQL gives one MVCC snapshot to the complete statement. Every
         // aggregate therefore describes one real directory state without a
         // client-driven BEGIN + seven sequential protocol round trips.
         let row = sqlx::query(
-            r#"SELECT
+            r#"WITH
+               scoped_sessions AS MATERIALIZED (
+                 SELECT s.*
+                 FROM sessions s
+                 WHERE s.context_id = $1
+                   AND (
+                     $6::text[] IS NULL
+                     OR EXISTS (
+                       SELECT 1
+                       FROM session_principal_bindings visible_binding
+                       WHERE visible_binding.session_id = s.id
+                         AND visible_binding.unbound_at IS NULL
+                         AND visible_binding.principal_id = ANY($6::text[])
+                     )
+                   )
+               ),
+               active_policy AS (
+                 SELECT COALESCE(
+                   bool_or(context_sharing = 'isolated') FILTER (WHERE id = $2),
+                   FALSE
+                 ) AS current_is_isolated
+                 FROM scoped_sessions
+               ),
+               classified_sessions AS MATERIALIZED (
+                 SELECT s.*,
+                   CASE
+                     WHEN s.id = $2 THEN NULL
+                     WHEN policy.current_is_isolated OR s.context_sharing = 'isolated'
+                       THEN 'isolated'
+                     WHEN s.status = 'archived' THEN 'archived'
+                     WHEN s.attention_state = 'retired' THEN 'retired'
+                     WHEN s.last_activity_at < $3 THEN 'outside_window'
+                     ELSE NULL
+                   END AS exclusion_reason
+                 FROM scoped_sessions s
+                 CROSS JOIN active_policy policy
+               ),
+               full_session_ids AS MATERIALIZED (
+                 SELECT id
+                 FROM classified_sessions
+                 WHERE exclusion_reason IS NULL
+                 ORDER BY CASE WHEN id = $2 THEN 0 ELSE 1 END,
+                          last_activity_at DESC, id
+                 LIMIT $4
+               ),
+               metadata_candidate_ids AS MATERIALIZED (
+                 SELECT s.id, s.last_activity_at
+                 FROM classified_sessions s
+                 CROSS JOIN active_policy policy
+                 WHERE NOT EXISTS (
+                         SELECT 1 FROM full_session_ids selected_full
+                         WHERE selected_full.id = s.id
+                       )
+                   AND NOT (
+                     s.id <> $2
+                     AND (policy.current_is_isolated OR s.context_sharing = 'isolated')
+                   )
+                   AND (
+                     EXISTS (
+                       SELECT 1 FROM thread_activations activation
+                       WHERE activation.session_id = s.id
+                         AND activation.status IN ('queued', 'running')
+                     )
+                     OR EXISTS (
+                       SELECT 1 FROM objectives objective
+                       WHERE objective.context_id = $1
+                         AND objective.coordinator_session_id = s.id
+                         AND objective.status IN ('active', 'paused', 'blocked')
+                     )
+                   )
+               ),
+               metadata_session_ids AS MATERIALIZED (
+                 SELECT id
+                 FROM metadata_candidate_ids
+                 ORDER BY last_activity_at DESC, id
+                 LIMIT $5
+               ),
+               selected_session_ids AS MATERIALIZED (
+                 SELECT id, 0::smallint AS projection_order FROM full_session_ids
+                 UNION ALL
+                 SELECT id, 1::smallint AS projection_order FROM metadata_session_ids
+               ),
+               session_selection_counts AS (
+                 SELECT
+                   COUNT(*) FILTER (WHERE exclusion_reason = 'archived') AS archived,
+                   COUNT(*) FILTER (WHERE exclusion_reason = 'retired') AS retired,
+                   COUNT(*) FILTER (WHERE exclusion_reason = 'isolated') AS isolated,
+                   COUNT(*) FILTER (WHERE exclusion_reason = 'outside_window') AS outside_window,
+                   GREATEST(
+                     COUNT(*) FILTER (WHERE exclusion_reason IS NULL) - $4,
+                     0
+                   ) AS over_count,
+                   GREATEST(
+                     (SELECT COUNT(*) FROM metadata_candidate_ids) - $5,
+                     0
+                   ) AS metadata_over_count
+                 FROM classified_sessions
+               )
+               SELECT
                  to_jsonb(c) AS context_json,
                  COALESCE(
                    (SELECT to_jsonb(clock)
@@ -2774,10 +2880,21 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                  (SELECT state_hash FROM mind_projections WHERE context_id = c.id)
                    AS mind_projection_hash,
                  COALESCE(
-                   (SELECT jsonb_agg(to_jsonb(s) ORDER BY s.last_activity_at DESC, s.id)
-                    FROM sessions s WHERE s.context_id = c.id),
+                   (SELECT jsonb_agg(to_jsonb(s)
+                                     ORDER BY selected.projection_order,
+                                              s.last_activity_at DESC, s.id)
+                    FROM selected_session_ids selected
+                    JOIN scoped_sessions s ON s.id = selected.id),
                    '[]'::jsonb
                  ) AS sessions_json,
+                 (SELECT jsonb_build_object(
+                    'archived', archived,
+                    'retired', retired,
+                    'isolated', isolated,
+                    'outside_window', outside_window,
+                    'over_count', over_count,
+                    'metadata_over_count', metadata_over_count
+                  ) FROM session_selection_counts) AS session_exclusions_json,
                  COALESCE(
                    (SELECT jsonb_agg(
                       (to_jsonb(o) - 'wait_condition_json' - 'completion_intent_json')
@@ -2789,7 +2906,15 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                     )
                     FROM objectives o
                     WHERE o.context_id = c.id
-                      AND o.status IN ('active', 'paused', 'blocked')),
+                      AND o.status IN ('active', 'paused', 'blocked')
+                      AND (
+                        $6::text[] IS NULL
+                        OR EXISTS (
+                          SELECT 1 FROM selected_session_ids selected
+                          WHERE selected.id = o.coordinator_session_id
+                             OR selected.id = o.delivery_session_id
+                        )
+                      )),
                    '[]'::jsonb
                  ) AS objectives_json,
                  COALESCE(
@@ -2805,6 +2930,13 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                       FROM work_assignments w
                       WHERE w.context_id = c.id
                         AND w.status IN ('queued', 'running')
+                        AND (
+                          $6::text[] IS NULL
+                          OR EXISTS (
+                            SELECT 1 FROM selected_session_ids selected
+                            WHERE selected.id = w.session_id
+                          )
+                        )
                       ORDER BY w.updated_at DESC, w.id
                       LIMIT 32
                     ) bounded_assignments),
@@ -2821,21 +2953,33 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                                      ORDER BY activation.created_at, activation.id)
                     FROM thread_activations activation
                     WHERE activation.context_id = c.id
-                      AND activation.status IN ('queued', 'running')),
+                      AND activation.status IN ('queued', 'running')
+                      AND (
+                        $6::text[] IS NULL
+                        OR EXISTS (
+                          SELECT 1 FROM selected_session_ids selected
+                          WHERE selected.id = activation.session_id
+                        )
+                      )),
                    '[]'::jsonb
                  ) AS active_activations_json,
                  COALESCE(
                    (SELECT jsonb_agg(to_jsonb(binding)
                                      ORDER BY binding.session_id, binding.principal_id)
                     FROM session_principal_bindings binding
-                    JOIN sessions s ON s.id = binding.session_id
-                    WHERE s.context_id = c.id AND binding.unbound_at IS NULL),
+                    JOIN selected_session_ids selected ON selected.id = binding.session_id
+                    WHERE binding.unbound_at IS NULL),
                    '[]'::jsonb
                  ) AS principal_bindings_json
                FROM cognitive_contexts c
                WHERE c.id = $1"#,
         )
         .bind(context_id)
+        .bind(active_session_id)
+        .bind(active_after)
+        .bind(max_full_sessions)
+        .bind(max_metadata_sessions)
+        .bind(principal_ids)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -2870,6 +3014,10 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
             postgres_snapshot_component(&row, "context_json")?,
             postgres_snapshot_component(&row, "cognitive_clock_json")?,
             mind,
+            postgres_snapshot_component::<ContextRuntimeSessionExclusions>(
+                &row,
+                "session_exclusions_json",
+            )?,
             postgres_snapshot_component(&row, "sessions_json")?,
             postgres_snapshot_component(&row, "objectives_json")?,
             postgres_snapshot_component(&row, "work_assignments_json")?,
