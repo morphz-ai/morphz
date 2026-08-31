@@ -14518,6 +14518,46 @@ impl Orchestrator {
                 (false, Vec::new(), Vec::new(), false, false)
             }
         };
+        if thread_terminal {
+            // `commit_activation_outcome` atomically owns the real terminal
+            // boundary. Record it before live EventBus handoff: dispatch can
+            // legitimately outlive the durable user-visible reply, and a
+            // process-local timeline must not remain `first_output` while the
+            // Activation and Thread are already terminal in the Store.
+            let terminal_kind = event
+                .payload
+                .get("terminal_kind")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| matches!(*value, "completed" | "failed" | "cancelled"))
+                .unwrap_or_else(|| {
+                    if event.topic == "chat/reply"
+                        && event.payload.get("runtime_failure_kind").is_some()
+                    {
+                        "failed"
+                    } else {
+                        "completed"
+                    }
+                });
+            let terminal_outcome = match terminal_kind {
+                "completed" => ThreadActivationStatus::Succeeded.as_str(),
+                "failed" => ThreadActivationStatus::Failed.as_str(),
+                "cancelled" => ThreadActivationStatus::Cancelled.as_str(),
+                _ => unreachable!("terminal kind was validated above"),
+            };
+            self.observability.record_turn_checkpoint(
+                &route.root_turn_id,
+                event
+                    .payload
+                    .get("context_id")
+                    .and_then(serde_json::Value::as_str),
+                event
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str),
+                "scheduler.activation_terminal",
+                terminal_outcome,
+            );
+        }
         if should_dispatch {
             let mut dispatched = false;
             let mut dispatch_error = None;
