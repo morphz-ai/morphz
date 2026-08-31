@@ -25,6 +25,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         )"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_session_message_requests_event
            ON session_message_requests(event_id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_session_message_requests_session_created
+           ON session_message_requests(session_id, created_at DESC, event_id DESC)"#,
         r#"ALTER TABLE session_message_requests
            ADD COLUMN IF NOT EXISTS request_fingerprint TEXT"#,
     ] {
@@ -729,6 +731,570 @@ async fn claim_parallel_message_fast_path(
     }
 }
 
+/// Bounded PostgreSQL ingress for the two Session-ordered message modes.
+///
+/// The caller must already hold the source Session row lock in this
+/// transaction.  That first statement is intentional: under READ COMMITTED a
+/// waiter needs a fresh snapshot *after* the preceding ingress commits before
+/// it can choose an interrupt target or a follow-up predecessor.  Once the
+/// lock is held, this command performs the complete request/Event/Thread/
+/// Signal mutation (including interruption and batching) in one round trip.
+///
+/// `None` is reserved for a legacy idempotency row without a fingerprint; the
+/// existing repair path remains the authority for that rare compatibility
+/// case and this command has made no durable mutation when it returns `None`.
+struct OrderedMessageIngress<'a> {
+    session_id: &'a str,
+    client_message_id: &'a str,
+    event: &'a Event,
+    request_fingerprint: &'a str,
+    dispatch_mode: MessageDispatchMode,
+    agent_id: &'a str,
+}
+
+async fn claim_ordered_message_fast_path(
+    store: &PostgresStore,
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    ingress: OrderedMessageIngress<'_>,
+) -> Result<Option<MessageClaim>, StoreError> {
+    let OrderedMessageIngress {
+        session_id,
+        client_message_id,
+        event,
+        request_fingerprint,
+        dispatch_mode,
+        agent_id,
+    } = ingress;
+    debug_assert!(matches!(
+        dispatch_mode,
+        MessageDispatchMode::Interrupt | MessageDispatchMode::FollowUp
+    ));
+    let event_context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .ok_or("用户消息缺少 context_id")?;
+    let event_principal_id = event
+        .payload
+        .get("principal_id")
+        .and_then(JsonValue::as_str)
+        .ok_or("用户消息缺少 principal_id")?;
+    let requested_target_id = event.payload.get("target_id").and_then(JsonValue::as_str);
+    let command_now = now_text();
+    let event_timestamp = event
+        .timestamp
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let encounter_id = format!("principal_encounter_{}", event.id);
+    let replacement_thread_id = stable_thread_id(&event.id);
+    let signal_id = stable_thread_signal_id(&event.id);
+    let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
+    let statement_started = std::time::Instant::now();
+    let row = sqlx::query(
+        r#"WITH
+           request_insert AS (
+             INSERT INTO session_message_requests
+               (session_id, client_message_id, event_id, request_fingerprint, created_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT(session_id, client_message_id) DO NOTHING
+             RETURNING event_id, request_fingerprint
+           ),
+           predecessor AS MATERIALIZED (
+             SELECT request.event_id, thread.id AS thread_id,
+                    thread.generation AS thread_generation
+             FROM request_insert accepted
+             JOIN session_message_requests request
+               ON request.session_id = $1 AND request.event_id != $3
+             JOIN thread_signals signal ON signal.event_id = request.event_id
+             JOIN threads thread
+               ON thread.id = signal.thread_id
+              AND thread.generation = signal.thread_generation
+              AND thread.session_id = request.session_id
+             WHERE thread.kind IN ('dialogue_turn', 'execution')
+             ORDER BY request.created_at DESC, request.event_id DESC
+             LIMIT 1
+           ),
+           running_candidate AS MATERIALIZED (
+             SELECT activation.id AS activation_id,
+                    activation.root_turn_id AS root_turn_id,
+                    thread.id AS thread_id,
+                    thread.generation AS thread_generation,
+                    FALSE AS provider_wait
+             FROM predecessor
+             JOIN thread_signals signal ON signal.event_id = predecessor.event_id
+             JOIN threads thread
+               ON thread.id = signal.thread_id
+              AND thread.generation = signal.thread_generation
+             JOIN activation_signals link ON link.signal_id = signal.id
+             JOIN thread_activations activation ON activation.id = link.activation_id
+             WHERE $17 = 'interrupt'
+               AND activation.session_id = $1
+               AND activation.status = 'running'
+               AND activation.trigger_kind = 'chat/user_message'
+               AND activation.dialogue_lane_released_at IS NULL
+               AND thread.kind = 'dialogue_turn'
+               AND thread.status = 'open'
+               AND thread.control_state = 'active'
+             LIMIT 1
+             FOR UPDATE OF activation, thread, signal
+           ),
+           provider_wait_candidate AS MATERIALIZED (
+             SELECT COALESCE(
+                      (
+                        SELECT current.id
+                        FROM thread_activations current
+                        WHERE current.root_turn_id = thread.root_turn_id
+                          AND current.generation = thread.generation
+                          AND current.status IN ('queued', 'running')
+                          AND current.dialogue_lane_released_at IS NULL
+                        ORDER BY CASE current.status WHEN 'running' THEN 0 ELSE 1 END,
+                                 current.created_at DESC, current.id
+                        LIMIT 1
+                      ),
+                      dependency.metadata_json ->> 'activation_id'
+                    ) AS activation_id,
+                    waiting_activation.root_turn_id AS root_turn_id,
+                    thread.id AS thread_id,
+                    thread.generation AS thread_generation,
+                    TRUE AS provider_wait
+             FROM predecessor
+             JOIN thread_signals signal ON signal.event_id = predecessor.event_id
+             JOIN threads thread
+               ON thread.id = signal.thread_id
+              AND thread.generation = signal.thread_generation
+             JOIN scheduler_dependencies dependency
+               ON dependency.owner_kind = 'thread'
+              AND dependency.owner_id = thread.id
+              AND dependency.owner_generation = thread.generation
+              AND dependency.dependency_kind = 'resource'
+              AND dependency.required = TRUE
+              AND dependency.status IN ('pending', 'satisfied')
+              AND dependency.metadata_json ->> 'source' = 'provider_wait'
+             JOIN thread_activations waiting_activation
+               ON waiting_activation.id = dependency.metadata_json ->> 'activation_id'
+              AND waiting_activation.root_turn_id = thread.root_turn_id
+              AND waiting_activation.generation = thread.generation
+             WHERE $17 = 'interrupt'
+               AND NOT EXISTS (SELECT 1 FROM running_candidate)
+               AND thread.session_id = $1
+               AND thread.kind = 'dialogue_turn'
+               AND thread.status = 'open'
+               AND thread.control_state = 'active'
+               AND waiting_activation.status = 'completed'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM thread_activations released
+                 WHERE released.root_turn_id = thread.root_turn_id
+                   AND released.generation = thread.generation
+                   AND released.dialogue_lane_released_at IS NOT NULL
+               )
+             ORDER BY CASE dependency.status WHEN 'pending' THEN 0 ELSE 1 END,
+                      dependency.created_at DESC, dependency.id
+             LIMIT 1
+             FOR UPDATE OF dependency, thread, signal, waiting_activation
+           ),
+           interrupted_candidate AS MATERIALIZED (
+             SELECT * FROM running_candidate
+             UNION ALL
+             SELECT * FROM provider_wait_candidate
+           ),
+           queued_candidate AS MATERIALIZED (
+             SELECT activation.id AS activation_id,
+                    thread.id AS thread_id,
+                    thread.generation AS thread_generation
+             FROM request_insert accepted
+             JOIN thread_activations activation
+               ON activation.session_id = $1
+              AND activation.status = 'queued'
+              AND activation.trigger_kind = 'chat/user_message'
+             JOIN threads thread
+               ON thread.root_turn_id = activation.root_turn_id
+              AND thread.generation = activation.generation
+             LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
+             WHERE $17 = 'interrupt'
+               AND NOT EXISTS (SELECT 1 FROM interrupted_candidate)
+               AND root_event.type = 'user_message'
+               AND root_event.topic = 'chat/user_message'
+               AND thread.kind = 'dialogue_turn'
+               AND thread.status = 'open'
+               AND thread.control_state = 'active'
+               AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
+               AND (
+                 SELECT COUNT(*) FROM activation_signals links
+                 WHERE links.activation_id = activation.id
+               ) < $18
+               AND activation.initiating_principal_id IS NOT DISTINCT FROM $7
+               AND ($15 IS NULL OR thread.target_id IS NULL OR thread.target_id = $15)
+             ORDER BY activation.trigger_sequence, activation.id
+             LIMIT 1
+             FOR UPDATE OF activation, thread
+           ),
+           pending_candidate AS MATERIALIZED (
+             SELECT thread.id AS thread_id,
+                    thread.generation AS thread_generation
+             FROM request_insert accepted
+             JOIN threads thread ON thread.session_id = $1
+             LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
+             WHERE $17 = 'interrupt'
+               AND NOT EXISTS (SELECT 1 FROM interrupted_candidate)
+               AND NOT EXISTS (SELECT 1 FROM queued_candidate)
+               AND thread.kind = 'dialogue_turn'
+               AND thread.status = 'open'
+               AND thread.control_state = 'active'
+               AND root_event.type = 'user_message'
+               AND root_event.topic = 'chat/user_message'
+               AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
+               AND thread.initiating_principal_id IS NOT DISTINCT FROM $7
+               AND ($15 IS NULL OR thread.target_id IS NULL OR thread.target_id = $15)
+               AND NOT EXISTS (
+                 SELECT 1 FROM thread_activations activation
+                 WHERE activation.root_turn_id = thread.root_turn_id
+                   AND activation.generation = thread.generation
+                   AND activation.status IN ('queued', 'running')
+               )
+               AND EXISTS (
+                 SELECT 1 FROM thread_signals signal
+                 WHERE signal.thread_id = thread.id
+                   AND signal.thread_generation = thread.generation
+                   AND signal.status = 'pending'
+               )
+               AND (
+                 SELECT COUNT(*) FROM thread_signals signal
+                 WHERE signal.thread_id = thread.id
+                   AND signal.thread_generation = thread.generation
+                   AND signal.status = 'pending'
+               ) < $18
+             ORDER BY (
+               SELECT MIN(signal.sequence) FROM thread_signals signal
+               WHERE signal.thread_id = thread.id
+                 AND signal.thread_generation = thread.generation
+                 AND signal.status = 'pending'
+             ), thread.id
+             LIMIT 1
+             FOR UPDATE OF thread
+           ),
+           first_encounter AS (
+             INSERT INTO principal_context_encounters
+               (context_id, principal_id, encounter_id, first_event_id,
+                first_session_id, first_seen_at)
+             SELECT $6, $7, $8, $3, $1, $9
+             FROM request_insert
+             ON CONFLICT(context_id, principal_id) DO NOTHING
+             RETURNING encounter_id
+           ),
+           event_insert AS (
+             INSERT INTO events
+               (id, timestamp, actor, type, topic, context_id, session_id,
+                thread_id, activation_id, root_turn_id, objective_id, payload)
+             SELECT $3, $9, $10, $11, $12, $6, $1,
+                    NULL, NULL, NULL, NULL,
+                    $13::jsonb
+                    || CASE
+                         WHEN $17 = 'follow_up'
+                          AND EXISTS (SELECT 1 FROM predecessor)
+                         THEN jsonb_build_object(
+                           'after_thread_id', (SELECT thread_id FROM predecessor)
+                         )
+                         ELSE '{}'::jsonb
+                       END
+                    || COALESCE(
+                      (SELECT jsonb_build_object(
+                         'principal_first_seen_in_context', true,
+                         'principal_encounter_id', encounter_id
+                       ) FROM first_encounter),
+                      '{}'::jsonb
+                    )
+             FROM request_insert
+             RETURNING sequence, payload
+           ),
+           cancelled_activations AS (
+             UPDATE thread_activations activation
+             SET revision = activation.revision + 1,
+                 status = 'cancelled', claimed_by = NULL,
+                 lease_expires_at = NULL, updated_at = $5
+             FROM interrupted_candidate interrupted
+             WHERE (
+                 NOT interrupted.provider_wait
+                 AND activation.id = interrupted.activation_id
+                 AND activation.status = 'running'
+                 AND activation.dialogue_lane_released_at IS NULL
+               ) OR (
+                 interrupted.provider_wait
+                 AND activation.root_turn_id = interrupted.root_turn_id
+                 AND activation.generation = interrupted.thread_generation
+                 AND activation.status IN ('queued', 'running')
+                 AND activation.dialogue_lane_released_at IS NULL
+               )
+             RETURNING activation.id
+           ),
+           cancelled_dependencies AS (
+             UPDATE scheduler_dependencies dependency
+             SET status = 'cancelled', updated_at = $5
+             FROM interrupted_candidate interrupted
+             WHERE interrupted.provider_wait
+               AND dependency.owner_kind = 'thread'
+               AND dependency.owner_id = interrupted.thread_id
+               AND dependency.owner_generation = interrupted.thread_generation
+               AND dependency.status = 'pending'
+               AND (SELECT COUNT(*) FROM cancelled_activations) >= 0
+             RETURNING dependency.id
+           ),
+           cancelled_thread AS (
+             UPDATE threads thread
+             SET revision = thread.revision + 1,
+                 status = 'cancelled', updated_at = $5
+             FROM interrupted_candidate interrupted
+             WHERE thread.id = interrupted.thread_id
+               AND thread.generation = interrupted.thread_generation
+               AND thread.kind = 'dialogue_turn'
+               AND thread.status = 'open'
+               AND (SELECT COUNT(*) FROM cancelled_dependencies) >= 0
+               AND (SELECT COUNT(*) FROM cancelled_activations) >= 0
+             RETURNING thread.id
+           ),
+           deleted_activation_links AS (
+             DELETE FROM activation_signals link
+             USING interrupted_candidate interrupted
+             WHERE link.signal_id IN (
+               SELECT signal.id FROM thread_signals signal
+               WHERE signal.thread_id = interrupted.thread_id
+                 AND signal.thread_generation = interrupted.thread_generation
+                 AND signal.kind = 'chat/user_message'
+             )
+               AND (SELECT COUNT(*) FROM cancelled_thread) >= 0
+             RETURNING link.signal_id
+           ),
+           thread_insert AS (
+             INSERT INTO threads
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, root_turn_id, kind, status, control_state,
+                executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
+                supervision_generation, completion_contract_json, delivery_status,
+                created_at, updated_at)
+             SELECT $14, 1, 1, $19, $6, $1, $7, $3,
+                    'dialogue_turn', 'open', 'active', 'self', $15,
+                    'durable', 'runtime', 'dialogue-router', 1, '{}'::jsonb,
+                    'none', $5, $5
+             FROM event_insert
+             WHERE EXISTS (SELECT 1 FROM interrupted_candidate)
+                OR (
+                  NOT EXISTS (SELECT 1 FROM queued_candidate)
+                  AND NOT EXISTS (SELECT 1 FROM pending_candidate)
+                )
+             RETURNING id, generation
+           ),
+           moved_signals AS (
+             UPDATE thread_signals signal
+             SET thread_id = $14, thread_generation = 1, status = 'pending',
+                 claimed_at = NULL, acknowledged_at = NULL,
+                 parent_activation_id = NULL
+             FROM interrupted_candidate interrupted
+             WHERE signal.thread_id = interrupted.thread_id
+               AND signal.thread_generation = interrupted.thread_generation
+               AND signal.kind = 'chat/user_message'
+               AND signal.status IN ('claimed', 'acknowledged')
+               AND EXISTS (SELECT 1 FROM thread_insert)
+               AND (SELECT COUNT(*) FROM deleted_activation_links) >= 0
+             RETURNING signal.id
+           ),
+           route AS MATERIALIZED (
+             SELECT COALESCE(
+                      (SELECT thread_id FROM queued_candidate),
+                      (SELECT thread_id FROM pending_candidate),
+                      $14
+                    ) AS thread_id,
+                    COALESCE(
+                      (SELECT thread_generation FROM queued_candidate),
+                      (SELECT thread_generation FROM pending_candidate),
+                      1
+                    ) AS thread_generation,
+                    (SELECT activation_id FROM queued_candidate) AS activation_id,
+                    CASE
+                      WHEN EXISTS (SELECT 1 FROM queued_candidate)
+                        OR EXISTS (SELECT 1 FROM pending_candidate)
+                      THEN FALSE ELSE TRUE
+                    END AS inserted_thread
+             FROM event_insert
+             WHERE EXISTS (SELECT 1 FROM queued_candidate)
+                OR EXISTS (SELECT 1 FROM pending_candidate)
+                OR EXISTS (SELECT 1 FROM thread_insert)
+           ),
+           target_update AS (
+             UPDATE threads thread
+             SET target_id = $15, revision = thread.revision + 1, updated_at = $5
+             FROM route
+             WHERE NOT route.inserted_thread
+               AND $15 IS NOT NULL
+               AND thread.id = route.thread_id
+               AND thread.target_id IS NULL
+             RETURNING thread.id
+           ),
+           signal_insert AS (
+             INSERT INTO thread_signals
+               (id, thread_id, thread_generation, event_id, principal_id,
+                sequence, kind, parent_activation_id, status, created_at, claimed_at)
+             SELECT $16, route.thread_id, route.thread_generation, $3, $7,
+                    event_insert.sequence, $12, NULL,
+                    CASE WHEN route.activation_id IS NULL THEN 'pending' ELSE 'claimed' END,
+                    $5,
+                    CASE WHEN route.activation_id IS NULL THEN NULL ELSE $5 END
+             FROM event_insert CROSS JOIN route
+             WHERE (SELECT COUNT(*) FROM target_update) >= 0
+               AND (SELECT COUNT(*) FROM moved_signals) >= 0
+             RETURNING id
+           ),
+           activation_link_insert AS (
+             INSERT INTO activation_signals (activation_id, signal_id, ordinal)
+             SELECT route.activation_id, signal_insert.id,
+                    COALESCE((
+                      SELECT MAX(link.ordinal) FROM activation_signals link
+                      WHERE link.activation_id = route.activation_id
+                    ), -1) + 1
+             FROM route CROSS JOIN signal_insert
+             WHERE route.activation_id IS NOT NULL
+             RETURNING signal_id
+           ),
+           recall_insert AS (
+             INSERT INTO recall_projection_outbox
+               (context_id, document_kind, document_id, generation, document_json,
+                status, attempts, available_at, created_at, updated_at)
+             SELECT $6, 'event', $3, 1, jsonb_build_object('retired', false),
+                    'pending', 0, $5, $5, $5
+             FROM signal_insert
+             ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+               generation = recall_projection_outbox.generation + 1,
+               document_json = EXCLUDED.document_json,
+               status = 'pending', attempts = 0,
+               available_at = EXCLUDED.available_at,
+               claimed_by = NULL, claim_expires_at = NULL, last_error = NULL,
+               updated_at = EXCLUDED.updated_at
+             RETURNING document_id
+           ),
+           projection_insert AS (
+             INSERT INTO session_projections
+               (event_id, context_id, session_id, event_sequence)
+             SELECT $3, $6, $1, event_insert.sequence
+             FROM event_insert CROSS JOIN signal_insert
+             ON CONFLICT(event_id) DO NOTHING
+             RETURNING event_id
+           ),
+           session_touch AS (
+             UPDATE sessions session
+             SET updated_at = $9, last_activity_at = $9
+             FROM signal_insert
+             WHERE session.id = $1
+               AND (SELECT COUNT(*) FROM activation_link_insert) >= 0
+               AND (SELECT COUNT(*) FROM recall_insert) >= 0
+               AND (SELECT COUNT(*) FROM projection_insert) >= 0
+             RETURNING session.id
+           )
+           SELECT EXISTS(SELECT 1 FROM signal_insert) AS accepted,
+                  (SELECT payload FROM event_insert) AS accepted_payload,
+                  COALESCE(
+                    (SELECT event_id FROM request_insert),
+                    (SELECT request.event_id FROM session_message_requests request
+                     WHERE request.session_id = $1 AND request.client_message_id = $2)
+                  ) AS existing_event_id,
+                  COALESCE(
+                    (SELECT request_fingerprint FROM request_insert),
+                    (SELECT request.request_fingerprint FROM session_message_requests request
+                     WHERE request.session_id = $1 AND request.client_message_id = $2)
+                  ) AS existing_fingerprint,
+                  (SELECT activation_id FROM interrupted_candidate) AS interrupted_activation_id,
+                  (SELECT root_turn_id FROM interrupted_candidate) AS interrupted_root_turn_id,
+                  (SELECT thread_id FROM interrupted_candidate) AS interrupted_thread_id,
+                  (SELECT provider_wait FROM interrupted_candidate) AS interrupted_provider_wait,
+                  (SELECT COUNT(*) FROM cancelled_activations) AS cancelled_activation_count,
+                  (SELECT COUNT(*) FROM cancelled_thread) AS cancelled_thread_count,
+                  (SELECT COUNT(*) FROM session_touch) AS touched_session_count"#,
+    )
+    .bind(session_id)
+    .bind(client_message_id)
+    .bind(&event.id)
+    .bind(request_fingerprint)
+    .bind(&command_now)
+    .bind(event_context_id)
+    .bind(event_principal_id)
+    .bind(&encounter_id)
+    .bind(&event_timestamp)
+    .bind(&event.actor)
+    .bind(&event.event_type)
+    .bind(&event.topic)
+    .bind(JsonValue::Object(event.payload.clone()))
+    .bind(&replacement_thread_id)
+    .bind(requested_target_id)
+    .bind(&signal_id)
+    .bind(dispatch_mode.as_str())
+    .bind(batch_limit)
+    .bind(agent_id)
+    .fetch_one(&mut **tx)
+    .await;
+    store.observability.record_storage_statement(
+        "postgres",
+        "claim_message_ordered",
+        statement_started.elapsed(),
+        if row.is_ok() { "ok" } else { "error" },
+    );
+    let row = row?;
+
+    if row.get::<bool, _>("accepted") {
+        let cancelled_thread_count = row.get::<i64, _>("cancelled_thread_count");
+        let interrupted_activation_id = row.get::<Option<String>, _>("interrupted_activation_id");
+        let interrupted_root_turn_id = row.get::<Option<String>, _>("interrupted_root_turn_id");
+        let interrupted_thread_id = row.get::<Option<String>, _>("interrupted_thread_id");
+        let provider_wait = row
+            .get::<Option<bool>, _>("interrupted_provider_wait")
+            .unwrap_or(false);
+        if interrupted_thread_id.is_some() && cancelled_thread_count != 1 {
+            return Err("DialogueTurn terminated while being interrupted".into());
+        }
+        if interrupted_thread_id.is_some()
+            && !provider_wait
+            && row.get::<i64, _>("cancelled_activation_count") != 1
+        {
+            return Err(
+                "DialogueTurn crossed the Execution boundary while being interrupted".into(),
+            );
+        }
+        let payload = row
+            .get::<Option<JsonValue>, _>("accepted_payload")
+            .and_then(|payload| payload.as_object().cloned())
+            .ok_or("PostgreSQL ordered message ingress did not return Event payload")?;
+        let mut claimed_event = event.clone();
+        claimed_event.payload = payload;
+        let interrupted = match (
+            interrupted_activation_id,
+            interrupted_root_turn_id,
+            interrupted_thread_id,
+        ) {
+            (Some(activation_id), Some(root_turn_id), Some(thread_id)) => {
+                Some(InterruptedDialogueTurn {
+                    activation_id,
+                    root_turn_id,
+                    thread_id,
+                })
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err("PostgreSQL ordered ingress returned a partial interrupt result".into())
+            }
+        };
+        return Ok(Some(MessageClaim::Accepted {
+            event: claimed_event,
+            interrupted,
+        }));
+    }
+    let existing_event_id = row.get::<Option<String>, _>("existing_event_id");
+    let existing_fingerprint = row.get::<Option<String>, _>("existing_fingerprint");
+    match (existing_event_id, existing_fingerprint) {
+        (Some(event_id), Some(fingerprint)) => Ok(Some(if fingerprint == request_fingerprint {
+            MessageClaim::Existing { event_id }
+        } else {
+            MessageClaim::Conflict { event_id }
+        })),
+        _ => Ok(None),
+    }
+}
+
 #[async_trait::async_trait]
 impl DeliveryIngressStore for PostgresStore {
     async fn commit_thread_delivery(
@@ -883,6 +1449,7 @@ impl DeliveryIngressStore for PostgresStore {
                 );
             }
         }
+        let authority_started = std::time::Instant::now();
         let session = sqlx::query(if referenced_session_ids.is_empty() {
             r#"SELECT session.agent_id, session.context_id, session.status,
                       session.attention_state, session.attention_revision,
@@ -909,8 +1476,14 @@ impl DeliveryIngressStore for PostgresStore {
         .bind(session_id)
         .bind(event_principal_id)
         .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+        .await;
+        self.observability.record_storage_statement(
+            "postgres",
+            "claim_message_authority",
+            authority_started.elapsed(),
+            if session.is_ok() { "ok" } else { "error" },
+        );
+        let session = session?.ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
         let registry_context_id: String = session.get("context_id");
         if event_session_id != session_id || event_context_id != registry_context_id {
             return Err(format!(
@@ -929,6 +1502,35 @@ impl DeliveryIngressStore for PostgresStore {
             return Ok(MessageClaim::ForbiddenPrincipal {
                 principal_id: event_principal_id.to_string(),
             });
+        }
+
+        if !has_references
+            && session.get::<String, _>("attention_state") != "retired"
+            && event.event_type == TYPE_USER_MESSAGE
+            && event.topic == "chat/user_message"
+            && matches!(
+                dispatch_mode,
+                MessageDispatchMode::Interrupt | MessageDispatchMode::FollowUp
+            )
+        {
+            let agent_id = session.get::<String, _>("agent_id");
+            if let Some(claim) = claim_ordered_message_fast_path(
+                self,
+                &mut tx,
+                OrderedMessageIngress {
+                    session_id,
+                    client_message_id,
+                    event,
+                    request_fingerprint: &request_fingerprint,
+                    dispatch_mode,
+                    agent_id: &agent_id,
+                },
+            )
+            .await?
+            {
+                tx.commit().await?;
+                return Ok(claim);
+            }
         }
 
         let inserted = sqlx::query(

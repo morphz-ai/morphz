@@ -736,6 +736,8 @@ impl SqliteStore {
             PRIMARY KEY(session_id, client_message_id),
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
+        CREATE INDEX IF NOT EXISTS idx_session_message_requests_session_created
+            ON session_message_requests(session_id, created_at DESC, event_id DESC);
 
         CREATE TABLE IF NOT EXISTS thread_activations (
             id TEXT PRIMARY KEY,

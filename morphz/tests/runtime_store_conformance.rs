@@ -2911,6 +2911,186 @@ where
     );
 }
 
+async fn assert_concurrent_ordered_ingress_conformance<S>(store: Arc<S>)
+where
+    S: DeliveryIngressStore
+        + SessionDirectoryStore
+        + ThreadStore
+        + ActivationStore
+        + Send
+        + Sync
+        + 'static,
+{
+    const PRINCIPAL: &str = "conformance-concurrent-ordered-principal";
+    store
+        .ensure_principal(NewPrincipal {
+            id: PRINCIPAL.to_string(),
+            provider_id: "conformance".to_string(),
+            assurance: "verified".to_string(),
+            display_name: None,
+        })
+        .await
+        .unwrap();
+
+    let create_session = |session_id: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            store
+                .create_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "conformance-agent".to_string(),
+                    context_id: "conformance-context".to_string(),
+                    parent_session_id: Some("conformance-session".to_string()),
+                    title: session_id.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+            store
+                .bind_session_principal(session_id, PRINCIPAL)
+                .await
+                .unwrap();
+        }
+    };
+
+    const FOLLOW_UP_SESSION: &str = "conformance-concurrent-follow-up-session";
+    create_session(FOLLOW_UP_SESSION).await;
+    let follow_up_barrier = Arc::new(Barrier::new(3));
+    let claim_follow_up = |store: Arc<S>, barrier: Arc<Barrier>, suffix: &'static str| {
+        tokio::spawn(async move {
+            let event_id = format!("conformance-concurrent-follow-up-event-{suffix}");
+            let event = Event::new(
+                event_id.clone(),
+                "Store-Conformance".to_string(),
+                morphz::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                json!({
+                    "context_id": "conformance-context",
+                    "session_id": FOLLOW_UP_SESSION,
+                    "principal_id": PRINCIPAL,
+                    "text": suffix
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            barrier.wait().await;
+            let claim = store
+                .claim_message(
+                    FOLLOW_UP_SESSION,
+                    &format!("conformance-concurrent-follow-up-client-{suffix}"),
+                    &event,
+                    MessageDispatchMode::FollowUp,
+                )
+                .await?;
+            Ok::<_, TestError>((event_id, claim))
+        })
+    };
+    let follow_up_a = claim_follow_up(Arc::clone(&store), Arc::clone(&follow_up_barrier), "a");
+    let follow_up_b = claim_follow_up(Arc::clone(&store), Arc::clone(&follow_up_barrier), "b");
+    follow_up_barrier.wait().await;
+    let follow_ups = [
+        follow_up_a.await.unwrap().unwrap(),
+        follow_up_b.await.unwrap().unwrap(),
+    ];
+    assert!(follow_ups
+        .iter()
+        .all(|(_, claim)| matches!(claim, MessageClaim::Accepted { .. })));
+    let first = follow_ups
+        .iter()
+        .find(|(_, claim)| match claim {
+            MessageClaim::Accepted { event, .. } => !event.payload.contains_key("after_thread_id"),
+            _ => false,
+        })
+        .expect("the first concurrent follow-up must start the ordered chain");
+    let second = follow_ups
+        .iter()
+        .find(|(_, claim)| match claim {
+            MessageClaim::Accepted { event, .. } => event.payload.contains_key("after_thread_id"),
+            _ => false,
+        })
+        .expect("the second concurrent follow-up must observe its committed predecessor");
+    let MessageClaim::Accepted {
+        event: second_event,
+        ..
+    } = &second.1
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        second_event
+            .payload
+            .get("after_thread_id")
+            .and_then(serde_json::Value::as_str),
+        Some(stable_thread_id(&first.0).as_str()),
+        "ordered ingress must take its predecessor snapshot after the Session lock"
+    );
+
+    const INTERRUPT_SESSION: &str = "conformance-concurrent-interrupt-session";
+    create_session(INTERRUPT_SESSION).await;
+    let interrupt_barrier = Arc::new(Barrier::new(3));
+    let claim_interrupt = |store: Arc<S>, barrier: Arc<Barrier>, suffix: &'static str| {
+        tokio::spawn(async move {
+            let event_id = format!("conformance-concurrent-interrupt-event-{suffix}");
+            let event = Event::new(
+                event_id.clone(),
+                "Store-Conformance".to_string(),
+                morphz::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                json!({
+                    "context_id": "conformance-context",
+                    "session_id": INTERRUPT_SESSION,
+                    "principal_id": PRINCIPAL,
+                    "text": suffix
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            barrier.wait().await;
+            let claim = store
+                .claim_message(
+                    INTERRUPT_SESSION,
+                    &format!("conformance-concurrent-interrupt-client-{suffix}"),
+                    &event,
+                    MessageDispatchMode::Interrupt,
+                )
+                .await?;
+            Ok::<_, TestError>((event_id, claim))
+        })
+    };
+    let interrupt_a = claim_interrupt(Arc::clone(&store), Arc::clone(&interrupt_barrier), "a");
+    let interrupt_b = claim_interrupt(Arc::clone(&store), Arc::clone(&interrupt_barrier), "b");
+    interrupt_barrier.wait().await;
+    let interrupts = [
+        interrupt_a.await.unwrap().unwrap(),
+        interrupt_b.await.unwrap().unwrap(),
+    ];
+    assert!(interrupts.iter().all(|(_, claim)| matches!(
+        claim,
+        MessageClaim::Accepted {
+            interrupted: None,
+            ..
+        }
+    )));
+    let interrupt_event_ids = interrupts
+        .iter()
+        .map(|(event_id, _)| event_id.as_str())
+        .collect::<Vec<_>>();
+    let interrupt_signals = store
+        .list_context_thread_signals("conformance-context", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|signal| interrupt_event_ids.contains(&signal.event_id.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(interrupt_signals.len(), 2);
+    assert_eq!(
+        interrupt_signals[0].thread_id, interrupt_signals[1].thread_id,
+        "the second concurrent interrupt must observe and batch into the first pending Thread"
+    );
+}
+
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
 where
     S: EventStore + SchedulerDependencyStore + Send + Sync + 'static,
@@ -9653,6 +9833,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
     assert_concurrent_parallel_ingress_conformance(Arc::clone(&store)).await;
+    assert_concurrent_ordered_ingress_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {
@@ -9954,6 +10135,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "idx_pg_plan_executions_wait_kind",
         "idx_pg_execution_targets_kind_provider_status",
         "idx_pg_session_projections_context_session_sequence",
+        "idx_pg_session_message_requests_session_created",
     ] {
         assert!(
             installed_indexes.contains(index),
@@ -9986,6 +10168,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
     assert_concurrent_parallel_ingress_conformance(Arc::clone(&store)).await;
+    assert_concurrent_ordered_ingress_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {

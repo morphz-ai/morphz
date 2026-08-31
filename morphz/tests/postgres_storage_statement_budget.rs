@@ -386,5 +386,145 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
             .unwrap();
         assert_eq!(statements.load(Ordering::Relaxed), 5);
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 5);
+
+        let interrupt_event = Event::new(
+            format!("pg-budget-interrupt-event-{suffix}"),
+            "test".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": context_id,
+                "session_id": session_id,
+                "principal_id": principal_id,
+                "text": "interrupt the still-running PostgreSQL dialogue"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        assert!(matches!(
+            store
+                .claim_message(
+                    &session_id,
+                    &format!("pg-budget-interrupt-client-{suffix}"),
+                    &interrupt_event,
+                    MessageDispatchMode::Interrupt,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::Accepted {
+                interrupted: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            statements.load(Ordering::Relaxed),
+            3,
+            "an interrupting PostgreSQL ingress must remain one lock plus one mutation command inside one transaction"
+        );
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        let follow_up_event = Event::new(
+            format!("pg-budget-follow-up-event-{suffix}"),
+            "test".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": context_id,
+                "session_id": session_id,
+                "principal_id": principal_id,
+                "text": "wait for the replacement dialogue to finish"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let follow_up_client_id = format!("pg-budget-follow-up-client-{suffix}");
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        let accepted_follow_up = store
+            .claim_message(
+                &session_id,
+                &follow_up_client_id,
+                &follow_up_event,
+                MessageDispatchMode::FollowUp,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            accepted_follow_up,
+            MessageClaim::Accepted {
+                interrupted: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            statements.load(Ordering::Relaxed),
+            3,
+            "a follow-up PostgreSQL ingress must remain one lock plus one mutation command inside one transaction"
+        );
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        assert!(matches!(
+            store
+                .claim_message(
+                    &session_id,
+                    &follow_up_client_id,
+                    &follow_up_event,
+                    MessageDispatchMode::FollowUp,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::Existing { .. }
+        ));
+        assert_eq!(
+            statements.load(Ordering::Relaxed),
+            3,
+            "an ordered PostgreSQL idempotent replay must retain its bounded transaction budget"
+        );
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        let batched_interrupt_event = Event::new(
+            format!("pg-budget-batched-interrupt-event-{suffix}"),
+            "test".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": context_id,
+                "session_id": session_id,
+                "principal_id": principal_id,
+                "text": "batch another correction into the pending interrupt dialogue"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        assert!(matches!(
+            store
+                .claim_message(
+                    &session_id,
+                    &format!("pg-budget-batched-interrupt-client-{suffix}"),
+                    &batched_interrupt_event,
+                    MessageDispatchMode::Interrupt,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::Accepted {
+                interrupted: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            statements.load(Ordering::Relaxed),
+            3,
+            "a pending interrupt batch must retain the ordered ingress statement budget"
+        );
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
     });
 }

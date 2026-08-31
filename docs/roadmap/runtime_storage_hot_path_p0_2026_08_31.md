@@ -48,10 +48,13 @@ P0 保持以下约束，并通过 SQLite/PostgreSQL 共用 conformance suite 验
   Session Projection、Thread、Signal 与 Session activity；
 - PostgreSQL 对最常见的 canonical `user_message + Parallel + 无引用 Session` 路径使用
   一条 data-modifying CTE；
+- PostgreSQL 对 `Interrupt` 与 `Follow-up` 使用一次连接、一个短事务、一次 Session 行锁
+  和一条 data-modifying CTE，完整物理预算为三条语句；真实运行中断、Provider wait、
+  pending/queued 批量与 predecessor 链均在同一原子命令内完成；
 - SQLite 使用一次 pool acquire 和一个 `BEGIN IMMEDIATE` 事务，按九项规范化权威执行
   九条确定语句；
-- Interrupt、Follow-up、引用 Session、retired mount 和兼容事件类型保留通用事务路径，
-  避免为了追求一条 SQL 改写其既有语义。
+- 引用 Session、retired mount、历史幂等修复和兼容事件类型保留通用事务路径；三种正常
+  调度模式不再因模式不同落入无界的细粒度访问。
 
 ### 3.2 版本化 Context 快照
 
@@ -91,6 +94,8 @@ Context 的 steady-state 读取分为三段关键路径：
 | --- | ---: | ---: |
 | canonical Parallel ingress | 9 statements / 1 acquire / 1 transaction | 1 statement / 1 acquire |
 | canonical idempotent replay / conflict | 3 statements / 1 acquire / 1 transaction | 1 / 1 |
+| canonical Interrupt ingress / pending batch | bounded local transaction | 3 statements / 1 acquire / 1 transaction |
+| canonical Follow-up ingress / replay | bounded local transaction | 3 statements / 1 acquire / 1 transaction |
 | Runtime Directory | 1 / 1 | 1 / 1 |
 | Scheduler Snapshot | 1 / 1 | 1 / 1 |
 | Activation Causality | 1 / 1 | 1 / 1 |
@@ -108,8 +113,9 @@ Resources；Activation Context 额外读取一条精确因果快照。后半段�
 P0 完成需要同时满足：
 
 - SQLite/PostgreSQL 共用 Store conformance 全通过；
-- 并发幂等、独立 Parallel、首次 encounter、Session Projection、伪造 route 回滚和
-  授权错误优先级均由双后端测试覆盖；
+- 并发幂等、独立 Parallel、并发 Follow-up predecessor、并发 Interrupt batch、真实
+  Interrupt、首次 encounter、Session Projection、伪造 route 回滚和授权错误优先级均由
+  双后端测试覆盖；
 - Context 各快照结果与原细粒度 Store API 逐字段等价；
 - Mind retirement、stale CAS、双进程 fencing、Interrupt/Follow-up 和 Runtime 重启
   恢复测试通过；

@@ -57,12 +57,19 @@ data-modifying CTE，在一条语句中完成：
 该语句对 Session 行加稳定顺序的锁，对 Principal binding 使用共享锁；route 不匹配时
 不会留下 Event 或任何部分写入。
 
+`Interrupt` 与 `Follow-up` 需要观察同一 Session 上一条已提交消息，不能直接复用 Parallel
+的一条语句：在 PostgreSQL `READ COMMITTED` 下，等待行锁的语句不会为其他表自动取得
+锁后新快照。两种有序模式因此使用一次 pool acquire、一个短事务、一次 Session authority
+锁和一条 data-modifying CTE。完整入口固定为三条物理语句；CTE 同时完成 predecessor
+选择、真实运行中断、Provider wait 取消、queued/pending 批量合并、Event/Projection、
+Thread/Signal 与 Session activity，不再执行十余条细粒度查询。
+
 SQLite 使用一次连接获取和一个 `BEGIN IMMEDIATE` 事务。它仍执行九条规范化语句，原因
 是本地嵌入式数据库没有 WAN RTT，而保持清晰的领域写入比构造庞大 SQLite CTE 更容易
 验证。九条语句是固定预算，不随历史规模增长。
 
-Interrupt、Follow-up、引用 Session、retired mount、非 canonical 兼容事件继续使用通用
-事务路径。这是有意的语义选择，不是遗漏。
+只有引用 Session、retired mount、非 canonical 兼容事件与缺失 fingerprint 的历史幂等
+记录继续使用通用修复路径。正常的三种调度模式均有固定操作预算。
 
 Runtime 在调用该提交边界前仍读取一次 source Session，用于解析模型、Context、sandbox
 与消息路由等构造期配置。这不是授权依据；Session 状态和 Principal 绑定必须在
@@ -110,6 +117,8 @@ statement/acquire 数量不通过业务层计数猜测，而由隔离测试直�
 | --- | ---: | ---: |
 | canonical Parallel ingress | 9 statements / 1 acquire / 1 transaction | 1 statement / 1 acquire |
 | canonical idempotent replay / conflict | 3 statements / 1 acquire / 1 transaction | 1 / 1 |
+| canonical Interrupt ingress / pending batch | bounded local transaction | 3 statements / 1 acquire / 1 transaction |
+| canonical Follow-up ingress / replay | bounded local transaction | 3 statements / 1 acquire / 1 transaction |
 | Runtime Directory | 1 / 1 | 1 / 1 |
 | Scheduler Snapshot | 1 / 1 | 1 / 1 |
 | Activation Causality | 1 / 1 | 1 / 1 |
@@ -128,6 +137,8 @@ p95 不超过 250 ms、PostgreSQL p95 不超过 500 ms；它们是防止本地/C
 - 同一幂等键并发竞争，只产生一个 Accepted、一个 Existing 和一个 Signal；
 - 同一幂等键、不同 payload 在 Barrier 同步的真实竞争中只产生一个 Accepted 和一个
   Conflict，失败方指向胜出 Event，且不留下第二份 Event/Projection；
+- 同一 Session 的两个并发 Follow-up 被行锁串行化，第二条稳定指向第一条提交后的 Thread；
+- 同一 Session 的两个并发 Interrupt 在无运行 Activation 时稳定批入同一 pending Thread；
 - 两条独立 Parallel 消息并发进入同一 Session，产生不同 Thread 且均被接受；
 - 同一 Principal 并发首次进入多个 Session，只产生一个 first-seen；
 - Parallel 消息恰好一次进入 Session Projection；
