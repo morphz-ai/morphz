@@ -6,8 +6,8 @@ use crate::event::{
 use crate::llm::{model_visible_message_text, ModelAttemptBinding};
 use crate::memory::{
     CognitiveClockStore, ContextCapabilityBindingRecord, ContextCapabilityBindingStore,
-    ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore, ExecutionJobFilter,
-    ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
+    ContextCognitiveClock, ContextRuntimeSnapshotStore, DeliveryStatus, EventAppend, EventStore,
+    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetRecord, ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord,
@@ -1336,6 +1336,7 @@ pub struct ContextEngine {
     objective_store: Option<Arc<dyn ObjectiveStore>>,
     work_assignment_store: Option<Arc<dyn WorkAssignmentStore>>,
     capability_binding_store: Option<Arc<dyn ContextCapabilityBindingStore>>,
+    runtime_snapshot_store: Option<Arc<dyn ContextRuntimeSnapshotStore>>,
     execution_job_store: Option<Arc<dyn ExecutionJobStore>>,
     execution_target_store: Option<Arc<dyn ExecutionTargetStore>>,
     execution_target_authorization_store: Option<Arc<dyn ExecutionTargetAuthorizationStore>>,
@@ -1418,6 +1419,7 @@ impl ContextEngine {
             objective_store: None,
             work_assignment_store: None,
             capability_binding_store: None,
+            runtime_snapshot_store: None,
             execution_job_store: None,
             execution_target_store: None,
             execution_target_authorization_store: None,
@@ -1460,6 +1462,14 @@ impl ContextEngine {
 
     pub fn with_work_assignment_store(mut self, store: Arc<dyn WorkAssignmentStore>) -> Self {
         self.work_assignment_store = Some(store);
+        self
+    }
+
+    pub fn with_runtime_snapshot_store(
+        mut self,
+        store: Arc<dyn ContextRuntimeSnapshotStore>,
+    ) -> Self {
+        self.runtime_snapshot_store = Some(store);
         self
     }
 
@@ -3138,16 +3148,19 @@ impl ContextEngine {
         include_encoding: bool,
     ) -> Result<ContextView, DynError> {
         let started = Instant::now();
-        let result = self
-            .build_context_encoding_for_session_inner(
-                context_id,
-                active_session_id,
-                excluded_observation_ids,
-                activation_record,
-                evaluation_model_alias,
-                include_encoding,
-            )
-            .await;
+        // Context construction intentionally carries several independently
+        // versioned snapshots. Keep that large future behind this API boundary
+        // so Runtime scheduling futures do not embed its full state machine on
+        // every call path.
+        let result = Box::pin(self.build_context_encoding_for_session_inner(
+            context_id,
+            active_session_id,
+            excluded_observation_ids,
+            activation_record,
+            evaluation_model_alias,
+            include_encoding,
+        ))
+        .await;
         let outcome = if result.is_ok() { "ok" } else { "error" };
         let duration = started.elapsed();
         self.observability
@@ -3178,14 +3191,75 @@ impl ContextEngine {
         let mut phase_started = Instant::now();
         let model_alias = evaluation_model_alias
             .or_else(|| activation_record.and_then(|activation| activation.model_alias.as_deref()));
-        let (budget_config, token_budget_policy) = self
-            .effective_budget_config(context_id, model_alias)
+        let mut directory_snapshot = match &self.runtime_snapshot_store {
+            Some(store) => {
+                let command_started = Instant::now();
+                let result = store
+                    .read_context_runtime_directory_snapshot(context_id)
+                    .await;
+                self.observability.record_storage_command(
+                    store.storage_backend_name(),
+                    "read_runtime_directory_snapshot",
+                    command_started.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" },
+                );
+                Some(result?.ok_or_else(|| format!("Context '{context_id}' does not exist"))?)
+            }
+            None => None,
+        };
+        let initial_retirement_state = directory_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.mind.clone())
+            .map(|projection| {
+                Ok::<_, DynError>((
+                    directory_snapshot
+                        .as_ref()
+                        .expect("directory snapshot exists with its Mind")
+                        .cognitive_clock
+                        .clone(),
+                    Self::validate_mind_projection(context_id, projection)?,
+                ))
+            })
+            .transpose()?;
+        let finalized_retirements = self
+            .finalize_due_frame_retirements(context_id, active_session_id, initial_retirement_state)
             .await?;
-        self.finalize_due_frame_retirements(context_id, active_session_id)
-            .await?;
-        let cognitive_clock = match &self.cognitive_clock_store {
-            Some(store) => store.get_context_cognitive_clock(context_id).await?,
-            None => ContextCognitiveClock {
+        if finalized_retirements {
+            if let Some(store) = &self.runtime_snapshot_store {
+                let command_started = Instant::now();
+                let result = store
+                    .read_context_runtime_directory_snapshot(context_id)
+                    .await;
+                self.observability.record_storage_command(
+                    store.storage_backend_name(),
+                    "read_runtime_directory_snapshot",
+                    command_started.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" },
+                );
+                directory_snapshot =
+                    Some(result?.ok_or_else(|| format!("Context '{context_id}' does not exist"))?);
+            }
+        }
+        let (budget_config, token_budget_policy) = if let Some(snapshot) = &directory_snapshot {
+            let budget = self.resolve_context_token_budget(
+                context_id,
+                model_alias,
+                snapshot.context.requested_hard_token_limit,
+                snapshot.context.token_budget_revision,
+            );
+            let mut config = self.config.clone();
+            config.context_hard_token_limit = budget.effective_hard_token_limit;
+            config.context_soft_token_limit = budget.soft_token_limit;
+            config.context_maintenance_reserve_tokens = budget.maintenance_reserve_tokens;
+            (config, budget)
+        } else {
+            self.effective_budget_config(context_id, model_alias)
+                .await?
+        };
+        let cognitive_clock = match (&directory_snapshot, &self.cognitive_clock_store) {
+            (Some(snapshot), _) => snapshot.cognitive_clock.clone(),
+            (None, Some(store)) => store.get_context_cognitive_clock(context_id).await?,
+            (None, None) => ContextCognitiveClock {
                 context_id: context_id.to_string(),
                 tick: 0,
                 last_signal_batch_id: None,
@@ -3197,36 +3271,41 @@ impl ContextEngine {
         } else {
             None
         };
-        let registry_sessions = match &self.session_store {
-            Some(store) => store.list_context_sessions(context_id, true).await?,
-            None => {
+        let registry_sessions = match (&directory_snapshot, &self.session_store) {
+            (Some(snapshot), _) => snapshot.sessions.clone(),
+            (None, Some(store)) => store.list_context_sessions(context_id, true).await?,
+            (None, None) => {
                 self.context_sessions(context_id, legacy_events.as_deref().unwrap_or_default())
                     .await?
             }
         };
-        let objectives = match &self.objective_store {
-            Some(store) => store.list_context_objectives(context_id, false).await?,
-            None => Vec::new(),
+        let objectives = match (&directory_snapshot, &self.objective_store) {
+            (Some(snapshot), _) => snapshot.objectives.clone(),
+            (None, Some(store)) => store.list_context_objectives(context_id, false).await?,
+            (None, None) => Vec::new(),
         };
-        let work_assignments = match &self.work_assignment_store {
-            Some(store) => {
+        let work_assignments = match (&directory_snapshot, &self.work_assignment_store) {
+            (Some(snapshot), _) => snapshot.work_assignments.clone(),
+            (None, Some(store)) => {
                 store
                     .list_context_work_assignments(context_id, None, false, 32)
                     .await?
             }
-            None => Vec::new(),
+            (None, None) => Vec::new(),
         };
-        let capability_bindings = match &self.capability_binding_store {
-            Some(store) => store.list_context_capability_bindings(context_id).await?,
-            None => Vec::new(),
+        let capability_bindings = match (&directory_snapshot, &self.capability_binding_store) {
+            (Some(snapshot), _) => snapshot.capability_bindings.clone(),
+            (None, Some(store)) => store.list_context_capability_bindings(context_id).await?,
+            (None, None) => Vec::new(),
         };
-        let active_activations = match &self.session_store {
-            Some(store) => {
+        let active_activations = match (&directory_snapshot, &self.session_store) {
+            (Some(snapshot), _) => snapshot.active_activations.clone(),
+            (None, Some(store)) => {
                 store
                     .list_context_thread_activations(context_id, false)
                     .await?
             }
-            None => Vec::new(),
+            (None, None) => Vec::new(),
         };
         self.record_context_build_phase(
             activation_record,
@@ -3246,9 +3325,10 @@ impl ContextEngine {
             &objectives,
             &active_activations,
         );
-        let principal_bindings = match &self.session_store {
-            Some(store) => store.list_context_principal_bindings(context_id).await?,
-            None => Vec::new(),
+        let principal_bindings = match (&directory_snapshot, &self.session_store) {
+            (Some(snapshot), _) => snapshot.principal_bindings.clone(),
+            (None, Some(store)) => store.list_context_principal_bindings(context_id).await?,
+            (None, None) => Vec::new(),
         };
         let mut principals_by_session = HashMap::<String, Vec<String>>::new();
         for binding in principal_bindings {
@@ -3352,13 +3432,123 @@ impl ContextEngine {
             .and_then(|event| event.payload.get("completed_thread_ids"))
             .and_then(serde_json::Value::as_array)
             .map(|ids| {
-                ids.iter()
+                let mut ids = ids
+                    .iter()
                     .filter_map(serde_json::Value::as_str)
                     .map(ToOwned::to_owned)
-                    .collect::<HashSet<_>>()
-            });
+                    .collect::<Vec<_>>();
+                ids.sort();
+                ids.dedup();
+                ids
+            })
+            .unwrap_or_default();
         let references = ContextReferences::from_events(&events);
         let metadata = observation_metadata(&events, &state);
+        let active_principal_id = match activation_record {
+            Some(activation) => activation
+                .initiating_principal_id
+                .as_deref()
+                .or_else(|| {
+                    events
+                        .iter()
+                        .find(|event| event.id == activation.trigger_event_id)
+                        .and_then(event_principal)
+                })
+                .or_else(|| {
+                    events
+                        .iter()
+                        .find(|event| event.id == activation.root_turn_id)
+                        .and_then(event_principal)
+                })
+                .map(ToOwned::to_owned),
+            None => events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.event_type == TYPE_USER_MESSAGE
+                        && event_session(event) == Some(active_session_id)
+                })
+                .and_then(event_principal)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    principals_by_session
+                        .get(active_session_id)
+                        .filter(|principals| principals.len() == 1)
+                        .and_then(|principals| principals.first().cloned())
+                }),
+        };
+        let (
+            mut runtime_scheduler_snapshot,
+            mut runtime_causality_snapshot,
+            mut execution_resources_snapshot,
+        ) = if let Some(store) = &self.runtime_snapshot_store {
+            // Keep the three SQLx futures off the Context builder's stack. The
+            // concrete query futures are deliberately large; embedding all of
+            // them in `join!` made this already-large async state machine exceed
+            // the default test-thread stack even though there was no recursion.
+            let scheduler_read = Box::pin(async {
+                let command_started = Instant::now();
+                let result = store
+                    .read_context_runtime_scheduler_snapshot(
+                        context_id,
+                        &delivery_snapshot_ids,
+                        20,
+                        32,
+                    )
+                    .await;
+                self.observability.record_storage_command(
+                    store.storage_backend_name(),
+                    "read_runtime_scheduler_snapshot",
+                    command_started.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" },
+                );
+                result
+            });
+            let causality_read = Box::pin(async {
+                let Some(current) = activation_record else {
+                    return Ok(None);
+                };
+                let command_started = Instant::now();
+                let result = store
+                    .read_context_activation_causality_snapshot(
+                        context_id,
+                        &current.id,
+                        &current.root_turn_id,
+                        &current.trigger_event_id,
+                    )
+                    .await;
+                self.observability.record_storage_command(
+                    store.storage_backend_name(),
+                    "read_activation_causality_snapshot",
+                    command_started.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" },
+                );
+                result.map(Some)
+            });
+            let resources_read = Box::pin(async {
+                let command_started = Instant::now();
+                let result = store
+                    .read_context_execution_resources_snapshot(
+                        context_id,
+                        active_principal_id.as_deref(),
+                        16,
+                        1_000,
+                    )
+                    .await;
+                self.observability.record_storage_command(
+                    store.storage_backend_name(),
+                    "read_execution_resources_snapshot",
+                    command_started.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" },
+                );
+                result
+            });
+            let (scheduler, causality, resources) =
+                tokio::join!(scheduler_read, causality_read, resources_read);
+            (Some(scheduler?), causality?, Some(resources?))
+        } else {
+            (None, None, None)
+        };
         let (
             threads,
             thread_groups,
@@ -3366,107 +3556,117 @@ impl ContextEngine {
             thread_outcomes,
             schedules,
             thread_signals,
-        ) = match &self.session_store {
-            Some(store) => {
-                let active_threads = store.list_context_threads(context_id, false).await?;
-                let context_thread_ids = active_threads
-                    .iter()
-                    .map(|thread| thread.id.clone())
-                    .collect::<Vec<_>>();
-                let scheduled = store
-                    .list_thread_schedules(context_id, &context_thread_ids)
-                    .await?
-                    .into_iter()
-                    .filter(|intent| intent.status == ScheduleStatus::Queued)
-                    .collect::<Vec<_>>();
-                let mut projected = active_threads;
-                // Delivery snapshots name their terminal Threads exactly, so
-                // retrieve those rows by primary key rather than scanning all
-                // terminal history to rediscover a handful of IDs.
-                if let Some(ids) = delivery_snapshot_ids.as_ref() {
-                    for thread_id in ids {
-                        if let Some(thread) = store.get_thread(thread_id).await? {
-                            if thread.context_id == context_id
-                                && matches!(
-                                    thread.delivery_status,
-                                    DeliveryStatus::Pending | DeliveryStatus::Deferred
-                                )
-                                && !projected.iter().any(|current| current.id == thread.id)
-                            {
-                                projected.push(thread);
+        ) = match runtime_scheduler_snapshot.take() {
+            Some(snapshot) => (
+                snapshot.threads,
+                snapshot.thread_groups,
+                snapshot.thread_group_members,
+                snapshot.thread_outcomes,
+                snapshot.schedules,
+                snapshot.thread_signals,
+            ),
+            None => match &self.session_store {
+                Some(store) => {
+                    let active_threads = store.list_context_threads(context_id, false).await?;
+                    let context_thread_ids = active_threads
+                        .iter()
+                        .map(|thread| thread.id.clone())
+                        .collect::<Vec<_>>();
+                    let scheduled = store
+                        .list_thread_schedules(context_id, &context_thread_ids)
+                        .await?
+                        .into_iter()
+                        .filter(|intent| intent.status == ScheduleStatus::Queued)
+                        .collect::<Vec<_>>();
+                    let mut projected = active_threads;
+                    // Delivery snapshots name their terminal Threads exactly, so
+                    // retrieve those rows by primary key rather than scanning all
+                    // terminal history to rediscover a handful of IDs.
+                    if !delivery_snapshot_ids.is_empty() {
+                        for thread_id in &delivery_snapshot_ids {
+                            if let Some(thread) = store.get_thread(thread_id).await? {
+                                if thread.context_id == context_id
+                                    && matches!(
+                                        thread.delivery_status,
+                                        DeliveryStatus::Pending | DeliveryStatus::Deferred
+                                    )
+                                    && !projected.iter().any(|current| current.id == thread.id)
+                                {
+                                    projected.push(thread);
+                                }
                             }
                         }
                     }
-                }
-                let mut recent_terminal = store
-                    .list_recent_terminal_threads(context_id, 20)
-                    .await?
-                    .into_iter()
-                    .filter(|thread| {
-                        !matches!(
-                            thread.delivery_status,
-                            DeliveryStatus::Pending | DeliveryStatus::Deferred
-                        ) && !projected.iter().any(|current| current.id == thread.id)
-                    })
-                    .collect::<Vec<_>>();
-                // The Store returns newest first; the Context projection uses
-                // chronological order for deterministic encoding.
-                recent_terminal.reverse();
-                projected.extend(recent_terminal);
-                // Context Encoding only needs supervision barriers referenced
-                // by the bounded Thread projection above. Loading every open
-                // group in a long-lived Context would make both Prompt size
-                // and database work grow with historical concurrency.
-                let mut projected_group_ids = projected
-                    .iter()
-                    .filter_map(|thread| thread.supervision.thread_group_id.clone())
-                    .collect::<Vec<_>>();
-                projected_group_ids.sort();
-                projected_group_ids.dedup();
-                projected_group_ids.truncate(32);
-                let groups = store
-                    .list_thread_groups_by_ids(context_id, &projected_group_ids)
-                    .await?;
-                let members = store
-                    .list_thread_group_members_for_groups(&projected_group_ids)
-                    .await?
-                    .into_iter()
-                    .map(|(_, member)| member)
-                    .collect::<Vec<_>>();
-                let outcomes = store
-                    .list_thread_group_outcomes_for_groups(&projected_group_ids)
-                    .await?
-                    .into_iter()
-                    .map(|(_, outcome)| outcome)
-                    .collect::<Vec<_>>();
-                let projected_thread_ids = projected
-                    .iter()
-                    .map(|thread| thread.id.clone())
-                    .collect::<Vec<_>>();
-                let pending_signals = store
-                    .list_context_thread_signals_for_threads(
-                        context_id,
-                        &projected_thread_ids,
-                        Some(ThreadSignalStatus::Pending),
+                    let mut recent_terminal = store
+                        .list_recent_terminal_threads(context_id, 20)
+                        .await?
+                        .into_iter()
+                        .filter(|thread| {
+                            !matches!(
+                                thread.delivery_status,
+                                DeliveryStatus::Pending | DeliveryStatus::Deferred
+                            ) && !projected.iter().any(|current| current.id == thread.id)
+                        })
+                        .collect::<Vec<_>>();
+                    // The Store returns newest first; the Context projection uses
+                    // chronological order for deterministic encoding.
+                    recent_terminal.reverse();
+                    projected.extend(recent_terminal);
+                    // Context Encoding only needs supervision barriers referenced
+                    // by the bounded Thread projection above. Loading every open
+                    // group in a long-lived Context would make both Prompt size
+                    // and database work grow with historical concurrency.
+                    let mut projected_group_ids = projected
+                        .iter()
+                        .filter_map(|thread| thread.supervision.thread_group_id.clone())
+                        .collect::<Vec<_>>();
+                    projected_group_ids.sort();
+                    projected_group_ids.dedup();
+                    projected_group_ids.truncate(32);
+                    let groups = store
+                        .list_thread_groups_by_ids(context_id, &projected_group_ids)
+                        .await?;
+                    let members = store
+                        .list_thread_group_members_for_groups(&projected_group_ids)
+                        .await?
+                        .into_iter()
+                        .map(|(_, member)| member)
+                        .collect::<Vec<_>>();
+                    let outcomes = store
+                        .list_thread_group_outcomes_for_groups(&projected_group_ids)
+                        .await?
+                        .into_iter()
+                        .map(|(_, outcome)| outcome)
+                        .collect::<Vec<_>>();
+                    let projected_thread_ids = projected
+                        .iter()
+                        .map(|thread| thread.id.clone())
+                        .collect::<Vec<_>>();
+                    let pending_signals = store
+                        .list_context_thread_signals_for_threads(
+                            context_id,
+                            &projected_thread_ids,
+                            Some(ThreadSignalStatus::Pending),
+                        )
+                        .await?;
+                    (
+                        projected,
+                        groups,
+                        members,
+                        outcomes,
+                        scheduled,
+                        pending_signals,
                     )
-                    .await?;
-                (
-                    projected,
-                    groups,
-                    members,
-                    outcomes,
-                    scheduled,
-                    pending_signals,
-                )
-            }
-            None => (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
+                }
+                None => (
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            },
         };
         self.record_context_build_phase(
             activation_record,
@@ -3477,70 +3677,98 @@ impl ContextEngine {
             phase_started.elapsed(),
         );
         phase_started = Instant::now();
-        let activation_signals = match (&self.session_store, activation_record) {
-            (Some(store), Some(activation)) => {
-                store.list_activation_signals(&activation.id).await?
-            }
-            _ => Vec::new(),
-        };
         // Activation causality is a durable route, not a best-effort Context
         // projection. In particular, scheduled Threads have a synthetic
         // `root_turn_id`, while their immutable task lives on the first
         // Activation's trigger Event. Resolve the current trigger and original
         // task by exact IDs so retire/projection boundaries cannot erase the
         // work that a continuation is responsible for.
-        let mut activation_thread = None;
-        let mut activation_root_event = None;
-        let mut activation_trigger_event = None;
-        if let Some(current) = activation_record {
-            activation_thread = threads
-                .iter()
-                .find(|thread| thread.root_turn_id == current.root_turn_id)
-                .cloned();
-            if activation_thread.is_none() {
-                if let Some(store) = &self.session_store {
-                    activation_thread = store.get_thread_by_root(&current.root_turn_id).await?;
-                }
-            }
-
-            activation_trigger_event = events
-                .iter()
-                .find(|event| event.id == current.trigger_event_id)
-                .cloned();
-            if activation_trigger_event.is_none() {
-                activation_trigger_event = self
-                    .find_event(context_id, &current.trigger_event_id)
-                    .await?;
-            }
-
-            activation_root_event = events
-                .iter()
-                .find(|event| event.id == current.root_turn_id)
-                .cloned();
-            if activation_root_event.is_none() {
-                activation_root_event = self.find_event(context_id, &current.root_turn_id).await?;
-            }
-            if activation_root_event.is_none() {
-                if let Some(store) = &self.session_store {
-                    if let Some(first) = store
-                        .get_first_thread_activation_by_root(context_id, &current.root_turn_id)
-                        .await?
-                    {
-                        activation_root_event = if first.trigger_event_id
-                            == current.trigger_event_id
-                        {
-                            activation_trigger_event.clone()
-                        } else {
-                            events
-                                .iter()
-                                .find(|event| event.id == first.trigger_event_id)
-                                .cloned()
-                                .or(self.find_event(context_id, &first.trigger_event_id).await?)
-                        };
+        let (
+            activation_signals,
+            activation_thread,
+            activation_root_event,
+            activation_trigger_event,
+            activation_root_sequence,
+        ) = if let Some(current) = activation_record {
+            if let Some(snapshot) = runtime_causality_snapshot.take() {
+                (
+                    snapshot.activation_signals,
+                    snapshot.thread,
+                    snapshot.root_event,
+                    snapshot.trigger_event,
+                    snapshot.root_sequence,
+                )
+            } else {
+                let activation_signals = match &self.session_store {
+                    Some(store) => store.list_activation_signals(&current.id).await?,
+                    None => Vec::new(),
+                };
+                let mut activation_thread = threads
+                    .iter()
+                    .find(|thread| thread.root_turn_id == current.root_turn_id)
+                    .cloned();
+                if activation_thread.is_none() {
+                    if let Some(store) = &self.session_store {
+                        activation_thread = store.get_thread_by_root(&current.root_turn_id).await?;
                     }
                 }
+
+                let mut activation_trigger_event = events
+                    .iter()
+                    .find(|event| event.id == current.trigger_event_id)
+                    .cloned();
+                if activation_trigger_event.is_none() {
+                    activation_trigger_event = self
+                        .find_event(context_id, &current.trigger_event_id)
+                        .await?;
+                }
+
+                let mut activation_root_event = events
+                    .iter()
+                    .find(|event| event.id == current.root_turn_id)
+                    .cloned();
+                if activation_root_event.is_none() {
+                    activation_root_event =
+                        self.find_event(context_id, &current.root_turn_id).await?;
+                }
+                let mut activation_root_sequence = activation_root_event
+                    .as_ref()
+                    .and_then(|event| event.sequence);
+                if activation_root_event.is_none() || activation_root_sequence.is_none() {
+                    if let Some(store) = &self.session_store {
+                        if let Some(first) = store
+                            .get_first_thread_activation_by_root(context_id, &current.root_turn_id)
+                            .await?
+                        {
+                            activation_root_sequence.get_or_insert(first.trigger_sequence);
+                            if activation_root_event.is_none() {
+                                activation_root_event =
+                                    if first.trigger_event_id == current.trigger_event_id {
+                                        activation_trigger_event.clone()
+                                    } else {
+                                        events
+                                            .iter()
+                                            .find(|event| event.id == first.trigger_event_id)
+                                            .cloned()
+                                            .or(self
+                                                .find_event(context_id, &first.trigger_event_id)
+                                                .await?)
+                                    };
+                            }
+                        }
+                    }
+                }
+                (
+                    activation_signals,
+                    activation_thread,
+                    activation_root_event,
+                    activation_trigger_event,
+                    activation_root_sequence,
+                )
             }
-        }
+        } else {
+            (Vec::new(), None, None, None, None)
+        };
         let activation = activation_record.map(|current| {
             let mut focus = activation_focus(
                 current,
@@ -3572,7 +3800,16 @@ impl ContextEngine {
         );
         phase_started = Instant::now();
         let now = Utc::now();
-        let background_tasks = if let Some(store) = self.execution_job_store.as_ref() {
+        let background_tasks = if let Some(snapshot) = execution_resources_snapshot.as_ref() {
+            snapshot
+                .background_jobs
+                .iter()
+                .map(|job| {
+                    let live = get_tasks_map().get(&job.id);
+                    background_task_view_from_job(job, live.as_deref(), &threads, now)
+                })
+                .collect::<Vec<_>>()
+        } else if let Some(store) = self.execution_job_store.as_ref() {
             store
                 .list_execution_jobs(ExecutionJobFilter {
                     context_id: Some(context_id.to_string()),
@@ -3642,31 +3879,12 @@ impl ContextEngine {
             .iter()
             .filter(|frame| !state.retired.contains(&frame.id))
             .collect::<Vec<_>>();
-        let causal_frontier = if let Some(activation) = activation_record {
-            let persisted_root_sequence = events
-                .iter()
-                .find(|event| event.id == activation.root_turn_id)
-                .and_then(|event| event.sequence);
-            let first_activation_sequence = if persisted_root_sequence.is_none() {
-                match &self.session_store {
-                    Some(store) => store
-                        .get_first_thread_activation_by_root(context_id, &activation.root_turn_id)
-                        .await?
-                        .map(|first| first.trigger_sequence),
-                    None => None,
-                }
-            } else {
-                None
-            };
-            Some((
+        let causal_frontier = activation_record.map(|activation| {
+            (
                 activation,
-                persisted_root_sequence
-                    .or(first_activation_sequence)
-                    .unwrap_or(activation.trigger_sequence),
-            ))
-        } else {
-            None
-        };
+                activation_root_sequence.unwrap_or(activation.trigger_sequence),
+            )
+        });
         let ready_set = current_session_ids.iter().cloned().collect::<HashSet<_>>();
         let (observations, estimated_tokens) = loop {
             let full_set = sessions
@@ -3780,39 +3998,6 @@ impl ContextEngine {
             causal_events.as_deref().unwrap_or(&session_events),
             &self.config,
         );
-        let active_principal_id = match activation_record {
-            Some(activation) => activation
-                .initiating_principal_id
-                .as_deref()
-                .or_else(|| {
-                    events
-                        .iter()
-                        .find(|event| event.id == activation.trigger_event_id)
-                        .and_then(event_principal)
-                })
-                .or_else(|| {
-                    events
-                        .iter()
-                        .find(|event| event.id == activation.root_turn_id)
-                        .and_then(event_principal)
-                })
-                .map(ToOwned::to_owned),
-            None => events
-                .iter()
-                .rev()
-                .find(|event| {
-                    event.event_type == TYPE_USER_MESSAGE
-                        && event_session(event) == Some(active_session_id)
-                })
-                .and_then(event_principal)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    principals_by_session
-                        .get(active_session_id)
-                        .filter(|principals| principals.len() == 1)
-                        .and_then(|principals| principals.first().cloned())
-                }),
-        };
         self.record_context_build_phase(
             activation_record,
             context_id,
@@ -3822,34 +4007,43 @@ impl ContextEngine {
             phase_started.elapsed(),
         );
         phase_started = Instant::now();
-        let mut execution_targets = match &self.execution_target_store {
-            Some(store) => {
-                store
-                    .list_execution_targets(ExecutionTargetFilter {
-                        visible_to_principal_id: active_principal_id.clone(),
-                        owner_principal_is_null: active_principal_id.is_none(),
-                        limit: Some(16),
-                        ..Default::default()
-                    })
-                    .await?
-            }
-            None => Vec::new(),
-        };
-        let target_authorizations = match (
-            &self.execution_target_authorization_store,
-            active_principal_id.as_deref(),
-        ) {
-            (Some(store), Some(principal_id)) => {
-                store
-                    .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
-                        owner_principal_id: Some(principal_id.to_string()),
-                        limit: Some(1_000),
-                        ..Default::default()
-                    })
-                    .await?
-            }
-            _ => Vec::new(),
-        };
+        let (mut execution_targets, target_authorizations) =
+            match execution_resources_snapshot.take() {
+                Some(snapshot) => (snapshot.execution_targets, snapshot.target_authorizations),
+                None => {
+                    let targets = match &self.execution_target_store {
+                        Some(store) => {
+                            store
+                                .list_execution_targets(ExecutionTargetFilter {
+                                    visible_to_principal_id: active_principal_id.clone(),
+                                    owner_principal_is_null: active_principal_id.is_none(),
+                                    limit: Some(16),
+                                    ..Default::default()
+                                })
+                                .await?
+                        }
+                        None => Vec::new(),
+                    };
+                    let authorizations = match (
+                        &self.execution_target_authorization_store,
+                        active_principal_id.as_deref(),
+                    ) {
+                        (Some(store), Some(principal_id)) => {
+                            store
+                                .list_execution_target_authorizations(
+                                    ExecutionTargetAuthorizationFilter {
+                                        owner_principal_id: Some(principal_id.to_string()),
+                                        limit: Some(1_000),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await?
+                        }
+                        _ => Vec::new(),
+                    };
+                    (targets, authorizations)
+                }
+            };
         let current_thread_id = activation_signals
             .first()
             .map(|signal| signal.thread_id.as_str())
@@ -4012,15 +4206,28 @@ impl ContextEngine {
         &self,
         context_id: &str,
         acting_session_id: &str,
-    ) -> Result<(), DynError> {
+        mut initial: Option<(ContextCognitiveClock, MindState)>,
+    ) -> Result<bool, DynError> {
         let Some(clock_store) = &self.cognitive_clock_store else {
-            return Ok(());
+            return Ok(false);
         };
         const MAX_FINALIZATION_RETRIES: usize = 16;
 
         for attempt in 0..MAX_FINALIZATION_RETRIES {
-            let clock = clock_store.get_context_cognitive_clock(context_id).await?;
-            let state = self.load_current_mind(context_id, None).await?;
+            let (clock, state) = if attempt == 0 {
+                match initial.take() {
+                    Some(snapshot) => snapshot,
+                    None => (
+                        clock_store.get_context_cognitive_clock(context_id).await?,
+                        self.load_current_mind(context_id, None).await?,
+                    ),
+                }
+            } else {
+                (
+                    clock_store.get_context_cognitive_clock(context_id).await?,
+                    self.load_current_mind(context_id, None).await?,
+                )
+            };
             let due = state
                 .retiring
                 .values()
@@ -4028,7 +4235,7 @@ impl ContextEngine {
                 .cloned()
                 .collect::<Vec<_>>();
             if due.is_empty() {
-                return Ok(());
+                return Ok(false);
             }
             let mut items = vec![
                 atom("context-tx"),
@@ -4077,7 +4284,7 @@ impl ContextEngine {
                         event_code = "context.frame_retirement.window_effective",
                         "Frame retirement cognitive window became effective"
                     );
-                    return Ok(());
+                    return Ok(true);
                 }
                 Err(error)
                     if error
@@ -4103,7 +4310,7 @@ impl ContextEngine {
             event_code = "context.frame_retirement.finalization_deferred",
             "Frame retirement finalization was deferred because the Context remained busy"
         );
-        Ok(())
+        Ok(false)
     }
 
     /// Replaces the Context-local character estimate with the model client's complete-Prompt

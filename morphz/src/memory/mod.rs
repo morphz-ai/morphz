@@ -760,6 +760,248 @@ pub struct ContextEncodingProjectionSnapshot {
     pub events: Vec<crate::event::Event>,
 }
 
+/// One statement-consistent directory snapshot consumed by Context Encoding.
+///
+/// These records used to be loaded through seven independent Store calls. On
+/// PostgreSQL that multiplied network round trips and allowed a Context build
+/// to combine directory states that had never existed at one database
+/// statement boundary. The normalized tables remain authoritative; this is a
+/// bounded read contract over those tables rather than a second source of
+/// truth.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextRuntimeDirectorySnapshot {
+    /// Content-addressed revision of every component below. It is deliberately
+    /// not a mutable counter: any backend can reconstruct and validate it from
+    /// the canonical records it returns.
+    pub revision: String,
+    pub context: CognitiveContextRecord,
+    pub cognitive_clock: ContextCognitiveClock,
+    /// Current validated Mind head used by derived lifecycle checks before
+    /// the bounded observation projection is loaded. `None` is supported only
+    /// for lazy migration of a legacy Event-only Context.
+    pub mind: Option<MindProjectionRecord>,
+    pub sessions: Vec<SessionRecord>,
+    pub objectives: Vec<ObjectiveRecord>,
+    pub work_assignments: Vec<WorkAssignmentRecord>,
+    pub capability_bindings: Vec<ContextCapabilityBindingRecord>,
+    pub active_activations: Vec<ThreadActivationRecord>,
+    pub principal_bindings: Vec<SessionPrincipalBinding>,
+}
+
+impl ContextRuntimeDirectorySnapshot {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_components(
+        context: CognitiveContextRecord,
+        cognitive_clock: ContextCognitiveClock,
+        mind: Option<MindProjectionRecord>,
+        sessions: Vec<SessionRecord>,
+        objectives: Vec<ObjectiveRecord>,
+        work_assignments: Vec<WorkAssignmentRecord>,
+        capability_bindings: Vec<ContextCapabilityBindingRecord>,
+        active_activations: Vec<ThreadActivationRecord>,
+        principal_bindings: Vec<SessionPrincipalBinding>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use sha2::{Digest, Sha256};
+
+        let canonical = serde_json::to_vec(&(
+            &context,
+            &cognitive_clock,
+            &mind,
+            &sessions,
+            &objectives,
+            &work_assignments,
+            &capability_bindings,
+            &active_activations,
+            &principal_bindings,
+        ))?;
+        let revision = format!("sha256:{:x}", Sha256::digest(canonical));
+        Ok(Self {
+            revision,
+            context,
+            cognitive_clock,
+            mind,
+            sessions,
+            objectives,
+            work_assignments,
+            capability_bindings,
+            active_activations,
+            principal_bindings,
+        })
+    }
+}
+
+/// One statement-consistent scheduler projection consumed by Context
+/// Encoding.  It is intentionally bounded: active Threads remain complete,
+/// while terminal history and referenced supervision groups have explicit
+/// limits.  The normalized scheduler tables remain the write authorities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextRuntimeSchedulerSnapshot {
+    /// Content-addressed revision of every component below.
+    pub revision: String,
+    pub threads: Vec<ThreadRecord>,
+    pub thread_groups: Vec<ThreadGroupRecord>,
+    pub thread_group_members: Vec<ThreadGroupMemberRecord>,
+    pub thread_outcomes: Vec<ThreadOutcomeRecord>,
+    pub schedules: Vec<ScheduleRecord>,
+    pub thread_signals: Vec<ThreadSignalRecord>,
+}
+
+impl ContextRuntimeSchedulerSnapshot {
+    pub fn from_components(
+        threads: Vec<ThreadRecord>,
+        thread_groups: Vec<ThreadGroupRecord>,
+        thread_group_members: Vec<ThreadGroupMemberRecord>,
+        thread_outcomes: Vec<ThreadOutcomeRecord>,
+        schedules: Vec<ScheduleRecord>,
+        thread_signals: Vec<ThreadSignalRecord>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use sha2::{Digest, Sha256};
+
+        let canonical = serde_json::to_vec(&(
+            &threads,
+            &thread_groups,
+            &thread_group_members,
+            &thread_outcomes,
+            &schedules,
+            &thread_signals,
+        ))?;
+        let revision = format!("sha256:{:x}", Sha256::digest(canonical));
+        Ok(Self {
+            revision,
+            threads,
+            thread_groups,
+            thread_group_members,
+            thread_outcomes,
+            schedules,
+            thread_signals,
+        })
+    }
+}
+
+/// Exact causal inputs for one Activation.  Scheduled continuations can have
+/// a synthetic Thread root, so `root_event` resolves to either the persisted
+/// root Event or the first Activation's immutable trigger Event.  The
+/// separate `root_sequence` remains available even if that Event has since
+/// left a bounded Context projection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextActivationCausalitySnapshot {
+    pub revision: String,
+    pub activation_signals: Vec<ThreadSignalRecord>,
+    pub thread: Option<ThreadRecord>,
+    pub trigger_event: Option<crate::event::Event>,
+    pub root_event: Option<crate::event::Event>,
+    pub root_sequence: Option<u64>,
+}
+
+impl ContextActivationCausalitySnapshot {
+    pub fn from_components(
+        activation_signals: Vec<ThreadSignalRecord>,
+        thread: Option<ThreadRecord>,
+        trigger_event: Option<crate::event::Event>,
+        root_event: Option<crate::event::Event>,
+        root_sequence: Option<u64>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use sha2::{Digest, Sha256};
+
+        let canonical = serde_json::to_vec(&(
+            &activation_signals,
+            &thread,
+            &trigger_event,
+            &root_event,
+            root_sequence,
+        ))?;
+        let revision = format!("sha256:{:x}", Sha256::digest(canonical));
+        Ok(Self {
+            revision,
+            activation_signals,
+            thread,
+            trigger_event,
+            root_event,
+            root_sequence,
+        })
+    }
+}
+
+/// Bounded execution directory consumed by one Context build. Live
+/// background Jobs are included as authority; user-visible Targets and their
+/// optional scoped authorization history retain explicit projection limits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextExecutionResourcesSnapshot {
+    pub revision: String,
+    pub background_jobs: Vec<ExecutionJobRecord>,
+    pub execution_targets: Vec<ExecutionTargetRecord>,
+    pub target_authorizations: Vec<ExecutionTargetAuthorizationRecord>,
+}
+
+impl ContextExecutionResourcesSnapshot {
+    pub fn from_components(
+        background_jobs: Vec<ExecutionJobRecord>,
+        execution_targets: Vec<ExecutionTargetRecord>,
+        target_authorizations: Vec<ExecutionTargetAuthorizationRecord>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use sha2::{Digest, Sha256};
+
+        let canonical =
+            serde_json::to_vec(&(&background_jobs, &execution_targets, &target_authorizations))?;
+        let revision = format!("sha256:{:x}", Sha256::digest(canonical));
+        Ok(Self {
+            revision,
+            background_jobs,
+            execution_targets,
+            target_authorizations,
+        })
+    }
+}
+
+/// Hot Context directory read model. Implementations must return all
+/// components from one database statement snapshot and keep every collection
+/// deterministically ordered so the content revision is backend-independent.
+#[async_trait::async_trait]
+pub trait ContextRuntimeSnapshotStore: Send + Sync {
+    /// Stable, low-cardinality backend identity used by Runtime metrics.  A
+    /// lightweight test double may keep the default, while production Stores
+    /// must override it so SQLite and PostgreSQL regressions remain visible
+    /// independently.
+    fn storage_backend_name(&self) -> &'static str {
+        "unknown"
+    }
+
+    async fn read_context_runtime_directory_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<ContextRuntimeDirectorySnapshot>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Reads the exact bounded scheduler graph used by one Context build from
+    /// one database statement snapshot. `delivery_thread_ids` are explicit
+    /// completion-delivery roots and are sorted by stable identity; terminal
+    /// history is otherwise returned in chronological projection order.
+    async fn read_context_runtime_scheduler_snapshot(
+        &self,
+        context_id: &str,
+        delivery_thread_ids: &[String],
+        recent_terminal_limit: usize,
+        group_limit: usize,
+    ) -> Result<ContextRuntimeSchedulerSnapshot, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Reads all persisted causal facts needed to materialize one Activation
+    /// focus from one statement snapshot.
+    async fn read_context_activation_causality_snapshot(
+        &self,
+        context_id: &str,
+        activation_id: &str,
+        root_turn_id: &str,
+        trigger_event_id: &str,
+    ) -> Result<ContextActivationCausalitySnapshot, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn read_context_execution_resources_snapshot(
+        &self,
+        context_id: &str,
+        principal_id: Option<&str>,
+        target_limit: usize,
+        authorization_limit: usize,
+    ) -> Result<ContextExecutionResourcesSnapshot, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindSnapshotRecord {
     pub id: String,
@@ -7619,6 +7861,7 @@ pub trait RuntimeStore:
     + StorageMaintenanceStore
     + ContextCapabilityBindingStore
     + WorkAssignmentStore
+    + ContextRuntimeSnapshotStore
     + crate::scheduler::SchedulerDependencyStore
     + Send
     + Sync

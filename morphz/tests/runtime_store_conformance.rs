@@ -15,17 +15,19 @@ use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, DelegationFilter, DelegationStatus, DelegationStore, DeliveryFlushCommit,
-    DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationScope,
-    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
-    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRegistration,
-    ExecutionTargetStatus, ExecutionTargetStore, MessageClaim, MessageDispatchMode,
-    MindProjectionCommit, MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent,
-    NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand,
-    NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
+    CognitiveClockStore, ContextActivationCausalitySnapshot, ContextExecutionResourcesSnapshot,
+    ContextRuntimeDirectorySnapshot, ContextRuntimeSchedulerSnapshot, DelegationFilter,
+    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
+    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
+    ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
+    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
+    ExecutionTargetMutation, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, MindProjectionCommit,
+    MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob,
+    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
     NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer, NewSession, NewThread,
     NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
     ObjectiveWaitCondition, PairExecutionNode, ProviderAccountStateMutation,
@@ -53,6 +55,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::{NamedTempFile, TempDir};
+use tokio::sync::Barrier;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 type AttentionFuture<'a> = Pin<
@@ -2531,6 +2534,383 @@ where
     );
 }
 
+async fn assert_concurrent_parallel_ingress_conformance<S>(store: Arc<S>)
+where
+    S: DeliveryIngressStore
+        + EventStore
+        + SessionDirectoryStore
+        + SessionProjectionStore
+        + ThreadStore
+        + ActivationStore
+        + Send
+        + Sync
+        + 'static,
+{
+    const PRINCIPAL: &str = "conformance-concurrent-ingress-principal";
+    const SESSION: &str = "conformance-concurrent-ingress-session";
+    store
+        .ensure_principal(NewPrincipal {
+            id: PRINCIPAL.to_string(),
+            provider_id: "conformance".to_string(),
+            assurance: "verified".to_string(),
+            display_name: None,
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: SESSION.to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: SESSION.to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .bind_session_principal(SESSION, PRINCIPAL)
+        .await
+        .unwrap();
+
+    let replay_event = Event::new(
+        "conformance-concurrent-replay-event".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": SESSION,
+            "principal_id": PRINCIPAL,
+            "text": "the same client request races itself"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let replay_barrier = Arc::new(Barrier::new(3));
+    let claim = |store: Arc<S>, barrier: Arc<Barrier>| {
+        let event = replay_event.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .claim_message(
+                    SESSION,
+                    "conformance-concurrent-replay-client",
+                    &event,
+                    MessageDispatchMode::Parallel,
+                )
+                .await
+        })
+    };
+    let first = claim(Arc::clone(&store), Arc::clone(&replay_barrier));
+    let second = claim(Arc::clone(&store), Arc::clone(&replay_barrier));
+    replay_barrier.wait().await;
+    let claims = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim, MessageClaim::Accepted { .. }))
+            .count(),
+        1,
+        "one idempotency key must create exactly one accepted message"
+    );
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim, MessageClaim::Existing { .. }))
+            .count(),
+        1,
+        "the concurrent replay must observe the committed authority"
+    );
+    let replay_thread = store
+        .get_thread_by_root(&replay_event.id)
+        .await
+        .unwrap()
+        .expect("accepted message must own one DialogueTurn");
+    assert_eq!(
+        store
+            .list_context_thread_signals("conformance-context", None)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|signal| signal.event_id == replay_event.id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .query_session_projections("conformance-context", &[SESSION.to_string()], true)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.id == replay_event.id)
+            .count(),
+        1,
+        "Parallel ingress must project the accepted user message atomically"
+    );
+
+    let conflict_barrier = Arc::new(Barrier::new(3));
+    let conflicting_claim = |store: Arc<S>, barrier: Arc<Barrier>, suffix: &'static str| {
+        tokio::spawn(async move {
+            barrier.wait().await;
+            let event_id = format!("conformance-concurrent-conflict-event-{suffix}");
+            let event = Event::new(
+                event_id.clone(),
+                "Store-Conformance".to_string(),
+                morphz::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                json!({
+                    "context_id": "conformance-context",
+                    "session_id": SESSION,
+                    "principal_id": PRINCIPAL,
+                    "text": format!("conflicting payload {suffix}")
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            let claim = store
+                .claim_message(
+                    SESSION,
+                    "conformance-concurrent-conflict-client",
+                    &event,
+                    MessageDispatchMode::Parallel,
+                )
+                .await?;
+            Ok::<_, TestError>((event_id, claim))
+        })
+    };
+    let conflict_a = conflicting_claim(Arc::clone(&store), Arc::clone(&conflict_barrier), "a");
+    let conflict_b = conflicting_claim(Arc::clone(&store), Arc::clone(&conflict_barrier), "b");
+    conflict_barrier.wait().await;
+    let conflicting = [
+        conflict_a.await.unwrap().unwrap(),
+        conflict_b.await.unwrap().unwrap(),
+    ];
+    let accepted_conflict_event_id = conflicting
+        .iter()
+        .find_map(|(event_id, claim)| {
+            matches!(claim, MessageClaim::Accepted { .. }).then(|| event_id.clone())
+        })
+        .expect("one conflicting request must win the idempotency key");
+    assert_eq!(
+        conflicting
+            .iter()
+            .filter(|(_, claim)| matches!(claim, MessageClaim::Accepted { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        conflicting
+            .iter()
+            .filter(|(_, claim)| matches!(claim, MessageClaim::Conflict { .. }))
+            .count(),
+        1,
+        "the losing payload must be reported as a conflict, not as a replay"
+    );
+    let conflict_authority_event_id = conflicting
+        .iter()
+        .find_map(|(_, claim)| match claim {
+            MessageClaim::Conflict { event_id } => Some(event_id),
+            _ => None,
+        })
+        .expect("the losing request must identify the winning Event");
+    assert_eq!(conflict_authority_event_id, &accepted_conflict_event_id);
+    let conflicting_event_ids = conflicting
+        .iter()
+        .map(|(event_id, _)| event_id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                context_id: Some("conformance-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| conflicting_event_ids.contains(&event.id))
+            .count(),
+        1,
+        "a conflicting concurrent request must not leave a second Event"
+    );
+    assert_eq!(
+        store
+            .query_session_projections("conformance-context", &[SESSION.to_string()], true)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| conflicting_event_ids.contains(&event.id))
+            .count(),
+        1,
+        "a conflicting concurrent request must project only its winning Event"
+    );
+
+    let independent_barrier = Arc::new(Barrier::new(3));
+    let independent_claim = |store: Arc<S>, barrier: Arc<Barrier>, suffix: &'static str| {
+        tokio::spawn(async move {
+            barrier.wait().await;
+            let event_id = format!("conformance-concurrent-independent-{suffix}");
+            let event = Event::new(
+                event_id.clone(),
+                "Store-Conformance".to_string(),
+                morphz::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                json!({
+                    "context_id": "conformance-context",
+                    "session_id": SESSION,
+                    "principal_id": PRINCIPAL,
+                    "text": suffix
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            let claim = store
+                .claim_message(
+                    SESSION,
+                    &format!("conformance-concurrent-independent-client-{suffix}"),
+                    &event,
+                    MessageDispatchMode::Parallel,
+                )
+                .await?;
+            Ok::<_, TestError>((event_id, claim))
+        })
+    };
+    let independent_a =
+        independent_claim(Arc::clone(&store), Arc::clone(&independent_barrier), "a");
+    let independent_b =
+        independent_claim(Arc::clone(&store), Arc::clone(&independent_barrier), "b");
+    independent_barrier.wait().await;
+    let independent = [
+        independent_a.await.unwrap().unwrap(),
+        independent_b.await.unwrap().unwrap(),
+    ];
+    for (event_id, claim) in &independent {
+        assert!(matches!(claim, MessageClaim::Accepted { .. }));
+        let thread = store
+            .get_thread_by_root(event_id)
+            .await
+            .unwrap()
+            .expect("independent Parallel message must retain its own Thread");
+        assert_ne!(thread.id, replay_thread.id);
+    }
+    let projected_independent = store
+        .query_session_projections("conformance-context", &[SESSION.to_string()], true)
+        .await
+        .unwrap();
+    for (event_id, _) in &independent {
+        assert_eq!(
+            projected_independent
+                .iter()
+                .filter(|event| &event.id == event_id)
+                .count(),
+            1,
+            "each independent Parallel Event must enter Observation exactly once"
+        );
+    }
+
+    const FIRST_SEEN_PRINCIPAL: &str = "conformance-concurrent-first-seen-principal";
+    store
+        .ensure_principal(NewPrincipal {
+            id: FIRST_SEEN_PRINCIPAL.to_string(),
+            provider_id: "conformance".to_string(),
+            assurance: "verified".to_string(),
+            display_name: None,
+        })
+        .await
+        .unwrap();
+    for session_id in [
+        "conformance-concurrent-first-seen-session-a",
+        "conformance-concurrent-first-seen-session-b",
+    ] {
+        store
+            .create_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                parent_session_id: Some("conformance-session".to_string()),
+                title: session_id.to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal(session_id, FIRST_SEEN_PRINCIPAL)
+            .await
+            .unwrap();
+    }
+    let first_seen_barrier = Arc::new(Barrier::new(3));
+    let first_seen_claim =
+        |store: Arc<S>, barrier: Arc<Barrier>, session_id: &'static str, suffix: &'static str| {
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let event = Event::new(
+                    format!("conformance-concurrent-first-seen-event-{suffix}"),
+                    "Store-Conformance".to_string(),
+                    morphz::event::TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    json!({
+                        "context_id": "conformance-context",
+                        "session_id": session_id,
+                        "principal_id": FIRST_SEEN_PRINCIPAL,
+                        "text": suffix
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                );
+                store
+                    .claim_message(
+                        session_id,
+                        &format!("conformance-concurrent-first-seen-client-{suffix}"),
+                        &event,
+                        MessageDispatchMode::Parallel,
+                    )
+                    .await
+            })
+        };
+    let first_seen_a = first_seen_claim(
+        Arc::clone(&store),
+        Arc::clone(&first_seen_barrier),
+        "conformance-concurrent-first-seen-session-a",
+        "a",
+    );
+    let first_seen_b = first_seen_claim(
+        Arc::clone(&store),
+        Arc::clone(&first_seen_barrier),
+        "conformance-concurrent-first-seen-session-b",
+        "b",
+    );
+    first_seen_barrier.wait().await;
+    let first_seen_claims = [
+        first_seen_a.await.unwrap().unwrap(),
+        first_seen_b.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        first_seen_claims
+            .iter()
+            .filter_map(|claim| match claim {
+                MessageClaim::Accepted { event, .. } => Some(event),
+                _ => None,
+            })
+            .filter(|event| {
+                event
+                    .payload
+                    .get("principal_first_seen_in_context")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            })
+            .count(),
+        1,
+        "a Principal's first encounter must remain unique across concurrent Sessions"
+    );
+}
+
 async fn assert_scheduler_dependency_conformance<S>(store: Arc<S>)
 where
     S: EventStore + SchedulerDependencyStore + Send + Sync + 'static,
@@ -3379,6 +3759,42 @@ where
         MessageClaim::InactiveReference { .. }
     ));
 
+    let route_mismatch = Event::new(
+        "conformance-ingress-route-mismatch".to_string(),
+        "user".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-ingress-reference-unbound",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "the Event route must match the claimed Session"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .claim_message(
+            "conformance-session",
+            "client-message-route-mismatch",
+            &route_mismatch,
+            MessageDispatchMode::Parallel,
+        )
+        .await
+        .is_err());
+    assert!(
+        store
+            .query(QueryFilter {
+                event_id: Some(route_mismatch.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty(),
+        "a rejected route must not leave a durable Event behind"
+    );
+
     store
         .create_session(NewSession {
             id: "conformance-ingress-unbound".to_string(),
@@ -3405,6 +3821,47 @@ where
         .unwrap()
         .clone(),
     );
+    let unbound_malformed_reference = Event::new(
+        "conformance-ingress-unbound-malformed-reference".to_string(),
+        "user".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-ingress-unbound",
+            "principal_id": "o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat",
+            "text": "source authority takes precedence over reference diagnostics",
+            "references": [{
+                "kind": "unsupported",
+                "session_id": "conformance-session",
+                "context_id": "conformance-context",
+                "agent_id": "conformance-agent"
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_message(
+                "conformance-ingress-unbound",
+                "client-message-unbound-malformed-reference",
+                &unbound_malformed_reference,
+                MessageDispatchMode::Parallel,
+            )
+            .await
+            .unwrap(),
+        MessageClaim::ForbiddenPrincipal { .. }
+    ));
+    assert!(store
+        .query(QueryFilter {
+            event_id: Some(unbound_malformed_reference.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
     assert!(matches!(
         store
             .claim_message(
@@ -8817,6 +9274,351 @@ where
     assert_eq!(recovered.status, ProviderAccountStatus::Ready);
 }
 
+async fn assert_context_runtime_directory_snapshot_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    let context_id = "conformance-context";
+    let context = store
+        .get_context(context_id)
+        .await
+        .unwrap()
+        .expect("conformance Context must exist");
+    let expected = ContextRuntimeDirectorySnapshot::from_components(
+        context,
+        store.get_context_cognitive_clock(context_id).await.unwrap(),
+        store.get_mind_projection(context_id).await.unwrap(),
+        store.list_context_sessions(context_id, true).await.unwrap(),
+        store
+            .list_context_objectives(context_id, false)
+            .await
+            .unwrap(),
+        store
+            .list_context_work_assignments(context_id, None, false, 32)
+            .await
+            .unwrap(),
+        store
+            .list_context_capability_bindings(context_id)
+            .await
+            .unwrap(),
+        store
+            .list_context_thread_activations(context_id, false)
+            .await
+            .unwrap(),
+        store
+            .list_context_principal_bindings(context_id)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let actual = store
+        .read_context_runtime_directory_snapshot(context_id)
+        .await
+        .unwrap()
+        .expect("directory snapshot must exist");
+    assert_eq!(actual, expected);
+    assert_eq!(
+        store
+            .read_context_runtime_directory_snapshot("missing-context")
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+async fn assert_context_runtime_scheduler_snapshot_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    let context_id = "conformance-context";
+    let recent_terminal_limit = 20;
+    let group_limit = 32;
+    let mut delivery_thread_ids = store
+        .list_context_threads(context_id, true)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|thread| {
+            matches!(
+                thread.delivery_status,
+                DeliveryStatus::Pending | DeliveryStatus::Deferred
+            )
+        })
+        .map(|thread| thread.id)
+        .collect::<Vec<_>>();
+    delivery_thread_ids.sort();
+    delivery_thread_ids.dedup();
+
+    let active_threads = store.list_context_threads(context_id, false).await.unwrap();
+    let active_thread_ids = active_threads
+        .iter()
+        .map(|thread| thread.id.clone())
+        .collect::<Vec<_>>();
+    let schedules = store
+        .list_thread_schedules(context_id, &active_thread_ids)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|schedule| schedule.status == ScheduleStatus::Queued)
+        .collect::<Vec<_>>();
+    let mut projected = active_threads;
+    for thread_id in &delivery_thread_ids {
+        if let Some(thread) = store.get_thread(thread_id).await.unwrap() {
+            if thread.context_id == context_id
+                && matches!(
+                    thread.delivery_status,
+                    DeliveryStatus::Pending | DeliveryStatus::Deferred
+                )
+                && !projected.iter().any(|current| current.id == thread.id)
+            {
+                projected.push(thread);
+            }
+        }
+    }
+    let mut recent_terminal = store
+        .list_recent_terminal_threads(context_id, recent_terminal_limit)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|thread| {
+            !matches!(
+                thread.delivery_status,
+                DeliveryStatus::Pending | DeliveryStatus::Deferred
+            ) && !projected.iter().any(|current| current.id == thread.id)
+        })
+        .collect::<Vec<_>>();
+    recent_terminal.reverse();
+    projected.extend(recent_terminal);
+
+    let mut group_ids = projected
+        .iter()
+        .filter_map(|thread| thread.supervision.thread_group_id.clone())
+        .collect::<Vec<_>>();
+    group_ids.sort();
+    group_ids.dedup();
+    group_ids.truncate(group_limit);
+    let groups = store
+        .list_thread_groups_by_ids(context_id, &group_ids)
+        .await
+        .unwrap();
+    let members = store
+        .list_thread_group_members_for_groups(&group_ids)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, member)| member)
+        .collect::<Vec<_>>();
+    let outcomes = store
+        .list_thread_group_outcomes_for_groups(&group_ids)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, outcome)| outcome)
+        .collect::<Vec<_>>();
+    let projected_thread_ids = projected
+        .iter()
+        .map(|thread| thread.id.clone())
+        .collect::<Vec<_>>();
+    let signals = store
+        .list_context_thread_signals_for_threads(
+            context_id,
+            &projected_thread_ids,
+            Some(ThreadSignalStatus::Pending),
+        )
+        .await
+        .unwrap();
+    let expected = ContextRuntimeSchedulerSnapshot::from_components(
+        projected, groups, members, outcomes, schedules, signals,
+    )
+    .unwrap();
+    let actual = store
+        .read_context_runtime_scheduler_snapshot(
+            context_id,
+            &delivery_thread_ids,
+            recent_terminal_limit,
+            group_limit,
+        )
+        .await
+        .unwrap();
+    assert_eq!(actual, expected);
+
+    let mut reversed_delivery_ids = delivery_thread_ids;
+    reversed_delivery_ids.reverse();
+    assert_eq!(
+        store
+            .read_context_runtime_scheduler_snapshot(
+                context_id,
+                &reversed_delivery_ids,
+                recent_terminal_limit,
+                group_limit,
+            )
+            .await
+            .unwrap(),
+        actual,
+        "delivery input ordering must not perturb the scheduler snapshot"
+    );
+}
+
+async fn assert_context_activation_causality_snapshot_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    let context_id = "conformance-context";
+    let activation = store
+        .get_thread_activation("conformance-activation")
+        .await
+        .unwrap()
+        .expect("conformance Activation must exist");
+    let signals = store.list_activation_signals(&activation.id).await.unwrap();
+    let thread = store
+        .get_thread_by_root(&activation.root_turn_id)
+        .await
+        .unwrap();
+    let trigger_event = store
+        .query(QueryFilter {
+            event_id: Some(activation.trigger_event_id.clone()),
+            context_id: Some(context_id.to_string()),
+            ..QueryFilter::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .next();
+    let direct_root_event = store
+        .query(QueryFilter {
+            event_id: Some(activation.root_turn_id.clone()),
+            context_id: Some(context_id.to_string()),
+            ..QueryFilter::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .next();
+    let first_activation = store
+        .get_first_thread_activation_by_root(context_id, &activation.root_turn_id)
+        .await
+        .unwrap();
+    let first_trigger_event = if direct_root_event.is_none() {
+        if let Some(first) = &first_activation {
+            store
+                .query(QueryFilter {
+                    event_id: Some(first.trigger_event_id.clone()),
+                    context_id: Some(context_id.to_string()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let root_sequence = direct_root_event
+        .as_ref()
+        .and_then(|event| event.sequence)
+        .or_else(|| {
+            first_activation
+                .as_ref()
+                .map(|first| first.trigger_sequence)
+        });
+    let expected = ContextActivationCausalitySnapshot::from_components(
+        signals,
+        thread,
+        trigger_event,
+        direct_root_event.or(first_trigger_event),
+        root_sequence,
+    )
+    .unwrap();
+    let actual = store
+        .read_context_activation_causality_snapshot(
+            context_id,
+            &activation.id,
+            &activation.root_turn_id,
+            &activation.trigger_event_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(actual, expected);
+}
+
+async fn assert_context_execution_resources_snapshot_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    let context_id = "conformance-context";
+    let principal_id = "principal:conformance";
+    let target_limit = 16;
+    let authorization_limit = 1_000;
+    let jobs = store
+        .list_execution_jobs(morphz::memory::ExecutionJobFilter {
+            context_id: Some(context_id.to_string()),
+            tool_name: Some("exec/background".to_string()),
+            include_terminal: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let expected = ContextExecutionResourcesSnapshot::from_components(
+        jobs.clone(),
+        store
+            .list_execution_targets(ExecutionTargetFilter {
+                visible_to_principal_id: Some(principal_id.to_string()),
+                limit: Some(target_limit),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+        store
+            .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
+                owner_principal_id: Some(principal_id.to_string()),
+                limit: Some(authorization_limit),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let actual = store
+        .read_context_execution_resources_snapshot(
+            context_id,
+            Some(principal_id),
+            target_limit,
+            authorization_limit,
+        )
+        .await
+        .unwrap();
+    assert_eq!(actual, expected);
+
+    let expected_anonymous = ContextExecutionResourcesSnapshot::from_components(
+        jobs,
+        store
+            .list_execution_targets(ExecutionTargetFilter {
+                owner_principal_is_null: true,
+                limit: Some(target_limit),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .read_context_execution_resources_snapshot(
+                context_id,
+                None,
+                target_limit,
+                authorization_limit,
+            )
+            .await
+            .unwrap(),
+        expected_anonymous
+    );
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -8850,6 +9652,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         .unwrap();
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
+    assert_concurrent_parallel_ingress_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {
@@ -8897,7 +9700,11 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_background_wake_checkpoint_conformance(Arc::clone(&store)).await;
     assert_provider_account_state_cas_conformance(Arc::clone(&store)).await;
-    assert_approval_grant_conformance(store).await;
+    assert_approval_grant_conformance(Arc::clone(&store)).await;
+    assert_context_runtime_scheduler_snapshot_conformance(Arc::clone(&store)).await;
+    assert_context_activation_causality_snapshot_conformance(Arc::clone(&store)).await;
+    assert_context_execution_resources_snapshot_conformance(Arc::clone(&store)).await;
+    assert_context_runtime_directory_snapshot_conformance(store).await;
 }
 
 #[tokio::test]
@@ -9178,6 +9985,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .unwrap();
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
+    assert_concurrent_parallel_ingress_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {
@@ -9226,6 +10034,10 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_background_wake_checkpoint_conformance(Arc::clone(&store)).await;
     assert_provider_account_state_cas_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(Arc::clone(&store)).await;
+    assert_context_runtime_scheduler_snapshot_conformance(Arc::clone(&store)).await;
+    assert_context_activation_causality_snapshot_conformance(Arc::clone(&store)).await;
+    assert_context_execution_resources_snapshot_conformance(Arc::clone(&store)).await;
+    assert_context_runtime_directory_snapshot_conformance(Arc::clone(&store)).await;
 
     let migration_observation = Event::new(
         "postgres-session-projection-migration-observation".to_string(),

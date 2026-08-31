@@ -14,31 +14,33 @@ use crate::memory::{
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCapabilityBindingMutation,
-    ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
-    ContextEncodingProjectionSnapshot, ContextSessionCount, ContextTokenBudgetMutation,
-    ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
-    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobContextCounts,
-    ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobMutation, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
-    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
-    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
-    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
-    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore,
-    InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, MindProjectionCommit,
-    MindProjectionHead, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
-    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
-    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
-    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
-    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
-    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
-    NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment, NodePairingCodeError,
-    NodePairingCodeErrorKind, ObjectiveCompletionIntent, ObjectiveMutation,
+    CognitiveClockStore, CognitiveContextRecord, ContextActivationCausalitySnapshot,
+    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
+    ContextCapabilityBindingStore, ContextCognitiveClock, ContextEncodingProjectionSnapshot,
+    ContextExecutionResourcesSnapshot, ContextRuntimeDirectorySnapshot,
+    ContextRuntimeSchedulerSnapshot, ContextRuntimeSnapshotStore, ContextSessionCount,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
+    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
+    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
+    EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
+    ExecutionApprovalStore, ExecutionJobContextCounts, ExecutionJobFilter,
+    ExecutionJobMonitorRecord, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionNodeStatus, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
+    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
+    ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
+    ExecutionTargetStatus, ExecutionTargetStore, InterruptedDialogueTurn, MessageClaim,
+    MessageDispatchMode, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
+    MindProjectionStore, MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent,
+    NewApprovalRequest, NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext,
+    NewDelegation, NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewMindProjection, NewNodePairingCode, NewObjective,
+    NewPrincipal, NewRuntimeTimer, NewSchedule, NewScheduledObjective, NewSession, NewThread,
+    NewThreadActivation, NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment,
+    NodePairingCodeError, NodePairingCodeErrorKind, ObjectiveCompletionIntent, ObjectiveMutation,
     ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
     PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
@@ -75,8 +77,8 @@ use chrono::{DateTime, Utc};
 use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Acquire, QueryBuilder, Row, SqlitePool};
-use std::collections::HashSet;
+use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, SqlitePool};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
@@ -125,7 +127,12 @@ impl SqliteStore {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true)
-            .busy_timeout(std::time::Duration::from_secs(5)); // 5秒锁重试
+            .busy_timeout(std::time::Duration::from_secs(5)) // 5秒锁重试
+            // SQLx emits these events only when a subscriber enables the
+            // `sqlx::query` TRACE target. Keeping the callsites available lets
+            // the conformance suite enforce statement budgets without making
+            // production logs noisy by default.
+            .log_statements(log::LevelFilter::Trace);
 
         // Enable connection-pool concurrency to use WAL's single-writer, multiple-reader model.
         let pool = runtime_sqlite_pool_options(config.max_connections)
@@ -1843,6 +1850,9 @@ fn runtime_sqlite_pool_options(max_connections: u32) -> SqlitePoolOptions {
         .max_connections(max_connections.max(1))
         .max_lifetime(None)
         .idle_timeout(None)
+        .acquire_time_level(log::LevelFilter::Trace)
+        .acquire_slow_level(log::LevelFilter::Warn)
+        .acquire_slow_threshold(std::time::Duration::from_millis(100))
 }
 
 async fn begin_immediate_sqlite_transaction(
@@ -3931,6 +3941,720 @@ impl WorkAssignmentStore for SqliteStore {
             Some(current) => WorkAssignmentMutationResult::Conflict(current),
             None => WorkAssignmentMutationResult::NotFound,
         })
+    }
+}
+
+fn sqlite_snapshot_component<T>(
+    row: &SqliteRow,
+    column: &str,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    Ok(serde_json::from_str(&row.get::<String, _>(column))?)
+}
+
+#[async_trait::async_trait]
+impl ContextRuntimeSnapshotStore for SqliteStore {
+    fn storage_backend_name(&self) -> &'static str {
+        "sqlite"
+    }
+
+    async fn read_context_runtime_directory_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<ContextRuntimeDirectorySnapshot>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        // Every scalar subquery belongs to this one SQLite statement snapshot.
+        // `json(...)` marks nested JSON values so arrays contain objects rather
+        // than escaped JSON strings.
+        let row = sqlx::query(
+            r#"WITH
+               session_rows AS (
+                 SELECT json_object(
+                   'id', s.id, 'agent_id', s.agent_id, 'context_id', s.context_id,
+                   'parent_session_id', s.parent_session_id, 'title', s.title,
+                   'status', s.status, 'model_alias', s.model_alias,
+                   'reasoning_effort', s.reasoning_effort, 'sandbox_mode', s.sandbox_mode,
+                   'context_sharing', s.context_sharing, 'created_at', s.created_at,
+                   'updated_at', s.updated_at, 'last_activity_at', s.last_activity_at,
+                   'attention_state', sm.attention_state,
+                   'attention_revision', sm.attention_revision,
+                   'attention_reason', sm.attention_reason,
+                   'attention_changed_at', sm.attention_changed_at,
+                   'attention_event_id', sm.attention_event_id
+                 ) AS value
+                 FROM sessions s
+                 JOIN session_mounts sm
+                   ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                 WHERE s.context_id = ?
+                 ORDER BY s.last_activity_at DESC, s.id
+               ),
+               objective_rows AS (
+                 SELECT json_object(
+                   'id', id, 'agent_id', agent_id, 'context_id', context_id,
+                   'coordinator_session_id', coordinator_session_id,
+                   'delivery_session_id', delivery_session_id,
+                   'parent_objective_id', parent_objective_id,
+                   'source_event_id', source_event_id,
+                   'initiating_principal_id', initiating_principal_id,
+                   'stated_objective', stated_objective, 'revision', revision,
+                   'generation', generation, 'status', status,
+                   'status_reason', status_reason,
+                   'wait_condition', CASE WHEN wait_condition_json IS NULL
+                     THEN NULL ELSE json(wait_condition_json) END,
+                   'completion_intent', CASE WHEN completion_intent_json IS NULL
+                     THEN NULL ELSE json(completion_intent_json) END,
+                   'active_evaluation_id', active_evaluation_id,
+                   'evaluation_lease_expires_at', evaluation_lease_expires_at,
+                   'continuation_sequence', continuation_sequence,
+                   'token_budget', token_budget, 'tokens_used', tokens_used,
+                   'time_used_seconds', time_used_seconds,
+                   'created_at', created_at, 'updated_at', updated_at
+                 ) AS value
+                 FROM objectives
+                 WHERE context_id = ?
+                   AND status IN ('active', 'paused', 'blocked')
+                 ORDER BY updated_at DESC, id
+               ),
+               assignment_rows AS (
+                 SELECT json_object(
+                   'id', id, 'kind', kind, 'external_id', external_id,
+                   'agent_id', agent_id, 'context_id', context_id,
+                   'session_id', session_id, 'role', role, 'request_id', request_id,
+                   'objective_id', objective_id, 'counterparty_id', counterparty_id,
+                   'summary', summary, 'input', json(input_json),
+                   'output', CASE WHEN output_json IS NULL THEN NULL ELSE json(output_json) END,
+                   'status', status, 'status_reason', status_reason,
+                   'lease_expires_at', lease_expires_at, 'revision', revision,
+                   'created_at', created_at, 'updated_at', updated_at
+                 ) AS value
+                 FROM work_assignments
+                 WHERE context_id = ? AND status IN ('queued', 'running')
+                 ORDER BY updated_at DESC, id
+                 LIMIT 32
+               ),
+               capability_rows AS (
+                 SELECT json_object(
+                   'context_id', context_id, 'capability_id', capability_id,
+                   'enabled', json(CASE WHEN enabled != 0 THEN 'true' ELSE 'false' END),
+                   'revision', revision, 'updated_at', updated_at
+                 ) AS value
+                 FROM context_capability_bindings
+                 WHERE context_id = ?
+                 ORDER BY capability_id
+               ),
+               activation_rows AS (
+                 SELECT json_object(
+                   'id', id, 'revision', revision, 'generation', generation,
+                   'agent_id', agent_id, 'context_id', context_id,
+                   'session_id', session_id,
+                   'initiating_principal_id', initiating_principal_id,
+                   'trigger_event_id', trigger_event_id,
+                   'trigger_sequence', trigger_sequence, 'trigger_kind', trigger_kind,
+                   'parent_activation_id', parent_activation_id,
+                   'root_turn_id', root_turn_id,
+                   'context_snapshot_version', context_snapshot_version,
+                   'model_alias', model_alias, 'reasoning_effort', reasoning_effort,
+                   'status', status, 'claimed_by', claimed_by,
+                   'lease_expires_at', lease_expires_at,
+                   'dialogue_lane_released_at', dialogue_lane_released_at,
+                   'created_at', created_at, 'updated_at', updated_at
+                 ) AS value
+                 FROM thread_activations
+                 WHERE context_id = ? AND status IN ('queued', 'running')
+                 ORDER BY created_at, id
+               ),
+               principal_binding_rows AS (
+                 SELECT json_object(
+                   'session_id', b.session_id, 'principal_id', b.principal_id,
+                   'bound_at', b.bound_at, 'unbound_at', b.unbound_at
+                 ) AS value
+                 FROM session_principal_bindings b
+                 JOIN sessions s ON s.id = b.session_id
+                 WHERE s.context_id = ? AND b.unbound_at IS NULL
+                 ORDER BY b.session_id, b.principal_id
+               )
+               SELECT
+                 json_object(
+                   'id', c.id, 'agent_id', c.agent_id, 'title', c.title,
+                   'status', c.status, 'created_at', c.created_at,
+                   'updated_at', c.updated_at, 'seed_context_id', c.seed_context_id,
+                   'seed_context_version', c.seed_context_version,
+                   'seed_snapshot_hash', c.seed_snapshot_hash,
+                   'seed_projection', c.seed_projection,
+                   'requested_hard_token_limit', c.requested_hard_token_limit,
+                   'token_budget_revision', c.token_budget_revision
+                 ) AS context_json,
+                 COALESCE(
+                   (SELECT json_object(
+                      'context_id', clock.context_id, 'tick', clock.tick,
+                      'last_signal_batch_id', clock.last_signal_batch_id,
+                      'revision', clock.revision
+                    ) FROM context_cognitive_clocks clock
+                    WHERE clock.context_id = c.id),
+                   json_object(
+                     'context_id', c.id, 'tick', 0,
+                     'last_signal_batch_id', NULL, 'revision', 0
+                   )
+                 ) AS cognitive_clock_json,
+                 COALESCE(
+                   (SELECT json_object(
+                      'context_id', projection.context_id,
+                      'revision', projection.revision,
+                      'state', json(projection.state_json),
+                      'state_hash', projection.state_hash,
+                      'head_event_id', head.head_event_id,
+                      'updated_at', projection.updated_at
+                    )
+                    FROM mind_projections projection
+                    JOIN context_heads head ON head.context_id = projection.context_id
+                    WHERE projection.context_id = c.id
+                      AND projection.revision = head.revision
+                      AND projection.state_hash = head.projection_hash),
+                   'null'
+                 ) AS mind_json,
+                 (SELECT revision FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_revision,
+                 (SELECT projection_hash FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_hash,
+                 (SELECT revision FROM mind_projections WHERE context_id = c.id)
+                   AS mind_projection_revision,
+                 (SELECT state_hash FROM mind_projections WHERE context_id = c.id)
+                   AS mind_projection_hash,
+                 COALESCE((SELECT json_group_array(json(value)) FROM session_rows), '[]')
+                   AS sessions_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM objective_rows), '[]')
+                   AS objectives_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM assignment_rows), '[]')
+                   AS work_assignments_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM capability_rows), '[]')
+                   AS capability_bindings_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM activation_rows), '[]')
+                   AS active_activations_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM principal_binding_rows), '[]')
+                   AS principal_bindings_json
+               FROM cognitive_contexts c
+               WHERE c.id = ?"#,
+        )
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
+        let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
+        let mind = match (head_revision, projection_revision) {
+            (None, None) => None,
+            (Some(head_revision), Some(projection_revision)) => {
+                let head_hash = row
+                    .get::<Option<String>, _>("mind_head_hash")
+                    .ok_or("Context Head 缺少 projection_hash")?;
+                let projection_hash = row
+                    .get::<Option<String>, _>("mind_projection_hash")
+                    .ok_or("Mind Projection 缺少 state_hash")?;
+                if head_revision != projection_revision || head_hash != projection_hash {
+                    return Err(format!(
+                        "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
+                    )
+                    .into());
+                }
+                Some(
+                    sqlite_snapshot_component::<Option<MindProjectionRecord>>(&row, "mind_json")?
+                        .ok_or("一致的 Mind Projection 没有返回投影内容")?,
+                )
+            }
+            _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+        };
+        ContextRuntimeDirectorySnapshot::from_components(
+            sqlite_snapshot_component(&row, "context_json")?,
+            sqlite_snapshot_component(&row, "cognitive_clock_json")?,
+            mind,
+            sqlite_snapshot_component(&row, "sessions_json")?,
+            sqlite_snapshot_component(&row, "objectives_json")?,
+            sqlite_snapshot_component(&row, "work_assignments_json")?,
+            sqlite_snapshot_component(&row, "capability_bindings_json")?,
+            sqlite_snapshot_component(&row, "active_activations_json")?,
+            sqlite_snapshot_component(&row, "principal_bindings_json")?,
+        )
+        .map(Some)
+    }
+
+    async fn read_context_runtime_scheduler_snapshot(
+        &self,
+        context_id: &str,
+        delivery_thread_ids: &[String],
+        recent_terminal_limit: usize,
+        group_limit: usize,
+    ) -> Result<ContextRuntimeSchedulerSnapshot, Box<dyn std::error::Error + Send + Sync>> {
+        let delivery_thread_ids = serde_json::to_string(delivery_thread_ids)?;
+        let recent_terminal_limit = i64::try_from(recent_terminal_limit)?;
+        let group_limit = i64::try_from(group_limit)?;
+        let row = sqlx::query(
+            r#"WITH
+               delivery_ids(id) AS (
+                 SELECT CAST(value AS TEXT) FROM json_each(?)
+               ),
+               active_ids AS (
+                 SELECT id, 0 AS projection_bucket, created_at AS order_time,
+                        id AS order_id
+                 FROM threads
+                 WHERE context_id = ? AND status = 'open'
+               ),
+               delivery_projection_ids AS (
+                 SELECT thread.id, 1 AS projection_bucket, '' AS order_time,
+                        thread.id AS order_id
+                 FROM threads thread
+                 JOIN delivery_ids requested ON requested.id = thread.id
+                 WHERE thread.context_id = ?
+                   AND thread.delivery_status IN ('pending', 'deferred')
+                   AND NOT EXISTS (
+                     SELECT 1 FROM active_ids active WHERE active.id = thread.id
+                   )
+               ),
+               recent_candidates AS (
+                 SELECT id, updated_at
+                 FROM threads
+                 WHERE context_id = ?
+                   AND status IN ('completed', 'failed', 'cancelled')
+                 ORDER BY updated_at DESC, id
+                 LIMIT ?
+               ),
+               recent_projection_ids AS (
+                 SELECT thread.id, 2 AS projection_bucket,
+                        thread.updated_at AS order_time, thread.id AS order_id
+                 FROM recent_candidates recent
+                 JOIN threads thread ON thread.id = recent.id
+                 WHERE thread.delivery_status NOT IN ('pending', 'deferred')
+                   AND NOT EXISTS (
+                     SELECT 1 FROM active_ids active WHERE active.id = thread.id
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM delivery_projection_ids delivery
+                     WHERE delivery.id = thread.id
+                   )
+               ),
+               projected_ids AS (
+                 SELECT * FROM active_ids
+                 UNION ALL SELECT * FROM delivery_projection_ids
+                 UNION ALL SELECT * FROM recent_projection_ids
+               ),
+               projected_group_ids(id) AS (
+                 SELECT DISTINCT thread.thread_group_id
+                 FROM projected_ids projected
+                 JOIN threads thread ON thread.id = projected.id
+                 WHERE thread.thread_group_id IS NOT NULL
+                 ORDER BY thread.thread_group_id
+                 LIMIT ?
+               ),
+               thread_rows AS (
+                 SELECT projected.projection_bucket, projected.order_time,
+                        projected.order_id,
+                   json_object(
+                     'id', thread.id, 'revision', thread.revision,
+                     'generation', thread.generation, 'agent_id', thread.agent_id,
+                     'context_id', thread.context_id, 'session_id', thread.session_id,
+                     'initiating_principal_id', thread.initiating_principal_id,
+                     'root_turn_id', thread.root_turn_id, 'kind', thread.kind,
+                     'lifecycle', thread.status, 'control_state', thread.control_state,
+                     'executor_kind', thread.executor_kind,
+                     'executor_id', thread.executor_id, 'target_id', thread.target_id,
+                     'supervision', json_object(
+                       'lifetime', thread.lifetime,
+                       'supervisor_kind', thread.supervisor_kind,
+                       'supervisor_id', thread.supervisor_id,
+                       'generation', thread.supervision_generation,
+                       'origin_evaluation_id', thread.origin_evaluation_id,
+                       'parent_thread_id', thread.parent_thread_id,
+                       'thread_group_id', thread.thread_group_id,
+                       'completion_contract', json(thread.completion_contract_json)
+                     ),
+                     'result_text', thread.result_text,
+                     'result_event_id', thread.result_event_id,
+                     'delivery_status', thread.delivery_status,
+                     'delivery_event_id', thread.delivery_event_id,
+                     'created_at', thread.created_at, 'updated_at', thread.updated_at
+                   ) AS value
+                 FROM projected_ids projected
+                 JOIN threads thread ON thread.id = projected.id
+               ),
+               group_rows AS (
+                 SELECT group_record.created_at, group_record.id,
+                   json_object(
+                     'id', group_record.id, 'revision', group_record.revision,
+                     'context_id', group_record.context_id,
+                     'session_id', group_record.session_id,
+                     'supervisor_kind', group_record.supervisor_kind,
+                     'supervisor_id', group_record.supervisor_id,
+                     'generation', group_record.generation,
+                     'policy', group_record.policy,
+                     'required_count', group_record.required_count,
+                     'terminal_count', group_record.terminal_count,
+                     'successful_count', group_record.successful_count,
+                     'status', group_record.status,
+                     'completion_contract', json(group_record.completion_contract_json),
+                     'terminal_summary', json(group_record.terminal_summary_json),
+                     'barrier_event_id', group_record.barrier_event_id,
+                     'created_at', group_record.created_at,
+                     'updated_at', group_record.updated_at,
+                     'satisfied_at', group_record.satisfied_at
+                   ) AS value
+                 FROM projected_group_ids selected
+                 JOIN thread_groups group_record ON group_record.id = selected.id
+                 WHERE group_record.context_id = ?
+               ),
+               member_rows AS (
+                 SELECT member.group_id, member.ordinal, member.thread_id,
+                   json_object(
+                     'group_id', member.group_id, 'thread_id', member.thread_id,
+                     'ordinal', member.ordinal,
+                     'required', json(CASE WHEN member.required != 0
+                       THEN 'true' ELSE 'false' END),
+                     'status', member.status, 'outcome_id', member.outcome_id,
+                     'created_at', member.created_at, 'updated_at', member.updated_at
+                   ) AS value
+                 FROM projected_group_ids selected
+                 JOIN thread_group_members member ON member.group_id = selected.id
+               ),
+               outcome_rows AS (
+                 SELECT member.group_id, member.ordinal, outcome.created_at,
+                   json_object(
+                     'id', outcome.outcome_id, 'thread_id', outcome.thread_id,
+                     'thread_generation', outcome.thread_generation,
+                     'root_turn_id', outcome.root_turn_id,
+                     'activation_id', outcome.activation_id,
+                     'session_id', outcome.session_id,
+                     'terminal_kind', outcome.terminal_kind,
+                     'disposition', outcome.disposition, 'summary', outcome.summary,
+                     'result_event_id', outcome.event_id,
+                     'artifact_refs', json(outcome.artifact_refs_json),
+                     'evidence_refs', json(outcome.evidence_refs_json),
+                     'check_results', json(outcome.check_results_json),
+                     'unresolved_failures', json(outcome.unresolved_failures_json),
+                     'terminal_event_sequence', outcome.terminal_event_sequence,
+                     'created_at', outcome.created_at,
+                     'delivered_at', outcome.delivered_at
+                   ) AS value
+                 FROM projected_group_ids selected
+                 JOIN thread_group_members member ON member.group_id = selected.id
+                 JOIN thread_outcomes outcome ON outcome.thread_id = member.thread_id
+               ),
+               schedule_rows AS (
+                 SELECT COALESCE(schedule.not_before, schedule.created_at) AS due_at,
+                        schedule.id,
+                   json_object(
+                     'id', schedule.id, 'revision', schedule.revision,
+                     'thread_id', schedule.thread_id,
+                     'source_turn_id', schedule.source_turn_id,
+                     'intent', schedule.intent, 'model_alias', schedule.model_alias,
+                     'status', schedule.status, 'not_before', schedule.not_before,
+                     'interval_seconds', schedule.interval_seconds,
+                     'dependency_thread_ids', json(schedule.dependency_thread_ids_json),
+                     'created_at', schedule.created_at, 'updated_at', schedule.updated_at
+                   ) AS value
+                 FROM active_ids active
+                 JOIN schedules schedule ON schedule.thread_id = active.id
+                 WHERE schedule.status = 'queued'
+               ),
+               signal_rows AS (
+                 SELECT signal.sequence, signal.id,
+                   json_object(
+                     'id', signal.id, 'thread_id', signal.thread_id,
+                     'thread_generation', signal.thread_generation,
+                     'event_id', signal.event_id, 'principal_id', signal.principal_id,
+                     'sequence', signal.sequence, 'kind', signal.kind,
+                     'parent_activation_id', signal.parent_activation_id,
+                     'status', signal.status, 'created_at', signal.created_at,
+                     'claimed_at', signal.claimed_at,
+                     'acknowledged_at', signal.acknowledged_at
+                   ) AS value
+                 FROM projected_ids projected
+                 JOIN thread_signals signal ON signal.thread_id = projected.id
+                 WHERE signal.status = 'pending'
+               )
+               SELECT
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM thread_rows
+                   ORDER BY projection_bucket, order_time,
+                     CASE WHEN projection_bucket = 2 THEN order_id END DESC,
+                     CASE WHEN projection_bucket != 2 THEN order_id END
+                 )), '[]') AS threads_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM group_rows ORDER BY created_at, id
+                 )), '[]') AS thread_groups_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM member_rows ORDER BY group_id, ordinal, thread_id
+                 )), '[]') AS thread_group_members_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM outcome_rows ORDER BY group_id, ordinal, created_at
+                 )), '[]') AS thread_outcomes_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM schedule_rows ORDER BY due_at, id
+                 )), '[]') AS schedules_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM signal_rows ORDER BY sequence, id
+                 )), '[]') AS thread_signals_json"#,
+        )
+        .bind(delivery_thread_ids)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(recent_terminal_limit)
+        .bind(group_limit)
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        ContextRuntimeSchedulerSnapshot::from_components(
+            sqlite_snapshot_component(&row, "threads_json")?,
+            sqlite_snapshot_component(&row, "thread_groups_json")?,
+            sqlite_snapshot_component(&row, "thread_group_members_json")?,
+            sqlite_snapshot_component(&row, "thread_outcomes_json")?,
+            sqlite_snapshot_component(&row, "schedules_json")?,
+            sqlite_snapshot_component(&row, "thread_signals_json")?,
+        )
+    }
+
+    async fn read_context_activation_causality_snapshot(
+        &self,
+        context_id: &str,
+        activation_id: &str,
+        root_turn_id: &str,
+        trigger_event_id: &str,
+    ) -> Result<ContextActivationCausalitySnapshot, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            r#"WITH first_activation AS (
+                 SELECT trigger_event_id, trigger_sequence
+                 FROM thread_activations
+                 WHERE context_id = ? AND root_turn_id = ?
+                 ORDER BY created_at, id
+                 LIMIT 1
+               ),
+               activation_signal_rows AS (
+                 SELECT link.ordinal,
+                   json_object(
+                     'id', signal.id, 'thread_id', signal.thread_id,
+                     'thread_generation', signal.thread_generation,
+                     'event_id', signal.event_id, 'principal_id', signal.principal_id,
+                     'sequence', signal.sequence, 'kind', signal.kind,
+                     'parent_activation_id', signal.parent_activation_id,
+                     'status', signal.status, 'created_at', signal.created_at,
+                     'claimed_at', signal.claimed_at,
+                     'acknowledged_at', signal.acknowledged_at
+                   ) AS value
+                 FROM activation_signals link
+                 JOIN thread_signals signal ON signal.id = link.signal_id
+                 WHERE link.activation_id = ?
+               )
+               SELECT
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM activation_signal_rows ORDER BY ordinal
+                 )), '[]') AS activation_signals_json,
+                 COALESCE((SELECT json_object(
+                   'id', thread.id, 'revision', thread.revision,
+                   'generation', thread.generation, 'agent_id', thread.agent_id,
+                   'context_id', thread.context_id, 'session_id', thread.session_id,
+                   'initiating_principal_id', thread.initiating_principal_id,
+                   'root_turn_id', thread.root_turn_id, 'kind', thread.kind,
+                   'lifecycle', thread.status, 'control_state', thread.control_state,
+                   'executor_kind', thread.executor_kind,
+                   'executor_id', thread.executor_id, 'target_id', thread.target_id,
+                   'supervision', json_object(
+                     'lifetime', thread.lifetime,
+                     'supervisor_kind', thread.supervisor_kind,
+                     'supervisor_id', thread.supervisor_id,
+                     'generation', thread.supervision_generation,
+                     'origin_evaluation_id', thread.origin_evaluation_id,
+                     'parent_thread_id', thread.parent_thread_id,
+                     'thread_group_id', thread.thread_group_id,
+                     'completion_contract', json(thread.completion_contract_json)
+                   ),
+                   'result_text', thread.result_text,
+                   'result_event_id', thread.result_event_id,
+                   'delivery_status', thread.delivery_status,
+                   'delivery_event_id', thread.delivery_event_id,
+                   'created_at', thread.created_at, 'updated_at', thread.updated_at
+                 ) FROM threads thread
+                 WHERE thread.context_id = ? AND thread.root_turn_id = ?), 'null')
+                   AS thread_json,
+                 COALESCE((SELECT json_object(
+                   'id', event.id, 'sequence', event.rowid,
+                   'timestamp', event.timestamp, 'actor', event.actor,
+                   'type', event.type, 'topic', event.topic,
+                   'payload', json(event.payload)
+                 ) FROM events event
+                 WHERE event.context_id = ? AND event.id = ?), 'null')
+                   AS trigger_event_json,
+                 COALESCE((SELECT json_object(
+                   'id', event.id, 'sequence', event.rowid,
+                   'timestamp', event.timestamp, 'actor', event.actor,
+                   'type', event.type, 'topic', event.topic,
+                   'payload', json(event.payload)
+                 ) FROM events event
+                 WHERE event.context_id = ? AND event.id = ?), 'null')
+                   AS direct_root_event_json,
+                 COALESCE((SELECT json_object(
+                   'id', event.id, 'sequence', event.rowid,
+                   'timestamp', event.timestamp, 'actor', event.actor,
+                   'type', event.type, 'topic', event.topic,
+                   'payload', json(event.payload)
+                 ) FROM first_activation first
+                 JOIN events event ON event.id = first.trigger_event_id
+                 WHERE event.context_id = ?), 'null') AS first_trigger_event_json,
+                 COALESCE(
+                   (SELECT event.rowid FROM events event
+                    WHERE event.context_id = ? AND event.id = ?),
+                   (SELECT trigger_sequence FROM first_activation)
+                 ) AS root_sequence"#,
+        )
+        .bind(context_id)
+        .bind(root_turn_id)
+        .bind(activation_id)
+        .bind(context_id)
+        .bind(root_turn_id)
+        .bind(context_id)
+        .bind(trigger_event_id)
+        .bind(context_id)
+        .bind(root_turn_id)
+        .bind(context_id)
+        .bind(context_id)
+        .bind(root_turn_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let direct_root_event =
+            sqlite_snapshot_component::<Option<Event>>(&row, "direct_root_event_json")?;
+        let first_trigger_event =
+            sqlite_snapshot_component::<Option<Event>>(&row, "first_trigger_event_json")?;
+        let root_sequence = row
+            .get::<Option<i64>, _>("root_sequence")
+            .map(u64::try_from)
+            .transpose()?;
+        ContextActivationCausalitySnapshot::from_components(
+            sqlite_snapshot_component(&row, "activation_signals_json")?,
+            sqlite_snapshot_component(&row, "thread_json")?,
+            sqlite_snapshot_component(&row, "trigger_event_json")?,
+            direct_root_event.or(first_trigger_event),
+            root_sequence,
+        )
+    }
+
+    async fn read_context_execution_resources_snapshot(
+        &self,
+        context_id: &str,
+        principal_id: Option<&str>,
+        target_limit: usize,
+        authorization_limit: usize,
+    ) -> Result<ContextExecutionResourcesSnapshot, Box<dyn std::error::Error + Send + Sync>> {
+        let target_limit = i64::try_from(target_limit)?;
+        let authorization_limit = i64::try_from(authorization_limit)?;
+        let row = sqlx::query(
+            r#"WITH
+               background_job_rows AS (
+                 SELECT job.created_at, job.id,
+                   json_object(
+                     'id', job.id, 'revision', job.revision,
+                     'activation_id', job.activation_id,
+                     'thread_id', job.thread_id, 'agent_id', job.agent_id,
+                     'context_id', job.context_id, 'session_id', job.session_id,
+                     'initiating_principal_id', job.initiating_principal_id,
+                     'target_id', job.target_id, 'tool_call_id', job.tool_call_id,
+                     'tool_name', job.tool_name, 'request', json(job.request_json),
+                     'status', job.status, 'retry_safety', job.retry_safety,
+                     'claimed_by', job.claimed_by, 'claim_token', job.claim_token,
+                     'lease_expires_at', job.lease_expires_at,
+                     'heartbeat_at', job.heartbeat_at,
+                     'approval_ref', job.approval_ref,
+                     'side_effect_started_at', job.side_effect_started_at,
+                     'cancel_requested_at', job.cancel_requested_at,
+                     'cancel_reason', job.cancel_reason,
+                     'progress_ref', job.progress_ref,
+                     'checkpoint_generation', job.checkpoint_generation,
+                     'checkpoint_due_at', job.checkpoint_due_at,
+                     'result_event_id', job.result_event_id,
+                     'result_refs', json(job.result_refs_json),
+                     'error', job.error, 'exit_code', job.exit_code,
+                     'created_at', job.created_at, 'started_at', job.started_at,
+                     'updated_at', job.updated_at, 'finished_at', job.finished_at
+                   ) AS value
+                 FROM execution_jobs job
+                 WHERE job.context_id = ? AND job.tool_name = 'exec/background'
+                   AND job.status IN ('queued', 'waiting_approval', 'running')
+               ),
+               target_rows AS (
+                 SELECT target.updated_at, target.id,
+                   json_object(
+                     'id', target.id, 'revision', target.revision,
+                     'owner_principal_id', target.owner_principal_id,
+                     'provider_node_id', target.provider_node_id,
+                     'kind', target.kind, 'name', target.name,
+                     'status', target.status, 'platform', target.platform,
+                     'workspace_root', target.workspace_root,
+                     'capabilities', json(target.capabilities_json),
+                     'metadata', json(target.metadata_json),
+                     'policy_digest', target.policy_digest,
+                     'created_at', target.created_at, 'updated_at', target.updated_at,
+                     'last_seen_at', target.last_seen_at
+                   ) AS value
+                 FROM execution_targets target
+                 WHERE ((? IS NULL AND target.owner_principal_id IS NULL)
+                    OR (? IS NOT NULL AND (
+                      target.owner_principal_id IS NULL OR target.owner_principal_id = ?
+                    )))
+                 ORDER BY target.updated_at DESC, target.id
+                 LIMIT ?
+               ),
+               authorization_rows AS (
+                 SELECT authorization.updated_at, authorization.id,
+                   json_object(
+                     'id', authorization.id, 'revision', authorization.revision,
+                     'target_id', authorization.target_id,
+                     'owner_principal_id', authorization.owner_principal_id,
+                     'scope', authorization.scope, 'scope_id', authorization.scope_id,
+                     'status', authorization.status,
+                     'created_at', authorization.created_at,
+                     'updated_at', authorization.updated_at,
+                     'revoked_at', authorization.revoked_at,
+                     'revoke_reason', authorization.revoke_reason
+                   ) AS value
+                 FROM execution_target_authorizations authorization
+                 WHERE ? IS NOT NULL AND authorization.owner_principal_id = ?
+                 ORDER BY authorization.updated_at DESC, authorization.id
+                 LIMIT ?
+               )
+               SELECT
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM background_job_rows ORDER BY created_at, id
+                 )), '[]') AS background_jobs_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM target_rows ORDER BY updated_at DESC, id
+                 )), '[]') AS execution_targets_json,
+                 COALESCE((SELECT json_group_array(json(value)) FROM (
+                   SELECT value FROM authorization_rows ORDER BY updated_at DESC, id
+                 )), '[]') AS target_authorizations_json"#,
+        )
+        .bind(context_id)
+        .bind(principal_id)
+        .bind(principal_id)
+        .bind(principal_id)
+        .bind(target_limit)
+        .bind(principal_id)
+        .bind(principal_id)
+        .bind(authorization_limit)
+        .fetch_one(&self.pool)
+        .await?;
+        ContextExecutionResourcesSnapshot::from_components(
+            sqlite_snapshot_component(&row, "background_jobs_json")?,
+            sqlite_snapshot_component(&row, "execution_targets_json")?,
+            sqlite_snapshot_component(&row, "target_authorizations_json")?,
+        )
     }
 }
 
@@ -6118,7 +6842,7 @@ async fn enqueue_event_recall_in_transaction(
 async fn append_event_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &Event,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
     let payload = serde_json::to_string(&event.payload)?;
     let timestamp = event
         .timestamp
@@ -6133,7 +6857,7 @@ async fn append_event_in_transaction(
     let activation_id = causal_payload_string(event, "activation_id");
     let root_turn_id = causal_payload_string(event, "root_turn_id");
     let objective_id = causal_payload_string(event, "objective_id");
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO events \
          (id, timestamp, actor, type, topic, context_id, session_id, thread_id, activation_id, root_turn_id, objective_id, payload) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -6152,19 +6876,19 @@ async fn append_event_in_transaction(
     .bind(payload)
     .execute(&mut **tx)
     .await?;
+    let sequence = inserted.last_insert_rowid();
     if let Some(context_id) = context_id {
-        let sequence = u64::try_from(
-            sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
-                .bind(&event.id)
-                .fetch_one(&mut **tx)
-                .await?,
+        project_attention_acknowledgement_in_transaction(
+            tx,
+            event,
+            context_id,
+            u64::try_from(sequence).map_err(|_| "Event sequence 不能为负数")?,
         )
-        .map_err(|_| "Event sequence 不能为负数")?;
-        project_attention_acknowledgement_in_transaction(tx, event, context_id, sequence).await?;
+        .await?;
         enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
     }
     project_observation_in_transaction(tx, event).await?;
-    Ok(())
+    Ok(sequence)
 }
 
 /// Commit the scheduler mailbox fact caused by one user message in the same
@@ -6175,6 +6899,7 @@ async fn append_dialogue_signal_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     session: &SessionRecord,
     event: &Event,
+    sequence: i64,
     dispatch_mode: MessageDispatchMode,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let principal_id = event
@@ -6182,10 +6907,6 @@ async fn append_dialogue_signal_in_transaction(
         .get("principal_id")
         .and_then(JsonValue::as_str);
     let requested_target_id = event.payload.get("target_id").and_then(JsonValue::as_str);
-    let sequence = sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
-        .bind(&event.id)
-        .fetch_one(&mut **tx)
-        .await?;
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
 
@@ -15558,31 +16279,55 @@ impl DeliveryIngressStore for SqliteStore {
             .and_then(JsonValue::as_str)
             .ok_or("用户消息缺少 principal_id")?;
         let request_fingerprint = message_request_fingerprint(&event.payload)?;
-        let mut tx = self.pool.begin().await?;
-        // Acquire SQLite's single writer before reading mutable Session
-        // authority. This avoids a deferred read -> write snapshot upgrade and
-        // serializes a concurrent archive with the claim decision.
-        let locked = sqlx::query("UPDATE sessions SET updated_at = updated_at WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
-        if locked.rows_affected() != 1 {
-            tx.commit().await?;
-            return Err(format!("Session '{}' 不存在", session_id).into());
+        let references = event
+            .payload
+            .get("references")
+            .and_then(JsonValue::as_array);
+        let mut referenced_session_ids = Vec::new();
+        let mut reference_shape_error = None;
+        if let Some(references) = references {
+            for reference in references {
+                if reference.get("kind").and_then(JsonValue::as_str) != Some("session") {
+                    reference_shape_error = Some("用户消息包含不支持的引用类型".to_string());
+                    break;
+                }
+                let Some(referenced_session_id) =
+                    reference.get("session_id").and_then(JsonValue::as_str)
+                else {
+                    reference_shape_error = Some("Session 引用缺少 session_id".to_string());
+                    break;
+                };
+                referenced_session_ids.push(referenced_session_id.to_string());
+            }
         }
+        referenced_session_ids.sort();
+        referenced_session_ids.dedup();
+
+        // BEGIN IMMEDIATE acquires SQLite's single-writer authority before any
+        // mutable Session read.  The previous no-op UPDATE achieved the same
+        // fencing at the cost of an extra statement on every message.
+        let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         let session_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
                       s.model_alias, s.reasoning_effort, s.sandbox_mode, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
-                      sm.attention_changed_at, sm.attention_event_id
+                      sm.attention_changed_at, sm.attention_event_id,
+                      EXISTS(
+                        SELECT 1 FROM session_principal_bindings binding
+                        WHERE binding.session_id = s.id
+                          AND binding.principal_id = ?
+                          AND binding.unbound_at IS NULL
+                      ) AS principal_is_bound
                FROM sessions s
                JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
                WHERE s.id = ?"#,
         )
+        .bind(event_principal_id)
         .bind(session_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| format!("Session '{}' 不存在", session_id))?;
         let session = session_from_row(&session_row);
         if event_session_id != session_id || event_context_id != session.context_id {
             return Err(format!(
@@ -15595,17 +16340,7 @@ impl DeliveryIngressStore for SqliteStore {
             tx.commit().await?;
             return Ok(MessageClaim::InactiveSession);
         }
-        let principal_is_bound = sqlx::query_scalar::<_, i64>(
-            r#"SELECT EXISTS(
-                 SELECT 1 FROM session_principal_bindings
-                 WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL
-               )"#,
-        )
-        .bind(session_id)
-        .bind(event_principal_id)
-        .fetch_one(&mut *tx)
-        .await?
-            != 0;
+        let principal_is_bound = session_row.get::<i64, _>("principal_is_bound") != 0;
         if !principal_is_bound {
             tx.commit().await?;
             return Ok(MessageClaim::ForbiddenPrincipal {
@@ -15624,40 +16359,68 @@ impl DeliveryIngressStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
-            if let Some(references) = event
-                .payload
-                .get("references")
-                .and_then(JsonValue::as_array)
-            {
-                for reference in references {
-                    if reference.get("kind").and_then(JsonValue::as_str) != Some("session") {
-                        tx.rollback().await?;
-                        return Ok(MessageClaim::InvalidReference {
-                            message: "用户消息包含不支持的引用类型".to_string(),
-                        });
-                    }
-                    let Some(referenced_session_id) =
-                        reference.get("session_id").and_then(JsonValue::as_str)
-                    else {
-                        tx.rollback().await?;
-                        return Ok(MessageClaim::InvalidReference {
-                            message: "Session 引用缺少 session_id".to_string(),
-                        });
-                    };
-                    let referenced = sqlx::query(
-                        "SELECT agent_id, context_id, status FROM sessions WHERE id = ?",
+            // Preserve the authority/error ordering of the original ingress:
+            // an unbound source Principal must not learn whether a supplied
+            // reference is malformed. Existing idempotent requests also reach
+            // fingerprint comparison before any newly supplied shape error.
+            if let Some(message) = reference_shape_error {
+                tx.rollback().await?;
+                return Ok(MessageClaim::InvalidReference { message });
+            }
+            if let Some(references) = references {
+                let authoritative_references = if referenced_session_ids.is_empty() {
+                    HashMap::new()
+                } else {
+                    let ids_json = serde_json::to_string(&referenced_session_ids)?;
+                    sqlx::query(
+                        r#"SELECT s.id, s.agent_id, s.context_id, s.status,
+                                  EXISTS(
+                                    SELECT 1 FROM session_principal_bindings binding
+                                    WHERE binding.session_id = s.id
+                                      AND binding.principal_id = ?
+                                      AND binding.unbound_at IS NULL
+                                  ) AS principal_is_bound
+                           FROM sessions s
+                           WHERE s.id IN (
+                             SELECT DISTINCT CAST(value AS TEXT) FROM json_each(?)
+                           )
+                           ORDER BY s.id"#,
                     )
-                    .bind(referenced_session_id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    let Some(referenced) = referenced else {
+                    .bind(event_principal_id)
+                    .bind(ids_json)
+                    .fetch_all(&mut *tx)
+                    .await?
+                    .into_iter()
+                    .map(|row| {
+                        (
+                            row.get::<String, _>("id"),
+                            (
+                                row.get::<String, _>("agent_id"),
+                                row.get::<String, _>("context_id"),
+                                row.get::<String, _>("status"),
+                                row.get::<i64, _>("principal_is_bound") != 0,
+                            ),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>()
+                };
+                for reference in references {
+                    let referenced_session_id = reference
+                        .get("session_id")
+                        .and_then(JsonValue::as_str)
+                        .expect("reference shape was validated before opening the transaction");
+                    let Some((
+                        referenced_agent_id,
+                        referenced_context_id,
+                        referenced_status,
+                        principal_is_bound,
+                    )) = authoritative_references.get(referenced_session_id)
+                    else {
                         tx.rollback().await?;
                         return Ok(MessageClaim::InvalidReference {
                             message: format!("引用的 Session '{referenced_session_id}' 不存在"),
                         });
                     };
-                    let referenced_agent_id = referenced.get::<String, _>("agent_id");
-                    let referenced_context_id = referenced.get::<String, _>("context_id");
                     if reference.get("agent_id").and_then(JsonValue::as_str)
                         != Some(referenced_agent_id.as_str())
                         || reference.get("context_id").and_then(JsonValue::as_str)
@@ -15670,31 +16433,20 @@ impl DeliveryIngressStore for SqliteStore {
                             ),
                         });
                     }
-                    if referenced_agent_id != session.agent_id {
+                    if referenced_agent_id != &session.agent_id {
                         tx.rollback().await?;
                         return Ok(MessageClaim::ForbiddenReference {
                             session_id: referenced_session_id.to_string(),
                             principal_id: event_principal_id.to_string(),
                         });
                     }
-                    if referenced.get::<String, _>("status") == "archived" {
+                    if referenced_status == "archived" {
                         tx.rollback().await?;
                         return Ok(MessageClaim::InactiveReference {
                             session_id: referenced_session_id.to_string(),
                         });
                     }
-                    let principal_is_bound = sqlx::query_scalar::<_, i64>(
-                        r#"SELECT EXISTS(
-                             SELECT 1 FROM session_principal_bindings
-                             WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL
-                           )"#,
-                    )
-                    .bind(referenced_session_id)
-                    .bind(event_principal_id)
-                    .fetch_one(&mut *tx)
-                    .await?
-                        != 0;
-                    if !principal_is_bound {
+                    if !*principal_is_bound {
                         tx.rollback().await?;
                         return Ok(MessageClaim::ForbiddenReference {
                             session_id: referenced_session_id.to_string(),
@@ -15766,23 +16518,22 @@ impl DeliveryIngressStore for SqliteStore {
             let timestamp = event
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            append_event_in_transaction(&mut tx, &claimed_event).await?;
-            append_dialogue_signal_in_transaction(&mut tx, &session, &claimed_event, dispatch_mode)
-                .await?;
+            let sequence = append_event_in_transaction(&mut tx, &claimed_event).await?;
+            append_dialogue_signal_in_transaction(
+                &mut tx,
+                &session,
+                &claimed_event,
+                sequence,
+                dispatch_mode,
+            )
+            .await?;
             sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
                 .bind(&timestamp)
                 .bind(&timestamp)
                 .bind(session_id)
                 .execute(&mut *tx)
                 .await?;
-            let mount = sqlx::query(
-                "SELECT attention_state, attention_revision FROM session_mounts WHERE session_id = ? AND context_id = ? AND unmounted_at IS NULL",
-            )
-            .bind(session_id)
-            .bind(event_context_id)
-            .fetch_one(&mut *tx)
-            .await?;
-            if mount.get::<String, _>("attention_state") == "retired" {
+            if session.attention_state == SessionAttentionState::Retired {
                 let restore_event_id = format!("runtime_session_restored_{}", event.id);
                 sqlx::query(
                     r#"UPDATE session_mounts
@@ -15818,7 +16569,7 @@ impl DeliveryIngressStore for SqliteStore {
                         ),
                         (
                             "attention_revision".to_string(),
-                            serde_json::json!(mount.get::<i64, _>("attention_revision") + 1),
+                            serde_json::json!(session.attention_revision + 1),
                         ),
                     ]
                     .into_iter()
@@ -16004,13 +16755,14 @@ impl DeliveryIngressStore for SqliteStore {
             }
         }
 
-        append_event_in_transaction(&mut tx, event).await?;
+        let sequence = append_event_in_transaction(&mut tx, event).await?;
         // Follow-up here means only "do not batch/interrupt". The Event does
         // not carry MessageDispatchMode and remains a distinct internal root.
         append_dialogue_signal_in_transaction(
             &mut tx,
             &target,
             event,
+            sequence,
             MessageDispatchMode::FollowUp,
         )
         .await?;
@@ -23889,13 +24641,43 @@ impl SessionProjectionStore for SqliteStore {
         session_ids: &[String],
         include_context_wide: bool,
     ) -> Result<ContextEncodingProjectionSnapshot, Box<dyn std::error::Error + Send + Sync>> {
-        let mut tx = self.pool.begin().await?;
-        // The first read pins SQLite's WAL snapshot. Mind and Observation
-        // membership below therefore belong to one atomic Context boundary.
-        let mind = get_mind_projection_from_executor(&mut *tx, context_id).await?;
         let mut builder = QueryBuilder::new(
-            r#"SELECT e.rowid AS event_sequence, e.id, e.timestamp, e.actor,
-                      e.type, e.topic, e.payload
+            r#"SELECT snapshot.row_kind, snapshot.event_sequence,
+                      snapshot.event_id, snapshot.event_timestamp,
+                      snapshot.event_actor, snapshot.event_type,
+                      snapshot.event_topic, snapshot.event_payload,
+                      snapshot.mind_context_id, snapshot.mind_revision,
+                      snapshot.mind_state_json, snapshot.mind_state_hash,
+                      snapshot.mind_head_event_id, snapshot.mind_updated_at
+               FROM (
+                 SELECT 0 AS sort_key, 'mind' AS row_kind,
+                        NULL AS event_sequence, NULL AS event_id,
+                        NULL AS event_timestamp, NULL AS event_actor,
+                        NULL AS event_type, NULL AS event_topic,
+                        NULL AS event_payload,
+                        projection.context_id AS mind_context_id,
+                        projection.revision AS mind_revision,
+                        projection.state_json AS mind_state_json,
+                        projection.state_hash AS mind_state_hash,
+                        head.head_event_id AS mind_head_event_id,
+                        projection.updated_at AS mind_updated_at
+                 FROM mind_projections projection
+                 JOIN context_heads head ON head.context_id = projection.context_id
+                 WHERE projection.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(
+            r#" AND projection.revision = head.revision
+                   AND projection.state_hash = head.projection_hash
+                 UNION ALL
+                 SELECT 1 AS sort_key, 'event' AS row_kind,
+                        e.rowid AS event_sequence, e.id AS event_id,
+                        e.timestamp AS event_timestamp, e.actor AS event_actor,
+                        e.type AS event_type, e.topic AS event_topic,
+                        e.payload AS event_payload,
+                        NULL AS mind_context_id, NULL AS mind_revision,
+                        NULL AS mind_state_json, NULL AS mind_state_hash,
+                        NULL AS mind_head_event_id, NULL AS mind_updated_at
                FROM session_projections projection
                JOIN events e ON e.id = projection.event_id
                WHERE projection.context_id = "#,
@@ -23918,23 +24700,66 @@ impl SessionProjectionStore for SqliteStore {
         } else if !include_context_wide {
             builder.push("0");
         }
-        builder.push(") ORDER BY projection.event_sequence ASC");
-        let rows = builder.build().fetch_all(&mut *tx).await?;
-        let events = rows
-            .into_iter()
-            .map(|row| {
-                Ok(Event {
-                    id: row.get("id"),
-                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
-                    timestamp: parse_time(&row.get::<String, _>("timestamp")),
-                    actor: row.get("actor"),
-                    event_type: row.get("type"),
-                    topic: row.get("topic"),
-                    payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
-                })
-            })
-            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
-        tx.commit().await?;
+        builder.push(") ) snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        let mut mind = None;
+        let mut events = Vec::with_capacity(rows.len().saturating_sub(1));
+        for row in rows {
+            match row.get::<String, _>("row_kind").as_str() {
+                "mind" => {
+                    mind = Some(MindProjectionRecord {
+                        context_id: row
+                            .get::<Option<String>, _>("mind_context_id")
+                            .ok_or("Mind Projection snapshot 缺少 context_id")?,
+                        revision: u64::try_from(
+                            row.get::<Option<i64>, _>("mind_revision")
+                                .ok_or("Mind Projection snapshot 缺少 revision")?,
+                        )?,
+                        state: serde_json::from_str(
+                            &row.get::<Option<String>, _>("mind_state_json")
+                                .ok_or("Mind Projection snapshot 缺少 state_json")?,
+                        )?,
+                        state_hash: row
+                            .get::<Option<String>, _>("mind_state_hash")
+                            .ok_or("Mind Projection snapshot 缺少 state_hash")?,
+                        head_event_id: row.get("mind_head_event_id"),
+                        updated_at: parse_time(
+                            &row.get::<Option<String>, _>("mind_updated_at")
+                                .ok_or("Mind Projection snapshot 缺少 updated_at")?,
+                        ),
+                    });
+                }
+                "event" => events.push(Event {
+                    id: row
+                        .get::<Option<String>, _>("event_id")
+                        .ok_or("Context Encoding snapshot Event 缺少 id")?,
+                    sequence: Some(u64::try_from(
+                        row.get::<Option<i64>, _>("event_sequence")
+                            .ok_or("Context Encoding snapshot Event 缺少 sequence")?,
+                    )?),
+                    timestamp: parse_time(
+                        &row.get::<Option<String>, _>("event_timestamp")
+                            .ok_or("Context Encoding snapshot Event 缺少 timestamp")?,
+                    ),
+                    actor: row
+                        .get::<Option<String>, _>("event_actor")
+                        .ok_or("Context Encoding snapshot Event 缺少 actor")?,
+                    event_type: row
+                        .get::<Option<String>, _>("event_type")
+                        .ok_or("Context Encoding snapshot Event 缺少 type")?,
+                    topic: row
+                        .get::<Option<String>, _>("event_topic")
+                        .ok_or("Context Encoding snapshot Event 缺少 topic")?,
+                    payload: serde_json::from_str(
+                        &row.get::<Option<String>, _>("event_payload")
+                            .ok_or("Context Encoding snapshot Event 缺少 payload")?,
+                    )?,
+                }),
+                other => {
+                    return Err(format!("未知 Context Encoding snapshot row kind '{other}'").into())
+                }
+            }
+        }
         Ok(ContextEncodingProjectionSnapshot { mind, events })
     }
 }

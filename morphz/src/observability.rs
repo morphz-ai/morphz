@@ -340,6 +340,29 @@ impl Observability {
         );
     }
 
+    /// Record one semantic Store command.  The histogram count is the actual
+    /// command count; its duration includes pool admission and database work.
+    /// Physical SQL statements are deliberately enforced by integration-test
+    /// budgets instead of being guessed here.
+    pub fn record_storage_command(
+        &self,
+        backend: &'static str,
+        command: &'static str,
+        duration: Duration,
+        outcome: &'static str,
+    ) {
+        self.observe_histogram(
+            "morphz_storage_command_duration_seconds",
+            "Wall-clock duration of one semantic Morphz Store command, including pool admission.",
+            BTreeMap::from([
+                ("backend", backend.to_string()),
+                ("command", command.to_string()),
+                ("outcome", outcome.to_string()),
+            ]),
+            duration,
+        );
+    }
+
     pub fn record_http_request(
         &self,
         method: &str,
@@ -608,6 +631,33 @@ mod tests {
         let output = observability.prometheus_text();
         assert!(output.contains("method=\"OTHER\""));
         assert!(!output.contains("ATTACKER-CONTROLLED-METHOD"));
+    }
+
+    #[test]
+    fn storage_commands_export_backend_command_outcome_and_real_count() {
+        let observability = Observability::with_turn_capacity(2);
+        observability.record_storage_command(
+            "postgres",
+            "claim_message",
+            Duration::from_millis(12),
+            "ok",
+        );
+        observability.record_storage_command(
+            "postgres",
+            "claim_message",
+            Duration::from_millis(4),
+            "error",
+        );
+
+        let output = observability.prometheus_text();
+        assert!(output.contains("morphz_storage_command_duration_seconds_bucket"));
+        assert!(output.contains("backend=\"postgres\""));
+        assert!(output.contains("command=\"claim_message\""));
+        assert!(output.contains("outcome=\"ok\""));
+        assert!(output.contains("outcome=\"error\""));
+        assert!(output.contains(
+            "morphz_storage_command_duration_seconds_count{backend=\"postgres\",command=\"claim_message\",outcome=\"ok\"} 1"
+        ));
     }
 
     #[test]

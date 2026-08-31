@@ -1198,6 +1198,9 @@ impl MorphzRuntimeBuilder {
             .with_work_assignment_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::WorkAssignmentStore>
             )
+            .with_runtime_snapshot_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::ContextRuntimeSnapshotStore>
+            )
             .with_principal_first_seen_cues(self.principal_first_seen_cues)
             .with_model_context_capacity(Arc::clone(&model_context_capacity))
             .with_model_context_capacities(Arc::clone(&model_context_capacities))
@@ -9378,30 +9381,11 @@ impl SessionHandle {
             )));
         }
         let principal_id = principal_id.into();
-        let principal_verification_started = std::time::Instant::now();
-        let principal_verified = self
-            .runtime
-            .inner
-            .store
-            .verify_session_principal(&self.id, &principal_id)
-            .await;
-        self.runtime.inner.observability.record_operation(
-            "storage",
-            "verify_session_principal",
-            principal_verification_started.elapsed(),
-            if principal_verified.is_ok() {
-                "ok"
-            } else {
-                "error"
-            },
-        );
-        if !principal_verified? {
-            return Err(format!(
-                "Principal '{}' is not bound to Session '{}'; message rejected",
-                principal_id, self.id
-            )
-            .into());
-        }
+        // Principal authority is intentionally decided by `claim_message`
+        // while its Session row and binding belong to the same transaction as
+        // the immutable Event and scheduler Signal. A transaction-external
+        // preflight was both non-authoritative (TOCTOU) and a duplicate remote
+        // read on every accepted message.
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         validate_client_message_id(&client_message_id)?;
         let model_alias = if let Some(model_alias) = model_alias {
@@ -9675,8 +9659,8 @@ impl SessionHandle {
             .await;
         let claim_duration = claim_started.elapsed();
         let claim_outcome = if claim.is_ok() { "ok" } else { "error" };
-        self.runtime.inner.observability.record_operation(
-            "storage",
+        self.runtime.inner.observability.record_storage_command(
+            self.runtime.inner.store.storage_backend_name(),
             "claim_message",
             claim_duration,
             claim_outcome,

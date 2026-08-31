@@ -3787,19 +3787,11 @@ impl MorphzSdk {
         principal: &PrincipalAssertion,
         command: SendMessageCommand,
     ) -> SdkResult<MessageReceipt> {
-        self.authorize_session(&principal.principal_id, &command.session_id)
-            .await?;
-        if let Some(target_id) = command.target_id.as_deref() {
-            let target = self
-                .inspect_execution_target(&principal.principal_id, target_id)
-                .await?;
-            if !target.status.accepts_jobs() {
-                return Err(SdkError::new(
-                    SdkErrorCode::Conflict,
-                    format!("Execution Target '{target_id}' is not online"),
-                ));
-            }
-        }
+        // Runtime ingress validates the Session and optional Target before any
+        // durable side effect, while the source Principal is authoritatively
+        // revalidated inside the atomic `claim_message` transaction. Repeating
+        // those directory reads in this SDK facade adds no authority and turns
+        // one remote ingress into a chain of duplicate PostgreSQL round trips.
         self.runtime
             .session(command.session_id)
             .send_as_principal_with_options(
@@ -4299,6 +4291,36 @@ mod tests {
         )
         .await
         .unwrap();
+        let forbidden_source = sdk
+            .send_message(
+                &principal("principal-private"),
+                SendMessageCommand {
+                    session_id: "session-reference-a".to_string(),
+                    text: "Attempt unbound ingress".to_string(),
+                    actor: "User-API".to_string(),
+                    client_message_id: Some("reference-message-unbound-source".to_string()),
+                    attachments: Vec::new(),
+                    references: Vec::new(),
+                    harness: None,
+                    dispatch_mode: None,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    target_id: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(forbidden_source.code, SdkErrorCode::Forbidden);
+        assert!(runtime
+            .query_events(QueryFilter {
+                context_id: Some("context-reference-a".to_string()),
+                actors: vec!["User-API".to_string()],
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .all(|event| event.payload["client_message_id"] != "reference-message-unbound-source"));
         let forbidden = sdk
             .send_message(
                 &principal("principal-reference"),

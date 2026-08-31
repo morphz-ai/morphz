@@ -4112,6 +4112,7 @@ dependencies = [
  "keyring",
  "libsqlite3-hotbundle",
  "libsqlite3-sys",
+ "log",
  "morphz-cognitive-coordination",
  "nix 0.31.3",
  "portable-pty",
