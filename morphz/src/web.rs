@@ -68,6 +68,8 @@ const DASHBOARD_FAVICON: &[u8] = include_bytes!("../../dashboard/dist/favicon.sv
 const DASHBOARD_ICONS: &[u8] = include_bytes!("../../dashboard/dist/icons.svg");
 const DASHBOARD_DURABLE_EVENT_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(500);
+const DASHBOARD_WEBSOCKET_HEARTBEAT_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(20);
 const DASHBOARD_DURABLE_EVENT_BATCH_SIZE: usize = 256;
 const DASHBOARD_RECENT_EVENT_IDS: usize = 16_384;
 
@@ -8090,9 +8092,21 @@ async fn handle_ws_connection(
         }
     }
 
+    let mut heartbeat = tokio::time::interval(DASHBOARD_WEBSOCKET_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     // Forward EventBus broadcasts to WebSocket while maintaining the connection heartbeat.
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                // Browser WebSocket implementations answer protocol Pings with
+                // Pongs automatically. Besides keeping intermediaries from
+                // expiring an otherwise idle Dashboard, a failed send closes
+                // the server task so the client can reconnect promptly.
+                if socket.send(WsMessage::Ping(Vec::new())).await.is_err() {
+                    break;
+                }
+            }
             // Receive new Events from the broadcast channel and push them to the browser in real time.
             broadcast_msg = rx.recv() => {
                 match broadcast_msg {

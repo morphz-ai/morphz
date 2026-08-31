@@ -32,6 +32,19 @@ test('Context and Session catalog actions stay clickable above navigation', () =
   )
 })
 
+test('Session WebSocket errors close the failed transport and enter the reconnect path', () => {
+  assert.match(
+    appSource,
+    /nextSocket\.onerror\s*=\s*\(\)\s*=>\s*\{[\s\S]*?setWsStatus\('disconnected'\)[\s\S]*?nextSocket\.close\(\)/s,
+    'a transient WebSocket error must not leave the Dashboard permanently stuck in a false disconnected state',
+  )
+  assert.match(
+    appSource,
+    /nextSocket\.onclose\s*=\s*\(\)\s*=>\s*\{[\s\S]*?socket = undefined[\s\S]*?reconnectTimer = window\.setTimeout\(connect, 2500\)/s,
+    'the failed Session transport must be replaced through one deterministic reconnect path',
+  )
+})
+
 test('managed credentials preserve multiline secret values', () => {
   assert.match(
     credentialsSource,

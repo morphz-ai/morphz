@@ -4242,16 +4242,20 @@ export default function App() {
     }
     const connect = () => {
       if (disposed) return
+      reconnectTimer = undefined
       const params = new URLSearchParams()
       const token = getDashboardToken()
       if (token) params.set('token', token)
       const query = params.size > 0 ? `?${params}` : ''
-      socket = new WebSocket(`${CORE_WS_URL}${query}`)
-      socket.onopen = () => {
+      const nextSocket = new WebSocket(`${CORE_WS_URL}${query}`)
+      socket = nextSocket
+      nextSocket.onopen = () => {
+        if (disposed || socket !== nextSocket) return
         scheduleRefresh()
         scheduleExecutionJobsRefresh()
       }
-      socket.onmessage = messageEvent => {
+      nextSocket.onmessage = messageEvent => {
+        if (disposed || socket !== nextSocket) return
         try {
           const event = JSON.parse(messageEvent.data) as MorphzEvent
           const invalidated = invalidatedQueriesForTopic(event.topic)
@@ -4262,10 +4266,17 @@ export default function App() {
           // This connection is only an invalidation channel.
         }
       }
-      socket.onclose = () => {
-        if (!disposed) reconnectTimer = window.setTimeout(connect, 3_000)
+      nextSocket.onclose = () => {
+        if (disposed || socket !== nextSocket) return
+        socket = undefined
+        reconnectTimer = window.setTimeout(connect, 3_000)
       }
-      socket.onerror = () => socket?.close()
+      nextSocket.onerror = () => {
+        // A WebSocket error is not guaranteed to produce a prompt close event.
+        // Close this exact transport so the close path deterministically
+        // replaces it instead of leaving an unusable half-open connection.
+        nextSocket.close()
+      }
     }
     connect()
     return () => {
@@ -4514,6 +4525,7 @@ export default function App() {
     }
     const connect = () => {
       if (disposed) return
+      reconnectTimer = undefined
       setWsStatus('connecting')
       const params = new URLSearchParams({ session_id: selectedSessionId })
       const token = getDashboardToken()
@@ -4521,13 +4533,15 @@ export default function App() {
       if (observesExactModelRequests(view, cognitionView)) {
         params.set('observe_model_requests', 'true')
       }
-      socket = new WebSocket(`${CORE_WS_URL}?${params}`)
-      socket.onopen = () => {
+      const nextSocket = new WebSocket(`${CORE_WS_URL}?${params}`)
+      socket = nextSocket
+      nextSocket.onopen = () => {
+        if (disposed || socket !== nextSocket) return
         setWsStatus('connected')
         void loadSession(selectedSessionId, selectedContextId)
       }
-      socket.onmessage = messageEvent => {
-        if (disposed) return
+      nextSocket.onmessage = messageEvent => {
+        if (disposed || socket !== nextSocket) return
         try {
           const event = JSON.parse(messageEvent.data) as MorphzEvent
           if (event.topic === 'runtime/model_attempt_snapshot') {
@@ -4691,8 +4705,9 @@ export default function App() {
           setError(t('errors.websocketParse'))
         }
       }
-      socket.onclose = () => {
-        if (disposed) return
+      nextSocket.onclose = () => {
+        if (disposed || socket !== nextSocket) return
+        socket = undefined
         setWsStatus('disconnected')
         pendingStreamEvents = []
         if (streamTimer !== undefined) window.clearTimeout(streamTimer)
@@ -4700,7 +4715,14 @@ export default function App() {
         dispatchModelStream({ type: 'reset_session', sessionId: selectedSessionId })
         reconnectTimer = window.setTimeout(connect, 2500)
       }
-      socket.onerror = () => setWsStatus('disconnected')
+      nextSocket.onerror = () => {
+        if (disposed || socket !== nextSocket) return
+        setWsStatus('disconnected')
+        // The browser may report an error before (or without promptly)
+        // dispatching close. Force this exact failed transport through the
+        // close handler so the Session socket always reconnects.
+        nextSocket.close()
+      }
     }
     connect()
     return () => {
