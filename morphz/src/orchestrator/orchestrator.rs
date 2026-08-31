@@ -7955,6 +7955,7 @@ impl Orchestrator {
         &self,
         event: &Event,
     ) -> Result<Option<AdmittedThreadActivation>, DynError> {
+        let activation_route_started = Instant::now();
         let session_id = required_payload_str(event, "session_id")?;
         let session_store = self
             .context_engine
@@ -8148,6 +8149,15 @@ impl Orchestrator {
                     .get("objective_evaluation_id")
                     .and_then(|value| value.as_str()),
             );
+        self.observability.record_turn_stage(
+            &root_turn_id,
+            Some(&session.context_id),
+            Some(&session.id),
+            "scheduler.resolve_activation_route",
+            activation_route_started.elapsed(),
+            "ok",
+            None,
+        );
         let derived_thread_kind = derived_thread_kind(event, objective_route.is_some());
         let plan_execution_id = event
             .payload
@@ -8218,6 +8228,7 @@ impl Orchestrator {
                 ThreadKind::Execution => "event-router",
             })
         };
+        let ensure_thread_started = Instant::now();
         let thread = session_store
             .ensure_thread(NewThread {
                 id: stable_thread_id(&root_turn_id),
@@ -8237,12 +8248,22 @@ impl Orchestrator {
                 supervision,
             })
             .await?;
+        self.observability.record_turn_stage(
+            &root_turn_id,
+            Some(&session.context_id),
+            Some(&session.id),
+            "scheduler.ensure_thread",
+            ensure_thread_started.elapsed(),
+            "ok",
+            None,
+        );
         // A real signal wins the race with the Thread's fallback clock as
         // soon as it is routed, even if another Activation currently owns the
         // Thread and this signal must remain queued. Cancelling before claim
         // prevents the old timer from manufacturing a second wake while that
         // legitimate signal waits for admission. The timeout Event itself is
         // already owned by the claimed Timer and must not cancel itself.
+        let cancel_wait_started = Instant::now();
         if event
             .payload
             .get("wake_kind")
@@ -8259,8 +8280,18 @@ impl Orchestrator {
                 );
             }
         }
+        self.observability.record_turn_stage(
+            &root_turn_id,
+            Some(&session.context_id),
+            Some(&session.id),
+            "scheduler.cancel_thread_wait",
+            cancel_wait_started.elapsed(),
+            "ok",
+            None,
+        );
         let activation_id = stable_thread_activation_id(&event.id);
         let signal_id = crate::memory::stable_thread_signal_id(&event.id);
+        let claim_signal_started = Instant::now();
         let Some(activation) = session_store
             .claim_thread_signal_batch(
                 NewThreadSignal {
@@ -8291,6 +8322,15 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(&activation.session_id),
+            "scheduler.claim_signal_batch",
+            claim_signal_started.elapsed(),
+            "ok",
+            None,
+        );
         if activation.status.is_terminal() {
             self.activation_admission.forget(&activation.id);
             return Ok(None);
@@ -8304,11 +8344,21 @@ impl Orchestrator {
             self.activation_admission.forget(&activation.id);
             return Ok(None);
         }
-        if activation.status == ThreadActivationStatus::Queued
-            && !session_store
+        let runnable_check_started = Instant::now();
+        let activation_runnable = activation.status != ThreadActivationStatus::Queued
+            || session_store
                 .dialogue_turn_activation_runnable(&activation.id)
-                .await?
-        {
+                .await?;
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(&activation.session_id),
+            "scheduler.dialogue_runnable_check",
+            runnable_check_started.elapsed(),
+            "ok",
+            None,
+        );
+        if !activation_runnable {
             // The Signal batch is durably queued behind the Session's current
             // DialogueTurn. Do not place it in the process-local admission
             // window yet: doing so would repeatedly win a global permit only
@@ -10637,6 +10687,7 @@ impl Orchestrator {
         activation: &ThreadActivationRecord,
         refresh_context_snapshot: bool,
     ) -> Result<(), DynError> {
+        let recovery_scan_started = Instant::now();
         let attempt_id = activation.id.clone();
         let mut persisted_assistant_call = self
             .context_engine
@@ -10728,8 +10779,18 @@ impl Orchestrator {
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned)
             });
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(session_id),
+            "scheduler.recovery_scan",
+            recovery_scan_started.elapsed(),
+            "ok",
+            None,
+        );
         let parallel_dialogue = root_dispatch_mode.as_deref() == Some("parallel");
         let dialogue_gate = self.dialogue_thread_gate(session_id);
+        let dialogue_gate_started = Instant::now();
         let dialogue_bound = if parallel_dialogue {
             false
         } else if matches!(
@@ -10742,9 +10803,19 @@ impl Orchestrator {
         } else {
             dialogue_gate.owns(&activation.root_turn_id).await
         };
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(session_id),
+            "scheduler.dialogue_gate",
+            dialogue_gate_started.elapsed(),
+            "ok",
+            None,
+        );
         let mut dialogue_lease = dialogue_bound.then(|| {
             DialogueThreadLease::new(Arc::clone(&dialogue_gate), activation.root_turn_id.clone())
         });
+        let activation_policy_started = Instant::now();
         let session_store = self
             .context_engine
             .session_store()
@@ -10977,6 +11048,15 @@ impl Orchestrator {
             self.publish_no_reply(session_id, &attempt_id, None).await?;
             return Ok(());
         }
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(session_id),
+            "scheduler.activation_policy",
+            activation_policy_started.elapsed(),
+            "ok",
+            None,
+        );
         let context_id = activation.context_id.clone();
         // Tool protocol state is activation-local, not a second Context. Read
         // the latest Mind first, then build only the one-shot Provider envelope
@@ -10991,6 +11071,7 @@ impl Orchestrator {
                 Some(&activation_model_alias),
             )
             .await?;
+        let continuation_started = Instant::now();
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
             route.context_token_budget = Some(context.token_budget_policy.clone());
         }
@@ -11020,6 +11101,16 @@ impl Orchestrator {
                 )
                 .await?;
         }
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&context_id),
+            Some(session_id),
+            "request.continuation_load",
+            continuation_started.elapsed(),
+            "ok",
+            None,
+        );
+        let activation_snapshot_started = Instant::now();
         if refresh_context_snapshot {
             self.rebind_activation_context_snapshot_after_maintenance(
                 activation,
@@ -11030,9 +11121,19 @@ impl Orchestrator {
             self.record_activation_context_snapshot(activation, context.state.version)
                 .await?;
         }
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&context_id),
+            Some(session_id),
+            "request.activation_snapshot",
+            activation_snapshot_started.elapsed(),
+            "ok",
+            None,
+        );
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
             route.context_snapshot_version = Some(context.state.version);
         }
+        let request_policy_started = Instant::now();
         let context_tx_receipt = self.context_tx_receipt(&context).await?;
         let objective_control_available = self
             .objective_evaluations
@@ -11142,6 +11243,16 @@ impl Orchestrator {
                 }
             }
         }
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&context_id),
+            Some(session_id),
+            "request.runtime_policy_load",
+            request_policy_started.elapsed(),
+            "ok",
+            None,
+        );
+        let prompt_prepare_started = Instant::now();
         let (_prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "The Runtime provides the current Context Encoding below. It is not an ordinary user message. Execute the final evaluate entry and decide from protocol, inbox, and the current state that follows.";
 
@@ -11615,6 +11726,16 @@ impl Orchestrator {
         let initial_request_policy = self
             .effective_model_request_policy(session_id, &attempt_id)
             .await?;
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&context_id),
+            Some(session_id),
+            "request.prompt_prepare",
+            prompt_prepare_started.elapsed(),
+            "ok",
+            None,
+        );
+        let continuation_restore_started = Instant::now();
         let mut prompt_cache_transport_seed_to_persist = None;
         let structured_delta_ids = continuation
             .structured_deltas
@@ -11780,6 +11901,15 @@ impl Orchestrator {
                 );
             }
         }
+        self.observability.record_turn_stage(
+            &activation.root_turn_id,
+            Some(&context_id),
+            Some(session_id),
+            "request.continuation_restore",
+            continuation_restore_started.elapsed(),
+            "ok",
+            None,
+        );
         let no_delivered_output_ids = HashSet::new();
         let mut visible_routed_input_ids = if bounded_critical_projection {
             no_delivered_output_ids.clone()
@@ -11815,9 +11945,19 @@ impl Orchestrator {
             } else {
                 format!("{attempt_id}_response_retry_{request_index}")
             };
+            let request_policy_resolve_started = Instant::now();
             let request_policy = self
                 .effective_model_request_policy(session_id, &model_attempt_id)
                 .await?;
+            self.observability.record_turn_stage(
+                &activation.root_turn_id,
+                Some(&context_id),
+                Some(session_id),
+                "request.policy_resolve",
+                request_policy_resolve_started.elapsed(),
+                "ok",
+                None,
+            );
             if last_request_model_alias.as_deref() != Some(request_policy.model_alias.as_str())
                 && reasoning_continuations > 0
             {
@@ -11867,9 +12007,19 @@ impl Orchestrator {
             );
             signal_input_ids.sort();
             signal_input_ids.dedup();
+            let signal_binding_started = Instant::now();
             let bound_signals = session_store
                 .bind_activation_input_signals(&activation.id, &signal_input_ids)
                 .await?;
+            self.observability.record_turn_stage(
+                &activation.root_turn_id,
+                Some(&context_id),
+                Some(session_id),
+                "request.signal_binding",
+                signal_binding_started.elapsed(),
+                "ok",
+                None,
+            );
 
             // A physical request can still see causal input whose scheduler
             // Signal belongs to an earlier Activation (for example, the
@@ -11897,6 +12047,7 @@ impl Orchestrator {
             // must already know which physical Attempt to close.
             self.active_model_attempts
                 .insert(activation.id.clone(), model_attempt_id.clone());
+            let attempt_state_started = Instant::now();
             self.record_model_attempt_started(
                 session_id,
                 &model_attempt_id,
@@ -11906,6 +12057,15 @@ impl Orchestrator {
                 bound_signals.len(),
             )
             .await?;
+            self.observability.record_turn_stage(
+                &activation.root_turn_id,
+                Some(&context_id),
+                Some(session_id),
+                "request.attempt_state_persist",
+                attempt_state_started.elapsed(),
+                "ok",
+                None,
+            );
             let completion = self
                 .request_model_completion_with_policy(
                     session_id,
