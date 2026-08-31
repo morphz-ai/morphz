@@ -8302,8 +8302,8 @@ impl Orchestrator {
         let activation_id = stable_thread_activation_id(&event.id);
         let signal_id = crate::memory::stable_thread_signal_id(&event.id);
         let claim_signal_started = Instant::now();
-        let Some(activation) = session_store
-            .claim_thread_signal_batch(
+        let claim = session_store
+            .claim_thread_signal_batch_observed(
                 NewThreadSignal {
                     id: signal_id,
                     thread_id: thread.id,
@@ -8324,23 +8324,23 @@ impl Orchestrator {
                     trigger_sequence,
                     trigger_kind: event.topic.clone(),
                     parent_activation_id,
-                    root_turn_id,
+                    root_turn_id: root_turn_id.clone(),
                 },
                 crate::memory::DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
             )
-            .await?
-        else {
-            return Ok(None);
-        };
+            .await?;
         self.observability.record_turn_stage(
-            &activation.root_turn_id,
-            Some(&activation.context_id),
-            Some(&activation.session_id),
+            &root_turn_id,
+            Some(&session.context_id),
+            Some(&session.id),
             "scheduler.claim_signal_batch",
             claim_signal_started.elapsed(),
             "ok",
-            None,
+            Some(claim.execution_path.as_str()),
         );
+        let Some(activation) = claim.activation else {
+            return Ok(None);
+        };
         if activation.status.is_terminal() {
             self.activation_admission.forget(&activation.id);
             return Ok(None);

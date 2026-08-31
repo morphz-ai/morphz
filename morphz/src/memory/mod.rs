@@ -1772,6 +1772,15 @@ pub struct NewThreadSignal {
     pub parent_activation_id: Option<String>,
 }
 
+/// Result of one durable Signal-batch claim together with the physical Store
+/// path that produced it. The path is diagnostic metadata only; scheduler
+/// correctness remains entirely represented by the authoritative Activation.
+#[derive(Debug, Clone)]
+pub struct ThreadSignalBatchClaim {
+    pub activation: Option<ThreadActivationRecord>,
+    pub execution_path: String,
+}
+
 /// Stable scheduler identity for the one mailbox Signal caused by an
 /// immutable Event.  Every backend and recovery path uses this helper so an
 /// idempotent replay cannot invent a second Signal identity.
@@ -6120,6 +6129,22 @@ pub trait ActivationStore: Send + Sync {
         activation: NewThreadActivation,
         max_signals: usize,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Same durable mutation as `claim_thread_signal_batch`, with bounded
+    /// execution-path telemetry for latency diagnosis. Backends without a
+    /// specialized path inherit this compatibility implementation.
+    async fn claim_thread_signal_batch_observed(
+        &self,
+        signal: NewThreadSignal,
+        activation: NewThreadActivation,
+        max_signals: usize,
+    ) -> Result<ThreadSignalBatchClaim, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(ThreadSignalBatchClaim {
+            activation: self
+                .claim_thread_signal_batch(signal, activation, max_signals)
+                .await?,
+            execution_path: "store_general".to_string(),
+        })
+    }
     async fn list_signal_outbox(
         &self,
         status: SignalOutboxStatus,

@@ -10,8 +10,8 @@ use crate::memory::{
     NewThreadActivation, NewThreadSignal, ObjectiveCompletionIntent, ObjectiveStatus,
     ObjectiveWaitCondition, SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus,
     ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadGroupPolicy,
-    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus,
-    ThreadSupervisorKind,
+    ThreadGroupStatus, ThreadKind, ThreadLifecycle, ThreadSignalBatchClaim, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervisorKind,
 };
 use crate::scheduler::{
     stable_scheduler_dependency_id, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
@@ -171,15 +171,22 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
              p_root_turn_id TEXT,
              p_max_signals BIGINT,
              p_now TEXT
-           ) RETURNS TABLE(handled BOOLEAN, activation_snapshot JSONB)
+           ) RETURNS TABLE(
+             handled BOOLEAN,
+             activation_snapshot JSONB,
+             execution_path TEXT,
+             server_duration_micros BIGINT
+           )
            LANGUAGE plpgsql AS $function$
            DECLARE
+             started_at TIMESTAMPTZ := clock_timestamp();
              candidate threads%ROWTYPE;
              outbox_status TEXT;
              outbox_signal_id TEXT;
            BEGIN
              IF p_signal_kind <> 'chat/user_message' OR p_max_signals < 1 THEN
-               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'unsupported_signal'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
                RETURN;
              END IF;
 
@@ -202,14 +209,19 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                 OR candidate.status <> 'open'
                 OR candidate.control_state <> 'active'
                 OR candidate.initiating_principal_id IS DISTINCT FROM p_principal_id THEN
-               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'candidate_ineligible'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
                RETURN;
              END IF;
 
              -- Replays and an already queued compatible DialogueTurn need the
              -- complete idempotency/batching path.
-             IF EXISTS (SELECT 1 FROM thread_signals WHERE event_id = p_event_id)
-                OR EXISTS (
+             IF EXISTS (SELECT 1 FROM thread_signals WHERE event_id = p_event_id) THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'preexisting_signal'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
+               RETURN;
+             END IF;
+             IF EXISTS (
                   SELECT 1
                   FROM thread_activations queued
                   JOIN threads queued_thread
@@ -226,18 +238,27 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                       SELECT COUNT(*) FROM activation_signals links
                       WHERE links.activation_id = queued.id
                     ) < p_max_signals
-                )
-                OR EXISTS (
+                ) THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'queued_dialogue_batch'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
+               RETURN;
+             END IF;
+             IF EXISTS (
                   SELECT 1 FROM thread_activations
                   WHERE root_turn_id = p_root_turn_id
                     AND generation = p_thread_generation
                     AND status IN ('queued', 'running')
-                )
-                OR EXISTS (
+                ) THEN
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'active_root_activation'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
+               RETURN;
+             END IF;
+             IF EXISTS (
                   SELECT 1 FROM thread_signals
                   WHERE thread_id = p_thread_id AND status = 'pending'
                 ) THEN
-               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'pending_thread_signal'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
                RETURN;
              END IF;
 
@@ -245,7 +266,8 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
              FROM signal_outbox WHERE event_id = p_event_id FOR UPDATE;
              IF FOUND AND outbox_status = 'materialized'
                 AND outbox_signal_id IS DISTINCT FROM p_signal_id THEN
-               RETURN QUERY SELECT FALSE, NULL::JSONB;
+               RETURN QUERY SELECT FALSE, NULL::JSONB, 'outbox_conflict'::TEXT,
+                 (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT;
                RETURN;
              END IF;
 
@@ -290,7 +312,8 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
               WHERE id = p_signal_id AND status = 'pending';
 
              RETURN QUERY
-               SELECT TRUE, to_jsonb(claimed)
+               SELECT TRUE, to_jsonb(claimed), 'postgres_fresh_dialogue_fast'::TEXT,
+                      (EXTRACT(EPOCH FROM (clock_timestamp() - started_at)) * 1000000)::BIGINT
                  FROM thread_activations claimed
                 WHERE claimed.id = p_activation_id;
            END;
@@ -662,15 +685,28 @@ impl ActivationStore for PostgresStore {
 
     async fn claim_thread_signal_batch(
         &self,
+        signal: NewThreadSignal,
+        activation: NewThreadActivation,
+        max_signals: usize,
+    ) -> Result<Option<ThreadActivationRecord>, StoreError> {
+        Ok(self
+            .claim_thread_signal_batch_observed(signal, activation, max_signals)
+            .await?
+            .activation)
+    }
+
+    async fn claim_thread_signal_batch_observed(
+        &self,
         mut signal: NewThreadSignal,
         mut activation: NewThreadActivation,
         max_signals: usize,
-    ) -> Result<Option<ThreadActivationRecord>, StoreError> {
+    ) -> Result<ThreadSignalBatchClaim, StoreError> {
         if max_signals == 0 {
             return Err("Thread Signal batch limit must be greater than zero".into());
         }
         let max_signals = i64::try_from(max_signals)?;
         let now = now_text();
+        let mut execution_path = "postgres_general".to_string();
 
         if signal.kind == "chat/user_message"
             && signal.parent_activation_id.is_none()
@@ -678,7 +714,9 @@ impl ActivationStore for PostgresStore {
         {
             let fast = sqlx::query(
                 r#"SELECT result.handled AS fast_handled,
-                          result.activation_snapshot
+                          result.activation_snapshot,
+                          result.execution_path,
+                          result.server_duration_micros
                    FROM morphz_try_claim_fresh_dialogue_activation_v1(
                      $1, $2, $3, $4, $5, $6, $7, $8,
                      $9, $10, $11, $12, $13, $14, $15
@@ -701,6 +739,8 @@ impl ActivationStore for PostgresStore {
             .bind(&now)
             .fetch_one(&self.pool)
             .await?;
+            let server_duration_micros = fast.get::<i64, _>("server_duration_micros");
+            let fast_execution_path = fast.get::<String, _>("execution_path");
             if fast.get::<bool, _>("fast_handled") {
                 let snapshot = fast
                     .try_get::<Option<JsonValue>, _>("activation_snapshot")?
@@ -712,8 +752,16 @@ impl ActivationStore for PostgresStore {
                     event_code = "memory.postgres.dialogue_turn.fresh_claim_fast_path",
                     "Claimed one fresh DialogueTurn Signal batch in one PostgreSQL round trip"
                 );
-                return Ok(Some(created));
+                return Ok(ThreadSignalBatchClaim {
+                    activation: Some(created),
+                    execution_path: format!(
+                        "{fast_execution_path};server_duration_micros={server_duration_micros}"
+                    ),
+                });
             }
+            execution_path = format!(
+                "postgres_fallback:{fast_execution_path};server_duration_micros={server_duration_micros}"
+            );
         }
 
         let mut tx = self.pool.begin().await?;
@@ -870,7 +918,10 @@ impl ActivationStore for PostgresStore {
                 event_code = "memory.postgres.thread_signal.stale_generation_quarantined",
                 "Quarantined a Thread Signal from a stale generation"
             );
-            return Ok(None);
+            return Ok(ThreadSignalBatchClaim {
+                activation: None,
+                execution_path,
+            });
         }
         if stored_signal.thread_id != signal.thread_id {
             return Err(format!(
@@ -957,7 +1008,10 @@ impl ActivationStore for PostgresStore {
                 .await?;
             }
             tx.commit().await?;
-            return Ok(Some(existing));
+            return Ok(ThreadSignalBatchClaim {
+                activation: Some(existing),
+                execution_path,
+            });
         }
 
         if let Some(existing) = joined_dialogue_activation {
@@ -1007,7 +1061,10 @@ impl ActivationStore for PostgresStore {
                 event_code = "memory.postgres.dialogue_turn.input_batched",
                 "Added consecutive user input to the next DialogueTurn batch"
             );
-            return Ok(Some(existing));
+            return Ok(ThreadSignalBatchClaim {
+                activation: Some(existing),
+                execution_path,
+            });
         }
 
         // A Thread row lock is the cross-worker single-flight authority. Every
@@ -1093,11 +1150,17 @@ impl ActivationStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
-            return Ok(None);
+            return Ok(ThreadSignalBatchClaim {
+                activation: None,
+                execution_path,
+            });
         }
         if thread.control_state == crate::memory::ThreadControlState::Paused {
             tx.commit().await?;
-            return Ok(None);
+            return Ok(ThreadSignalBatchClaim {
+                activation: None,
+                execution_path,
+            });
         }
         sqlx::query(
             r#"UPDATE thread_signals signals
@@ -1145,7 +1208,10 @@ impl ActivationStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
-            return Ok(Some(existing));
+            return Ok(ThreadSignalBatchClaim {
+                activation: Some(existing),
+                execution_path,
+            });
         }
         if sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM thread_activations
@@ -1158,7 +1224,10 @@ impl ActivationStore for PostgresStore {
         .await?
         {
             tx.commit().await?;
-            return Ok(None);
+            return Ok(ThreadSignalBatchClaim {
+                activation: None,
+                execution_path,
+            });
         }
         let pending = sqlx::query(
             r#"SELECT * FROM thread_signals WHERE thread_id = $1 AND status = 'pending'
@@ -1170,7 +1239,10 @@ impl ActivationStore for PostgresStore {
         .await?;
         if pending.is_empty() {
             tx.commit().await?;
-            return Ok(None);
+            return Ok(ThreadSignalBatchClaim {
+                activation: None,
+                execution_path,
+            });
         }
         let primary = signal_from_row(&pending[0])?;
         // Keep replayed user input in event-sequence order, but let the newly arrived
@@ -1308,7 +1380,10 @@ impl ActivationStore for PostgresStore {
             "Advanced the cognitive-activity clock with the unique Signal batch"
             );
         }
-        Ok(Some(created))
+        Ok(ThreadSignalBatchClaim {
+            activation: Some(created),
+            execution_path,
+        })
     }
 
     async fn list_signal_outbox(
