@@ -421,8 +421,8 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         ));
         assert_eq!(
             statements.load(Ordering::Relaxed),
-            3,
-            "an interrupting PostgreSQL ingress must remain one lock plus one mutation command inside one transaction"
+            1,
+            "an uncontended interrupting PostgreSQL ingress must remain one atomic statement/round trip"
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
 
@@ -462,8 +462,8 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         ));
         assert_eq!(
             statements.load(Ordering::Relaxed),
-            3,
-            "a follow-up PostgreSQL ingress must remain one lock plus one mutation command inside one transaction"
+            1,
+            "an uncontended follow-up PostgreSQL ingress must remain one atomic statement/round trip"
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
 
@@ -483,8 +483,8 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         ));
         assert_eq!(
             statements.load(Ordering::Relaxed),
-            3,
-            "an ordered PostgreSQL idempotent replay must retain its bounded transaction budget"
+            1,
+            "an uncontended ordered PostgreSQL idempotent replay must remain one atomic statement/round trip"
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
 
@@ -522,8 +522,8 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         ));
         assert_eq!(
             statements.load(Ordering::Relaxed),
-            3,
-            "a pending interrupt batch must retain the ordered ingress statement budget"
+            1,
+            "an uncontended pending interrupt batch must remain one atomic statement/round trip"
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
     });

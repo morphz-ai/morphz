@@ -517,6 +517,13 @@ async fn claim_parallel_message_fast_path(
         .get("context_id")
         .and_then(JsonValue::as_str)
         .ok_or("用户消息缺少 context_id")?;
+    if event_session_id != session_id {
+        return Err(format!(
+            "消息路由与 Session Registry 不一致：请求 Session='{}'，Event Session='{}'",
+            session_id, event_session_id
+        )
+        .into());
+    }
     let event_principal_id = event
         .payload
         .get("principal_id")
@@ -749,12 +756,11 @@ struct OrderedMessageIngress<'a> {
     event: &'a Event,
     request_fingerprint: &'a str,
     dispatch_mode: MessageDispatchMode,
-    agent_id: &'a str,
 }
 
 async fn claim_ordered_message_fast_path(
     store: &PostgresStore,
-    tx: &mut sqlx::Transaction<'_, Postgres>,
+    connection: &mut sqlx::PgConnection,
     ingress: OrderedMessageIngress<'_>,
 ) -> Result<Option<MessageClaim>, StoreError> {
     let OrderedMessageIngress {
@@ -763,7 +769,6 @@ async fn claim_ordered_message_fast_path(
         event,
         request_fingerprint,
         dispatch_mode,
-        agent_id,
     } = ingress;
     debug_assert!(matches!(
         dispatch_mode,
@@ -774,6 +779,18 @@ async fn claim_ordered_message_fast_path(
         .get("context_id")
         .and_then(JsonValue::as_str)
         .ok_or("用户消息缺少 context_id")?;
+    let event_session_id = event
+        .payload
+        .get("session_id")
+        .and_then(JsonValue::as_str)
+        .ok_or("用户消息缺少 session_id")?;
+    if event_session_id != session_id {
+        return Err(format!(
+            "消息路由与 Session Registry 不一致：请求 Session='{}'，Event Session='{}'",
+            session_id, event_session_id
+        )
+        .into());
+    }
     let event_principal_id = event
         .payload
         .get("principal_id")
@@ -791,10 +808,29 @@ async fn claim_ordered_message_fast_path(
     let statement_started = std::time::Instant::now();
     let row = sqlx::query(
         r#"WITH
+           authority AS MATERIALIZED (
+             SELECT session.agent_id, session.context_id, session.status,
+                    session.attention_state,
+                    EXISTS(
+                      SELECT 1 FROM session_principal_bindings binding
+                      WHERE binding.session_id = session.id
+                        AND binding.principal_id = $7
+                        AND binding.unbound_at IS NULL
+                      FOR SHARE
+                    ) AS principal_is_bound
+             FROM sessions session
+             WHERE session.id = $1
+             FOR UPDATE SKIP LOCKED
+           ),
            request_insert AS (
              INSERT INTO session_message_requests
                (session_id, client_message_id, event_id, request_fingerprint, created_at)
-             VALUES ($1, $2, $3, $4, $5)
+             SELECT $1, $2, $3, $4, $5
+             FROM authority
+             WHERE authority.context_id = $6
+               AND authority.status <> 'archived'
+               AND authority.attention_state <> 'retired'
+               AND authority.principal_is_bound
              ON CONFLICT(session_id, client_message_id) DO NOTHING
              RETURNING event_id, request_fingerprint
            ),
@@ -1070,11 +1106,11 @@ async fn claim_ordered_message_fast_path(
                 executor_kind, target_id, lifetime, supervisor_kind, supervisor_id,
                 supervision_generation, completion_contract_json, delivery_status,
                 created_at, updated_at)
-             SELECT $14, 1, 1, $19, $6, $1, $7, $3,
+             SELECT $14, 1, 1, authority.agent_id, $6, $1, $7, $3,
                     'dialogue_turn', 'open', 'active', 'self', $15,
                     'durable', 'runtime', 'dialogue-router', 1, '{}'::jsonb,
                     'none', $5, $5
-             FROM event_insert
+             FROM event_insert CROSS JOIN authority
              WHERE EXISTS (SELECT 1 FROM interrupted_candidate)
                 OR (
                   NOT EXISTS (SELECT 1 FROM queued_candidate)
@@ -1187,7 +1223,11 @@ async fn claim_ordered_message_fast_path(
                AND (SELECT COUNT(*) FROM projection_insert) >= 0
              RETURNING session.id
            )
-           SELECT EXISTS(SELECT 1 FROM signal_insert) AS accepted,
+           SELECT (SELECT context_id FROM authority) AS authority_context_id,
+                  (SELECT status FROM authority) AS authority_status,
+                  (SELECT attention_state FROM authority) AS authority_attention_state,
+                  (SELECT principal_is_bound FROM authority) AS authority_principal_is_bound,
+                  EXISTS(SELECT 1 FROM signal_insert) AS accepted,
                   (SELECT payload FROM event_insert) AS accepted_payload,
                   COALESCE(
                     (SELECT event_id FROM request_insert),
@@ -1225,8 +1265,7 @@ async fn claim_ordered_message_fast_path(
     .bind(&signal_id)
     .bind(dispatch_mode.as_str())
     .bind(batch_limit)
-    .bind(agent_id)
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *connection)
     .await;
     store.observability.record_storage_statement(
         "postgres",
@@ -1235,6 +1274,38 @@ async fn claim_ordered_message_fast_path(
         if row.is_ok() { "ok" } else { "error" },
     );
     let row = row?;
+
+    let Some(authority_context_id) = row.get::<Option<String>, _>("authority_context_id") else {
+        // A concurrent ordered ingress owns the Session row, or the Session
+        // does not exist. The general transactional path waits for the lock
+        // and distinguishes those cases from a fresh READ COMMITTED snapshot.
+        return Ok(None);
+    };
+    if event_context_id != authority_context_id {
+        return Err(format!(
+            "消息路由与 Session Registry 不一致：请求 Session='{}'，Event Context='{}'，Registry Context='{}'",
+            session_id, event_context_id, authority_context_id
+        )
+        .into());
+    }
+    if row.get::<Option<String>, _>("authority_status").as_deref() == Some("archived") {
+        return Ok(Some(MessageClaim::InactiveSession));
+    }
+    if row
+        .get::<Option<bool>, _>("authority_principal_is_bound")
+        .is_some_and(|bound| !bound)
+    {
+        return Ok(Some(MessageClaim::ForbiddenPrincipal {
+            principal_id: event_principal_id.to_string(),
+        }));
+    }
+    if row
+        .get::<Option<String>, _>("authority_attention_state")
+        .as_deref()
+        == Some("retired")
+    {
+        return Ok(None);
+    }
 
     if row.get::<bool, _>("accepted") {
         let cancelled_thread_count = row.get::<i64, _>("cancelled_thread_count");
@@ -1403,6 +1474,30 @@ impl DeliveryIngressStore for PostgresStore {
             }
         }
         let mut connection = self.acquire_observed("claim_message").await?;
+        if !has_references
+            && event.event_type == TYPE_USER_MESSAGE
+            && event.topic == "chat/user_message"
+            && matches!(
+                dispatch_mode,
+                MessageDispatchMode::Interrupt | MessageDispatchMode::FollowUp
+            )
+        {
+            if let Some(claim) = claim_ordered_message_fast_path(
+                self,
+                &mut connection,
+                OrderedMessageIngress {
+                    session_id,
+                    client_message_id,
+                    event,
+                    request_fingerprint: &request_fingerprint,
+                    dispatch_mode,
+                },
+            )
+            .await?
+            {
+                return Ok(claim);
+            }
+        }
         let begin_started = std::time::Instant::now();
         let tx = connection.begin().await;
         self.observability.record_storage_statement(
@@ -1513,17 +1608,15 @@ impl DeliveryIngressStore for PostgresStore {
                 MessageDispatchMode::Interrupt | MessageDispatchMode::FollowUp
             )
         {
-            let agent_id = session.get::<String, _>("agent_id");
             if let Some(claim) = claim_ordered_message_fast_path(
                 self,
-                &mut tx,
+                &mut *tx,
                 OrderedMessageIngress {
                     session_id,
                     client_message_id,
                     event,
                     request_fingerprint: &request_fingerprint,
                     dispatch_mode,
-                    agent_id: &agent_id,
                 },
             )
             .await?
