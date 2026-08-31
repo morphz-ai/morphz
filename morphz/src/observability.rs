@@ -59,6 +59,7 @@ pub struct TurnTraceRecord {
 struct LiveTurnTrace {
     record: TurnTraceRecord,
     started: Instant,
+    checkpoints: HashMap<&'static str, Instant>,
 }
 
 #[derive(Debug)]
@@ -192,6 +193,7 @@ impl Observability {
                     stages: Vec::new(),
                 },
                 started: Instant::now(),
+                checkpoints: HashMap::new(),
             },
         );
         store.trim();
@@ -204,6 +206,60 @@ impl Observability {
             .turns
             .get(root_turn_id)
             .map(|turn| turn.started.elapsed())
+    }
+
+    /// Remember a process-local boundary for a later adjacent-stage
+    /// measurement. Only the resulting interval is exported.
+    pub fn mark_turn_boundary(&self, root_turn_id: &str, boundary: &'static str) {
+        let mut store = self
+            .turns
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(turn) = store.turns.get_mut(root_turn_id) {
+            turn.checkpoints.insert(boundary, Instant::now());
+            turn.record.updated_at = Utc::now();
+        }
+    }
+
+    /// Record the interval from a previously marked boundary. The boundary is
+    /// consumed so a retry cannot accidentally measure the same wait twice.
+    /// Missing boundaries (for example after process recovery) are skipped
+    /// rather than exported as a fabricated zero-duration stage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_turn_stage_since_boundary(
+        &self,
+        root_turn_id: &str,
+        context_id: Option<&str>,
+        session_id: Option<&str>,
+        boundary: &'static str,
+        stage: &'static str,
+        outcome: &'static str,
+        detail: Option<&str>,
+    ) -> bool {
+        let duration = {
+            let mut store = self
+                .turns
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            store
+                .turns
+                .get_mut(root_turn_id)
+                .and_then(|turn| turn.checkpoints.remove(boundary))
+                .map(|started| started.elapsed())
+        };
+        let Some(duration) = duration else {
+            return false;
+        };
+        self.record_turn_stage(
+            root_turn_id,
+            context_id,
+            session_id,
+            stage,
+            duration,
+            outcome,
+            detail,
+        );
+        true
     }
 
     pub fn mark_turn_status(&self, root_turn_id: &str, status: TurnTraceStatus) {
@@ -357,6 +413,70 @@ impl Observability {
             BTreeMap::from([
                 ("backend", backend.to_string()),
                 ("command", command.to_string()),
+                ("outcome", outcome.to_string()),
+            ]),
+            duration,
+        );
+    }
+
+    /// Record only pool admission. Database execution has its own histogram so
+    /// pool pressure cannot be mistaken for network/server latency.
+    pub fn record_storage_pool_acquire(
+        &self,
+        backend: &'static str,
+        operation: &'static str,
+        duration: Duration,
+        outcome: &'static str,
+    ) {
+        self.observe_histogram(
+            "morphz_storage_pool_acquire_duration_seconds",
+            "Wall-clock wait to acquire a database connection from the configured pool.",
+            BTreeMap::from([
+                ("backend", backend.to_string()),
+                ("operation", operation.to_string()),
+                ("outcome", outcome.to_string()),
+            ]),
+            duration,
+        );
+    }
+
+    /// Record establishment of a physical database connection. This is a
+    /// startup/reconnect concern and is intentionally distinct from borrowing
+    /// an already-open connection from the pool.
+    pub fn record_storage_connection(
+        &self,
+        backend: &'static str,
+        operation: &'static str,
+        duration: Duration,
+        outcome: &'static str,
+    ) {
+        self.observe_histogram(
+            "morphz_storage_connection_duration_seconds",
+            "Wall-clock duration to establish and validate a physical database connection.",
+            BTreeMap::from([
+                ("backend", backend.to_string()),
+                ("operation", operation.to_string()),
+                ("outcome", outcome.to_string()),
+            ]),
+            duration,
+        );
+    }
+
+    /// Record one physical statement after pool acquisition. This includes
+    /// network round-trip, server execution and result decoding.
+    pub fn record_storage_statement(
+        &self,
+        backend: &'static str,
+        operation: &'static str,
+        duration: Duration,
+        outcome: &'static str,
+    ) {
+        self.observe_histogram(
+            "morphz_storage_statement_duration_seconds",
+            "Wall-clock database statement duration after pool acquisition.",
+            BTreeMap::from([
+                ("backend", backend.to_string()),
+                ("operation", operation.to_string()),
                 ("outcome", outcome.to_string()),
             ]),
             duration,
@@ -658,6 +778,67 @@ mod tests {
         assert!(output.contains(
             "morphz_storage_command_duration_seconds_count{backend=\"postgres\",command=\"claim_message\",outcome=\"ok\"} 1"
         ));
+    }
+
+    #[test]
+    fn adjacent_turn_stage_consumes_exact_boundary_once() {
+        let observability = Observability::with_turn_capacity(2);
+        observability.begin_turn("turn", Some("ctx"), Some("session"));
+        observability.mark_turn_boundary("turn", "claim.completed");
+        std::thread::sleep(Duration::from_millis(1));
+
+        assert!(observability.record_turn_stage_since_boundary(
+            "turn",
+            Some("ctx"),
+            Some("session"),
+            "claim.completed",
+            "scheduler.await_activation_admission",
+            "ok",
+            None,
+        ));
+        assert!(!observability.record_turn_stage_since_boundary(
+            "turn",
+            Some("ctx"),
+            Some("session"),
+            "claim.completed",
+            "scheduler.await_activation_admission",
+            "ok",
+            None,
+        ));
+        let turn = observability.turn("turn").expect("turn trace");
+        assert_eq!(turn.stages.len(), 1);
+        assert_eq!(turn.stages[0].stage, "scheduler.await_activation_admission");
+        assert!(turn.stages[0].duration_micros > 0);
+    }
+
+    #[test]
+    fn database_connection_pool_and_statement_metrics_are_distinct() {
+        let observability = Observability::with_turn_capacity(2);
+        observability.record_storage_connection(
+            "postgres",
+            "pool_startup",
+            Duration::from_millis(40),
+            "ok",
+        );
+        observability.record_storage_pool_acquire(
+            "postgres",
+            "claim_message",
+            Duration::from_millis(2),
+            "ok",
+        );
+        observability.record_storage_statement(
+            "postgres",
+            "claim_message",
+            Duration::from_millis(12),
+            "ok",
+        );
+
+        let output = observability.prometheus_text();
+        assert!(output.contains("morphz_storage_connection_duration_seconds_count"));
+        assert!(output.contains("operation=\"pool_startup\""));
+        assert!(output.contains("morphz_storage_pool_acquire_duration_seconds_count"));
+        assert!(output.contains("morphz_storage_statement_duration_seconds_count"));
+        assert!(output.contains("operation=\"claim_message\""));
     }
 
     #[test]

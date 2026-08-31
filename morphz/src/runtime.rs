@@ -1050,6 +1050,7 @@ impl MorphzRuntimeBuilder {
         let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(
             self.config.orchestrator.event_bus.max_in_flight,
         ));
+        let observability = Arc::new(crate::observability::Observability::default());
         let (store, sqlite_database_path, storage_label): (
             Arc<dyn RuntimeStore>,
             Option<String>,
@@ -1080,9 +1081,10 @@ impl MorphzRuntimeBuilder {
                             "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
                         )
                     })?;
-                    let store = PostgresStore::new(
+                    let store = PostgresStore::new_with_observability(
                         &database_url,
                         self.config.storage.postgres.max_connections,
+                        Arc::clone(&observability),
                     )
                     .await?;
                     (Arc::new(store), None, format!("postgres:env:{url_env}"))
@@ -1184,7 +1186,6 @@ impl MorphzRuntimeBuilder {
             Arc::new(RwLock::new(resolve_model_context_capacities(&self.config)));
         let provider_catalog_config = self.config.clone();
         let model_prompt_token_limit_overrides = RwLock::new(HashMap::new());
-        let observability = Arc::new(crate::observability::Observability::default());
         let context_engine = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
@@ -9674,6 +9675,12 @@ impl SessionHandle {
             claim_outcome,
             claim.as_ref().err().map(|_| "message_claim_failed"),
         );
+        if claim.is_ok() {
+            self.runtime
+                .inner
+                .observability
+                .mark_turn_boundary(&event_id, "ingress.claim_message.completed");
+        }
         let claim = match claim {
             Ok(claim) => claim,
             Err(error) => {

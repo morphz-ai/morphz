@@ -8323,6 +8323,15 @@ impl Orchestrator {
             );
             return Ok(None);
         }
+        self.observability.record_turn_stage_since_boundary(
+            &activation.root_turn_id,
+            Some(&activation.context_id),
+            Some(&activation.session_id),
+            "ingress.claim_message.completed",
+            "scheduler.await_activation_admission",
+            "ok",
+            Some("from=ingress.claim_message.completed,to=scheduler.activation_admission"),
+        );
         let admission_started = Instant::now();
         let admission_permit = match self
             .activation_admission
@@ -8387,6 +8396,8 @@ impl Orchestrator {
                     "scheduler.to_activation_running",
                     "ok",
                 );
+                self.observability
+                    .mark_turn_boundary(&claimed.root_turn_id, "scheduler.activation_running");
                 self.arm_activation_lease(&claimed).await?;
                 Ok(Some(AdmittedThreadActivation {
                     record: claimed,
@@ -9124,6 +9135,15 @@ impl Orchestrator {
         if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
             self.observability
                 .begin_turn(root_turn_id, Some(&stream_context_id), Some(session_id));
+            self.observability.record_turn_stage_since_boundary(
+                root_turn_id,
+                Some(&stream_context_id),
+                Some(session_id),
+                "context.build.completed",
+                "provider.await_request_pipeline",
+                "ok",
+                Some("from=context.build.completed,to=provider.request_pipeline"),
+            );
         }
         let model_input_usage = crate::model_input::inspect_model_input_messages(&messages)
             .map_err(ModelCompletionError::internal)?;

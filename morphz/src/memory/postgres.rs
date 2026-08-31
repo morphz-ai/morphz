@@ -29,12 +29,14 @@ use crate::memory::{
     TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
     WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
 };
+use crate::observability::Observability;
 use crate::scheduler::{
     objective_wait_dependency_key, stable_scheduler_dependency_id, SchedulerDependencyKind,
     SchedulerDependencyOwnerKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
+use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgListener, PgPoolOptions, PgRow};
 use sqlx::{ConnectOptions, Connection, PgPool, Postgres, QueryBuilder, Row};
 use std::future::Future;
@@ -67,12 +69,26 @@ mod thread_group;
 
 pub struct PostgresStore {
     pool: PgPool,
+    observability: Arc<Observability>,
     edge_command_notify: Arc<Notify>,
     thread_signal_notify: Arc<Notify>,
 }
 
 impl PostgresStore {
     pub async fn new(database_url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        Self::new_with_observability(
+            database_url,
+            max_connections,
+            Arc::new(Observability::default()),
+        )
+        .await
+    }
+
+    pub async fn new_with_observability(
+        database_url: &str,
+        max_connections: u32,
+        observability: Arc<Observability>,
+    ) -> Result<Self, StoreError> {
         let options = database_url
             .parse::<PgConnectOptions>()?
             // As with SQLite, query events are dormant unless an explicit
@@ -80,11 +96,24 @@ impl PostgresStore {
             // diagnostics can therefore count physical round trips without
             // changing Store semantics.
             .log_statements(log::LevelFilter::Trace);
-        let mut migration_lock = PgConnection::connect_with(&options).await?;
+        let migration_connect_started = std::time::Instant::now();
+        let migration_lock = PgConnection::connect_with(&options).await;
+        observability.record_storage_connection(
+            "postgres",
+            "migration_lock",
+            migration_connect_started.elapsed(),
+            if migration_lock.is_ok() {
+                "ok"
+            } else {
+                "error"
+            },
+        );
+        let mut migration_lock = migration_lock?;
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(SCHEMA_MIGRATION_LOCK)
             .execute(&mut migration_lock)
             .await?;
+        let pool_connect_started = std::time::Instant::now();
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(1))
             // Keep pool admission observable without producing normal service
@@ -94,9 +123,17 @@ impl PostgresStore {
             .acquire_slow_level(log::LevelFilter::Warn)
             .acquire_slow_threshold(std::time::Duration::from_millis(100))
             .connect_with(options)
-            .await?;
+            .await;
+        observability.record_storage_connection(
+            "postgres",
+            "pool_startup",
+            pool_connect_started.elapsed(),
+            if pool.is_ok() { "ok" } else { "error" },
+        );
+        let pool = pool?;
         let store = Self {
             pool,
+            observability,
             edge_command_notify: Arc::new(Notify::new()),
             thread_signal_notify: Arc::new(Notify::new()),
         };
@@ -357,6 +394,21 @@ impl PostgresStore {
         unlock?;
         store.start_database_change_listener(database_url).await?;
         Ok(store)
+    }
+
+    pub(super) async fn acquire_observed(
+        &self,
+        operation: &'static str,
+    ) -> Result<PoolConnection<Postgres>, StoreError> {
+        let started = std::time::Instant::now();
+        let connection = self.pool.acquire().await;
+        self.observability.record_storage_pool_acquire(
+            "postgres",
+            operation,
+            started.elapsed(),
+            if connection.is_ok() { "ok" } else { "error" },
+        );
+        connection.map_err(Into::into)
     }
 
     async fn start_database_change_listener(&self, database_url: &str) -> Result<(), StoreError> {

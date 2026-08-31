@@ -9,7 +9,7 @@ use crate::memory::{
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use serde_json::{json, Value as JsonValue};
-use sqlx::{PgPool, Postgres, Row};
+use sqlx::{Acquire, PgPool, Postgres, Row};
 use std::collections::HashMap;
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
@@ -499,7 +499,7 @@ async fn interrupt_dialogue_turn_in_tx(
 /// COMMITTED race where another statement's conflicting request was not in
 /// this statement's initial snapshot.
 async fn claim_parallel_message_fast_path(
-    pool: &PgPool,
+    store: &PostgresStore,
     session_id: &str,
     client_message_id: &str,
     event: &Event,
@@ -528,6 +528,8 @@ async fn claim_parallel_message_fast_path(
     let encounter_id = format!("principal_encounter_{}", event.id);
     let thread_id = stable_thread_id(&event.id);
     let signal_id = stable_thread_signal_id(&event.id);
+    let mut connection = store.acquire_observed("claim_message").await?;
+    let statement_started = std::time::Instant::now();
     let row = sqlx::query(
         r#"WITH
            authority AS MATERIALIZED (
@@ -672,8 +674,15 @@ async fn claim_parallel_message_fast_path(
     .bind(requested_target_id)
     .bind(&signal_id)
     .bind(event_session_id)
-    .fetch_optional(pool)
-    .await?;
+    .fetch_optional(&mut *connection)
+    .await;
+    store.observability.record_storage_statement(
+        "postgres",
+        "claim_message",
+        statement_started.elapsed(),
+        if row.is_ok() { "ok" } else { "error" },
+    );
+    let row = row?;
 
     let Some(row) = row else {
         return Err(format!("Session '{session_id}' 不存在").into());
@@ -816,7 +825,7 @@ impl DeliveryIngressStore for PostgresStore {
             && event.topic == "chat/user_message"
         {
             if let Some(claim) = claim_parallel_message_fast_path(
-                &self.pool,
+                self,
                 session_id,
                 client_message_id,
                 event,
@@ -827,7 +836,16 @@ impl DeliveryIngressStore for PostgresStore {
                 return Ok(claim);
             }
         }
-        let mut tx = self.pool.begin().await?;
+        let mut connection = self.acquire_observed("claim_message").await?;
+        let begin_started = std::time::Instant::now();
+        let tx = connection.begin().await;
+        self.observability.record_storage_statement(
+            "postgres",
+            "claim_message_begin",
+            begin_started.elapsed(),
+            if tx.is_ok() { "ok" } else { "error" },
+        );
+        let mut tx = tx?;
         let mut locked_references = HashMap::new();
         if !referenced_session_ids.is_empty() {
             // Lock the source and every referenced Session in one stable order.

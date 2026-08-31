@@ -3147,6 +3147,17 @@ impl ContextEngine {
         evaluation_model_alias: Option<&str>,
         include_encoding: bool,
     ) -> Result<ContextView, DynError> {
+        if let Some(activation) = activation_record {
+            self.observability.record_turn_stage_since_boundary(
+                &activation.root_turn_id,
+                Some(context_id),
+                Some(active_session_id),
+                "scheduler.activation_running",
+                "scheduler.await_context_build",
+                "ok",
+                Some("from=scheduler.activation_running,to=context.build"),
+            );
+        }
         let started = Instant::now();
         // Context construction intentionally carries several independently
         // versioned snapshots. Keep that large future behind this API boundary
@@ -3175,6 +3186,10 @@ impl ContextEngine {
                 outcome,
                 result.as_ref().err().map(|_| "context_build_failed"),
             );
+            if result.is_ok() {
+                self.observability
+                    .mark_turn_boundary(&activation.root_turn_id, "context.build.completed");
+            }
         }
         result
     }
