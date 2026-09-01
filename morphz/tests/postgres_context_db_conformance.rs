@@ -710,6 +710,11 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         store.get_mind_projection(context_id).await?.unwrap().state,
         serde_json::to_value(&replaced)?
     );
+    let heads = store
+        .list_mind_projection_heads(&[context_id.to_string()])
+        .await?;
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].revision, replaced.version);
 
     let directory = store
         .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
