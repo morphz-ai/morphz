@@ -1,5 +1,5 @@
 use crate::event::TYPE_USER_MESSAGE;
-use crate::llm::{Client, Message};
+use crate::llm::{Client, Message, ModelRequestContext};
 use crate::memory::{ApprovalStatus, ApprovalStore, EventStore, QueryFilter};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -650,8 +650,21 @@ impl ApprovalProvider for AiAutoReviewProvider {
             .read()
             .map_err(|_| "Auto-review client lock poisoned")?
             .clone();
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: request.context_id.clone(),
+                session_id: request.session_id.clone(),
+                attempt_id: format!("permission-review:{}", request.approval_id),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await?;
+        let (stream, mut stream_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let stream_drain =
+            tokio::spawn(async move { while stream_receiver.recv().await.is_some() {} });
         let response = client
-            .create_completion(
+            .create_completion_bound_stream(
+                &binding,
                 vec![
                     Message {
                         role: "system".to_string(),
@@ -669,8 +682,12 @@ impl ApprovalProvider for AiAutoReviewProvider {
                     },
                 ],
                 Vec::new(),
+                None,
+                stream,
             )
-            .await?;
+            .await;
+        stream_drain.abort();
+        let response = response?;
         if !response.tool_calls.is_empty() {
             return Err("automatic approval Reviewer must not produce tool calls".into());
         }
@@ -785,6 +802,11 @@ mod tests {
 
     struct FixedReviewClient(&'static str);
 
+    #[derive(Default)]
+    struct ContextBoundReviewClient {
+        bound_request: Mutex<Option<ModelRequestContext>>,
+    }
+
     struct MutableApprovalStore {
         record: Mutex<ApprovalRecord>,
     }
@@ -873,6 +895,57 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl Client for ContextBoundReviewClient {
+        async fn bind_model_attempt(
+            &self,
+            request: &ModelRequestContext,
+        ) -> Result<crate::llm::ModelAttemptBinding, crate::llm::ModelAttemptBindingError> {
+            *self.bound_request.lock().unwrap() = Some(request.clone());
+            Ok(crate::llm::ModelAttemptBinding {
+                requested_alias: "review".to_string(),
+                route_id: "review".to_string(),
+                route_revision: "review-v1".to_string(),
+                provider_instance_id: "review-provider".to_string(),
+                auth_account_id: "review-account".to_string(),
+                physical_model: "review-model".to_string(),
+                protocol: "test".to_string(),
+                provider_adapter: "test".to_string(),
+                provider_adapter_version: "1".to_string(),
+                endpoint: "test://review".to_string(),
+                capabilities: Vec::new(),
+                model_input_limits: crate::llm::ModelInputLimits::default(),
+            })
+        }
+
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+            Err("automatic review must not use an unbound model request".into())
+        }
+
+        async fn create_completion_bound_stream(
+            &self,
+            binding: &crate::llm::ModelAttemptBinding,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+            _measurement: Option<crate::llm::PromptTokenCount>,
+            stream: crate::llm::ModelStreamSender,
+        ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+            assert_eq!(binding.auth_account_id, "review-account");
+            stream
+                .send(crate::llm::ModelStreamEvent::Started)
+                .map_err(|_| "automatic-review stream receiver was dropped")?;
+            Ok(Response {
+                content: r#"{"decision":"allow_once","rationale":"context bound","risk_tags":[]}"#
+                    .to_string(),
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
     fn user_message(id: &str, text: &str) -> Event {
         Event::new(
             id.to_string(),
@@ -943,6 +1016,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fenced.decision, "deny");
+    }
+
+    #[tokio::test]
+    async fn auto_reviewer_binds_the_model_to_the_approval_causal_context() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let client = Arc::new(ContextBoundReviewClient::default());
+        let reviewer = AiAutoReviewProvider::new(client.clone(), store as Arc<dyn EventStore>);
+        let request = human_request("context-bound-review");
+
+        let decision = reviewer.review(&request).await.unwrap();
+
+        assert!(matches!(decision, ApprovalDecision::AllowOnce { .. }));
+        let bound = client.bound_request.lock().unwrap().clone().unwrap();
+        assert_eq!(bound.context_id, request.context_id);
+        assert_eq!(bound.session_id, request.session_id);
+        assert_eq!(bound.attempt_id, "permission-review:context-bound-review");
+        assert_ne!(bound.context_id, "operator");
     }
 
     #[tokio::test]

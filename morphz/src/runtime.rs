@@ -11324,10 +11324,6 @@ mod tests {
             if !active_source {
                 return Ok(text_response("non-dialogue-maintenance"));
             }
-            if prompt.contains("target-result-from-b") {
-                self.source_reply_calls.fetch_add(1, Ordering::SeqCst);
-                return Ok(text_response("source-received-result"));
-            }
             if has_session_signal_result {
                 self.source_continuation_calls
                     .fetch_add(1, Ordering::SeqCst);
@@ -11342,6 +11338,15 @@ mod tests {
                 self.observed_concurrent_target
                     .store(true, Ordering::SeqCst);
                 return Ok(text_response("source-finished"));
+            }
+            // The target reply may become visible before the source's tool
+            // continuation is evaluated under a heavily loaded test suite.
+            // Prefer the exact tool-result continuation when both facts are
+            // present; the independently routed target Signal still receives
+            // its own Evaluation and proves the symmetric return path below.
+            if prompt.contains("target-result-from-b") {
+                self.source_reply_calls.fetch_add(1, Ordering::SeqCst);
+                return Ok(text_response("source-received-result"));
             }
             self.source_initial_calls.fetch_add(1, Ordering::SeqCst);
             assert!(prompt.contains("start-session-coordination"));
@@ -16741,6 +16746,133 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(jobs.len(), 1, "one tool call must map to one physical Job");
+        assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn session_request_approval_overrides_full_access_during_durable_preflight() {
+        let database = NamedTempFile::new().unwrap();
+        let fixture = NamedTempFile::new().unwrap();
+        std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
+        let observed_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(ApprovalReadClient {
+            calls: AtomicU64::new(0),
+            path: fixture.path().to_string_lossy().into_owned(),
+            expected_rejected: false,
+            observed_result: Arc::clone(&observed_result),
+            observed_tool_schemas: Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::FullAccess;
+        let runtime = MorphzRuntime::builder(config, Arc::clone(&client) as Arc<dyn Client>)
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-full-access-to-human-approval".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Session permission switch durable approval".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let updated = runtime
+            .update_session(
+                &session.id,
+                SessionUpdate {
+                    permission_mode: Some(Some(PermissionMode::RequestApproval)),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated.permission_mode,
+            Some(PermissionMode::RequestApproval)
+        );
+
+        let mut requests = runtime.subscribe("runtime/approval_requested", 4);
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "read the fixture after the Session switched to human approval",
+                "User-Test",
+                Some("client-session-human-approval".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(3), requests.recv())
+            .await
+            .expect("the Session override must create a visible durable approval")
+            .unwrap();
+        let approval_id = request.payload["approval_id"].as_str().unwrap().to_string();
+        assert_eq!(request.payload["session_id"], json!(session.id));
+        let approval = runtime
+            .inner
+            .store
+            .get_approval(&approval_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(approval.status, crate::memory::ApprovalStatus::PendingHuman);
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id.clone()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, approval.job_id);
+        assert_eq!(
+            jobs[0].status,
+            crate::memory::ExecutionJobStatus::WaitingApproval
+        );
+        assert!(jobs[0].started_at.is_none());
+        assert!(!observed_result.load(Ordering::SeqCst));
+
+        runtime
+            .decide_approval(
+                &approval_id,
+                ApprovalDecision::AllowOnce {
+                    rationale: "human approved the switched Session".to_string(),
+                    risk_tags: vec!["session-policy-switch".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "approval-work-complete");
+        assert!(observed_result.load(Ordering::SeqCst));
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id.clone()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
     }

@@ -17679,20 +17679,31 @@ impl Orchestrator {
                 activation_route.as_ref(),
                 durable_execution_identity.as_ref(),
             ) {
-                let prepared = self
-                    .prepare_physical_execution(
-                        tool,
-                        route,
-                        agent_id,
-                        thread_id,
-                        &context_id,
-                        session_id,
-                        attempt_id,
-                        &call,
-                        &output_id,
-                        timeout_secs,
-                        action_group_id.as_deref(),
-                        options.wake_on_output && action_group_id.is_none(),
+                // Physical preflight and physical execution must observe the
+                // same causal Session permission preset. The execution task
+                // below rebuilds this scope after spawning, but preflight runs
+                // before that task exists. Without this scope a Runtime started
+                // in Full Access could skip the durable approval record after
+                // the Session switched to Request Approval, then block later in
+                // the process-local reviewer with nothing for the Dashboard to
+                // display.
+                let prepared = crate::tool::CURRENT_SESSION_ID
+                    .scope(
+                        session_id.to_string(),
+                        self.prepare_physical_execution(
+                            tool,
+                            route,
+                            agent_id,
+                            thread_id,
+                            &context_id,
+                            session_id,
+                            attempt_id,
+                            &call,
+                            &output_id,
+                            timeout_secs,
+                            action_group_id.as_deref(),
+                            options.wake_on_output && action_group_id.is_none(),
+                        ),
                     )
                     .await;
                 match prepared? {
@@ -19891,10 +19902,15 @@ impl PlanCallPlanner for OrchestratorPlanCallPlanner {
         effect: &crate::sexpr_eval::PlanEffect,
         effect_tool_call_id: &str,
     ) -> PlanExecutionResult<NewExecutionJob> {
-        self.orchestrator
+        let orchestrator = self
+            .orchestrator
             .upgrade()
-            .ok_or("Runtime is shut down and cannot plan a Yao call")?
-            .plan_execution_job(plan, effect, effect_tool_call_id)
+            .ok_or("Runtime is shut down and cannot plan a Yao call")?;
+        crate::tool::CURRENT_SESSION_ID
+            .scope(
+                plan.session_id.clone(),
+                orchestrator.plan_execution_job(plan, effect, effect_tool_call_id),
+            )
             .await
     }
 }

@@ -448,43 +448,43 @@ impl RoutedClient {
     }
 
     pub fn primary_binding(&self) -> Result<ModelAttemptBinding, String> {
-        let request = ModelRequestContext {
-            context_id: "operator".to_string(),
-            session_id: "operator".to_string(),
-            attempt_id: "startup".to_string(),
-            objective_id: None,
-            required_capabilities: Vec::new(),
-        };
+        let request = Self::unscoped_control_request("startup");
         let alias = self.alias()?;
         let catalog = self.catalog()?;
         let (route_id, route) = catalog.resolve_route(&alias)?;
+        let selection_route = Self::without_affinity(route);
         let (candidate, account_id) = self
-            .select_candidate_and_account_local(&catalog, route_id, route, &request, None)
+            .select_candidate_and_account_local(
+                &catalog,
+                route_id,
+                &selection_route,
+                &request,
+                None,
+            )
             .map_err(|error| error.to_string())?;
-        let provider = catalog
-            .provider_instances
-            .get(&candidate.provider)
-            .expect("validated route provider");
-        let model_input_limits = provider
-            .models
-            .get(&candidate.model)
-            .map(crate::config::ProviderModelConfig::model_input_limits)
-            .unwrap_or_default();
-        let protocol = provider.protocol.effective_for_model(&candidate.model);
-        Ok(ModelAttemptBinding {
-            requested_alias: alias,
-            route_id: route_id.to_string(),
-            route_revision: Self::route_revision(route_id, route),
-            provider_instance_id: candidate.provider,
-            auth_account_id: account_id,
-            physical_model: candidate.model,
-            protocol: protocol.as_str().to_string(),
-            provider_adapter: provider.adapter.clone(),
-            provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
-            endpoint: provider.base_url.clone(),
-            capabilities: candidate.capabilities,
-            model_input_limits,
-        })
+        Ok(self.binding_from_selection(&catalog, &alias, route_id, route, candidate, account_id))
+    }
+
+    /// Build a request shape for Runtime control-plane work that has no
+    /// owning Context or Session.  Empty identifiers are intentional here:
+    /// they cannot be confused with a durable application identity.
+    fn unscoped_control_request(attempt_id: &str) -> ModelRequestContext {
+        ModelRequestContext {
+            context_id: String::new(),
+            session_id: String::new(),
+            attempt_id: attempt_id.to_string(),
+            objective_id: None,
+            required_capabilities: Vec::new(),
+        }
+    }
+
+    /// Control-plane selection must not create a sticky account affinity for
+    /// an identity that does not exist.  The original route remains the
+    /// immutable revision recorded in the resulting binding.
+    fn without_affinity(route: &ModelRouteConfig) -> ModelRouteConfig {
+        let mut selection_route = route.clone();
+        selection_route.affinity = ModelRouteAffinity::None;
+        selection_route
     }
 
     fn binding_from_selection(
@@ -1636,6 +1636,28 @@ impl RoutedClient {
             model_input_limits,
         })
     }
+
+    /// Resolve an operator control-plane probe without inventing an Agent,
+    /// Context, or Session. Application evaluations must instead use
+    /// `bind_model_attempt_for_alias`, which enforces durable Agent authority.
+    async fn bind_control_plane_attempt_for_alias(
+        &self,
+        alias: String,
+        attempt_id: &str,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        let catalog = self
+            .catalog()
+            .map_err(ModelAttemptBindingError::configuration)?;
+        let (route_id, route) = catalog
+            .resolve_route(&alias)
+            .map_err(ModelAttemptBindingError::configuration)?;
+        let selection_route = Self::without_affinity(route);
+        let request = Self::unscoped_control_request(attempt_id);
+        let (candidate, account_id) = self
+            .select_candidate_and_account(&catalog, route_id, &selection_route, &request, None)
+            .await?;
+        Ok(self.binding_from_selection(&catalog, &alias, route_id, route, candidate, account_id))
+    }
 }
 
 struct AccountLease {
@@ -2128,14 +2150,15 @@ impl Client for RoutedClient {
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, ProviderError> {
+        if self.agent_binding_store().is_some() {
+            return Err(
+                "unbound RoutedClient completion is unavailable after Runtime Agent authority is attached; bind the request to its durable Context and Session first"
+                    .into(),
+            );
+        }
+        let alias = self.alias()?;
         let binding = self
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: "operator".to_string(),
-                session_id: "operator".to_string(),
-                attempt_id: "direct-completion".to_string(),
-                objective_id: None,
-                required_capabilities: Vec::new(),
-            })
+            .bind_control_plane_attempt_for_alias(alias, "direct-completion")
             .await?;
         let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
         let result = self
@@ -2192,42 +2215,22 @@ impl Client for RoutedClient {
     }
 
     async fn probe_health(&self) -> Result<(), ProviderError> {
+        let alias = self.alias()?;
         let binding = self
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: "operator".to_string(),
-                session_id: "operator".to_string(),
-                attempt_id: "health-probe".to_string(),
-                objective_id: None,
-                required_capabilities: Vec::new(),
-            })
+            .bind_control_plane_attempt_for_alias(alias, "health-probe")
             .await?;
         let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
         self.protocol_client(&binding).await?.probe_health().await
     }
 
     async fn probe_health_bound(&self, binding: &ModelAttemptBinding) -> Result<(), ProviderError> {
-        // Keep the logical route frozen while allowing that route's normal
-        // account-selection policy to choose a now-healthy account. This
-        // prevents a UI model switch from redirecting the probe without
-        // pinning recovery forever to the exact account that just failed.
-        let probe_binding = self
-            .bind_model_attempt_for_alias(
-                binding.requested_alias.clone(),
-                &ModelRequestContext {
-                    context_id: "operator".to_string(),
-                    session_id: "operator".to_string(),
-                    attempt_id: "health-probe-bound".to_string(),
-                    objective_id: None,
-                    required_capabilities: Vec::new(),
-                },
-            )
-            .await?;
-        let _lease =
-            AccountLease::acquire(&probe_binding.auth_account_id, Arc::clone(&self.state))?;
-        self.protocol_client(&probe_binding)
-            .await?
-            .probe_health()
-            .await
+        // A persisted request binding is the complete authority for recovery.
+        // Re-selecting here would either need the original causal Context or
+        // bypass its Agent account policy. Probe the exact physical account;
+        // a subsequent Evaluation can perform ordinary failover with its real
+        // Context and Session.
+        let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
+        self.protocol_client(binding).await?.probe_health().await
     }
 }
 
@@ -2802,6 +2805,14 @@ mod tests {
         let client = RoutedClient::new(&routed_config(), "coding".to_string()).unwrap();
         client.attach_provider_account_state_store(store.clone());
         client.attach_agent_provider_binding_store(store);
+
+        let unbound_error = client
+            .create_completion(Vec::new(), Vec::new())
+            .await
+            .unwrap_err();
+        assert!(unbound_error
+            .to_string()
+            .contains("bind the request to its durable Context and Session"));
 
         let binding = client
             .bind_model_attempt(&ModelRequestContext {

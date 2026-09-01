@@ -8438,8 +8438,8 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use crate::llm::{
-        Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenCount, ReasoningEffort,
-        Response, ToolDefinition,
+        Client, Message, ModelRequestContext, ModelStreamEvent, ModelStreamSender,
+        PromptTokenCount, ReasoningEffort, Response, ToolDefinition,
     };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{ProviderModelCatalogStore as _, ScheduleStore as _, ThreadStore as _};
@@ -8800,6 +8800,56 @@ mod tests {
         let path = tmp.path().to_path_buf();
         drop(tmp);
         test_state_at(&path).await
+    }
+
+    async fn routed_completion_for_session(
+        runtime: &MorphzRuntime,
+        client: &crate::provider::routing::RoutedClient,
+        session_id: &str,
+        prompt: &str,
+    ) -> Response {
+        let identity = runtime.identity().clone();
+        runtime
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: identity.agent_id,
+                context_id: identity.context_id.clone(),
+                parent_session_id: None,
+                title: "Provider route test".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: identity.context_id,
+                session_id: session_id.to_string(),
+                attempt_id: format!("provider-route-test:{session_id}"),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+        let response = client
+            .create_completion_bound_stream(
+                &binding,
+                vec![Message {
+                    role: "user".to_string(),
+                    content: prompt.to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+                None,
+                stream,
+            )
+            .await
+            .unwrap();
+        drain.abort();
+        response
     }
 
     #[test]
@@ -12028,13 +12078,23 @@ account = "xai-account"
             )
             .route(
                 "/responses",
-                post(|headers: HeaderMap| async move {
+                post(|headers: HeaderMap, Json(request): Json<Value>| async move {
                     if headers
                         .get(header::AUTHORIZATION)
                         .and_then(|value| value.to_str().ok())
                         != Some("Bearer durable-test-key")
                     {
                         return StatusCode::UNAUTHORIZED.into_response();
+                    }
+                    if request.get("stream").and_then(Value::as_bool) == Some(true) {
+                        return (
+                            [(header::CONTENT_TYPE, "text/event-stream")],
+                            concat!(
+                                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"E2E_OK\"}\n\n",
+                                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"output_tokens\":1}}}\n\n"
+                            ),
+                        )
+                            .into_response();
                     }
                     Json(json!({
                         "status": "completed",
@@ -12288,19 +12348,13 @@ account = "xai-account"
         assert_eq!(switched.status(), StatusCode::OK);
         assert_eq!(runtime.model(), "model-b");
 
-        let completion = routed_client
-            .create_completion(
-                vec![Message {
-                    role: "user".to_string(),
-                    content: "health".to_string(),
-                    name: None,
-                    tool_call_id: None,
-                    tool_calls: None,
-                }],
-                Vec::new(),
-            )
-            .await
-            .unwrap();
+        let completion = routed_completion_for_session(
+            &runtime,
+            routed_client.as_ref(),
+            "session-local-provider",
+            "health",
+        )
+        .await;
         assert_eq!(completion.content, "E2E_OK");
 
         let capacity = handle_update_inference(
@@ -12342,29 +12396,23 @@ account = "xai-account"
                 .unwrap(),
         );
         let restart_database_path = temp.path().join("restarted.db");
-        let (_restarted_state, _restarted_runtime) =
+        let (_restarted_state, restarted_runtime) =
             test_state_at_with_config_client_auth_and_secrets(
                 &restart_database_path,
-                false,
+                true,
                 persisted,
                 restarted_client.clone(),
                 None,
                 Some(secret_store),
             )
             .await;
-        let restarted_completion = restarted_client
-            .create_completion(
-                vec![Message {
-                    role: "user".to_string(),
-                    content: "after restart".to_string(),
-                    name: None,
-                    tool_call_id: None,
-                    tool_calls: None,
-                }],
-                Vec::new(),
-            )
-            .await
-            .unwrap();
+        let restarted_completion = routed_completion_for_session(
+            &restarted_runtime,
+            restarted_client.as_ref(),
+            "session-local-provider-restarted",
+            "after restart",
+        )
+        .await;
         assert_eq!(restarted_completion.content, "E2E_OK");
     }
 

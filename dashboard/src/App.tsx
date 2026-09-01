@@ -138,7 +138,11 @@ import { RuntimePage } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
 import { DASHBOARD_API, getDashboardToken } from './api/runtime'
-import { invalidatedQueriesForTopic, type AuthoritativeQuery } from './app/invalidation'
+import {
+  invalidatedQueriesForTopic,
+  invalidationsRequireSessionRefresh,
+  type AuthoritativeQuery,
+} from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
 import {
   autoTintDimension,
@@ -4498,7 +4502,7 @@ export default function App() {
   useEffect(() => {
     authoritativeRefreshRef.current = (invalidated: readonly AuthoritativeQuery[]) => {
       if (invalidated.includes('catalog')) void loadCatalog()
-      const refreshesSession = invalidated.includes('session')
+      const refreshesSession = invalidationsRequireSessionRefresh(invalidated)
       if (refreshesSession) void loadSession(selectedSessionId, selectedContextId)
       if (!refreshesSession && invalidated.includes('overview')) {
         void loadOverview(selectedContextId, selectedSessionId)
@@ -9266,6 +9270,25 @@ export default function App() {
               </div>
             )}
             <div className="composer-policy-controls">
+              <label
+                className={`composer-reasoning-control composer-permission-control ${selectedPermissionMode === 'full_access' ? 'is-danger' : ''}`}
+                title={t('permission.title')}
+              >
+                <LockKeyhole size={11} />
+                <select
+                  aria-label={t('permission.label')}
+                  disabled={changingPermission || !selectedSessionId}
+                  value={selectedPermissionMode}
+                  onChange={event => void changePermissionMode(event.target.value)}
+                >
+                  {selectedPermissionMode === 'custom' && (
+                    <option value="custom" disabled>{t('permission.customDefault')}</option>
+                  )}
+                  <option value="auto_review">{t('permission.autoApproval')}</option>
+                  <option value="request_approval">{t('permission.requestApproval')}</option>
+                  <option value="full_access">{t('permission.fullAccess')}</option>
+                </select>
+              </label>
               {modelOptions.length > 0 ? (
                 <label className={`composer-model-control ${selectedModelOption ? 'ok' : ''}`} title={t('model.sessionSelectorTitle')}>
                   <Bot size={11} />
@@ -9306,25 +9329,6 @@ export default function App() {
                   {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
                   {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
                   {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
-                </select>
-              </label>
-              <label
-                className={`composer-reasoning-control composer-permission-control ${selectedPermissionMode === 'full_access' ? 'is-danger' : ''}`}
-                title={t('permission.title')}
-              >
-                <LockKeyhole size={11} />
-                <select
-                  aria-label={t('permission.label')}
-                  disabled={changingPermission || !selectedSessionId}
-                  value={selectedPermissionMode}
-                  onChange={event => void changePermissionMode(event.target.value)}
-                >
-                  {selectedPermissionMode === 'custom' && (
-                    <option value="custom" disabled>{t('permission.customDefault')}</option>
-                  )}
-                  <option value="auto_review">{t('permission.autoApproval')}</option>
-                  <option value="request_approval">{t('permission.requestApproval')}</option>
-                  <option value="full_access">{t('permission.fullAccess')}</option>
                 </select>
               </label>
               <div className="context-budget-selector" ref={contextTokenBudgetRef}>

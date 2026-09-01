@@ -1,5 +1,15 @@
 export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'events' | 'thread' | 'mind-transactions' | 'execution-jobs'
 
+/**
+ * App currently obtains Scheduler detail as part of the authoritative Session
+ * snapshot. A Scheduler-only invalidation must therefore refresh that snapshot
+ * too; otherwise a newly persisted human approval stays invisible until the
+ * polling interval happens to run.
+ */
+export function invalidationsRequireSessionRefresh(queries: readonly AuthoritativeQuery[]): boolean {
+  return queries.includes('session') || queries.includes('scheduler')
+}
+
 const ephemeralTopics = new Set([
   'runtime/model_stream',
   'runtime/model_attempt_snapshot',

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { invalidatedQueriesForTopic } from '../src/app/invalidation.ts'
+import {
+  invalidatedQueriesForTopic,
+  invalidationsRequireSessionRefresh,
+} from '../src/app/invalidation.ts'
 
 test('ephemeral model deltas never cause authoritative refetch storms', () => {
   assert.deepEqual(invalidatedQueriesForTopic('runtime/model_stream'), [])
@@ -33,4 +36,10 @@ test('durable events invalidate shared projections by semantic scope', () => {
 test('ordinary durable progress is already merged from the live socket', () => {
   assert.deepEqual(invalidatedQueriesForTopic('chat/user_message'), [])
   assert.deepEqual(invalidatedQueriesForTopic('chat/progress'), [])
+})
+
+test('scheduler invalidation refreshes the Session projection that carries approval cards', () => {
+  assert.equal(invalidationsRequireSessionRefresh(['scheduler', 'thread']), true)
+  assert.equal(invalidationsRequireSessionRefresh(['session']), true)
+  assert.equal(invalidationsRequireSessionRefresh(['thread']), false)
 })

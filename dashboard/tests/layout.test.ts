@@ -541,8 +541,8 @@ test('composer runtime metadata reserves green for actual health', () => {
 test('composer separates stable policy controls from read-only telemetry', () => {
   assert.match(
     appSource,
-    /className="composer-policy-controls"[\s\S]*?composer-model-control[\s\S]*?className="composer-reasoning-control"[\s\S]*?className="context-budget-selector"[\s\S]*?<Composer[\s\S]*?className="composer-footer-row"[\s\S]*?className="shortcut-row"[\s\S]*?className="composer-telemetry"[\s\S]*?token-usage[\s\S]*?connection-status/s,
-    'adjustable model, reasoning and context controls follow their decision order above the composer while shortcuts and telemetry share one footer row',
+    /className="composer-policy-controls"[\s\S]*?composer-permission-control[\s\S]*?composer-model-control[\s\S]*?className="composer-reasoning-control"[\s\S]*?className="context-budget-selector"[\s\S]*?<Composer[\s\S]*?className="composer-footer-row"[\s\S]*?className="shortcut-row"[\s\S]*?className="composer-telemetry"[\s\S]*?token-usage[\s\S]*?connection-status/s,
+    'permission policy leads the right-aligned control group before model, reasoning and context while shortcuts and telemetry share one footer row',
   )
   assert.match(
     appCss,
