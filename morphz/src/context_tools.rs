@@ -7,8 +7,8 @@ use crate::orchestrator::context::{
     RecallSearchRequest,
 };
 use crate::tool::{
-    Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
-    CURRENT_SESSION_ID,
+    Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID,
+    CURRENT_CONTEXT_VIEW_MANIFEST, CURRENT_PRINCIPAL_ID, CURRENT_SESSION_ID,
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -213,6 +213,12 @@ impl Tool for RecallTool {
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "recall is missing the Runtime-injected cognitive context")?;
+        let view_manifest = CURRENT_CONTEXT_VIEW_MANIFEST
+            .try_with(|manifest| manifest.as_ref().map(|manifest| (**manifest).clone()))
+            .map_err(|_| "recall is missing the Runtime-injected Context View manifest")?
+            .ok_or("recall has no Runtime-injected Context View manifest")?;
+        view_manifest.validate_for_context(&context_id)?;
+        let view_manifest = Some(view_manifest);
         let search_selected = args.query.is_some()
             || args.start_time.is_some()
             || args.end_time.is_some()
@@ -238,22 +244,55 @@ impl Tool for RecallTool {
                     include_events: args.include_events.unwrap_or(false),
                     max_nodes: args.max_nodes.unwrap_or(32),
                     cursor: non_empty(args.cursor),
+                    view_manifest,
                 })
                 .await?;
             return Ok(serde_json::to_string_pretty(&page)?);
         }
 
         if let Some(event_id) = args.event_id {
-            let event = self
+            let through_sequence = view_manifest.as_ref().and_then(|manifest| {
+                (!manifest.resident_event_ids.contains(&event_id))
+                    .then_some(manifest.event_sequence_upper_bound)
+            });
+            let event_visibility_snapshot = through_sequence.and_then(|_| {
+                view_manifest
+                    .as_ref()
+                    .and_then(|manifest| manifest.event_visibility_snapshot.clone())
+            });
+            let mut event = self
                 .context_engine
-                .find_event(&context_id, &event_id)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "event '{}' does not exist or is outside the current Context",
-                        event_id
-                    )
-                })?;
+                .find_event_through_sequence(
+                    &context_id,
+                    &event_id,
+                    through_sequence,
+                    event_visibility_snapshot,
+                )
+                .await?;
+            // Resident identities are already part of the physical request's
+            // input even when they were routed after the base Context
+            // snapshot. A short @eN reference needs one exact lookup before
+            // that identity can be checked; non-resident future Events remain
+            // unavailable.
+            if event.is_none() && event_id.starts_with("@e") {
+                let candidate = self
+                    .context_engine
+                    .find_event_through_sequence(&context_id, &event_id, None, None)
+                    .await?;
+                if candidate.as_ref().is_some_and(|candidate| {
+                    view_manifest
+                        .as_ref()
+                        .is_some_and(|manifest| manifest.resident_event_ids.contains(&candidate.id))
+                }) {
+                    event = candidate;
+                }
+            }
+            let event = event.ok_or_else(|| {
+                format!(
+                    "event '{}' does not exist or is outside the current Context",
+                    event_id
+                )
+            })?;
             let event_reference = self.context_engine.event_reference(&event);
             return event_chunk(
                 event,
@@ -277,6 +316,7 @@ impl Tool for RecallTool {
                 end_time,
                 limit,
                 cursor: non_empty(args.cursor),
+                view_manifest,
             })
             .await?;
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
@@ -418,8 +458,37 @@ mod tests {
     use super::*;
     use crate::config::OrchestratorConfig;
     use crate::memory::sqlite::SqliteStore;
-    use crate::memory::EventStore;
+    use crate::memory::{EventStore, RecallProjectionStore};
+    use crate::orchestrator::context::ContextViewManifest;
     use tempfile::TempDir;
+
+    fn model_view(
+        context_id: &str,
+        event_sequence_upper_bound: u64,
+    ) -> Option<Arc<ContextViewManifest>> {
+        Some(Arc::new(ContextViewManifest::context_wide(
+            context_id,
+            0,
+            event_sequence_upper_bound,
+            Vec::<String>::new(),
+            Vec::<String>::new(),
+        )))
+    }
+
+    async fn execute_model_recall(
+        tool: &RecallTool,
+        context_id: &str,
+        event_sequence_upper_bound: u64,
+        arguments: serde_json::Value,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let arguments = arguments.to_string();
+        CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                model_view(context_id, event_sequence_upper_bound),
+                CURRENT_CONTEXT_ID.scope(context_id.to_string(), tool.execute(&arguments)),
+            )
+            .await
+    }
 
     #[tokio::test]
     async fn context_tx_tool_commits_versioned_frame() {
@@ -734,6 +803,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_recall_requires_runtime_context_view_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-missing-manifest.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        let engine = Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        ));
+        let tool = RecallTool::new(engine);
+        let arguments = serde_json::json!({ "query": "evidence" }).to_string();
+
+        let missing_scope = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-missing-manifest".to_string(),
+                tool.execute(&arguments),
+            )
+            .await
+            .unwrap_err();
+        assert!(missing_scope
+            .to_string()
+            .contains("missing the Runtime-injected Context View manifest"));
+
+        let explicit_none = CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                None,
+                CURRENT_CONTEXT_ID.scope(
+                    "recall-missing-manifest".to_string(),
+                    tool.execute(&arguments),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(explicit_none
+            .to_string()
+            .contains("has no Runtime-injected Context View manifest"));
+    }
+
+    #[tokio::test]
     async fn recall_reads_exact_event_in_unicode_safe_chunks() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("recall-tool.db");
@@ -761,40 +868,36 @@ mod tests {
             OrchestratorConfig::default(),
         ));
         let tool = RecallTool::new(engine);
-        let result = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-session".to_string(),
-                tool.execute(
-                    &serde_json::json!({
-                        "event_id": "event:unicode",
-                        "offset": 2,
-                        "limit": 3
-                    })
-                    .to_string(),
-                ),
-            )
-            .await
-            .unwrap();
+        let result = execute_model_recall(
+            &tool,
+            "recall-session",
+            1,
+            serde_json::json!({
+                "event_id": "event:unicode",
+                "offset": 2,
+                "limit": 3
+            }),
+        )
+        .await
+        .unwrap();
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(result["text"], "丙丁戊");
         assert_eq!(result["event_id"], "@e1");
         assert_eq!(result["next_offset"], 5);
         assert_eq!(result["total_chars"], 6);
 
-        let aliased = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-session".to_string(),
-                tool.execute(
-                    &serde_json::json!({
-                        "event_id": "@e1",
-                        "offset": 0,
-                        "limit": 2
-                    })
-                    .to_string(),
-                ),
-            )
-            .await
-            .unwrap();
+        let aliased = execute_model_recall(
+            &tool,
+            "recall-session",
+            1,
+            serde_json::json!({
+                "event_id": "@e1",
+                "offset": 0,
+                "limit": 2
+            }),
+        )
+        .await
+        .unwrap();
         let aliased: serde_json::Value = serde_json::from_str(&aliased).unwrap();
         assert_eq!(aliased["text"], "甲乙");
         assert_eq!(aliased["event_id"], "@e1");
@@ -850,20 +953,18 @@ mod tests {
             OrchestratorConfig::default(),
         ));
         let tool = RecallTool::new(engine);
-        let search = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-reference-context".to_string(),
-                tool.execute(
-                    &serde_json::json!({
-                        "start_time": "2026-08-16T08:00:00Z",
-                        "end_time": "2026-08-16T11:00:00Z",
-                        "limit": 10,
-                    })
-                    .to_string(),
-                ),
-            )
-            .await
-            .unwrap();
+        let search = execute_model_recall(
+            &tool,
+            "recall-reference-context",
+            2,
+            serde_json::json!({
+                "start_time": "2026-08-16T08:00:00Z",
+                "end_time": "2026-08-16T11:00:00Z",
+                "limit": 10,
+            }),
+        )
+        .await
+        .unwrap();
         let search: serde_json::Value = serde_json::from_str(&search).unwrap();
         let matches = search["matches"].as_array().unwrap();
         let observation = matches
@@ -879,24 +980,21 @@ mod tests {
 
         for hit in [observation, control_receipt] {
             let suggested = hit["suggested_recall"].clone();
-            let recalled = CURRENT_CONTEXT_ID
-                .scope(
-                    "recall-reference-context".to_string(),
-                    tool.execute(&suggested.to_string()),
-                )
+            let recalled = execute_model_recall(&tool, "recall-reference-context", 2, suggested)
                 .await
                 .unwrap();
             let recalled: serde_json::Value = serde_json::from_str(&recalled).unwrap();
             assert_eq!(recalled["event_id"], hit["event_id"]);
         }
 
-        let forged = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-reference-context".to_string(),
-                tool.execute(&serde_json::json!({ "event_id": "@e2" }).to_string()),
-            )
-            .await
-            .unwrap_err();
+        let forged = execute_model_recall(
+            &tool,
+            "recall-reference-context",
+            2,
+            serde_json::json!({ "event_id": "@e2" }),
+        )
+        .await
+        .unwrap_err();
         assert!(forged
             .to_string()
             .contains("does not identify a visible observation"));
@@ -930,22 +1028,20 @@ mod tests {
             OrchestratorConfig::default(),
         ));
         let tool = RecallTool::new(engine);
-        let result = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-session".to_string(),
-                tool.execute(
-                    &serde_json::json!({
-                        "event_id": "event:source",
-                        "frame_id": "",
-                        "query": "",
-                        "offset": 0,
-                        "limit": 100
-                    })
-                    .to_string(),
-                ),
-            )
-            .await
-            .unwrap();
+        let result = execute_model_recall(
+            &tool,
+            "recall-session",
+            1,
+            serde_json::json!({
+                "event_id": "event:source",
+                "frame_id": "",
+                "query": "",
+                "offset": 0,
+                "limit": 100
+            }),
+        )
+        .await
+        .unwrap();
         assert!(result.contains("evidence"));
     }
 
@@ -999,20 +1095,18 @@ mod tests {
             ),
         );
         let tool = RecallTool::new(engine);
-        let first = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-time-context".to_string(),
-                tool.execute(
-                    &serde_json::json!({
-                        "start_time": "2026-08-04T09:30:00Z",
-                        "end_time": "2026-08-04T12:00:00Z",
-                        "limit": 1
-                    })
-                    .to_string(),
-                ),
-            )
-            .await
-            .unwrap();
+        let first = execute_model_recall(
+            &tool,
+            "recall-time-context",
+            3,
+            serde_json::json!({
+                "start_time": "2026-08-04T09:30:00Z",
+                "end_time": "2026-08-04T12:00:00Z",
+                "limit": 1
+            }),
+        )
+        .await
+        .unwrap();
         let first: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(first["matches"][0]["document_id"], "event:time-2");
         for timestamp in [
@@ -1025,23 +1119,205 @@ mod tests {
         }
         let cursor = first["next_cursor"].as_str().unwrap();
 
-        let second = CURRENT_CONTEXT_ID
-            .scope(
-                "recall-time-context".to_string(),
-                tool.execute(
-                    &serde_json::json!({
-                        "start_time": "2026-08-04T09:30:00Z",
-                        "end_time": "2026-08-04T12:00:00Z",
-                        "limit": 1,
-                        "cursor": cursor
+        let second = execute_model_recall(
+            &tool,
+            "recall-time-context",
+            3,
+            serde_json::json!({
+                "start_time": "2026-08-04T09:30:00Z",
+                "end_time": "2026-08-04T12:00:00Z",
+                "limit": 1,
+                "cursor": cursor
+            }),
+        )
+        .await
+        .unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["matches"][0]["document_id"], "event:time-1");
+    }
+
+    #[tokio::test]
+    async fn model_recall_search_excludes_resident_content_without_principal_isolation() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-residency.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(crate::memory::NewCognitiveContext {
+                id: "recall-residency-context".to_string(),
+                agent_id: "recall-residency-agent".to_string(),
+                title: "Recall residency".to_string(),
+            })
+            .await
+            .unwrap();
+        for (id, principal_id, text) in [
+            (
+                "event:resident",
+                "principal-a",
+                "VISIBILITY-ORBIT already resident",
+            ),
+            (
+                "event:preview",
+                "principal-a",
+                "VISIBILITY-ORBIT preview remains retrievable",
+            ),
+            (
+                "event:swapped",
+                "principal-b",
+                "VISIBILITY-ORBIT another principal and swapped session",
+            ),
+        ] {
+            store
+                .append(Event::new(
+                    id.to_string(),
+                    "User".to_string(),
+                    crate::event::TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::json!({
+                        "context_id": "recall-residency-context",
+                        "session_id": if id == "event:swapped" {
+                            "session-swapped"
+                        } else {
+                            "session-active"
+                        },
+                        "principal_id": principal_id,
+                        "text": text,
                     })
-                    .to_string(),
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("recall-residency-worker", 16)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        let engine = Arc::new(
+            ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>),
+        );
+        let tool = RecallTool::new(engine);
+        let manifest = ContextViewManifest::context_wide(
+            "recall-residency-context",
+            0,
+            3,
+            vec!["event:resident".to_string()],
+            Vec::<String>::new(),
+        );
+        let search = CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                Some(Arc::new(manifest)),
+                CURRENT_CONTEXT_ID.scope(
+                    "recall-residency-context".to_string(),
+                    tool.execute(
+                        &serde_json::json!({
+                            "query": "VISIBILITY-ORBIT",
+                            "limit": 10,
+                        })
+                        .to_string(),
+                    ),
                 ),
             )
             .await
             .unwrap();
-        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
-        assert_eq!(second["matches"][0]["document_id"], "event:time-1");
+        let search: serde_json::Value = serde_json::from_str(&search).unwrap();
+        let ids = search["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["document_id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert!(!ids.contains("event:resident"));
+        assert!(ids.contains("event:preview"));
+        assert!(
+            ids.contains("event:swapped"),
+            "Principal identity and Session residency must not become an implicit Recall isolation boundary"
+        );
+
+        let exact = CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                Some(Arc::new(ContextViewManifest::context_wide(
+                    "recall-residency-context",
+                    0,
+                    3,
+                    vec!["event:resident".to_string()],
+                    Vec::<String>::new(),
+                ))),
+                CURRENT_CONTEXT_ID.scope(
+                    "recall-residency-context".to_string(),
+                    tool.execute(&serde_json::json!({ "event_id": "event:resident" }).to_string()),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(exact.contains("already resident"));
+
+        store
+            .append(Event::new(
+                "event:future".to_string(),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-residency-context",
+                    "session_id": "session-future",
+                    "principal_id": "principal-b",
+                    "text": "VISIBILITY-ORBIT committed after the physical request",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        let future = CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                Some(Arc::new(ContextViewManifest::context_wide(
+                    "recall-residency-context",
+                    0,
+                    3,
+                    Vec::<String>::new(),
+                    Vec::<String>::new(),
+                ))),
+                CURRENT_CONTEXT_ID.scope(
+                    "recall-residency-context".to_string(),
+                    tool.execute(&serde_json::json!({ "event_id": "event:future" }).to_string()),
+                ),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(future.contains("does not exist or is outside the current Context"));
+
+        let routed_future = CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                Some(Arc::new(ContextViewManifest::context_wide(
+                    "recall-residency-context",
+                    0,
+                    3,
+                    vec!["event:future".to_string()],
+                    Vec::<String>::new(),
+                ))),
+                CURRENT_CONTEXT_ID.scope(
+                    "recall-residency-context".to_string(),
+                    tool.execute(&serde_json::json!({ "event_id": "event:future" }).to_string()),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(
+            routed_future.contains("committed after the physical request"),
+            "an exact Event already routed into the physical request remains readable without broadening search beyond its frontier"
+        );
     }
 
     #[test]

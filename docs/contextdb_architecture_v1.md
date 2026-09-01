@@ -1,18 +1,19 @@
 # ContextDB：面向认知 Runtime 的分布式 AST 数据库架构 v1
 
-> 状态：Architecture Baseline / SQLite Runtime Integration Preview
+> 状态：Architecture Baseline / SQLite + PostgreSQL Runtime Integration Preview
 >
 > 日期：2026-09-01
 >
 > 适用范围：ContextDB、Morphz Runtime、Morphz Cloud 的长期存储边界
 >
 > 本文同时描述长期目标与 2026-09-01 的实现基线。默认关闭的
-> `experimental-context-db` 已接入 SQLite Runtime：Context AST 是当前 Mind 的权威状态，
-> Agent Trajectory、Session Projection、Recall Projection 与 Runtime Control 在同一 SQLite
-> 事务域内原子提交，现有数据库可进行一次性精确导入，真实对话和重启恢复已经通过测试。
-> 兼容 `mind_projections` / `context_heads` 行仍在迁移期同步维护，但不参与 ContextDB 模式的
-> 当前 Mind 读取。完整 Runtime Control AST 化、Edge、Watch、Selector、Reference Model、
-> PostgreSQL 后端和分布式复制仍属于后续阶段。
+> `experimental-context-db` 已接入 SQLite 与 PostgreSQL Runtime：Context AST 是当前 Mind
+> 的唯一运行时权威，原生 Mutation、Agent Trajectory、Session Projection、Recall Projection
+> 与 Runtime Control 在各自后端的同一事务域内原子提交，现有数据库可进行一次性精确导入。
+> 双后端真实数据库 Conformance、statement budget、真实对话和重启恢复已经通过测试；旧
+> `mind_projections` / `context_heads` 数据只作为显式迁移输入，不参与 ContextDB 模式的当前
+> Mind 读写。完整 Runtime Control AST 化、Edge、Watch、通用 Selector、Reference Model
+> 和分布式复制仍属于后续阶段。
 
 ## 1. 核心决策
 
@@ -31,18 +32,18 @@ ContextDB 核心不依赖历史重放；Morphz Runtime 仍将完整 Agent Trajec
 
 三种架构状态的区别是：
 
-| 维度 | 旧 Runtime | 当前 SQLite Integration Preview | ContextDB 长期目标 |
+| 维度 | 旧 Runtime | 当前双后端 Integration Preview | ContextDB 长期目标 |
 | --- | --- | --- | --- |
 | 当前 Mind 权威 | `mind_projections` + `context_heads` | Context AST | Context AST |
 | 模型 Context | 从多表和 Projection 组装 | Mind 从 ContextDB 读取，其余控制投影保持现状 | ContextDB View / Selector |
-| Mind 修改 | Agent Trajectory Event + Projection 原子提交 | AST Diff、Agent Trajectory 和控制投影同事务提交 | 原生 Context Transaction |
+| Mind 修改 | Agent Trajectory Event + Projection 原子提交 | 原生 AST Mutation、Agent Trajectory 和控制投影同事务提交 | 原生 Context Transaction |
 | Thread / Session Control | 规范化 Runtime 表 | 规范化 Runtime 表，同事务保留全部既有语义 | Runtime-owned AST Node + 可重建索引 |
 | Retire / Recall | Active Projection + Recall Projection | 行为与旧 Runtime 等价 | Active Context 与可选 Archive / Recall 明确解耦 |
 | Agent Trajectory | 完整保留 | 完整保留并可验证导出 | Morphz 能力；不作为 ContextDB 当前状态的重放前提 |
 | 分布式复制 | 依赖外部关系数据库 | SQLite 单机 | ContextDB Shard / Raft 或成熟分布式 KV |
 
-当前接入以默认关闭的实验特性提供可回滚边界。SQLite 路径已经证明 Mind authority 可以
-切换而不牺牲 Agent Trajectory、Session/Thread、调度、Recall 和恢复语义；后续仍按
+当前接入以默认关闭的实验特性提供可回滚边界。SQLite 与 PostgreSQL 路径已经证明 Mind
+authority 可以切换而不牺牲 Agent Trajectory、Session/Thread、调度、Recall 和恢复语义；后续仍按
 兼容矩阵逐域迁移，不能把“接入了 Mind”误写成“全部 Runtime 状态已经 AST 化”。
 
 ## 2. 目标与非目标
@@ -428,6 +429,22 @@ Morphz 的 `derive`、`revise`、`retire`、`relate` 等属于其上的领域事
 
 Snapshot 不要求复制一份完整物理数据；它可以是 MVCC 版本、Root Pointer 或不可变 Chunk 集合。
 
+当前 Runtime 的模型 View 还携带一个可持久化的 `ContextViewManifest`：Mind revision、Event
+sequence frontier、后端事务可见性令牌、Visibility policy fingerprint，以及本次请求真正
+resident 的 Event/Frame identity。Event sequence 是物理追加身份而非因果顺序。这里存在
+两套独立的物理可见性时钟：Frame 文档按 Mind revision
+封锁，Event 文档按 Event sequence 封锁。PostgreSQL 仅靠 sequence 不足以表达物理快照，
+因为 sequence 可以在事务提交前分配；实现必须把 `pg_snapshot` 与 frontier 一起传递到后续
+Recall SQL。该谓词和 resident 排除都在候选排名与 `LIMIT` 之前执行。
+
+Manifest 随选择 Tool 的 `assistant_call` 持久化，并在新 task 与崩溃恢复后重建为 task-local
+边界。字段损坏、后端令牌不兼容，或旧 Recall 计划缺失 Manifest 时必须 fail closed；不能
+把恢复失败解释成不受限的当前状态查询。
+
+数据库迁移也是并发 Runtime 的可执行契约。PostgreSQL 中的函数、触发器等可执行对象必须
+绑定当前 Store 的 schema；初始化、升级或删除一个临时 schema，不得通过 `search_path`
+解析误改另一 Runtime 的对象。该约束由跨 schema 启动/销毁回归测试持续验证。
+
 ## 7. 物理存储模型
 
 ### 7.1 Context 不是一个不可分割的大字符串
@@ -652,6 +669,12 @@ ContextDB 必须区分：
 | Retired | 不可见 | 仅在启用 Archive / Recall 时可检索 |
 
 Recall 查询必须排除本轮已经完整可见的 Node ID。Recall 结果引用原始 Node / Archive ID，不能把相同证据伪装成第二份独立事实。
+
+默认 Recall 是 `visible AND non_resident`。Principal 不是默认隔离边界；同一 Agent Context
+在没有显式 Visibility predicate 时仍可 Recall 不同 Principal 的 Session。活跃但被 24 小时
+窗口、50 Session 上限或其他 Selector swap out 的内容属于 non-resident，仍可检索；retired
+也属于 non-resident。显式精确 ID 读取与默认搜索去重是两种操作，前者可读取已经 resident
+的原始事实，后者不得重复注入它。
 
 ### 10.2 不启用 Recall
 
@@ -976,6 +999,9 @@ ContextDB 的性能约束以增长阶数和固定操作预算表达：
 15. Cross-Context 协作必须显式、幂等、可恢复；
 16. Secret 不进入模型可见 Context AST；
 17. 相同 AST、版本和 View Policy 必须产生确定的规范编码。
+18. Event 与 Frame Recall 必须分别服从 Event frontier 和 Mind revision，不能混用时钟；
+19. 后端的事务提交顺序与分配 ID 顺序不一致时，模型 View 必须保留真实事务可见性；
+20. Tool task、分页与崩溃恢复不得扩大产生该调用的物理 View 边界。
 
 ## 17. 实施阶段与门禁
 

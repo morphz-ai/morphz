@@ -50,7 +50,7 @@ use crate::memory::{
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{
     attribute_prompt_components, render_context_delta_observation, ContextEngine,
-    ContextObservation, ContextView,
+    ContextObservation, ContextView, ContextViewManifest,
 };
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::permission::{DurableApprovalGrant, PermissionBroker};
@@ -1483,6 +1483,10 @@ struct ToolExecutionOptions {
     /// canonical Context seed on their first assistant tool-call Event. Later
     /// Activations reuse that Event-backed seed and leave this field empty.
     prompt_cache_transport_seed: Option<PromptCacheTransportSeed>,
+    /// Exact Context residency of the physical model request that selected
+    /// these tools. Persisted with assistant_call so crash recovery cannot
+    /// silently broaden Recall to a different view.
+    context_view_manifest: Option<ContextViewManifest>,
 }
 
 #[derive(Debug, Default)]
@@ -2601,6 +2605,7 @@ struct PromptCacheTransportSeed {
 struct ToolContinuationEnvelope {
     messages: Vec<Message>,
     delivered_output_ids: HashSet<String>,
+    delivered_output_sequence_upper_bound: u64,
     structured_deltas: Vec<PromptCacheStructuredDelta>,
     prompt_cache_transport_seed: Option<PromptCacheTransportSeed>,
 }
@@ -8993,6 +8998,9 @@ impl Orchestrator {
                     continue;
                 };
                 continuation.delivered_output_ids.insert(output.id.clone());
+                continuation.delivered_output_sequence_upper_bound = continuation
+                    .delivered_output_sequence_upper_bound
+                    .max(output.sequence.unwrap_or(0));
                 if let Some(delta) = observations
                     .get(output.id.as_str())
                     .and_then(|observation| {
@@ -9100,6 +9108,11 @@ impl Orchestrator {
                 .iter()
                 .map(|delta| delta.observation_id.clone())
                 .collect(),
+            delivered_output_sequence_upper_bound: initial_deltas
+                .iter()
+                .map(|delta| delta.source_sequence)
+                .max()
+                .unwrap_or(0),
             structured_deltas: initial_deltas,
             prompt_cache_transport_seed: Some(seed),
             ..Default::default()
@@ -9155,6 +9168,9 @@ impl Orchestrator {
                     return Ok(None);
                 };
                 continuation.delivered_output_ids.insert(output.id.clone());
+                continuation.delivered_output_sequence_upper_bound = continuation
+                    .delivered_output_sequence_upper_bound
+                    .max(output.sequence.unwrap_or(0));
                 continuation.structured_deltas.push(delta);
             }
         }
@@ -10584,6 +10600,7 @@ impl Orchestrator {
             .get("model_attempt_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
+        let context_view_manifest = persisted_context_view_manifest(assistant_call)?;
         let context_tx_allowed = assistant_call
             .payload
             .get("context_tx_rejection_status")
@@ -10615,6 +10632,7 @@ impl Orchestrator {
                 model_attempt_id,
                 provider_continuation: None,
                 prompt_cache_transport_seed: None,
+                context_view_manifest,
             },
         )
         .await?;
@@ -11721,6 +11739,7 @@ impl Orchestrator {
                         model_attempt_id: None,
                         provider_continuation: None,
                         prompt_cache_transport_seed: None,
+                        context_view_manifest: None,
                     },
                 ))
                 .await?;
@@ -11920,6 +11939,8 @@ impl Orchestrator {
                     )?,
                 ];
                 continuation.delivered_output_ids = structured.delivered_output_ids;
+                continuation.delivered_output_sequence_upper_bound =
+                    structured.delivered_output_sequence_upper_bound;
                 continuation.structured_deltas = structured.structured_deltas;
                 request_prompt_measurement = self
                     .count_projected_prompt_tokens(&context, &messages, &tools)
@@ -12036,6 +12057,13 @@ impl Orchestrator {
         } else {
             continuation.delivered_output_ids.clone()
         };
+        let mut visible_routed_input_sequence_upper_bound = if bounded_critical_projection {
+            context.event_sequence_upper_bound
+        } else {
+            context
+                .event_sequence_upper_bound
+                .max(continuation.delivered_output_sequence_upper_bound)
+        };
         let mut context_maintenance_owner = None;
         let mut context_maintenance_gate = None;
         let mut protocol_errors = 0usize;
@@ -12062,6 +12090,7 @@ impl Orchestrator {
             terminal_decision,
             terminal_model_attempt_id,
             terminal_provider_continuation,
+            terminal_context_view_manifest,
         ) = loop {
             let request_index = model_request_index;
             model_request_index = model_request_index.saturating_add(1);
@@ -12162,6 +12191,12 @@ impl Orchestrator {
             }
             request_input_ids.sort();
             request_input_ids.dedup();
+            let mut request_context_view_manifest =
+                ContextViewManifest::from_view(&context, visible_routed_input_ids.iter().cloned());
+            request_context_view_manifest.event_sequence_upper_bound =
+                request_context_view_manifest
+                    .event_sequence_upper_bound
+                    .max(visible_routed_input_sequence_upper_bound);
             self.publish_model_request_snapshot(
                 session_id,
                 &model_attempt_id,
@@ -12799,6 +12834,7 @@ impl Orchestrator {
                             model_attempt_id: Some(model_attempt_id.clone()),
                             provider_continuation: provider_continuation.clone(),
                             prompt_cache_transport_seed: None,
+                            context_view_manifest: Some(request_context_view_manifest.clone()),
                         },
                     ))
                     .await?;
@@ -12821,6 +12857,8 @@ impl Orchestrator {
                     protocol_messages
                         .push(self.standard_tool_result_message(&protocol_call, &output));
                     visible_routed_input_ids.insert(output.id.clone());
+                    visible_routed_input_sequence_upper_bound =
+                        visible_routed_input_sequence_upper_bound.max(output.sequence.unwrap_or(0));
                     let completion_committed = output
                         .payload
                         .get("text")
@@ -12913,10 +12951,17 @@ impl Orchestrator {
                         Some(decision),
                         model_attempt_id,
                         provider_continuation,
+                        request_context_view_manifest,
                     );
                 }
                 Ok(decision) => {
-                    break (response, decision, model_attempt_id, provider_continuation)
+                    break (
+                        response,
+                        decision,
+                        model_attempt_id,
+                        provider_continuation,
+                        request_context_view_manifest,
+                    )
                 }
                 Err(reason) => {
                     protocol_errors += 1;
@@ -13153,6 +13198,7 @@ impl Orchestrator {
                     model_attempt_id: Some(terminal_model_attempt_id.clone()),
                     provider_continuation: terminal_provider_continuation,
                     prompt_cache_transport_seed: prompt_cache_transport_seed_to_persist,
+                    context_view_manifest: Some(terminal_context_view_manifest),
                 },
             ))
             .await;
@@ -16159,6 +16205,7 @@ impl Orchestrator {
                 model_attempt_id: None,
                 provider_continuation: None,
                 prompt_cache_transport_seed: None,
+                context_view_manifest: None,
             },
         )
         .await?;
@@ -17107,6 +17154,13 @@ impl Orchestrator {
         options: ToolExecutionOptions,
     ) -> Result<ToolExecutionOutcome, DynError> {
         let context_id = self.context_id_for_session(session_id)?;
+        if options
+            .context_view_manifest
+            .as_ref()
+            .is_some_and(|manifest| manifest.context_id != context_id)
+        {
+            return Err("tool Context View manifest belongs to another Cognitive Context".into());
+        }
         let activation_route = self.activation_route(attempt_id);
         let internal_child_handoff = activation_route
             .as_ref()
@@ -17344,6 +17398,9 @@ impl Orchestrator {
         }
         if let Some(seed) = options.prompt_cache_transport_seed.as_ref() {
             assistant_call_payload.push(("prompt_cache_transport_seed".to_string(), json!(seed)));
+        }
+        if let Some(manifest) = options.context_view_manifest.as_ref() {
+            assistant_call_payload.push(("context_view_manifest".to_string(), json!(manifest)));
         }
         if let Some(provider_continuation) = provider_continuation {
             assistant_call_payload.push((
@@ -17719,6 +17776,7 @@ impl Orchestrator {
                 .as_ref()
                 .map(|evaluation| evaluation.objective_id.clone());
             let task_wake_on_output = options.wake_on_output;
+            let task_context_view_manifest = options.context_view_manifest.clone().map(Arc::new);
             // Established before the spawn, because task-locals do not cross
             // into a new task: the chain below rebuilds every one of them.
             let inference_channel: Option<Arc<dyn crate::sexpr_eval::RuntimeInference>> =
@@ -17771,6 +17829,8 @@ impl Orchestrator {
                     .scope(inference_channel, async move {
                 crate::tool::CURRENT_PRINCIPAL_ID
                     .scope(task_principal_id, async move {
+                crate::tool::CURRENT_CONTEXT_VIEW_MANIFEST
+                    .scope(task_context_view_manifest, async move {
                 crate::permission::CURRENT_DURABLE_APPROVAL
                         .scope(durable_approval_grant, async move {
                             crate::tool::CURRENT_EXECUTION_JOB
@@ -18172,6 +18232,8 @@ impl Orchestrator {
                                 .await
                         })
                         .await
+                    })
+                    .await
                     })
                     .await
                     })
@@ -18884,6 +18946,7 @@ impl Orchestrator {
                 model_attempt_id: None,
                 provider_continuation: None,
                 prompt_cache_transport_seed: None,
+                context_view_manifest: None,
             },
         )
         .await?;
@@ -19647,6 +19710,61 @@ fn activation_admission_key_for_class(
         class,
         activation.created_at.timestamp_millis(),
     )
+}
+
+fn persisted_context_view_manifest(
+    assistant_call: &Event,
+) -> Result<Option<ContextViewManifest>, DynError> {
+    let Some(value) = assistant_call.payload.get("context_view_manifest") else {
+        // A pre-manifest non-Recall plan can still be recovered because its
+        // physical side effects do not inspect model-visible history. Recall
+        // is different: treating a missing boundary as `None` would silently
+        // expand the recovered model call to the current Context. Fail closed
+        // instead of reintroducing time-travel during restart recovery.
+        if assistant_call_selects_tool(assistant_call, "recall") {
+            return Err(format!(
+                "persisted assistant_call '{}' selected Recall without a Context View manifest; restart from a fresh Evaluation",
+                assistant_call.id
+            )
+            .into());
+        }
+        return Ok(None);
+    };
+    serde_json::from_value::<ContextViewManifest>(value.clone())
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "persisted assistant_call '{}' has an invalid Context View manifest: {error}",
+                assistant_call.id
+            )
+            .into()
+        })
+}
+
+fn assistant_call_selects_tool(assistant_call: &Event, expected_name: &str) -> bool {
+    // Inspect every assistant-call representation we have emitted. Some old
+    // Events kept the full transcript or only the continuation envelope; an
+    // empty modern field must not hide Recall in one of those legacy fields
+    // during crash recovery.
+    [
+        "tool_calls",
+        "continuation_tool_calls",
+        "transcript_tool_calls",
+    ]
+    .into_iter()
+    .filter_map(|field| assistant_call.payload.get(field))
+    .filter_map(serde_json::Value::as_array)
+    .flatten()
+    .any(|call| {
+        call.get("name")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                call.get("function")
+                    .and_then(|value| value.get("name"))
+                    .and_then(|value| value.as_str())
+            })
+            == Some(expected_name)
+    })
 }
 
 fn event_contains_physical_tool_plan(event: &Event) -> bool {
@@ -21302,7 +21420,7 @@ mod tests {
         model_binding_completion_error, model_harness_tool_scope,
         model_visible_attachment_references, new_runtime_claimant_id,
         objective_supervision_matches_state, persist_model_reasoning_summary, persist_model_usage,
-        persistent_provider_wait_contexts, plan_infer_tool_scope,
+        persisted_context_view_manifest, persistent_provider_wait_contexts, plan_infer_tool_scope,
         production_system_prompt_inspection, prompt_cache_seed_requires_rebase,
         prompt_cache_transport_context_commit_after_sequence,
         prompt_cache_transport_contract_digest, prompt_cache_transport_seed,
@@ -21316,9 +21434,9 @@ mod tests {
         should_force_final_for_maintenance, structured_context_delta_message,
         tool_call_activity_preview, validate_final_reply_response,
         validate_objective_closure_review_response, validate_objective_completion_call,
-        ContextEngine, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
-        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
-        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        ContextEngine, ContextViewManifest, DialogueThreadGate, DialogueThreadLease,
+        DurableEventWriter, DurableEventWriterMetrics, DynError, EvaluationContextOverlay,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
         ModelVisibleAttachmentReference, NoReplyMode, Orchestrator, PromptCacheStructuredDelta,
         ProviderCircuitAdmission, ProviderCircuitPhase, ProviderCircuitState, Registry,
         TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
@@ -23778,6 +23896,95 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("argument preview truncated"));
+    }
+
+    #[test]
+    fn persisted_context_view_manifest_round_trips_and_malformed_data_fails_closed() {
+        let manifest = ContextViewManifest::context_wide(
+            "manifest-recovery-context",
+            7,
+            99,
+            ["resident-event".to_string()],
+            ["resident-frame".to_string()],
+        );
+        let persisted = Event::new(
+            "call-manifest-recovery".to_string(),
+            "Agent-Morphz".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            serde_json::Map::from_iter([("context_view_manifest".to_string(), json!(manifest))]),
+        );
+        assert_eq!(
+            persisted_context_view_manifest(&persisted).unwrap(),
+            Some(manifest)
+        );
+
+        let legacy = Event::new(
+            "call-before-manifest".to_string(),
+            "Agent-Morphz".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            serde_json::Map::new(),
+        );
+        assert_eq!(persisted_context_view_manifest(&legacy).unwrap(), None);
+
+        let legacy_recall = Event::new(
+            "call-before-manifest-with-recall".to_string(),
+            "Agent-Morphz".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            serde_json::Map::from_iter([(
+                "tool_calls".to_string(),
+                json!([{"id":"recall-1","name":"recall","arguments":"{}"}]),
+            )]),
+        );
+        let legacy_recall_error = persisted_context_view_manifest(&legacy_recall)
+            .unwrap_err()
+            .to_string();
+        assert!(legacy_recall_error.contains("selected Recall without a Context View manifest"));
+        assert!(legacy_recall_error.contains("call-before-manifest-with-recall"));
+
+        for field in ["continuation_tool_calls", "transcript_tool_calls"] {
+            let legacy_shape = Event::new(
+                format!("call-before-manifest-{field}"),
+                "Agent-Morphz".to_string(),
+                crate::event::TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                serde_json::Map::from_iter([
+                    ("tool_calls".to_string(), json!([])),
+                    (
+                        field.to_string(),
+                        json!([{
+                            "id": "recall-legacy-shape",
+                            "function": {"name": "recall", "arguments": "{}"}
+                        }]),
+                    ),
+                ]),
+            );
+            let error = persisted_context_view_manifest(&legacy_shape)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("selected Recall without a Context View manifest"),
+                "legacy field {field} must fail closed even when tool_calls exists but is empty: {error}"
+            );
+        }
+
+        let malformed = Event::new(
+            "call-corrupt-manifest".to_string(),
+            "Agent-Morphz".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            serde_json::Map::from_iter([(
+                "context_view_manifest".to_string(),
+                json!({"context_id": 17}),
+            )]),
+        );
+        let error = persisted_context_view_manifest(&malformed)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid Context View manifest"));
+        assert!(error.contains("call-corrupt-manifest"));
     }
 
     #[test]

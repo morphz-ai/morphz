@@ -2975,6 +2975,7 @@ async fn search_context_recall(
             end_time,
             limit,
             cursor: option_value(invocation, "cursor").map(ToOwned::to_owned),
+            view_manifest: None,
         })
         .await?;
     println!("{}", serde_json::to_string_pretty(&page)?);
@@ -3017,6 +3018,7 @@ async fn recall_context_frame(
             include_events: switch_enabled(invocation, "include-events")?,
             max_nodes,
             cursor: option_value(invocation, "cursor").map(ToOwned::to_owned),
+            view_manifest: None,
         })
         .await?;
     println!("{}", serde_json::to_string_pretty(&page)?);

@@ -740,12 +740,16 @@ async fn claim_parallel_message_fast_path(
 
 /// Bounded PostgreSQL ingress for the two Session-ordered message modes.
 ///
-/// The caller must already hold the source Session row lock in this
-/// transaction.  That first statement is intentional: under READ COMMITTED a
-/// waiter needs a fresh snapshot *after* the preceding ingress commits before
-/// it can choose an interrupt target or a follow-up predecessor.  Once the
-/// lock is held, this command performs the complete request/Event/Thread/
-/// Signal mutation (including interruption and batching) in one round trip.
+/// The uncontended one-statement attempt first takes a transaction-scoped,
+/// non-blocking advisory guard for the Session. A concurrent attempt that
+/// cannot take the guard returns `None` without durable mutation; the caller
+/// then starts the general transaction, locks the Session in a separate
+/// statement, and invokes this command again. That separate lock statement is
+/// essential under READ COMMITTED: a waiter needs a fresh statement snapshot
+/// *after* its predecessor commits before choosing an interrupt target or a
+/// follow-up predecessor. Once serialized, this command performs the complete
+/// request/Event/Thread/Signal mutation (including interruption and batching)
+/// in one round trip.
 ///
 /// `None` is reserved for a legacy idempotency row without a fingerprint; the
 /// existing repair path remains the authority for that rare compatibility
@@ -808,6 +812,12 @@ async fn claim_ordered_message_fast_path(
     let statement_started = std::time::Instant::now();
     let row = sqlx::query(
         r#"WITH
+           ordered_guard AS MATERIALIZED (
+             SELECT pg_try_advisory_xact_lock(
+                      hashtext('morphz:ordered-ingress'),
+                      hashtext($1)
+                    ) AS acquired
+           ),
            authority AS MATERIALIZED (
              SELECT session.agent_id, session.context_id, session.status,
                     session.attention_state,
@@ -820,6 +830,16 @@ async fn claim_ordered_message_fast_path(
                     ) AS principal_is_bound
              FROM sessions session
              WHERE session.id = $1
+               AND (SELECT acquired FROM ordered_guard)
+               -- A statement snapshot is fixed before lock acquisition. If a
+               -- predecessor commits while this statement is waiting, EPQ can
+               -- expose its newer Session tuple while all other reads still
+               -- use the older snapshot. Refuse that mixed-time View and let
+               -- the caller retry after a separate Session-lock statement.
+               AND pg_visible_in_snapshot(
+                     (session.xmin::text)::xid8,
+                     pg_current_snapshot()
+                   )
              FOR UPDATE SKIP LOCKED
            ),
            request_insert AS (

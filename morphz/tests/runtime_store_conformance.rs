@@ -5505,6 +5505,23 @@ where
             .with_timezone(&chrono::Utc);
         store.append(event).await.unwrap();
     }
+    let non_resident_events = store
+        .query(QueryFilter {
+            context_id: Some(context_id.to_string()),
+            excluded_event_ids: vec!["recall-time-conformance-1".to_string()],
+            latest_k: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        non_resident_events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["recall-time-conformance-0"],
+        "Event-store residency exclusions must execute before ORDER/LIMIT"
+    );
     let projected = store
         .project_recall_outbox_batch("recall-conformance-worker", 8)
         .await
@@ -5523,11 +5540,40 @@ where
             start_time: Some(start_time),
             end_time: Some(end_time),
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit: 1,
         })
         .await
         .unwrap();
     assert_eq!(timeline[0].document_id, "recall-time-conformance-1");
+    let non_resident_timeline = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: None,
+            start_time: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-08-04T09:30:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ),
+            end_time: Some(end_time),
+            before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: vec!["recall-time-conformance-1".to_string()],
+            excluded_frame_ids: Vec::new(),
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        non_resident_timeline[0].document_id, "recall-time-conformance-0",
+        "resident exclusions must be applied by the backend before LIMIT"
+    );
     let combined = store
         .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
             context_id: context_id.to_string(),
@@ -5539,12 +5585,64 @@ where
                     .with_timezone(&chrono::Utc),
             ),
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit: 8,
         })
         .await
         .unwrap();
     assert_eq!(combined.len(), 1);
     assert_eq!(combined[0].document_id, "recall-time-conformance-0");
+
+    let causal_snapshot = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some("时间窗口".to_string()),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            through_sequence: Some(non_resident_timeline[0].updated_sequence),
+            through_mind_version: Some(10),
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
+            limit: 8,
+        })
+        .await
+        .unwrap();
+    assert_eq!(causal_snapshot.len(), 1);
+    assert_eq!(
+        causal_snapshot[0].document_id, "recall-time-conformance-0",
+        "Recall must apply the physical Context View frontier inside SQL before ranking and LIMIT"
+    );
+    let pre_frame_view = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some(morphz::memory::normalize_recall_text(
+                "memory/sandbox-permission",
+            )),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            // Event and Mind clocks are intentionally different domains. A
+            // large Event frontier must not admit a Frame updated at a later
+            // Mind revision than the physical model View.
+            through_sequence: Some(u64::try_from(i64::MAX).unwrap()),
+            through_mind_version: Some(19),
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
+            limit: 8,
+        })
+        .await
+        .unwrap();
+    assert!(
+        pre_frame_view.is_empty(),
+        "Frame Recall must use the Mind revision fence rather than comparing a Frame version with an Event sequence"
+    );
 
     // Model the exact rebuild race: maintenance captured `documents`, then a
     // new authoritative Event committed before the replacement transaction.

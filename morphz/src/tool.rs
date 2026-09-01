@@ -20,7 +20,7 @@ use crate::memory::{
     ThreadPromotionRequest, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::TYPE_OBJECTIVE_CONTROL;
-use crate::orchestrator::context::ContextEngine;
+use crate::orchestrator::context::{ContextEngine, ContextViewManifest};
 use crate::permission::{
     ApprovalContext, ApprovalRequirement, FilesystemAccess, PermissionBroker, PermissionConfig,
     PermissionProfile, SandboxMode, ShellEnvironmentPolicy,
@@ -150,6 +150,10 @@ fn executable_secret_aliases(
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
+    /// Exact model-visible Context residency for the physical request that
+    /// selected this tool call. It is Runtime-injected and never accepted from
+    /// model-authored Recall arguments.
+    pub static CURRENT_CONTEXT_VIEW_MANIFEST: Option<Arc<ContextViewManifest>>;
     pub static CURRENT_OBJECTIVE_ID: Option<String>;
     pub static CURRENT_PRINCIPAL_ID: Option<String>;
     pub static CURRENT_ATTEMPT_ID: String;

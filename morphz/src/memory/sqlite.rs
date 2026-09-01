@@ -78,7 +78,7 @@ use chrono::{DateTime, Utc};
 use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, SqlitePool};
+use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -24072,6 +24072,11 @@ impl EventStore for SqliteStore {
         &self,
         filter: QueryFilter,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
+        if filter.event_visibility_snapshot.is_some() {
+            return Err(
+                "a PostgreSQL Event visibility snapshot cannot be evaluated by SQLite".into(),
+            );
+        }
         let forward_by_sequence = filter.after_sequence.is_some();
         let mut builder = QueryBuilder::new(
             "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
@@ -24085,6 +24090,14 @@ impl EventStore for SqliteStore {
             builder.push(" AND id IN (");
             let mut separated = builder.separated(", ");
             for event_id in &filter.event_ids {
+                separated.push_bind(event_id);
+            }
+            builder.push(")");
+        }
+        if !filter.excluded_event_ids.is_empty() {
+            builder.push(" AND id NOT IN (");
+            let mut separated = builder.separated(", ");
+            for event_id in &filter.excluded_event_ids {
                 separated.push_bind(event_id);
             }
             builder.push(")");
@@ -24126,6 +24139,11 @@ impl EventStore for SqliteStore {
         if let Some(before_sequence) = filter.before_sequence {
             builder.push(" AND rowid < ");
             builder.push_bind(i64::try_from(before_sequence).unwrap_or(i64::MAX));
+        }
+
+        if let Some(through_sequence) = filter.through_sequence {
+            builder.push(" AND rowid <= ");
+            builder.push_bind(i64::try_from(through_sequence).unwrap_or(i64::MAX));
         }
 
         if let Some(st) = filter.start_time {
@@ -24814,6 +24832,62 @@ impl CognitiveClockStore for SqliteStore {
     }
 }
 
+fn push_sqlite_recall_residency_exclusions<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    request: &'a RecallDocumentSearchRequest,
+) {
+    if !request.excluded_event_ids.is_empty() {
+        query.push(" AND NOT (d.document_kind = 'event' AND d.document_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &request.excluded_event_ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push("))");
+    }
+    if !request.excluded_frame_ids.is_empty() {
+        query.push(" AND NOT (d.document_kind = 'frame' AND d.document_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &request.excluded_frame_ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push("))");
+    }
+}
+
+fn push_sqlite_recall_visibility_boundary(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    request: &RecallDocumentSearchRequest,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if request.event_visibility_snapshot.is_some() {
+        return Err("a PostgreSQL Event visibility snapshot cannot be evaluated by SQLite".into());
+    }
+    match (request.through_sequence, request.through_mind_version) {
+        (Some(event_sequence), Some(mind_version)) => {
+            query.push(" AND ((d.document_kind = 'event' AND d.updated_sequence <= ");
+            query.push_bind(i64::try_from(event_sequence)?);
+            query.push(") OR (d.document_kind = 'frame' AND d.updated_sequence <= ");
+            query.push_bind(i64::try_from(mind_version)?);
+            query.push("))");
+        }
+        (Some(event_sequence), None) => {
+            query.push(" AND (d.document_kind <> 'event' OR d.updated_sequence <= ");
+            query.push_bind(i64::try_from(event_sequence)?);
+            query.push(")");
+        }
+        (None, Some(mind_version)) => {
+            query.push(" AND (d.document_kind <> 'frame' OR d.updated_sequence <= ");
+            query.push_bind(i64::try_from(mind_version)?);
+            query.push(")");
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl RecallProjectionStore for SqliteStore {
     async fn recall_index_capability(
@@ -24834,6 +24908,11 @@ impl RecallProjectionStore for SqliteStore {
             start_time: None,
             end_time: None,
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit,
         })
         .await
@@ -24910,6 +24989,8 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_sqlite_recall_visibility_boundary(&mut query, &request)?;
+            push_sqlite_recall_residency_exclusions(&mut query, &request);
             if chronological {
                 query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC");
             } else {
@@ -24943,6 +25024,8 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_sqlite_recall_visibility_boundary(&mut query, &request)?;
+            push_sqlite_recall_residency_exclusions(&mut query, &request);
             query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
             query.push_bind(i64::try_from(limit)?);
             query.build().fetch_all(&self.pool).await?
@@ -24976,6 +25059,8 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_sqlite_recall_visibility_boundary(&mut query, &request)?;
+            push_sqlite_recall_residency_exclusions(&mut query, &request);
             query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
             query.push_bind(i64::try_from(limit)?);
             query.build().fetch_all(&self.pool).await?
@@ -25299,8 +25384,21 @@ impl SessionProjectionStore for SqliteStore {
                     })
                 })
                 .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+            let event_sequence_upper_bound = u64::try_from(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM events WHERE context_id = ?",
+                )
+                .bind(context_id)
+                .fetch_one(&mut *transaction)
+                .await?,
+            )?;
             transaction.commit().await?;
-            return Ok(ContextEncodingProjectionSnapshot { mind, events });
+            return Ok(ContextEncodingProjectionSnapshot {
+                mind,
+                events,
+                event_sequence_upper_bound,
+                event_visibility_snapshot: None,
+            });
         }
         let mut builder = QueryBuilder::new(
             r#"SELECT snapshot.row_kind, snapshot.event_sequence,
@@ -25361,10 +25459,25 @@ impl SessionProjectionStore for SqliteStore {
         } else if !include_context_wide {
             builder.push("0");
         }
-        builder.push(") ) snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
+        builder.push(
+            r#")
+                 UNION ALL
+                 SELECT 2 AS sort_key, 'frontier' AS row_kind,
+                        COALESCE(MAX(e.rowid), 0) AS event_sequence,
+                        NULL AS event_id, NULL AS event_timestamp,
+                        NULL AS event_actor, NULL AS event_type,
+                        NULL AS event_topic, NULL AS event_payload,
+                        NULL AS mind_context_id, NULL AS mind_revision,
+                        NULL AS mind_state_json, NULL AS mind_state_hash,
+                        NULL AS mind_head_event_id, NULL AS mind_updated_at
+                 FROM events e WHERE e.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(") snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
         let rows = builder.build().fetch_all(&self.pool).await?;
         let mut mind = None;
-        let mut events = Vec::with_capacity(rows.len().saturating_sub(1));
+        let mut events = Vec::with_capacity(rows.len().saturating_sub(2));
+        let mut event_sequence_upper_bound = 0;
         for row in rows {
             match row.get::<String, _>("row_kind").as_str() {
                 "mind" => {
@@ -25416,12 +25529,23 @@ impl SessionProjectionStore for SqliteStore {
                             .ok_or("Context Encoding snapshot Event 缺少 payload")?,
                     )?,
                 }),
+                "frontier" => {
+                    event_sequence_upper_bound = u64::try_from(
+                        row.get::<Option<i64>, _>("event_sequence")
+                            .ok_or("Context Encoding snapshot 缺少 Event frontier")?,
+                    )?;
+                }
                 other => {
                     return Err(format!("未知 Context Encoding snapshot row kind '{other}'").into())
                 }
             }
         }
-        Ok(ContextEncodingProjectionSnapshot { mind, events })
+        Ok(ContextEncodingProjectionSnapshot {
+            mind,
+            events,
+            event_sequence_upper_bound,
+            event_visibility_snapshot: None,
+        })
     }
 }
 
@@ -27288,6 +27412,11 @@ mod tests {
                 start_time: Some(start_time),
                 end_time: Some(end_time),
                 before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: Vec::new(),
                 limit: 1,
             })
             .await
@@ -27298,6 +27427,27 @@ mod tests {
             "2026-08-04T11:00:00+00:00"
         );
 
+        let non_resident_first = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: None,
+                start_time: Some(start_time),
+                end_time: Some(end_time),
+                before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: vec!["recall-time-event-2".to_string()],
+                excluded_frame_ids: Vec::new(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            non_resident_first[0].document_id, "recall-time-event-1",
+            "resident exclusion must happen inside SQL before LIMIT"
+        );
+
         let second = store
             .query_recall_documents(RecallDocumentSearchRequest {
                 context_id: "recall-time-context".to_string(),
@@ -27305,6 +27455,11 @@ mod tests {
                 start_time: Some(start_time),
                 end_time: Some(end_time),
                 before_sequence: Some(first[0].updated_sequence),
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: Vec::new(),
                 limit: 1,
             })
             .await
@@ -27322,12 +27477,59 @@ mod tests {
                         .with_timezone(&Utc),
                 ),
                 before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: Vec::new(),
                 limit: 10,
             })
             .await
             .unwrap();
         assert_eq!(combined.len(), 1, "end_time 必须是排他的");
         assert_eq!(combined[0].document_id, "recall-time-event-1");
+
+        let frame_documents = [
+            ("active-frame", false, 2_u64),
+            ("retired-frame", true, 1_u64),
+        ]
+        .into_iter()
+        .map(|(id, retired, sequence)| RecallDocument {
+            context_id: "recall-time-context".to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: id.to_string(),
+            revision: 1,
+            searchable_text: crate::memory::segment_recall_text(&format!("{id} 共享认知证据")),
+            legacy_searchable_chunks: Vec::new(),
+            preview: format!("{id} 共享认知证据"),
+            retired,
+            updated_sequence: sequence,
+            state_hash: format!("hash-{id}"),
+        })
+        .collect::<Vec<_>>();
+        store
+            .replace_recall_documents("recall-time-context", &frame_documents)
+            .await
+            .unwrap();
+        let non_resident_frames = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: Some(crate::memory::normalize_recall_text("共享认知")),
+                start_time: None,
+                end_time: None,
+                before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: vec!["active-frame".to_string()],
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(non_resident_frames.len(), 1);
+        assert_eq!(non_resident_frames[0].document_id, "retired-frame");
+        assert!(non_resident_frames[0].retired);
     }
 
     #[tokio::test]

@@ -70,6 +70,21 @@ Context build 必须生成一个确定性的 `ContextViewManifest`，至少描�
 Manifest（或等价的数据库可执行谓词），在候选生成阶段排除 resident 内容，而不是检索后靠
 Prompt 去重。
 
+当前 Runtime 把产生物理模型请求的精确 Manifest 持久化到 `chat/assistant_call`，并在并行
+Tool task 与崩溃恢复时重新建立同一 task-local View 边界。Manifest 损坏必须 fail closed，
+不能被解释成“没有限制”；旧版本 Event 缺少该字段与字段存在但不可解析是两个不同状态。
+SQLite 与 PostgreSQL 都必须在 SQL `LIMIT` 之前执行 resident identity 排除，避免已驻留的
+高相关前缀耗尽候选窗口。显式按 Event/Frame ID 读取仍是精确历史操作，不受默认搜索去重
+规则影响。
+
+Manifest 同时冻结两套不能混用的物理可见性时钟：Event 使用不可变 `sequence`，Frame 使用
+Mind `version`。Event sequence 只是追加身份，并不表达因果顺序。PostgreSQL 还必须冻结事务
+可见性快照，因为 `BIGSERIAL` 在提交前分配：低 sequence
+事务可能晚于高 sequence 事务提交，单独使用 `MAX(sequence)` 会把物理 View 之后才提交的
+Event 倒灌进 Recall。SQLite 的单写者 rowid 顺序不需要额外快照令牌。模型默认搜索同时应用
+数字边界、后端快照与 resident 排除；物理请求中已经明确 resident 的精确 ID 可以继续读取，
+但不得因此扩大普通搜索边界。
+
 这条规则允许被 swap out 的活跃 Session 继续参与跨会话认知，同时防止同一内容在模型输入
 中出现两份。Recall 返回的是带来源和 lifecycle 的临时证据，不会因此自动把整个 Session
 restore 或重新挂载。
@@ -226,7 +241,7 @@ Runtime 不依赖 SQLite 表名、PostgreSQL JSONB 形态或未来的复制实�
 
 - 默认 SQLite 全量测试；
 - PostgreSQL 全量 Store conformance 与集成测试；
--真实 Provider 对话、Tool continuation、restart、Interrupt、Follow-up、Parallel、Schedule、
+- 真实 Provider 对话、Tool continuation、restart、Interrupt、Follow-up、Parallel、Schedule、
   multi-session shared Context；
 - 格式、Clippy `-D warnings`、all-targets、all-features 和跨平台构建；
 - 用户真实工作 Context 作为长期 Canary，发现的问题必须先固化成自动回归测试再修复。
@@ -244,7 +259,17 @@ Runtime 不依赖 SQLite 表名、PostgreSQL JSONB 形态或未来的复制实�
 | Mind、Session retirement、Trajectory 分步可见 | `mind_update_and_session_retirement_commit_atomically_*`、`context_db_is_authoritative_while_trajectory_and_control_commit_atomically` | 每个写点故障注入均全有或全无 |
 | restart 后 Mind、Observation retirement 或回复丢失 | `committed_mind_survives_engine_restart_*`、Runtime restart 系列 | SQLite/PostgreSQL kill/restart 都覆盖 |
 | retire/restore 导致 Session Projection 重复或遗漏 | `session_projection_tracks_append_retire_restore_atomically` | active residency 与 lifecycle 分离验证 |
-| Recall payload 被二次 preview、当前内容重复注入 | `event_recall_payload_is_not_previewed_a_second_time` | 新增 resident/non-resident Recall 测试 |
+| Recall payload 被二次 preview、当前内容重复注入 | `event_recall_payload_is_not_previewed_a_second_time`、`model_recall_search_excludes_resident_content_without_principal_isolation` | 模型默认搜索排除精确 resident identity；显式 ID 读取仍可用 |
+| active 但未进入本轮 View 的 Session 被误当成不可 Recall | `session_outside_the_fifty_session_view_remains_recallable_across_principals`、`retired_observation_is_non_resident_and_remains_recallable` | 默认语义固定为 `visible AND non_resident`，lifecycle 不冒充 residency |
+| resident 排除在 SQL `LIMIT` 后执行导致空页 | `recall_indexes_long_event_suffix_and_pages_an_authoritative_time_range`、共享 RuntimeStore conformance | SQLite/PostgreSQL 均在候选生成阶段排除 |
+| Tool spawn/restart 丢失生成调用时的 View 边界 | `persisted_context_view_manifest_round_trips_and_malformed_data_fails_closed` | Manifest 随 `assistant_call` 持久化；损坏明确失败，不静默扩大 Recall |
+| 在线模型工具调用漏传 Manifest 后退化为无界当前查询 | `model_recall_requires_runtime_context_view_manifest` | 模型 `recall` 必须由 Runtime 注入精确 View；task-local 缺失或显式为空均 fail closed |
+| 旧 `assistant_call` 恢复 Recall 时无 Manifest 而退化成当前全量搜索 | `persisted_context_view_manifest_round_trips_and_malformed_data_fails_closed` | 旧非 Recall 工具可兼容恢复；旧 Recall 计划必须从新 Evaluation 开始 |
+| Event sequence 与 Frame Mind version 被当成同一时钟 | 共享 RuntimeStore Recall conformance | Event 与 Frame 在 SQL 候选阶段分别使用各自物理可见性上界 |
+| PostgreSQL 低 sequence 事务晚提交后倒灌进旧 View | `postgres_context_db_is_atomic_fenced_restartable_and_directory_consistent_when_configured` | `MAX(sequence)` 与 `pg_snapshot` 同时冻结，Event/Recall 两条读取链路都验证 |
+| ContextDB 目录读取正确但模型编码仍读取旧 Mind Projection | `postgres_context_db_is_atomic_fenced_restartable_and_directory_consistent_when_configured` | 冲突旧表作为 decoy，目录、直接读和模型编码都必须以 ContextDB 为准 |
+| PostgreSQL 有序 ingress 拿到新 Session 行却读取旧 Thread/Event 快照 | 共享 RuntimeStore 并发 Follow-up/Interrupt conformance | 混合时间 View 无副作用回退；无竞争路径仍保持单 SQL 预算 |
+| 新 schema 初始化用未限定函数名误删另一 schema 的 Runtime 快速路径 | `postgres_schema_bootstrap_never_removes_a_peer_runtime_fast_path` | 所有可执行迁移对象都绑定 `current_schema()`；修复迁移恢复已受影响数据库；临时 schema 删除不影响常驻 Runtime |
 | Recall 重建改变当前 Mind | `long_stateful_context_converges_across_projection_snapshot_replay_and_recall_rebuild` | 删除整个 Recall index 后 Context hash 不变 |
 | 大 Session Registry 被全量拉入内存 | `working_set_max_one_and_large_registry_do_not_expand_projection`、双后端 statement budget | SQL 内完成窗口、数量与可选谓词筛选 |
 | `max_sessions=1` 错误改变共享认知能力 | 当前默认 50、ME-09 冻结配置 | 默认值、生成配置和远端 artifact 三处断言为 50 |

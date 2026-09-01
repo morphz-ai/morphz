@@ -9,8 +9,9 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
     EventStore, MindProjectionCommit, MindProjectionStore, NewAgent, NewCognitiveContext,
-    NewMindProjection, NewSession, QueryFilter, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionProjectionMutation,
+    NewMindProjection, NewSession, QueryFilter, RecallDocumentSearchRequest, RecallProjectionStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
+    SessionProjectionMutation, SessionProjectionStore,
 };
 use morphz::observability::Observability;
 use morphz::orchestrator::context::{
@@ -731,6 +732,133 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         directory.mind.unwrap().state,
         serde_json::to_value(&replaced)?
     );
+    let encoding_snapshot = store
+        .read_context_encoding_projection_snapshot(context_id, &[session_id.to_string()], true)
+        .await?;
+    assert_eq!(
+        encoding_snapshot.mind.unwrap().state,
+        serde_json::to_value(&replaced)?,
+        "the physical model Context snapshot must read ContextDB rather than the conflicting legacy projection"
+    );
+
+    // PostgreSQL BIGSERIAL values are reserved before commit. Reproduce the
+    // dangerous order explicitly: transaction A owns the lower sequence but
+    // remains uncommitted; transaction B commits the higher sequence; the
+    // physical View is captured; only then does A commit. A numeric MAX fence
+    // alone would let A leak backwards into that already-built model request.
+    let mut delayed = audit_pool.begin().await?;
+    let delayed_sequence = sqlx::query_scalar::<_, i64>(
+        r#"INSERT INTO events
+           (id, timestamp, actor, type, topic, context_id, session_id,
+            thread_id, activation_id, root_turn_id, objective_id, payload)
+           VALUES ($1, $2, 'Concurrent writer', $3, 'chat/user_message', $4, $5,
+                   NULL, NULL, NULL, NULL, $6)
+           RETURNING sequence"#,
+    )
+    .bind("pg-causal-delayed-low-sequence")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(morphz::event::TYPE_USER_MESSAGE)
+    .bind(context_id)
+    .bind(session_id)
+    .bind(json!({
+        "context_id": context_id,
+        "session_id": session_id,
+        "text": "must not leak into an earlier physical View"
+    }))
+    .fetch_one(&mut *delayed)
+    .await?;
+    let delayed_outbox_time =
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(
+        r#"INSERT INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, created_at, updated_at)
+           VALUES ($1, 'event', $2, 1, $3, 'pending', 0, $4, $4, $4)"#,
+    )
+    .bind(context_id)
+    .bind("pg-causal-delayed-low-sequence")
+    .bind(json!({"retired": false}))
+    .bind(&delayed_outbox_time)
+    .execute(&mut *delayed)
+    .await?;
+    store
+        .append(Event::new(
+            "pg-causal-visible-high-sequence".to_string(),
+            "Committed writer".to_string(),
+            morphz::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": context_id,
+                "session_id": session_id,
+                "text": "visible before the physical View"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ))
+        .await?;
+    let causal_view = store
+        .read_context_encoding_projection_snapshot(context_id, &[session_id.to_string()], true)
+        .await?;
+    let visibility_snapshot = causal_view
+        .event_visibility_snapshot
+        .clone()
+        .expect("PostgreSQL must issue a transaction visibility snapshot");
+    assert!(
+        i64::try_from(causal_view.event_sequence_upper_bound)? > delayed_sequence,
+        "the committed Event must establish a higher numeric frontier"
+    );
+    delayed.commit().await?;
+    let causally_visible = store
+        .query(QueryFilter {
+            context_id: Some(context_id.to_string()),
+            through_sequence: Some(causal_view.event_sequence_upper_bound),
+            event_visibility_snapshot: Some(visibility_snapshot),
+            latest_k: Some(32),
+            ..Default::default()
+        })
+        .await?;
+    let causally_visible_ids = causally_visible
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(causally_visible_ids.contains("pg-causal-visible-high-sequence"));
+    assert!(
+        !causally_visible_ids.contains("pg-causal-delayed-low-sequence"),
+        "a transaction committed after the physical View must remain invisible even when its reserved sequence is below MAX(sequence)"
+    );
+    loop {
+        let projected = store
+            .project_recall_outbox_batch("pg-causal-visibility-worker", 64)
+            .await?;
+        if projected.claimed == 0 {
+            break;
+        }
+    }
+    let causally_recalled = store
+        .query_recall_documents(RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some(morphz::memory::normalize_recall_text("physical View")),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            through_sequence: Some(causal_view.event_sequence_upper_bound),
+            through_mind_version: Some(replaced.version),
+            event_visibility_snapshot: causal_view.event_visibility_snapshot,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
+            limit: 16,
+        })
+        .await?;
+    let causally_recalled_ids = causally_recalled
+        .iter()
+        .map(|hit| hit.document_id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(causally_recalled_ids.contains("pg-causal-visible-high-sequence"));
+    assert!(
+        !causally_recalled_ids.contains("pg-causal-delayed-low-sequence"),
+        "the Recall projection must preserve the PostgreSQL transaction snapshot before ranking and LIMIT"
+    );
     audit_pool.close().await;
 
     drop(store);
@@ -815,6 +943,74 @@ async fn postgres_context_db_requires_and_performs_explicit_exact_migration_when
     );
     drop(authoritative);
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&administration)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_schema_bootstrap_never_removes_a_peer_runtime_fast_path() -> Result<(), TestError>
+{
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return Ok(());
+    };
+    let (administration, peer_schema, peer_url) =
+        isolated_database_url(&database_url, "peer_runtime").await?;
+    let peer = PostgresStore::new(&peer_url, 2).await?;
+    drop(peer);
+
+    let suffix = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .ok_or("timestamp does not fit i64")?;
+    let transient_schema = format!(
+        "morphz_contextdb_transient_runtime_{}_{}",
+        std::process::id(),
+        suffix.unsigned_abs()
+    );
+    sqlx::query(&format!("CREATE SCHEMA {transient_schema}"))
+        .execute(&administration)
+        .await?;
+    let separator = if database_url.contains('?') { '&' } else { '?' };
+    let transient_url = format!(
+        "{database_url}{separator}options=-csearch_path%3D{transient_schema}%2C{peer_schema}"
+    );
+    let transient = PostgresStore::new_with_context_db(
+        &transient_url,
+        2,
+        Arc::new(Observability::default()),
+        permit(),
+    )
+    .await?;
+    drop(transient);
+    sqlx::query(&format!("DROP SCHEMA {transient_schema} CASCADE"))
+        .execute(&administration)
+        .await?;
+
+    for function_name in [
+        "morphz_try_claim_fresh_dialogue_activation_v1",
+        "morphz_update_thread_activation_v1",
+    ] {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS (
+                 SELECT 1
+                   FROM pg_proc function
+                   JOIN pg_namespace namespace
+                     ON namespace.oid = function.pronamespace
+                  WHERE namespace.nspname = $1
+                    AND function.proname = $2
+               )"#,
+        )
+        .bind(&peer_schema)
+        .bind(function_name)
+        .fetch_one(&administration)
+        .await?;
+        assert!(
+            exists,
+            "bootstrapping and removing another schema must not delete {peer_schema}.{function_name}"
+        );
+    }
+
+    sqlx::query(&format!("DROP SCHEMA {peer_schema} CASCADE"))
         .execute(&administration)
         .await?;
     Ok(())

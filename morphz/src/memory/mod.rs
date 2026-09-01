@@ -72,6 +72,34 @@ pub struct RecallDocumentSearchRequest {
     pub end_time: Option<DateTime<Utc>>,
     /// Stable exclusive Event sequence boundary for backward pagination.
     pub before_sequence: Option<u64>,
+    /// Inclusive physical Event-sequence boundary of the Context View which
+    /// selected Recall. Event sequence is append identity, not causal order.
+    /// This is independent from the pagination cursor: backends must reject
+    /// documents beyond this sequence before ranking/LIMIT and must also
+    /// enforce `event_visibility_snapshot` when the backend provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_sequence: Option<u64>,
+    /// Inclusive Mind revision of the physical Context View. Frame Recall
+    /// documents use `updated_sequence` as a Mind-version clock, not an Event
+    /// sequence, so this fence must remain separate from `through_sequence`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_mind_version: Option<u64>,
+    /// Backend-issued visibility snapshot for Events whose transaction may
+    /// have reserved a sequence before the physical View but committed only
+    /// afterwards. PostgreSQL uses `pg_snapshot`; SQLite leaves this empty
+    /// because its single-writer commit order matches rowid order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_visibility_snapshot: Option<String>,
+    /// Event documents already present in the exact model-visible Context
+    /// View. Backends must apply these exclusions before LIMIT so a resident
+    /// prefix cannot starve genuinely non-resident Recall candidates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_event_ids: Vec<String>,
+    /// Active Frame documents already present in the exact model-visible
+    /// Mind. Retired Frames are intentionally absent from this set and remain
+    /// Recall candidates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_frame_ids: Vec<String>,
     pub limit: usize,
 }
 
@@ -759,6 +787,13 @@ pub struct SessionProjectionMutation {
 pub struct ContextEncodingProjectionSnapshot {
     pub mind: Option<MindProjectionRecord>,
     pub events: Vec<crate::event::Event>,
+    /// Greatest immutable Event sequence committed in this Context on the
+    /// same database snapshot as `mind` and `events`.
+    pub event_sequence_upper_bound: u64,
+    /// Opaque backend snapshot paired with the Event frontier. A later Recall
+    /// query must preserve it so out-of-order transaction commits cannot leak
+    /// into an earlier physical model request.
+    pub event_visibility_snapshot: Option<String>,
 }
 
 /// Storage-level selection contract for the Session portion of one Context
@@ -5268,6 +5303,10 @@ pub struct QueryFilter {
     /// Exact Event IDs, usually returned by the asynchronous Recall lexical
     /// projection. Empty means no ID constraint.
     pub event_ids: Vec<String>,
+    /// Exact Event IDs to exclude before ordering and LIMIT. This is the
+    /// immutable Event-store counterpart of Recall residency filtering; doing
+    /// it after LIMIT can starve a page with already-resident content.
+    pub excluded_event_ids: Vec<String>,
     pub sequence: Option<u64>,
     pub context_id: Option<String>,
     pub session_id: Option<String>,
@@ -5283,6 +5322,15 @@ pub struct QueryFilter {
     /// with `latest_k`, this provides stable backward pagination over the
     /// immutable Event Sequence without offset scans.
     pub before_sequence: Option<u64>,
+    /// Only return Events at or before this inclusive physical View frontier.
+    /// Event sequence is append identity, not causal order. Unlike
+    /// `before_sequence`, this is a model-request visibility boundary rather
+    /// than a backward-pagination cursor.
+    pub through_sequence: Option<u64>,
+    /// Opaque Event visibility snapshot captured with the physical Context
+    /// View. Backends which issue one must enforce it in addition to the
+    /// numeric sequence frontier.
+    pub event_visibility_snapshot: Option<String>,
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
     pub actors: Vec<String>,
@@ -5426,10 +5474,10 @@ pub trait EventStore: Send + Sync {
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
-/// The Event Store and Mind Projection remain authoritative; implementations
+/// Agent Trajectory and the current Context Store remain authoritative;
 /// source mutation only enqueues a lightweight Outbox intent. Expensive text
 /// extraction and lexical index writes run independently and may be rebuilt
-/// from Events + Mind after failure.
+/// from Trajectory facts plus current Context state after failure.
 #[async_trait::async_trait]
 pub trait RecallProjectionStore: Send + Sync {
     async fn recall_index_capability(

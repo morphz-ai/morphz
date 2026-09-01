@@ -984,6 +984,15 @@ pub struct SessionWorkingSetView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextView {
     pub context_id: String,
+    /// Greatest immutable Event sequence admitted by the physical visibility
+    /// snapshot used to compile the model-facing View. Sequence is append
+    /// identity, not causal order.
+    #[serde(default)]
+    pub event_sequence_upper_bound: u64,
+    /// Opaque Store visibility token captured with the Event frontier. This
+    /// closes the PostgreSQL sequence-reservation/commit-order gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_visibility_snapshot: Option<String>,
     /// Exact budget policy used to compile this projection.
     pub token_budget_policy: ContextTokenBudget,
     pub active_session_id: String,
@@ -1080,6 +1089,10 @@ pub struct FrameRecallRequest {
     pub include_events: bool,
     pub max_nodes: usize,
     pub cursor: Option<String>,
+    /// Runtime-injected physical View boundary. Operator callers may leave
+    /// this empty for an explicit current-state inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_manifest: Option<ContextViewManifest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1090,6 +1103,113 @@ pub struct RecallSearchRequest {
     pub end_time: Option<DateTime<Utc>>,
     pub limit: usize,
     pub cursor: Option<String>,
+    /// Runtime-injected identity of the exact Context View used for the model
+    /// request that selected Recall. Control-plane callers may leave this
+    /// empty to request an explicit Context-wide history search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_manifest: Option<ContextViewManifest>,
+}
+
+/// The model-facing residency boundary for one physical request.
+///
+/// Visibility and residency are deliberately separate. The current default
+/// visibility policy is the whole Cognitive Context (including Sessions from
+/// different Principals); `resident_*` only prevents content already encoded
+/// in this exact request from being injected a second time. Future explicit
+/// visibility predicates must change `visibility_fingerprint` and preserve
+/// the same cursor check rather than silently turning Principal identity into
+/// a default isolation boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextViewManifest {
+    pub context_id: String,
+    pub mind_version: u64,
+    /// Inclusive physical Event-sequence frontier of the model request.
+    /// Recall may read resident identities explicitly, but ordinary lookup
+    /// may never cross this sequence or the backend visibility snapshot into
+    /// facts committed after the request was constructed.
+    pub event_sequence_upper_bound: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_visibility_snapshot: Option<String>,
+    pub visibility_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resident_event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resident_frame_ids: Vec<String>,
+}
+
+impl ContextViewManifest {
+    pub fn context_wide(
+        context_id: impl Into<String>,
+        mind_version: u64,
+        event_sequence_upper_bound: u64,
+        resident_event_ids: impl IntoIterator<Item = String>,
+        resident_frame_ids: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let context_id = context_id.into();
+        let mut resident_event_ids = resident_event_ids.into_iter().collect::<Vec<_>>();
+        resident_event_ids.sort();
+        resident_event_ids.dedup();
+        let mut resident_frame_ids = resident_frame_ids.into_iter().collect::<Vec<_>>();
+        resident_frame_ids.sort();
+        resident_frame_ids.dedup();
+        Self {
+            visibility_fingerprint: recall_context_visibility_fingerprint(&context_id),
+            context_id,
+            mind_version,
+            event_sequence_upper_bound,
+            event_visibility_snapshot: None,
+            resident_event_ids,
+            resident_frame_ids,
+        }
+    }
+
+    pub fn from_view(
+        view: &ContextView,
+        additionally_resident_event_ids: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let mut resident_event_ids = view
+            .observations
+            .iter()
+            // A preview is intentionally only partially resident and must
+            // remain Recallable. `recalled-chunk` is a complete tool result
+            // Event even when the original source Event has more pages.
+            .filter(|observation| observation.representation != "preview")
+            .map(|observation| observation.id.clone())
+            .chain(additionally_resident_event_ids)
+            .collect::<Vec<_>>();
+        resident_event_ids.sort();
+        resident_event_ids.dedup();
+
+        let mut resident_frame_ids = view
+            .state
+            .frames
+            .iter()
+            .filter(|frame| !view.state.retired.contains(&frame.id))
+            .map(|frame| frame.id.clone())
+            .collect::<Vec<_>>();
+        resident_frame_ids.sort();
+        resident_frame_ids.dedup();
+
+        let mut manifest = Self::context_wide(
+            view.context_id.clone(),
+            view.state.version,
+            view.event_sequence_upper_bound,
+            resident_event_ids,
+            resident_frame_ids,
+        );
+        manifest.event_visibility_snapshot = view.event_visibility_snapshot.clone();
+        manifest
+    }
+
+    pub(crate) fn validate_for_context(&self, context_id: &str) -> Result<(), DynError> {
+        if self.context_id != context_id {
+            return Err("Recall Context View manifest belongs to another Context".into());
+        }
+        if self.visibility_fingerprint != recall_context_visibility_fingerprint(context_id) {
+            return Err("Recall Context View manifest has an unsupported visibility policy".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1180,7 +1300,23 @@ struct RecallSearchCursor {
     normalized_query: String,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+    visibility_fingerprint: String,
+    /// Original inclusive request frontier. A later physical request may page
+    /// this older snapshot, but it must never use a cursor from its future.
+    #[serde(default)]
+    through_sequence: Option<u64>,
+    #[serde(default)]
+    through_mind_version: Option<u64>,
+    #[serde(default)]
+    event_visibility_snapshot: Option<String>,
     before_sequence: u64,
+}
+
+fn recall_context_visibility_fingerprint(context_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"morphz/recall-visibility/context-wide/v1\0");
+    digest.update(context_id.as_bytes());
+    format!("v1:{:x}", digest.finalize())
 }
 
 fn select_session_working_set(
@@ -3423,58 +3559,93 @@ impl ContextEngine {
             phase_started.elapsed(),
         );
         phase_started = Instant::now();
-        let (state, events) = match legacy_events {
-            Some(events) => {
-                let state = self.load_current_mind(context_id, Some(&events)).await?;
-                (state, events)
-            }
-            None => {
-                if let (Some(projection_store), Some(_)) =
-                    (&self.session_projection_store, &self.mind_projection_store)
-                {
-                    let mut snapshot = projection_store
-                        .read_context_encoding_projection_snapshot(
-                            context_id,
-                            &full_session_ids,
-                            true,
-                        )
-                        .await?;
-                    if snapshot.mind.is_none() {
-                        // Lazily migrate legacy persisted Events, then take a fresh
-                        // atomic snapshot. The steady-state path performs only
-                        // the single snapshot read above.
-                        self.load_current_mind(context_id, None).await?;
-                        snapshot = projection_store
+        let (state, events, event_sequence_upper_bound, event_visibility_snapshot) =
+            match legacy_events {
+                Some(events) => {
+                    let state = self.load_current_mind(context_id, Some(&events)).await?;
+                    let event_sequence_upper_bound = events
+                        .iter()
+                        .filter_map(|event| event.sequence)
+                        .max()
+                        .unwrap_or(0);
+                    (state, events, event_sequence_upper_bound, None)
+                }
+                None => {
+                    if let (Some(projection_store), Some(_)) =
+                        (&self.session_projection_store, &self.mind_projection_store)
+                    {
+                        let mut snapshot = projection_store
                             .read_context_encoding_projection_snapshot(
                                 context_id,
                                 &full_session_ids,
                                 true,
                             )
                             .await?;
+                        if snapshot.mind.is_none() {
+                            // Lazily migrate legacy persisted Events, then take a fresh
+                            // atomic snapshot. The steady-state path performs only
+                            // the single snapshot read above.
+                            self.load_current_mind(context_id, None).await?;
+                            snapshot = projection_store
+                                .read_context_encoding_projection_snapshot(
+                                    context_id,
+                                    &full_session_ids,
+                                    true,
+                                )
+                                .await?;
+                        }
+                        let event_sequence_upper_bound = snapshot.event_sequence_upper_bound;
+                        let event_visibility_snapshot = snapshot.event_visibility_snapshot.clone();
+                        let state = Self::validate_mind_projection(
+                            context_id,
+                            snapshot.mind.ok_or_else(|| {
+                                format!(
+                                    "consistent encoding snapshot for Context '{context_id}' is missing a Mind Projection"
+                                )
+                            })?,
+                        )?;
+                        (
+                            state,
+                            snapshot.events,
+                            event_sequence_upper_bound,
+                            event_visibility_snapshot,
+                        )
+                    } else {
+                        // Lightweight/legacy configurations must provide both
+                        // materialized projections before they can use the atomic
+                        // snapshot path. Otherwise Mind still comes from Event replay
+                        // replay while active observations come from the optional
+                        // Session Projection compatibility path.
+                        let state = self.load_current_mind(context_id, None).await?;
+                        let events = self
+                            .context_encoding_events(context_id, &full_session_ids)
+                            .await?;
+                        // Lightweight compatibility stores do not expose the
+                        // atomic Projection snapshot contract. Fence Recall at a
+                        // later Context-wide Event read and never below an Event
+                        // which was already included in this View.
+                        let latest = self
+                            .store
+                            .query(QueryFilter {
+                                context_id: Some(context_id.to_string()),
+                                latest_k: Some(1),
+                                ..Default::default()
+                            })
+                            .await?
+                            .into_iter()
+                            .filter_map(|event| event.sequence)
+                            .max()
+                            .unwrap_or(0);
+                        let event_sequence_upper_bound = events
+                            .iter()
+                            .filter_map(|event| event.sequence)
+                            .max()
+                            .unwrap_or(0)
+                            .max(latest);
+                        (state, events, event_sequence_upper_bound, None)
                     }
-                    let state = Self::validate_mind_projection(
-                        context_id,
-                        snapshot.mind.ok_or_else(|| {
-                            format!(
-                                "consistent encoding snapshot for Context '{context_id}' is missing a Mind Projection"
-                            )
-                        })?,
-                    )?;
-                    (state, snapshot.events)
-                } else {
-                    // Lightweight/legacy configurations must provide both
-                    // materialized projections before they can use the atomic
-                    // snapshot path. Otherwise Mind still comes from Event replay
-                    // replay while active observations come from the optional
-                    // Session Projection compatibility path.
-                    let state = self.load_current_mind(context_id, None).await?;
-                    let events = self
-                        .context_encoding_events(context_id, &full_session_ids)
-                        .await?;
-                    (state, events)
                 }
-            }
-        };
+            };
         self.record_context_build_phase(
             activation_record,
             context_id,
@@ -4156,6 +4327,26 @@ impl ContextEngine {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        // The Projection snapshot supplies the normal frontier. A Context
+        // build also joins bounded scheduler/causality snapshots which may
+        // contain a later already-committed Signal. Never publish a manifest
+        // whose boundary is below an Event identity physically encoded in the
+        // same request.
+        let event_sequence_upper_bound = events
+            .iter()
+            .filter_map(|event| event.sequence)
+            .chain(
+                active_activations
+                    .iter()
+                    .map(|activation| activation.trigger_sequence),
+            )
+            .chain(thread_signals.iter().map(|signal| signal.sequence))
+            .chain(
+                activation
+                    .iter()
+                    .flat_map(|focus| focus.signal_batch.iter().map(|signal| signal.sequence)),
+            )
+            .fold(event_sequence_upper_bound, u64::max);
         let sexpr = if include_encoding {
             {
                 render_context(ContextRenderInput {
@@ -4205,6 +4396,8 @@ impl ContextEngine {
 
         Ok(ContextView {
             context_id: context_id.to_string(),
+            event_sequence_upper_bound,
+            event_visibility_snapshot,
             token_budget_policy,
             active_session_id: active_session_id.to_string(),
             active_principal_id,
@@ -4633,6 +4826,17 @@ impl ContextEngine {
         context_id: &str,
         event_id: &str,
     ) -> Result<Option<Event>, DynError> {
+        self.find_event_through_sequence(context_id, event_id, None, None)
+            .await
+    }
+
+    pub(crate) async fn find_event_through_sequence(
+        &self,
+        context_id: &str,
+        event_id: &str,
+        through_sequence: Option<u64>,
+        event_visibility_snapshot: Option<String>,
+    ) -> Result<Option<Event>, DynError> {
         let by_reference = event_id.strip_prefix(EVENT_REFERENCE_PREFIX);
         let filter = match by_reference {
             Some(sequence) => QueryFilter {
@@ -4640,12 +4844,16 @@ impl ContextEngine {
                 sequence: Some(sequence.parse::<u64>().map_err(|_| {
                     format!("Context short reference '{event_id}' is not a valid Event sequence")
                 })?),
+                through_sequence,
+                event_visibility_snapshot,
                 top_k: Some(1),
                 ..Default::default()
             },
             None => QueryFilter {
                 event_id: Some(event_id.to_string()),
                 context_id: Some(context_id.to_string()),
+                through_sequence,
+                event_visibility_snapshot,
                 top_k: Some(1),
                 ..Default::default()
             },
@@ -4691,6 +4899,15 @@ impl ContextEngine {
         request.depth = request.depth.min(4);
         request.max_nodes = request.max_nodes.clamp(1, 128);
         let state = self.load_current_mind(&request.context_id, None).await?;
+        if let Some(manifest) = request.view_manifest.as_ref() {
+            manifest.validate_for_context(&request.context_id)?;
+            if state.version != manifest.mind_version {
+                return Err(
+                    "Mind changed after the physical Context View was built; retry Frame Recall from a fresh Evaluation"
+                        .into(),
+                );
+            }
+        }
         let offset = if let Some(cursor) = &request.cursor {
             let cursor = self.decode_frame_recall_cursor(cursor)?;
             if cursor.context_id != request.context_id
@@ -4846,14 +5063,23 @@ impl ContextEngine {
                     }
                 }
                 NodeKey::Event(id) => {
-                    let event =
-                        self.find_event(&request.context_id, id)
-                            .await?
-                            .ok_or_else(|| {
-                                format!(
-                                    "frame source event '{id}' does not exist or is unauthorized"
-                                )
-                            })?;
+                    let event = self
+                        .find_event_through_sequence(
+                            &request.context_id,
+                            id,
+                            request
+                                .view_manifest
+                                .as_ref()
+                                .map(|manifest| manifest.event_sequence_upper_bound),
+                            request
+                                .view_manifest
+                                .as_ref()
+                                .and_then(|manifest| manifest.event_visibility_snapshot.clone()),
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            format!("frame source event '{id}' does not exist or is unauthorized")
+                        })?;
                     let body = event_text(&event);
                     FrameRecallNode::Event {
                         id: id.clone(),
@@ -5501,6 +5727,44 @@ impl ContextRecallService for ContextEngine {
             return Err("Recall start_time must be earlier than end_time".into());
         }
         let normalized_query = crate::memory::normalize_recall_text(&query);
+        let expected_visibility_fingerprint =
+            recall_context_visibility_fingerprint(&request.context_id);
+        let (
+            excluded_event_ids,
+            excluded_frame_ids,
+            visibility_fingerprint,
+            mut through_sequence,
+            mut through_mind_version,
+            mut event_visibility_snapshot,
+        ) = request
+            .view_manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest.validate_for_context(&request.context_id)?;
+                Ok::<_, DynError>((
+                    manifest.resident_event_ids.clone(),
+                    manifest.resident_frame_ids.clone(),
+                    manifest.visibility_fingerprint.clone(),
+                    Some(manifest.event_sequence_upper_bound),
+                    Some(manifest.mind_version),
+                    manifest.event_visibility_snapshot.clone(),
+                ))
+            })
+            .transpose()?
+            .unwrap_or_else(|| {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    expected_visibility_fingerprint.clone(),
+                    None,
+                    None,
+                    None,
+                )
+            });
+        let excluded_event_id_set = excluded_event_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
         let mut before_sequence = None;
         if let Some(cursor) = request.cursor.as_deref() {
             let cursor = self.decode_recall_search_cursor(cursor)?;
@@ -5508,11 +5772,43 @@ impl ContextRecallService for ContextEngine {
                 || cursor.normalized_query != normalized_query
                 || cursor.start_time != request.start_time
                 || cursor.end_time != request.end_time
+                || cursor.visibility_fingerprint != visibility_fingerprint
             {
                 return Err(
                     "Recall search cursor does not match the current query parameters".into(),
                 );
             }
+            if let Some(manifest_sequence) = through_sequence {
+                let cursor_sequence = cursor.through_sequence.ok_or(
+                    "Recall search cursor predates physical View fencing; restart the search",
+                )?;
+                if cursor_sequence > manifest_sequence {
+                    return Err(
+                        "Recall search cursor belongs to a later Context View; restart the search"
+                            .into(),
+                    );
+                }
+            }
+            if let Some(manifest_version) = through_mind_version {
+                let cursor_version = cursor
+                    .through_mind_version
+                    .ok_or("Recall search cursor predates Mind View fencing; restart the search")?;
+                if cursor_version > manifest_version {
+                    return Err(
+                        "Recall search cursor belongs to a later Mind View; restart the search"
+                            .into(),
+                    );
+                }
+            }
+            if event_visibility_snapshot.is_some() && cursor.event_visibility_snapshot.is_none() {
+                return Err(
+                    "Recall search cursor predates transactional View fencing; restart the search"
+                        .into(),
+                );
+            }
+            through_sequence = cursor.through_sequence;
+            through_mind_version = cursor.through_mind_version;
+            event_visibility_snapshot = cursor.event_visibility_snapshot;
             before_sequence = Some(cursor.before_sequence);
         }
         let limit = request.limit.clamp(1, 100);
@@ -5528,6 +5824,9 @@ impl ContextRecallService for ContextEngine {
                     start_time: request.start_time,
                     end_time: request.end_time,
                     before_sequence,
+                    through_sequence,
+                    event_visibility_snapshot: event_visibility_snapshot.clone(),
+                    excluded_event_ids: excluded_event_ids.clone(),
                     topics: vec![
                         "chat/user_message".to_string(),
                         "chat/reply".to_string(),
@@ -5546,6 +5845,8 @@ impl ContextRecallService for ContextEngine {
             events
                 .into_iter()
                 .rev()
+                .filter(|event| !excluded_event_id_set.contains(event.id.as_str()))
+                .take(limit)
                 .map(|event| {
                     let preview = event_text(&event).chars().take(500).collect();
                     RecallSearchHit {
@@ -5568,6 +5869,11 @@ impl ContextRecallService for ContextEngine {
                     start_time: request.start_time,
                     end_time: request.end_time,
                     before_sequence,
+                    through_sequence,
+                    through_mind_version,
+                    event_visibility_snapshot: event_visibility_snapshot.clone(),
+                    excluded_event_ids: excluded_event_ids.clone(),
+                    excluded_frame_ids: excluded_frame_ids.clone(),
                     limit,
                 })
                 .await?
@@ -5579,8 +5885,11 @@ impl ContextRecallService for ContextEngine {
                     start_time: request.start_time,
                     end_time: request.end_time,
                     before_sequence,
+                    through_sequence,
+                    event_visibility_snapshot: event_visibility_snapshot.clone(),
+                    excluded_event_ids: excluded_event_ids.clone(),
                     excluded_topics: vec!["chat/context_inspect".to_string()],
-                    latest_k: Some(limit.saturating_mul(8).clamp(limit, 800)),
+                    latest_k: Some(limit.saturating_mul(8).clamp(limit, 8_192)),
                     ..Default::default()
                 })
                 .await?;
@@ -5588,7 +5897,8 @@ impl ContextRecallService for ContextEngine {
                 .into_iter()
                 .rev()
                 .filter(|event| {
-                    crate::memory::event_has_recall_value(event)
+                    !excluded_event_id_set.contains(event.id.as_str())
+                        && crate::memory::event_has_recall_value(event)
                         && (normalized_query.is_empty()
                             || crate::memory::normalize_recall_text(&event_text(event))
                                 .contains(&normalized_query))
@@ -5622,6 +5932,10 @@ impl ContextRecallService for ContextEngine {
                         normalized_query: normalized_query.clone(),
                         start_time: request.start_time,
                         end_time: request.end_time,
+                        visibility_fingerprint: visibility_fingerprint.clone(),
+                        through_sequence,
+                        through_mind_version,
+                        event_visibility_snapshot,
                         before_sequence,
                     })
                 })
@@ -16639,6 +16953,398 @@ mod tests {
         assert!(observation.preview.contains(&"x".repeat(1_500)));
     }
 
+    #[tokio::test]
+    async fn context_view_manifest_tracks_actual_residency_not_lifecycle_shortcuts() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-view-manifest.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "manifest-context".to_string(),
+                agent_id: "manifest-agent".to_string(),
+                title: "Manifest Context".to_string(),
+            })
+            .await
+            .unwrap();
+        for (id, text) in [
+            ("manifest-full", "short resident evidence".to_string()),
+            (
+                "manifest-preview",
+                format!("preview-only evidence {}", "x".repeat(256)),
+            ),
+        ] {
+            store
+                .append(Event::new(
+                    id.to_string(),
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::json!({
+                        "context_id": "manifest-context",
+                        "session_id": "manifest-session",
+                        "text": text,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig {
+                observation_preview_chars: 32,
+                ..OrchestratorConfig::default()
+            },
+        );
+        let mut view = engine
+            .build_context_encoding("manifest-context", "manifest-session", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            view.observations
+                .iter()
+                .find(|observation| observation.id == "manifest-full")
+                .unwrap()
+                .representation,
+            "full"
+        );
+        assert_eq!(
+            view.observations
+                .iter()
+                .find(|observation| observation.id == "manifest-preview")
+                .unwrap()
+                .representation,
+            "preview"
+        );
+        view.state.frames.extend([
+            ContextFrame {
+                id: "active-frame".to_string(),
+                body: "(fact active)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 1,
+                updated_version: 1,
+            },
+            ContextFrame {
+                id: "retired-frame".to_string(),
+                body: "(fact retired)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 1,
+                updated_version: 1,
+            },
+        ]);
+        view.state.retired.insert("retired-frame".to_string());
+
+        let manifest =
+            ContextViewManifest::from_view(&view, ["continuation-tool-output".to_string()]);
+        assert_eq!(
+            manifest.resident_event_ids,
+            vec![
+                "continuation-tool-output".to_string(),
+                "manifest-full".to_string(),
+            ]
+        );
+        assert_eq!(manifest.resident_frame_ids, vec!["active-frame"]);
+        assert!(
+            !manifest
+                .resident_event_ids
+                .contains(&"manifest-preview".to_string()),
+            "preview-only content must remain Recallable"
+        );
+        assert!(
+            !manifest
+                .resident_frame_ids
+                .contains(&"retired-frame".to_string()),
+            "retired content is non-resident and remains Recallable"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_manifest_never_reads_events_committed_after_the_physical_view() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-causal-frontier.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "recall-causal-context".to_string(),
+                agent_id: "recall-causal-agent".to_string(),
+                title: "Recall physical visibility frontier".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "causal-before-view".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-causal-context",
+                    "session_id": "causal-session-a",
+                    "principal_id": "principal-a",
+                    "text": format!("CAUSAL-ORBIT before {}", "x".repeat(256)),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        store
+            .project_recall_outbox_batch("causal-frontier-before", 8)
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig {
+                observation_preview_chars: 32,
+                ..OrchestratorConfig::default()
+            },
+        )
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        let old_view = engine
+            .build_context_encoding("recall-causal-context", "causal-session-a", &HashSet::new())
+            .await
+            .unwrap();
+        let old_manifest = ContextViewManifest::from_view(&old_view, std::iter::empty());
+        assert_eq!(old_manifest.event_sequence_upper_bound, 1);
+
+        store
+            .append(Event::new(
+                "causal-after-view".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-causal-context",
+                    "session_id": "causal-session-b",
+                    "principal_id": "principal-b",
+                    "text": format!("CAUSAL-ORBIT after {}", "y".repeat(256)),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        store
+            .project_recall_outbox_batch("causal-frontier-after", 8)
+            .await
+            .unwrap();
+
+        let old_page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "recall-causal-context".to_string(),
+                query: "CAUSAL-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(old_manifest),
+            })
+            .await
+            .unwrap();
+        assert_eq!(old_page.matches.len(), 1);
+        assert_eq!(old_page.matches[0].document_id, "causal-before-view");
+
+        let fresh_view = engine
+            .build_context_encoding("recall-causal-context", "causal-session-a", &HashSet::new())
+            .await
+            .unwrap();
+        let fresh_page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "recall-causal-context".to_string(),
+                query: "CAUSAL-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(ContextViewManifest::from_view(
+                    &fresh_view,
+                    std::iter::empty(),
+                )),
+            })
+            .await
+            .unwrap();
+        assert_eq!(fresh_page.matches.len(), 2);
+        assert!(fresh_page
+            .matches
+            .iter()
+            .any(|hit| hit.document_id == "causal-after-view"));
+    }
+
+    #[tokio::test]
+    async fn session_outside_the_fifty_session_view_remains_recallable_across_principals() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-swapped-session.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "swapped-context".to_string(),
+                agent_id: "swapped-agent".to_string(),
+                title: "Swapped Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let mut all_event_ids = BTreeSet::new();
+        for index in 0..=50 {
+            let event_id = format!("swapped-event-{index:02}");
+            all_event_ids.insert(event_id.clone());
+            store
+                .append(Event::new(
+                    event_id,
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::json!({
+                        "context_id": "swapped-context",
+                        "session_id": format!("swapped-session-{index:02}"),
+                        "principal_id": format!("principal-{}", index % 2),
+                        "text": format!("SWAPPED-ORBIT evidence {index:02}"),
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("swapped-session-worker", 64)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        let view = engine
+            .build_context_encoding("swapped-context", "swapped-session-00", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(view.session_working_set.max_sessions, 50);
+        assert_eq!(view.session_working_set.full_session_ids.len(), 50);
+        assert_eq!(view.observations.len(), 50);
+        assert_eq!(view.session_working_set.excluded.over_count, 1);
+        let resident_event_ids = view
+            .observations
+            .iter()
+            .map(|observation| observation.id.clone())
+            .collect::<BTreeSet<_>>();
+        let expected_swapped = all_event_ids
+            .difference(&resident_event_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(expected_swapped.len(), 1);
+
+        let page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "swapped-context".to_string(),
+                query: "SWAPPED-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(ContextViewManifest::from_view(&view, std::iter::empty())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].document_id, expected_swapped[0]);
+    }
+
+    #[tokio::test]
+    async fn retired_observation_is_non_resident_and_remains_recallable() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-retired-observation.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "retired-recall-context".to_string(),
+                agent_id: "retired-recall-agent".to_string(),
+                title: "Retired Recall".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "retired-recall-event".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "retired-recall-context",
+                    "session_id": "retired-recall-session",
+                    "text": "RETIRED-ORBIT durable evidence",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        engine
+            .apply_context_transaction(
+                "retired-recall-context",
+                "retired-recall-session",
+                "(context-tx (base-version 0) (reason evidence-consumed) (retire retired-recall-event))",
+            )
+            .await
+            .unwrap();
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("retired-recall-worker", 32)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        let view = engine
+            .build_context_encoding(
+                "retired-recall-context",
+                "retired-recall-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        assert!(view
+            .observations
+            .iter()
+            .all(|observation| observation.id != "retired-recall-event"));
+        let page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "retired-recall-context".to_string(),
+                query: "RETIRED-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(ContextViewManifest::from_view(&view, std::iter::empty())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].document_id, "retired-recall-event");
+        assert!(page.matches[0].retired);
+    }
+
     #[test]
     fn tool_call_history_enters_the_inbox_but_control_events_do_not() {
         let assistant_call = Event::new(
@@ -16816,6 +17522,7 @@ mod tests {
             include_events: false,
             max_nodes,
             cursor,
+            view_manifest: None,
         };
         let depth_zero = engine
             .recall_frame_graph(request(0, 32, None))
@@ -16869,6 +17576,7 @@ mod tests {
                 include_events: false,
                 max_nodes: 32,
                 cursor: None,
+                view_manifest: None,
             })
             .await
             .unwrap();
@@ -16904,6 +17612,10 @@ mod tests {
             normalized_query: "fact".to_string(),
             start_time: None,
             end_time: None,
+            visibility_fingerprint: recall_context_visibility_fingerprint("recall-graph-context"),
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
             before_sequence: 42,
         };
         let encoded_search_cursor = engine.encode_recall_search_cursor(&search_cursor).unwrap();
@@ -16958,6 +17670,7 @@ mod tests {
                 include_events: false,
                 max_nodes: 128,
                 cursor: None,
+                view_manifest: None,
             })
             .await
             .unwrap();
@@ -16973,6 +17686,88 @@ mod tests {
             cyclic.nodes.len(),
             "cycles must not revisit nodes"
         );
+    }
+
+    #[tokio::test]
+    async fn model_frame_recall_fails_closed_when_mind_changes_after_the_view() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("frame-causal-view.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "frame-causal-context".to_string(),
+                agent_id: "frame-causal-agent".to_string(),
+                title: "Frame causal Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        engine
+            .apply_context_transaction(
+                "frame-causal-context",
+                "frame-causal-session",
+                "(context-tx (base-version 0) (create A (fact before)))",
+            )
+            .await
+            .unwrap();
+        let view = engine
+            .build_context_encoding(
+                "frame-causal-context",
+                "frame-causal-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        let manifest = ContextViewManifest::from_view(&view, std::iter::empty());
+        engine
+            .apply_context_transaction(
+                "frame-causal-context",
+                "frame-causal-session",
+                "(context-tx (base-version 1) (create B (fact after)))",
+            )
+            .await
+            .unwrap();
+
+        let error = engine
+            .recall_frame_graph(FrameRecallRequest {
+                context_id: "frame-causal-context".to_string(),
+                frame_id: "A".to_string(),
+                depth: 0,
+                direction: FrameRecallDirection::Ancestors,
+                include_bodies: true,
+                include_events: false,
+                max_nodes: 32,
+                cursor: None,
+                view_manifest: Some(manifest),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Mind changed after the physical Context View"));
+
+        let current = engine
+            .recall_frame_graph(FrameRecallRequest {
+                context_id: "frame-causal-context".to_string(),
+                frame_id: "A".to_string(),
+                depth: 0,
+                direction: FrameRecallDirection::Ancestors,
+                include_bodies: true,
+                include_events: false,
+                max_nodes: 32,
+                cursor: None,
+                view_manifest: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(current.mind_version, 2);
     }
 
     #[tokio::test]

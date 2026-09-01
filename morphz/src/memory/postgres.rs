@@ -293,6 +293,17 @@ impl PostgresStore {
                     activation::migrate_latency_fast_paths(&store.pool),
                 )
                 .await?;
+            // The original fast-path migration used an unqualified
+            // `DROP FUNCTION`, so initializing another schema could remove a
+            // peer Runtime's function after the original migration was
+            // already recorded. A new migration identity both installs the
+            // schema-qualified definitions and repairs affected databases.
+            store
+                .run_versioned_migration(
+                    "20260901_01_scheduler_latency_fast_path_schema_isolation",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
+                .await?;
             store
                 .run_versioned_migration(
                     "20260726_01_plan_executions",
@@ -4587,6 +4598,14 @@ impl EventStore for PostgresStore {
             }
             builder.push(")");
         }
+        if !filter.excluded_event_ids.is_empty() {
+            builder.push(" AND id NOT IN (");
+            let mut separated = builder.separated(", ");
+            for event_id in &filter.excluded_event_ids {
+                separated.push_bind(event_id);
+            }
+            builder.push(")");
+        }
         if let Some(sequence) = filter.sequence {
             builder
                 .push(" AND sequence = ")
@@ -4620,6 +4639,16 @@ impl EventStore for PostgresStore {
             builder
                 .push(" AND sequence < ")
                 .push_bind(i64::try_from(before).unwrap_or(i64::MAX));
+        }
+        if let Some(through) = filter.through_sequence {
+            builder
+                .push(" AND sequence <= ")
+                .push_bind(i64::try_from(through).unwrap_or(i64::MAX));
+        }
+        if let Some(snapshot) = filter.event_visibility_snapshot {
+            builder.push(" AND pg_visible_in_snapshot((events.xmin::text)::xid8, CAST(");
+            builder.push_bind(snapshot);
+            builder.push(" AS pg_snapshot))");
         }
         if let Some(start) = filter.start_time {
             builder
@@ -5188,6 +5217,66 @@ impl CognitiveClockStore for PostgresStore {
     }
 }
 
+fn push_postgres_recall_residency_exclusions<'a>(
+    query: &mut QueryBuilder<'a, Postgres>,
+    request: &'a RecallDocumentSearchRequest,
+) {
+    if !request.excluded_event_ids.is_empty() {
+        query.push(" AND NOT (d.document_kind = 'event' AND d.document_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &request.excluded_event_ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push("))");
+    }
+    if !request.excluded_frame_ids.is_empty() {
+        query.push(" AND NOT (d.document_kind = 'frame' AND d.document_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &request.excluded_frame_ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push("))");
+    }
+}
+
+fn push_postgres_recall_visibility_boundary<'a>(
+    query: &mut QueryBuilder<'a, Postgres>,
+    request: &'a RecallDocumentSearchRequest,
+) -> Result<(), StoreError> {
+    match (request.through_sequence, request.through_mind_version) {
+        (Some(event_sequence), Some(mind_version)) => {
+            query.push(" AND ((d.document_kind = 'event' AND d.updated_sequence <= ");
+            query.push_bind(i64::try_from(event_sequence)?);
+            query.push(") OR (d.document_kind = 'frame' AND d.updated_sequence <= ");
+            query.push_bind(i64::try_from(mind_version)?);
+            query.push("))");
+        }
+        (Some(event_sequence), None) => {
+            query.push(" AND (d.document_kind <> 'event' OR d.updated_sequence <= ");
+            query.push_bind(i64::try_from(event_sequence)?);
+            query.push(")");
+        }
+        (None, Some(mind_version)) => {
+            query.push(" AND (d.document_kind <> 'frame' OR d.updated_sequence <= ");
+            query.push_bind(i64::try_from(mind_version)?);
+            query.push(")");
+        }
+        (None, None) => {}
+    }
+    if let Some(snapshot) = &request.event_visibility_snapshot {
+        query.push(
+            " AND (d.document_kind <> 'event' OR (e.id IS NOT NULL AND pg_visible_in_snapshot((e.xmin::text)::xid8, CAST(",
+        );
+        query.push_bind(snapshot);
+        query.push(" AS pg_snapshot))))");
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl RecallProjectionStore for PostgresStore {
     async fn recall_index_capability(&self) -> Result<RecallIndexCapability, StoreError> {
@@ -5206,6 +5295,11 @@ impl RecallProjectionStore for PostgresStore {
             start_time: None,
             end_time: None,
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit,
         })
         .await
@@ -5292,6 +5386,8 @@ impl RecallProjectionStore for PostgresStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_postgres_recall_visibility_boundary(&mut query, &request)?;
+            push_postgres_recall_residency_exclusions(&mut query, &request);
             if chronological {
                 query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC");
             } else {
@@ -5325,6 +5421,8 @@ impl RecallProjectionStore for PostgresStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_postgres_recall_visibility_boundary(&mut query, &request)?;
+            push_postgres_recall_residency_exclusions(&mut query, &request);
             query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
             query.push_bind(i64::try_from(limit)?);
             query.build().fetch_all(&self.pool).await?
@@ -5358,6 +5456,8 @@ impl RecallProjectionStore for PostgresStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_postgres_recall_visibility_boundary(&mut query, &request)?;
+            push_postgres_recall_residency_exclusions(&mut query, &request);
             query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
             query.push_bind(i64::try_from(limit)?);
             query.build().fetch_all(&self.pool).await?
@@ -6740,9 +6840,58 @@ impl SessionProjectionStore for PostgresStore {
                       snapshot.event_topic, snapshot.event_payload,
                       snapshot.mind_context_id, snapshot.mind_revision,
                       snapshot.mind_state_json, snapshot.mind_state_hash,
-                      snapshot.mind_head_event_id, snapshot.mind_updated_at
-               FROM (
-                 SELECT 0 AS sort_key, 'mind'::TEXT AS row_kind,
+                      snapshot.mind_head_event_id, snapshot.mind_updated_at,
+                      snapshot.event_visibility_snapshot
+               FROM ("#,
+        );
+        #[cfg(feature = "experimental-context-db")]
+        let use_context_db = self.context_db.is_some();
+        #[cfg(not(feature = "experimental-context-db"))]
+        let use_context_db = false;
+        if use_context_db {
+            builder.push(
+                r#"SELECT 0 AS sort_key, 'mind'::TEXT AS row_kind,
+                        NULL::BIGINT AS event_sequence,
+                        NULL::TEXT AS event_id, NULL::TEXT AS event_timestamp,
+                        NULL::TEXT AS event_actor, NULL::TEXT AS event_type,
+                        NULL::TEXT AS event_topic, NULL::JSONB AS event_payload,
+                        context_db.context_id AS mind_context_id,
+                        context_db.revision AS mind_revision,
+                        jsonb_build_object(
+                          'context_id', context_db.context_id,
+                          'revision', context_db.revision,
+                          'root_node_id', context_db.root_node_id,
+                          'root_hash', context_db.root_hash,
+                          'nodes', COALESCE(
+                            (SELECT jsonb_agg(
+                               jsonb_build_object(
+                                 'node_id', node.node_id,
+                                 'parent_id', node.parent_id,
+                                 'order_key', node.order_key,
+                                 'owner_domain', node.owner_domain,
+                                 'node_revision', node.node_revision,
+                                 'body_sexpr', node.body_sexpr,
+                                 'content_hash', node.content_hash,
+                                 'subtree_hash', node.subtree_hash
+                               ) ORDER BY node.parent_id, node.order_key, node.node_id
+                             )
+                             FROM experimental_contextdb_nodes node
+                             WHERE node.context_id = context_db.context_id),
+                            '[]'::jsonb
+                          )
+                        ) AS mind_state_json,
+                        context_db.root_hash AS mind_state_hash,
+                        NULL::TEXT AS mind_head_event_id,
+                        context_db.updated_at AS mind_updated_at,
+                        NULL::TEXT AS event_visibility_snapshot
+                 FROM experimental_contextdb_contexts context_db
+                 WHERE context_db.context_id = "#,
+            );
+            builder.push_bind(context_id);
+            builder.push(" AND context_db.schema_version = 1");
+        } else {
+            builder.push(
+                r#"SELECT 0 AS sort_key, 'mind'::TEXT AS row_kind,
                         NULL::BIGINT AS event_sequence,
                         NULL::TEXT AS event_id, NULL::TEXT AS event_timestamp,
                         NULL::TEXT AS event_actor, NULL::TEXT AS event_type,
@@ -6752,15 +6901,20 @@ impl SessionProjectionStore for PostgresStore {
                         projection.state_json AS mind_state_json,
                         projection.state_hash AS mind_state_hash,
                         head.head_event_id AS mind_head_event_id,
-                        projection.updated_at AS mind_updated_at
+                        projection.updated_at AS mind_updated_at,
+                        NULL::TEXT AS event_visibility_snapshot
                  FROM mind_projections projection
                  JOIN context_heads head ON head.context_id = projection.context_id
                  WHERE projection.context_id = "#,
-        );
-        builder.push_bind(context_id);
+            );
+            builder.push_bind(context_id);
+            builder.push(
+                r#" AND projection.revision = head.revision
+                   AND projection.state_hash = head.projection_hash"#,
+            );
+        }
         builder.push(
-            r#" AND projection.revision = head.revision
-                   AND projection.state_hash = head.projection_hash
+            r#"
                  UNION ALL
                  SELECT 1 AS sort_key, 'event'::TEXT AS row_kind,
                         e.sequence AS event_sequence, e.id AS event_id,
@@ -6772,7 +6926,8 @@ impl SessionProjectionStore for PostgresStore {
                         NULL::JSONB AS mind_state_json,
                         NULL::TEXT AS mind_state_hash,
                         NULL::TEXT AS mind_head_event_id,
-                        NULL::TEXT AS mind_updated_at
+                        NULL::TEXT AS mind_updated_at,
+                        NULL::TEXT AS event_visibility_snapshot
                FROM session_projections projection
                JOIN events e ON e.id = projection.event_id
                WHERE projection.context_id = "#,
@@ -6795,13 +6950,41 @@ impl SessionProjectionStore for PostgresStore {
         } else if !include_context_wide {
             builder.push("FALSE");
         }
-        builder.push(") ) snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
+        builder.push(
+            r#")
+                 UNION ALL
+                 SELECT 2 AS sort_key, 'frontier'::TEXT AS row_kind,
+                        COALESCE(MAX(e.sequence), 0)::BIGINT AS event_sequence,
+                        NULL::TEXT AS event_id, NULL::TEXT AS event_timestamp,
+                        NULL::TEXT AS event_actor, NULL::TEXT AS event_type,
+                        NULL::TEXT AS event_topic, NULL::JSONB AS event_payload,
+                        NULL::TEXT AS mind_context_id,
+                        NULL::BIGINT AS mind_revision,
+                        NULL::JSONB AS mind_state_json,
+                        NULL::TEXT AS mind_state_hash,
+                        NULL::TEXT AS mind_head_event_id,
+                        NULL::TEXT AS mind_updated_at,
+                        pg_current_snapshot()::TEXT AS event_visibility_snapshot
+                 FROM events e WHERE e.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(") snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
         let rows = builder.build().fetch_all(&self.pool).await?;
         let mut mind = None;
-        let mut events = Vec::with_capacity(rows.len().saturating_sub(1));
+        let mut events = Vec::with_capacity(rows.len().saturating_sub(2));
+        let mut event_sequence_upper_bound = 0;
+        let mut event_visibility_snapshot = None;
         for row in rows {
             match row.get::<String, _>("row_kind").as_str() {
                 "mind" => {
+                    #[cfg(feature = "experimental-context-db")]
+                    if let Some(context_db) = &self.context_db {
+                        mind = context_db.decode_projection_snapshot_value(
+                            row.get::<Option<JsonValue>, _>("mind_state_json")
+                                .unwrap_or(JsonValue::Null),
+                        )?;
+                        continue;
+                    }
                     mind = Some(MindProjectionRecord {
                         context_id: row
                             .get::<Option<String>, _>("mind_context_id")
@@ -6849,12 +7032,24 @@ impl SessionProjectionStore for PostgresStore {
                             .ok_or("Context Encoding snapshot Event 缺少 payload")?,
                     )?,
                 }),
+                "frontier" => {
+                    event_sequence_upper_bound = u64::try_from(
+                        row.get::<Option<i64>, _>("event_sequence")
+                            .ok_or("Context Encoding snapshot 缺少 Event frontier")?,
+                    )?;
+                    event_visibility_snapshot = row.get("event_visibility_snapshot");
+                }
                 other => {
                     return Err(format!("未知 Context Encoding snapshot row kind '{other}'").into())
                 }
             }
         }
-        Ok(ContextEncodingProjectionSnapshot { mind, events })
+        Ok(ContextEncodingProjectionSnapshot {
+            mind,
+            events,
+            event_sequence_upper_bound,
+            event_visibility_snapshot,
+        })
     }
 }
 
