@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{AppConfig, StorageBackend};
 use crate::edge_node::{
@@ -35,6 +36,31 @@ pub struct PairEdgeNodeOptions {
 #[derive(Debug, Clone)]
 pub struct PairedEdgeNode {
     pub node: ExecutionNodeRecord,
+    pub credential_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapEdgeNodeOptions {
+    pub server_url: String,
+    pub pairing_code: String,
+    pub node_name: String,
+    pub workspace: PathBuf,
+    pub workers: usize,
+    pub full_access: bool,
+    pub credential_path: PathBuf,
+    pub receipt_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeBootstrapReceipt {
+    pub schema_version: u32,
+    pub client_version: String,
+    pub installed_at: chrono::DateTime<Utc>,
+    pub node_id: String,
+    pub server_url: String,
+    pub workspace: PathBuf,
+    pub workers: usize,
+    pub full_access: bool,
     pub credential_path: PathBuf,
 }
 
@@ -109,6 +135,124 @@ pub async fn pair_edge_node(
         node: paired.node,
         credential_path: options.credential_path,
     })
+}
+
+pub async fn bootstrap_edge_node(
+    runtime: &MorphzRuntime,
+    options: BootstrapEdgeNodeOptions,
+) -> Result<EdgeBootstrapReceipt, EdgeNodeError> {
+    if options.credential_path.exists() {
+        return Err(format!(
+            "this computer already has an Edge identity at '{}'; revoke or remove it explicitly before pairing a different Agent",
+            options.credential_path.display()
+        )
+        .into());
+    }
+    if options.receipt_path.exists() {
+        return Err(format!(
+            "this computer already has an Edge bootstrap receipt at '{}'; the one-time bootstrap will not overwrite it",
+            options.receipt_path.display()
+        )
+        .into());
+    }
+    let workspace = std::fs::canonicalize(&options.workspace).map_err(|error| {
+        format!(
+            "Edge workspace '{}' is not accessible: {error}",
+            options.workspace.display()
+        )
+    })?;
+    if !workspace.is_dir() {
+        return Err(format!(
+            "Edge workspace '{}' is not a directory",
+            workspace.display()
+        )
+        .into());
+    }
+    let _guard = EdgeBootstrapGuard::acquire(&options.receipt_path)?;
+    let server_url = options.server_url.trim_end_matches('/').to_string();
+    let paired = pair_edge_node(
+        runtime,
+        PairEdgeNodeOptions {
+            server_url: server_url.clone(),
+            pairing_code: options.pairing_code,
+            node_id: None,
+            node_name: options.node_name,
+            credential_path: options.credential_path.clone(),
+        },
+    )
+    .await?;
+    let receipt = EdgeBootstrapReceipt {
+        schema_version: 1,
+        client_version: crate::build_info::VERSION.to_string(),
+        installed_at: Utc::now(),
+        node_id: paired.node.id,
+        server_url,
+        workspace,
+        workers: options.workers.max(1),
+        full_access: options.full_access,
+        credential_path: options.credential_path,
+    };
+    save_edge_bootstrap_receipt(&options.receipt_path, &receipt)?;
+    Ok(receipt)
+}
+
+pub fn default_edge_bootstrap_receipt_path() -> Result<PathBuf, EdgeNodeError> {
+    Ok(standalone_edge_state_dir()?.join("bootstrap-receipt.json"))
+}
+
+pub fn load_edge_bootstrap_receipt(path: &Path) -> Result<EdgeBootstrapReceipt, EdgeNodeError> {
+    let receipt = serde_json::from_slice::<EdgeBootstrapReceipt>(&std::fs::read(path)?)?;
+    if receipt.schema_version != 1 || receipt.workers == 0 {
+        return Err(format!(
+            "unsupported or invalid Edge bootstrap receipt '{}'",
+            path.display()
+        )
+        .into());
+    }
+    Ok(receipt)
+}
+
+fn save_edge_bootstrap_receipt(
+    path: &Path,
+    receipt: &EdgeBootstrapReceipt,
+) -> Result<(), EdgeNodeError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec_pretty(receipt)?)?;
+    std::fs::rename(&temporary, path)?;
+    Ok(())
+}
+
+struct EdgeBootstrapGuard(PathBuf);
+
+impl EdgeBootstrapGuard {
+    fn acquire(receipt_path: &Path) -> Result<Self, EdgeNodeError> {
+        let lock_path = receipt_path.with_extension("bootstrap.lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "another Edge bootstrap is active (lock '{}'): {error}",
+                    lock_path.display()
+                )
+            })?;
+        use std::io::Write;
+        writeln!(file, "{}", std::process::id())?;
+        Ok(Self(lock_path))
+    }
+}
+
+impl Drop for EdgeBootstrapGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 pub fn edge_node_status(credential_path: &Path) -> Result<EdgeNodeStatus, EdgeNodeError> {
@@ -344,6 +488,34 @@ impl Client for EdgeOfflineClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{routing::post, Json, Router};
+    use tokio::sync::Mutex;
+
+    async fn accept_pairing(
+        axum::extract::State(codes): axum::extract::State<Arc<Mutex<Vec<String>>>>,
+        Json(command): Json<PairExecutionNodeCommand>,
+    ) -> Json<crate::sdk::PairedExecutionNode> {
+        codes.lock().await.push(command.code);
+        let now = Utc::now();
+        Json(crate::sdk::PairedExecutionNode {
+            node: ExecutionNodeRecord {
+                id: "node-bootstrap-test".to_string(),
+                revision: 1,
+                owner_principal_id: "principal-bootstrap-test".to_string(),
+                name: command.name,
+                status: crate::memory::ExecutionNodeStatus::Online,
+                device_key_fingerprint: command.device_key_fingerprint,
+                device_public_key: command.device_public_key,
+                protocol_version: command.protocol_version,
+                platform: command.platform,
+                capabilities: command.capabilities,
+                metadata: command.metadata,
+                created_at: now,
+                updated_at: now,
+                last_seen_at: Some(now),
+            },
+        })
+    }
 
     #[test]
     fn standalone_config_keeps_execution_policy_but_drops_control_plane_state() {
@@ -383,5 +555,92 @@ mod tests {
             .permissions
             .protected_paths
             .contains(&protected.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn bootstrap_receipt_round_trips_without_a_pairing_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("bootstrap-receipt.json");
+        let receipt = EdgeBootstrapReceipt {
+            schema_version: 1,
+            client_version: "0.1.0".to_string(),
+            installed_at: Utc::now(),
+            node_id: "node-a".to_string(),
+            server_url: "https://edge.example".to_string(),
+            workspace: directory.path().to_path_buf(),
+            workers: 4,
+            full_access: false,
+            credential_path: directory.path().join("credentials.json"),
+        };
+
+        save_edge_bootstrap_receipt(&path, &receipt).unwrap();
+        let bytes = std::fs::read_to_string(&path).unwrap();
+        assert!(!bytes.contains("pair_"));
+        assert_eq!(load_edge_bootstrap_receipt(&path).unwrap(), receipt);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_pairs_once_and_persists_only_long_lived_device_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let codes = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/api/edge/pair", post(accept_pairing))
+            .with_state(codes.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let config = AppConfig::default();
+        let runtime = MorphzRuntime::builder(config, Arc::new(EdgeOfflineClient))
+            .database_path(directory.path().join("runtime.db").to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let credential_path = directory.path().join("credentials.json");
+        let receipt_path = directory.path().join("bootstrap-receipt.json");
+        let receipt = bootstrap_edge_node(
+            &runtime,
+            BootstrapEdgeNodeOptions {
+                server_url: format!("http://{address}/"),
+                pairing_code: "pair_one_time_secret".to_string(),
+                node_name: "Bootstrap test node".to_string(),
+                workspace: workspace.clone(),
+                workers: 3,
+                full_access: false,
+                credential_path: credential_path.clone(),
+                receipt_path: receipt_path.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(receipt.node_id, "node-bootstrap-test");
+        assert_eq!(receipt.workspace, std::fs::canonicalize(workspace).unwrap());
+        assert_eq!(receipt.server_url, format!("http://{address}"));
+        assert_eq!(codes.lock().await.as_slice(), ["pair_one_time_secret"]);
+        assert!(credential_path.exists());
+        let persisted = std::fs::read_to_string(receipt_path).unwrap();
+        assert!(!persisted.contains("pair_one_time_secret"));
+
+        let replay = bootstrap_edge_node(
+            &runtime,
+            BootstrapEdgeNodeOptions {
+                server_url: format!("http://{address}"),
+                pairing_code: "pair_replay_must_not_be_sent".to_string(),
+                node_name: "Replay".to_string(),
+                workspace: receipt.workspace,
+                workers: 1,
+                full_access: false,
+                credential_path,
+                receipt_path: directory.path().join("bootstrap-receipt.json"),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(replay.to_string().contains("already has an Edge identity"));
+        assert_eq!(codes.lock().await.len(), 1);
+        server.abort();
     }
 }

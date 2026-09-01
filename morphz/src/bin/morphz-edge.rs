@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use morphz::config;
 use morphz::edge_app::{
-    build_standalone_edge_runtime, edge_node_status, list_edge_local_leases, pair_edge_node,
-    revoke_edge_local_lease, rotate_edge_node_key, start_edge_node, PairEdgeNodeOptions,
-    RunEdgeNodeOptions,
+    bootstrap_edge_node, build_standalone_edge_runtime, default_edge_bootstrap_receipt_path,
+    edge_node_status, list_edge_local_leases, load_edge_bootstrap_receipt, pair_edge_node,
+    revoke_edge_local_lease, rotate_edge_node_key, start_edge_node, BootstrapEdgeNodeOptions,
+    EdgeBootstrapReceipt, PairEdgeNodeOptions, RunEdgeNodeOptions,
 };
 use morphz::edge_node::EdgeNodeCredentials;
+use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
 use tracing_subscriber::{fmt, EnvFilter};
 
 type AppError = Box<dyn std::error::Error + Send + Sync>;
@@ -60,6 +62,43 @@ fn edge_command() -> Command {
                 .help("Set the tracing filter"),
         )
         .subcommand(
+            Command::new("bootstrap")
+                .about(
+                    "Pair and prepare this computer for user-level background service installation",
+                )
+                .arg(
+                    Arg::new("server-url")
+                        .long("server-url")
+                        .value_name("URL")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("pairing-code")
+                        .long("pairing-code")
+                        .value_name("CODE")
+                        .required(true),
+                )
+                .arg(Arg::new("node-name").long("node-name").value_name("NAME"))
+                .arg(
+                    Arg::new("workers")
+                        .long("workers")
+                        .value_name("COUNT")
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("receipt-file")
+                        .long("receipt-file")
+                        .value_name("PATH"),
+                )
+                .arg(
+                    Arg::new("full-access")
+                        .long("full-access")
+                        .action(ArgAction::SetTrue)
+                        .help("Explicitly allow execution outside the workspace sandbox"),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
             Command::new("pair")
                 .about("Pair this execution node with a Morphz Server")
                 .arg(
@@ -93,6 +132,16 @@ fn edge_command() -> Command {
                         .value_parser(clap::value_parser!(usize)),
                 ),
         )
+        .subcommand(
+            Command::new("service-run")
+                .about("Run from a verified bootstrap receipt (for user-level service managers)")
+                .hide(true)
+                .arg(
+                    Arg::new("receipt-file")
+                        .long("receipt-file")
+                        .value_name("PATH"),
+                ),
+        )
         .subcommand(Command::new("status").about("Show the paired Edge Node identity"))
         .subcommand(Command::new("rotate-key").about("Rotate the Edge device identity key"))
         .subcommand(
@@ -121,13 +170,31 @@ async fn main() -> Result<(), AppError> {
         std::env::set_current_dir(cwd)?;
     }
     init_logging(matches.get_one::<String>("log-level").map(String::as_str))?;
+    let command = matches.subcommand_name().unwrap_or("status");
+    let service_receipt = if command == "service-run" {
+        let child = matches
+            .subcommand_matches("service-run")
+            .expect("Clap validated the selected subcommand");
+        let path = child
+            .get_one::<String>("receipt-file")
+            .map(PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(default_edge_bootstrap_receipt_path)?;
+        Some((path.clone(), load_edge_bootstrap_receipt(&path)?))
+    } else {
+        None
+    };
     let credential_path = matches
         .get_one::<String>("credential-file")
         .map(PathBuf::from)
+        .or_else(|| {
+            service_receipt
+                .as_ref()
+                .map(|(_, receipt)| receipt.credential_path.clone())
+        })
         .map(Ok)
         .unwrap_or_else(EdgeNodeCredentials::default_path)?;
 
-    let command = matches.subcommand_name().unwrap_or("status");
     if command == "status" {
         print_status(&credential_path)?;
         return Ok(());
@@ -152,7 +219,33 @@ async fn main() -> Result<(), AppError> {
         return Ok(());
     }
 
-    let cwd = std::env::current_dir()?;
+    let cwd = matches
+        .get_one::<String>("workspace")
+        .map(PathBuf::from)
+        .or_else(|| {
+            service_receipt
+                .as_ref()
+                .map(|(_, receipt)| receipt.workspace.clone())
+        })
+        .unwrap_or(std::env::current_dir()?);
+    let cwd = if command == "bootstrap" || command == "service-run" {
+        let canonical = std::fs::canonicalize(&cwd).map_err(|error| {
+            format!(
+                "Edge workspace '{}' is not accessible: {error}",
+                cwd.display()
+            )
+        })?;
+        if !canonical.is_dir() {
+            return Err(format!(
+                "Edge workspace '{}' is not a directory",
+                canonical.display()
+            )
+            .into());
+        }
+        canonical
+    } else {
+        cwd
+    };
     let explicit_config = matches.get_one::<String>("config").map(PathBuf::from);
     let profile = matches.get_one::<String>("profile").map(String::as_str);
     let resolved = config::resolve_config(&cwd, explicit_config.as_deref(), profile)?;
@@ -161,7 +254,19 @@ async fn main() -> Result<(), AppError> {
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
     let mut source_config = resolved.config;
-    if let Some(workspace) = matches.get_one::<String>("workspace") {
+    if command == "bootstrap" || command == "service-run" {
+        source_config.permissions.workspace_root = cwd.to_string_lossy().into_owned();
+        let full_access = if command == "bootstrap" {
+            matches
+                .subcommand_matches("bootstrap")
+                .is_some_and(|child| child.get_flag("full-access"))
+        } else {
+            service_receipt
+                .as_ref()
+                .is_some_and(|(_, receipt)| receipt.full_access)
+        };
+        apply_service_permission_mode(&mut source_config, full_access);
+    } else if let Some(workspace) = matches.get_one::<String>("workspace") {
         source_config
             .permissions
             .workspace_root
@@ -181,6 +286,51 @@ async fn main() -> Result<(), AppError> {
         build_standalone_edge_runtime(&source_config, protected_paths).await?;
 
     match command {
+        "bootstrap" => {
+            let child = matches
+                .subcommand_matches("bootstrap")
+                .expect("Clap validated the selected subcommand");
+            let workspace = matches
+                .get_one::<String>("workspace")
+                .map(PathBuf::from)
+                .ok_or("morphz-edge bootstrap requires --workspace")?;
+            let receipt_path = child
+                .get_one::<String>("receipt-file")
+                .map(PathBuf::from)
+                .map(Ok)
+                .unwrap_or_else(default_edge_bootstrap_receipt_path)?;
+            let requested_workers = child
+                .get_one::<usize>("workers")
+                .copied()
+                .unwrap_or(edge_config.edge_execution.max_in_flight_per_node);
+            let workers = requested_workers
+                .clamp(1, edge_config.edge_execution.max_in_flight_per_node.max(1));
+            let full_access = child.get_flag("full-access");
+            if full_access {
+                eprintln!(
+                    "WARNING: --full-access disables the workspace sandbox for this Edge Node"
+                );
+            }
+            let receipt = bootstrap_edge_node(
+                &runtime,
+                BootstrapEdgeNodeOptions {
+                    server_url: required(child, "server-url").to_string(),
+                    pairing_code: required(child, "pairing-code").to_string(),
+                    node_name: child
+                        .get_one::<String>("node-name")
+                        .cloned()
+                        .or_else(|| std::env::var("HOSTNAME").ok())
+                        .unwrap_or_else(|| "Morphz Edge Node".to_string()),
+                    workspace,
+                    workers,
+                    full_access,
+                    credential_path,
+                    receipt_path,
+                },
+            )
+            .await?;
+            print_bootstrap_receipt(&receipt, child.get_flag("json"))?;
+        }
         "pair" => {
             let child = matches
                 .subcommand_matches("pair")
@@ -229,6 +379,26 @@ async fn main() -> Result<(), AppError> {
             tokio::signal::ctrl_c().await?;
             running.shutdown().await?;
         }
+        "service-run" => {
+            let (_, receipt) = service_receipt.expect("service-run loaded its receipt");
+            let running = start_edge_node(
+                runtime,
+                &edge_config,
+                RunEdgeNodeOptions {
+                    credential_path,
+                    target_id: None,
+                    target_name: Some("Edge Workspace".to_string()),
+                    workers: Some(receipt.workers),
+                },
+            )
+            .await?;
+            println!(
+                "Morphz Edge {} is online; target={} workers={}",
+                running.node_id, running.target_id, running.worker_count
+            );
+            tokio::signal::ctrl_c().await?;
+            running.shutdown().await?;
+        }
         "rotate-key" => {
             let status = rotate_edge_node_key(&runtime, &credential_path).await?;
             println!(
@@ -238,6 +408,35 @@ async fn main() -> Result<(), AppError> {
             );
         }
         _ => unreachable!("Clap accepts only the declared morphz-edge commands"),
+    }
+    Ok(())
+}
+
+fn apply_service_permission_mode(config: &mut config::AppConfig, full_access: bool) {
+    if full_access {
+        config.permissions.mode = PermissionMode::FullAccess;
+        config.permissions.sandbox_mode = SandboxMode::DangerFullAccess;
+        config.permissions.approval_policy = ApprovalPolicy::Never;
+        config.permissions.reviewer = ReviewerKind::Deny;
+    } else {
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.sandbox_mode = SandboxMode::WorkspaceWrite;
+        config.permissions.approval_policy = ApprovalPolicy::Never;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.permissions.network = false;
+    }
+}
+
+fn print_bootstrap_receipt(receipt: &EdgeBootstrapReceipt, json: bool) -> Result<(), AppError> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(receipt)?);
+    } else {
+        println!(
+            "Paired Edge Node '{}'\nWorkspace: {}\nCredentials: {}",
+            receipt.node_id,
+            receipt.workspace.display(),
+            receipt.credential_path.display()
+        );
     }
     Ok(())
 }
@@ -312,8 +511,10 @@ mod tests {
         assert_eq!(
             commands,
             [
+                "bootstrap",
                 "pair",
                 "run",
+                "service-run",
                 "status",
                 "rotate-key",
                 "local-leases",
@@ -323,6 +524,27 @@ mod tests {
         assert!(!commands.contains(&"pairing-code"));
         assert!(!commands.contains(&"nodes"));
         assert!(!commands.contains(&"revoke"));
+    }
+
+    #[test]
+    fn bootstrap_requires_pairing_boundaries_and_explicit_full_access() {
+        let matches = edge_command()
+            .try_get_matches_from([
+                "morphz-edge",
+                "--workspace=/tmp/project",
+                "bootstrap",
+                "--server-url=https://edge.example",
+                "--pairing-code=pair_once",
+                "--workers=4",
+            ])
+            .unwrap();
+        let bootstrap = matches.subcommand_matches("bootstrap").unwrap();
+        assert!(!bootstrap.get_flag("full-access"));
+        assert_eq!(bootstrap.get_one::<usize>("workers"), Some(&4));
+        assert_eq!(
+            matches.get_one::<String>("workspace").map(String::as_str),
+            Some("/tmp/project")
+        );
     }
 
     #[test]

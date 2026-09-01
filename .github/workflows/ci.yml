@@ -31,6 +31,8 @@ jobs:
         run: perl scripts/check-core-protocol-language.pl
       - name: Diagnostic log contract check
         run: perl scripts/check-diagnostic-logs.pl
+      - name: Signed Edge installer contract
+        run: sh scripts/edge/test_install.sh
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -112,6 +114,8 @@ jobs:
         run: cargo test -p morphz sandbox::tests -- --nocapture
       - name: Verify one-shot approval boundary
         run: cargo test -p morphz tool::tests::exec_ -- --nocapture
+      - name: Verify signed Edge installer contract
+        run: sh scripts/edge/test_install.sh
 
   native-sandbox-linux:
     name: Native Sandbox (Linux)
@@ -147,6 +151,20 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Parse the PowerShell Edge installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "scripts/edge/install.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

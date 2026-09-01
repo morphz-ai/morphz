@@ -9,10 +9,13 @@
 macOS/Linux 用户从 Morphz 网站复制：
 
 ```bash
-curl -fsSL https://morphz.ai/edge/install | sh -s -- --code pair_xxx --workspace "$PWD"
+curl -fsSL https://morphz.ai/edge/install | sh -s -- \
+  --server-url https://cloud.morphz.ai/edge \
+  --code pair_xxx \
+  --workspace "$PWD"
 ```
 
-Windows 用户复制等价 PowerShell 命令。命令中的 `pair_xxx` 是最长 900 秒、一次性使用的 Bootstrap Code，不是网站 Session、Runtime operator token 或 Edge 长期设备凭证。
+Windows 用户复制等价 PowerShell 7 命令。命令中的 `pair_xxx` 是最长 900 秒、一次性使用的 Bootstrap Code，不是网站 Session、Runtime operator token 或 Edge 长期设备凭证。Cloud 必须把自己的稳定 Edge Gateway URL 一并写入命令，安装器不猜测控制面地址。
 
 ## 2. 安全不变量
 
@@ -43,8 +46,8 @@ morphz-edge bootstrap
 1. 生成并保存设备身份；
 2. 调用现有 pair 协议；
 3. 验证本地配置与 Workspace policy；
-4. 输出结构化 installation receipt；
-5. 在 `--foreground` 时直接运行，或为平台安装器提供稳定的 `run` 参数。
+4. 输出不含 Bootstrap Code 的结构化 installation receipt；
+5. 为平台安装器提供稳定、隐藏的 `service-run --receipt-file ...` 入口。
 
 平台脚本负责：
 
@@ -68,14 +71,16 @@ morphz-edge bootstrap
       "architecture": "aarch64",
       "url": "https://...",
       "sha256": "...",
-      "signature": "...",
-      "size_bytes": 0
+      "size_bytes": 0,
+      "archive_format": "raw"
     }
   ]
 }
 ```
 
-Manifest 自身必须签名；客户端/脚本内置发布公钥。URL 可以指向 GitHub Releases 或 R2，但协议不得依赖某一厂商。
+Manifest 使用发布私钥生成原始 detached ECDSA/SHA-256 签名 `manifest.json.sig`；两个安装器内置对应公钥并在解析 JSON 前验签。签名后的 Manifest 对构建的 URL、SHA-256、字节数和打包格式共同背书。URL 可以指向 GitHub Releases 或 R2，但协议不得依赖某一厂商。
+
+macOS/Linux 首版使用 `archive_format=raw`。Windows 使用 ZIP bundle，除 `morphz-edge.exe` 外还必须包含 Windows Sandbox Runner 与所需辅助程序，Manifest 的 `entrypoint` 固定为 `morphz-edge.exe`。
 
 ## 5. 本地布局
 
@@ -106,3 +111,16 @@ macOS 使用 `~/Library/LaunchAgents`，Linux 使用 `systemd --user` 并提供�
 - Workspace 外访问被 Sandbox/permission policy 拒绝；
 - Cloud 撤销 Node 后旧设备凭证无法继续 claim Job；
 - 卸载后无残留运行进程，凭证保留/删除行为与用户选择一致。
+
+## 8. 发布操作
+
+仓库中的 `scripts/edge/install.sh` 和 `install.ps1` 是带公钥占位符的可信源码，不能原样部署。发布时：
+
+1. 分平台构建 Release 二进制；Windows 先生成包含完整 helper bundle 的 ZIP；
+2. 使用 `build_release_manifest.py` 计算构建摘要并用离线发布私钥签名 Manifest；
+3. 使用 `render_installers.sh` 把对应发布公钥写入两个安装器；
+4. 将构建、`manifest.json`、`.sig` 和渲染后的安装器作为同一个不可变 Release 发布；
+5. 运行 `test_install.sh`，并由 CI 分别验证 macOS、Linux 与 Windows 安装器契约；
+6. 最后再让 Cloud 配置指向新的安装器和 Manifest URL。
+
+发布私钥只存在于 CI secret/offline release 环境，不进入 Git；部署公钥可以公开。更完整的命令见 [`scripts/edge/README.md`](../scripts/edge/README.md)。
