@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -45,10 +46,19 @@ def _execution_jobs(database: Path) -> list[dict[str, object]]:
     ]
 
 
-def run(binary: Path, output: Path) -> dict[str, object]:
+def run(
+    binary: Path,
+    output: Path,
+    *,
+    learning_database: Path | None = None,
+    domain: str = "travel",
+) -> dict[str, object]:
     output.mkdir(parents=True, exist_ok=False)
     learning = output / "learning.sqlite"
-    learning.touch()
+    if learning_database is None:
+        learning.touch()
+    else:
+        shutil.copy2(learning_database.resolve(strict=True), learning)
     task_root = output / "tasks"
     calls: list[dict[str, object]] = []
 
@@ -59,7 +69,7 @@ def run(binary: Path, output: Path) -> dict[str, object]:
     runtime_context = AgentRuntimeContext(
         task_id="deterministic-adapter-gate",
         user_id="gate-user",
-        domain="travel",
+        domain=domain,
         now="2026-08-26T00:00:00Z",
         run_idx=1,
     )
@@ -122,6 +132,10 @@ def run(binary: Path, output: Path) -> dict[str, object]:
         "passed": all(checks.values()),
         "checks": checks,
         "execution_jobs": jobs,
+        "domain": domain,
+        "learning_database_source": (
+            str(learning_database.resolve()) if learning_database is not None else None
+        ),
         "runtime_output": str(agent_output),
     }
     (output / "state_bench_adapter_no_model_gate.json").write_text(
@@ -137,8 +151,25 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--learning-database", type=Path)
+    parser.add_argument(
+        "--domain",
+        choices=("travel", "customer_support", "shopping_assistant"),
+        default="travel",
+    )
     args = parser.parse_args()
-    print(json.dumps(run(args.binary, args.output), ensure_ascii=False, sort_keys=True))
+    print(
+        json.dumps(
+            run(
+                args.binary,
+                args.output,
+                learning_database=args.learning_database,
+                domain=args.domain,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

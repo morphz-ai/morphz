@@ -359,6 +359,8 @@ async fn build_client(
 > {
     if config.deterministic_fake_client {
         let mut app = config::AppConfig::default();
+        app.apply_runtime_env_overrides()
+            .map_err(|error| -> StateBenchError { error.into() })?;
         app.llm.model = "deterministic-me07-gate".to_string();
         app.orchestrator.context_transactions_enabled = true;
         return Ok((
