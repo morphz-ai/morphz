@@ -8,6 +8,10 @@ default-run = "morphz"
 [features]
 default = []
 experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
+# Compile the isolated single-node ContextDB reference backend. Compilation
+# alone never changes Runtime storage; an operator permit is also required to
+# construct the experimental store.
+experimental-context-db = []
 # Keep one canonical Structured Context seed and append ordered, structured
 # ContextDelta blocks inside one User message. Provider adapters preserve the
 # same block boundaries in their native content representation. The experiment
@@ -16,6 +20,11 @@ experimental-structured-context-delta-cache = []
 # Backward-compatible alias for builds created before the transport became a
 # provider-neutral experiment.
 experimental-openai-chatgpt-structured-cache = ["experimental-structured-context-delta-cache"]
+
+[[example]]
+name = "context_db_sqlite_benchmark"
+path = "examples/context_db_sqlite_benchmark.rs"
+required-features = ["experimental-context-db"]
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }

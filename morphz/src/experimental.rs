@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const COGNITIVE_COORDINATION: &str = "cognitive-coordination";
+pub const CONTEXT_DB: &str = "context-db";
 pub const COGNITIVE_COORDINATION_TOOL_NAME: &str = "coordinate";
 pub const COGNITIVE_COORDINATION_PARTICIPANT_ACTOR: &str = "Cognitive-Coordination-Experiment";
 
@@ -23,6 +24,8 @@ pub mod cognitive_coordination_identity;
 pub mod cognitive_coordination_network;
 #[cfg(feature = "experimental-cognitive-coordination")]
 pub mod cognitive_coordination_sdk;
+#[cfg(feature = "experimental-context-db")]
+pub mod context_db;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExperimentalFeature {
@@ -32,12 +35,20 @@ pub struct ExperimentalFeature {
     pub compiled: bool,
 }
 
-pub const FEATURES: &[ExperimentalFeature] = &[ExperimentalFeature {
-    name: COGNITIVE_COORDINATION,
-    cargo_feature: "experimental-cognitive-coordination",
-    summary: "coordinated multi-subject cognitive evaluation",
-    compiled: cfg!(feature = "experimental-cognitive-coordination"),
-}];
+pub const FEATURES: &[ExperimentalFeature] = &[
+    ExperimentalFeature {
+        name: COGNITIVE_COORDINATION,
+        cargo_feature: "experimental-cognitive-coordination",
+        summary: "coordinated multi-subject cognitive evaluation",
+        compiled: cfg!(feature = "experimental-cognitive-coordination"),
+    },
+    ExperimentalFeature {
+        name: CONTEXT_DB,
+        cargo_feature: "experimental-context-db",
+        summary: "authoritative Context AST database reference backend",
+        compiled: cfg!(feature = "experimental-context-db"),
+    },
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ExperimentalFeatureStatus {
