@@ -10,8 +10,12 @@ use morphz::memory::{
     SessionDirectoryStore, SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore,
     SessionUpdate, ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
 };
+#[cfg(feature = "experimental-context-db")]
+use morphz::memory::NewMindProjection;
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
+#[cfg(feature = "experimental-context-db")]
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -151,6 +155,96 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             "the complete Runtime directory must remain one physical statement"
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+
+        // Compiling the ContextDB experiment must not silently weaken the
+        // original one-statement Runtime-directory contract. Exercise the
+        // authoritative AST path itself, including its complete structural
+        // validation and Mind decoding, rather than merely counting an empty
+        // experimental schema lookup.
+        #[cfg(feature = "experimental-context-db")]
+        {
+            let context_db_file = NamedTempFile::new().unwrap();
+            let permit = morphz::experimental::require_enabled(
+                &std::collections::BTreeSet::from([
+                    morphz::experimental::CONTEXT_DB.to_string()
+                ]),
+                morphz::experimental::CONTEXT_DB,
+            )
+            .unwrap();
+            let context_db_store = SqliteStore::new_with_context_db(
+                context_db_file.path().to_str().unwrap(),
+                &morphz::config::SqliteStorageConfig::default(),
+                permit,
+            )
+            .await
+            .unwrap();
+            context_db_store
+                .create_agent_bundle(
+                    NewAgent {
+                        id: "context-db-statement-budget-agent".to_string(),
+                        title: "ContextDB Statement Budget Agent".to_string(),
+                        root_context_id: "context-db-statement-budget-context".to_string(),
+                    },
+                    NewCognitiveContext {
+                        id: "context-db-statement-budget-context".to_string(),
+                        agent_id: "context-db-statement-budget-agent".to_string(),
+                        title: "ContextDB Statement Budget Context".to_string(),
+                    },
+                    NewSession {
+                        id: "context-db-statement-budget-session".to_string(),
+                        agent_id: "context-db-statement-budget-agent".to_string(),
+                        context_id: "context-db-statement-budget-context".to_string(),
+                        parent_session_id: None,
+                        title: "ContextDB Statement Budget Session".to_string(),
+                        mount_kind: SessionMountKind::NewBlankContext,
+                    },
+                )
+                .await
+                .unwrap();
+            let initial_mind = morphz::orchestrator::context::MindState::default();
+            let initial_state = serde_json::to_value(&initial_mind).unwrap();
+            let initial_hash = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&initial_mind).unwrap())
+            );
+            context_db_store
+                .initialize_mind_projection(NewMindProjection {
+                    context_id: "context-db-statement-budget-context".to_string(),
+                    revision: initial_mind.version,
+                    state: initial_state.clone(),
+                    state_hash: initial_hash,
+                    head_event_id: None,
+                    recall_documents: Vec::new(),
+                })
+                .await
+                .unwrap();
+
+            statements.store(0, Ordering::Relaxed);
+            pool_acquires.store(0, Ordering::Relaxed);
+            let context_db_snapshot = context_db_store
+                .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                    context_id: "context-db-statement-budget-context".to_string(),
+                    active_session_id: "context-db-statement-budget-session".to_string(),
+                    active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+                    max_full_sessions: 50,
+                    max_metadata_sessions: 50,
+                    session_filter: ContextRuntimeSessionFilter::default(),
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                context_db_snapshot.mind.unwrap().state,
+                initial_state,
+                "the one-statement directory must decode the authoritative Context AST exactly"
+            );
+            assert_eq!(
+                statements.load(Ordering::Relaxed),
+                1,
+                "the ContextDB Runtime directory must remain one physical statement"
+            );
+            assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+        }
 
         for principal_id in ["statement-budget-principal-a", "statement-budget-principal-b"] {
             store

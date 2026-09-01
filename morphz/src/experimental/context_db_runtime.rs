@@ -72,7 +72,7 @@ struct DesiredNode {
     body_sexpr: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeContextSnapshot {
     context_id: String,
     revision: u64,
@@ -356,6 +356,26 @@ impl ContextDbRuntimeAdapter {
         self.load_runtime_snapshot_in_transaction(transaction, context_id)
             .await?
             .map(|snapshot| decode_projection(&snapshot))
+            .transpose()
+    }
+
+    /// Decodes the authoritative Runtime projection from a structural
+    /// ContextDB snapshot embedded in a larger storage query.
+    ///
+    /// Runtime directory reads use this entry point so the Context AST,
+    /// Sessions and control state all come from one SQLite statement snapshot
+    /// instead of adding a second ContextDB round trip. The exact same schema,
+    /// topology and Mind-hash validation used by the direct loader remains the
+    /// fail-closed boundary.
+    pub(crate) fn decode_projection_snapshot_json(
+        &self,
+        encoded: &str,
+    ) -> ContextDbResult<Option<MindProjectionRecord>> {
+        serde_json::from_str::<Option<RuntimeContextSnapshot>>(encoded)?
+            .map(|snapshot| {
+                validate_runtime_snapshot(&snapshot)?;
+                decode_projection(&snapshot)
+            })
             .transpose()
     }
 

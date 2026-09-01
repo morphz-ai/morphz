@@ -4125,8 +4125,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
         // Every scalar subquery belongs to this one SQLite statement snapshot.
         // `json(...)` marks nested JSON values so arrays contain objects rather
         // than escaped JSON strings.
-        let row = sqlx::query(
-            r#"WITH
+        let directory_sql_prefix = r#"WITH
                scoped_sessions AS MATERIALIZED (
                  SELECT s.*,
                         sm.attention_state AS mount_attention_state,
@@ -4382,6 +4381,66 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                      'last_signal_batch_id', NULL, 'revision', 0
                    )
                  ) AS cognitive_clock_json,
+"#;
+        let legacy_mind_columns = r#"
+                 COALESCE(
+                   (SELECT json_object(
+                      'context_id', projection.context_id,
+                      'revision', projection.revision,
+                      'state', json(projection.state_json),
+                      'state_hash', projection.state_hash,
+                      'head_event_id', head.head_event_id,
+                      'updated_at', projection.updated_at
+                    )
+                    FROM mind_projections projection
+                    JOIN context_heads head ON head.context_id = projection.context_id
+                    WHERE projection.context_id = c.id
+                      AND projection.revision = head.revision
+                      AND projection.state_hash = head.projection_hash),
+                   'null'
+                 ) AS mind_json,
+                 (SELECT revision FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_revision,
+                 (SELECT projection_hash FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_hash,
+                 (SELECT revision FROM mind_projections WHERE context_id = c.id)
+                   AS mind_projection_revision,
+                 (SELECT state_hash FROM mind_projections WHERE context_id = c.id)
+                   AS mind_projection_hash,
+"#;
+        let context_db_mind_columns = r#"
+                 COALESCE(
+                   (SELECT json_object(
+                      'context_id', context_db.context_id,
+                      'revision', context_db.revision,
+                      'root_node_id', context_db.root_node_id,
+                      'root_hash', context_db.root_hash,
+                      'nodes', json(COALESCE(
+                        (SELECT json_group_array(json(node_value))
+                         FROM (
+                           SELECT json_object(
+                             'node_id', node.node_id,
+                             'parent_id', node.parent_id,
+                             'order_key', node.order_key,
+                             'owner_domain', node.owner_domain,
+                             'node_revision', node.node_revision,
+                             'body_sexpr', node.body_sexpr,
+                             'content_hash', node.content_hash,
+                             'subtree_hash', node.subtree_hash
+                           ) AS node_value
+                           FROM experimental_contextdb_nodes node
+                           WHERE node.context_id = context_db.context_id
+                           ORDER BY node.parent_id, node.order_key, node.node_id
+                         )),
+                        '[]'
+                      ))
+                    )
+                    FROM experimental_contextdb_contexts context_db
+                    WHERE context_db.context_id = c.id),
+                   'null'
+                 ) AS context_db_mind_json,
+"#;
+        let directory_sql_suffix = r#"
                  COALESCE((SELECT json_group_array(json(value)) FROM session_rows), '[]')
                    AS sessions_json,
                  (SELECT json_object(
@@ -4403,32 +4462,78 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  COALESCE((SELECT json_group_array(json(value)) FROM principal_binding_rows), '[]')
                    AS principal_bindings_json
                FROM cognitive_contexts c
-               WHERE c.id = ?1"#,
-        )
-        .bind(context_id)
-        .bind(active_session_id)
-        .bind(active_after)
-        .bind(max_full_sessions)
-        .bind(max_metadata_sessions)
-        .bind(principal_ids)
-        .fetch_optional(&mut *transaction)
-        .await?;
+               WHERE c.id = ?1"#;
+        #[cfg(feature = "experimental-context-db")]
+        let use_context_db = self.context_db.is_some();
+        #[cfg(not(feature = "experimental-context-db"))]
+        let use_context_db = false;
+        static LEGACY_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        static CONTEXT_DB_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let (directory_sql_cache, mind_columns) = if use_context_db {
+            (&CONTEXT_DB_DIRECTORY_SQL, context_db_mind_columns)
+        } else {
+            (&LEGACY_DIRECTORY_SQL, legacy_mind_columns)
+        };
+        let directory_sql = directory_sql_cache
+            .get_or_init(|| [directory_sql_prefix, mind_columns, directory_sql_suffix].concat());
+        let row = sqlx::query(directory_sql.as_str())
+            .bind(context_id)
+            .bind(active_session_id)
+            .bind(active_after)
+            .bind(max_full_sessions)
+            .bind(max_metadata_sessions)
+            .bind(principal_ids)
+            .fetch_optional(&mut *transaction)
+            .await?;
 
         let Some(row) = row else {
             transaction.commit().await?;
             return Ok(None);
         };
         #[cfg(feature = "experimental-context-db")]
+        let read_legacy_mind = !use_context_db;
+        #[cfg(not(feature = "experimental-context-db"))]
+        let read_legacy_mind = true;
+        let legacy_mind = if read_legacy_mind {
+            let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
+            let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
+            match (head_revision, projection_revision) {
+                (None, None) => None,
+                (Some(head_revision), Some(projection_revision)) => {
+                    let head_hash = row
+                        .get::<Option<String>, _>("mind_head_hash")
+                        .ok_or("Context Head 缺少 projection_hash")?;
+                    let projection_hash = row
+                        .get::<Option<String>, _>("mind_projection_hash")
+                        .ok_or("Mind Projection 缺少 state_hash")?;
+                    if head_revision != projection_revision || head_hash != projection_hash {
+                        return Err(format!(
+                            "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
+                        )
+                        .into());
+                    }
+                    Some(
+                        sqlite_snapshot_component::<Option<MindProjectionRecord>>(
+                            &row,
+                            "mind_json",
+                        )?
+                        .ok_or("一致的 Mind Projection 没有返回投影内容")?,
+                    )
+                }
+                _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+            }
+        } else {
+            None
+        };
+        #[cfg(feature = "experimental-context-db")]
         let mind = if let Some(context_db) = &self.context_db {
             context_db
-                .load_projection_in_transaction(&mut transaction, context_id)
-                .await?
+                .decode_projection_snapshot_json(&row.get::<String, _>("context_db_mind_json"))?
         } else {
-            get_mind_projection_consistent_from_executor(&mut *transaction, context_id).await?
+            legacy_mind
         };
         #[cfg(not(feature = "experimental-context-db"))]
-        let mind =
-            get_mind_projection_consistent_from_executor(&mut *transaction, context_id).await?;
+        let mind = legacy_mind;
         let snapshot = ContextRuntimeDirectorySnapshot::from_components(
             sqlite_snapshot_component(&row, "context_json")?,
             sqlite_snapshot_component(&row, "cognitive_clock_json")?,
