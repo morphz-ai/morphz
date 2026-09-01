@@ -297,7 +297,7 @@ def build_toolchain_lock(
         "build_profile": "release",
         "build_features": ["experimental-context-db"],
         "build_command": (
-            "cargo build --release -p morphz --bin morphz "
+            "cargo build --locked --release -p morphz --bin morphz "
             "--bin morphz-harbor-wait --features experimental-context-db"
         ),
         "target": "x86_64-unknown-linux-gnu",
