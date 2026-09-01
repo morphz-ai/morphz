@@ -126,7 +126,7 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
                 id TEXT, title TEXT, created_at TEXT
             );
             CREATE TABLE events (
-                timestamp TEXT, topic TEXT, session_id TEXT,
+                id TEXT, timestamp TEXT, topic TEXT, session_id TEXT,
                 root_turn_id TEXT, payload TEXT
             );
             CREATE TABLE thread_activations (
@@ -145,8 +145,22 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
             CREATE TABLE experimental_contextdb_contexts (context_id TEXT);
             INSERT INTO sessions VALUES ('current-session', 'STATE-Bench task-1', '2026-01-01T00:00:00Z');
             INSERT INTO sessions VALUES ('old-session', 'old', '2025-01-01T00:00:00Z');
-            INSERT INTO events VALUES ('2026-01-01T00:00:00Z', 'chat/message', 'current-session', 'turn-1', '{}');
-            INSERT INTO events VALUES ('2025-01-01T00:00:00Z', 'chat/reply', 'old-session', 'old-turn', '{}');
+            INSERT INTO events VALUES (
+                'old-turn', '2025-12-31T23:59:58Z', 'chat/user_message',
+                'current-session', NULL, '{}'
+            );
+            INSERT INTO events VALUES (
+                'old-reply', '2025-12-31T23:59:59Z', 'chat/reply',
+                'current-session', 'old-turn', '{}'
+            );
+            INSERT INTO events VALUES (
+                'turn-1', '2026-01-01T00:00:00Z', 'chat/user_message',
+                'current-session', NULL, '{}'
+            );
+            INSERT INTO events VALUES (
+                'other-reply', '2025-01-01T00:00:00Z', 'chat/reply',
+                'old-session', 'other-turn', '{}'
+            );
             INSERT INTO thread_activations VALUES (
                 'activation-1', 'running', '2000-01-01T00:00:00Z',
                 '2000-01-01T00:00:00Z', 'turn-1', 'current-session'
@@ -171,6 +185,7 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
 
     assert state["available"] is True
     assert state["session_id"] == "current-session"
+    assert state["root_turn_id"] == "turn-1"
     assert state["replies"] == 0
     assert state["active_activations"][0]["lease_expired"] is True
     assert state["pending_required_dependencies"] == [

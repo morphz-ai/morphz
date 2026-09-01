@@ -149,19 +149,28 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
                 "session_count": len(sessions),
             }
         session_id = str(sessions[0][0])
+        # A chat/user_message event is the durable root of its own turn; child
+        # events and Activations point back to its event id via root_turn_id.
+        # Do not infer the current root from the newest child event.  If the
+        # scheduler has not admitted the latest user message yet, that query
+        # falls back to the previous turn and can falsely report the previous
+        # reply as a durable terminal for the timed-out request.
         root_row = connection.execute(
-            "SELECT root_turn_id FROM events "
-            "WHERE session_id = ? AND root_turn_id IS NOT NULL "
-            "ORDER BY timestamp DESC LIMIT 1",
+            "SELECT id FROM events "
+            "WHERE session_id = ? AND topic = 'chat/user_message' "
+            "ORDER BY timestamp DESC, id DESC LIMIT 1",
             (session_id,),
         ).fetchone()
-        root_turn_id = str(root_row[0]) if root_row is not None else None
+        if root_row is None:
+            return {
+                **unavailable,
+                "reason": "task_user_message_missing",
+                "session_id": session_id,
+            }
+        root_turn_id = str(root_row[0])
 
-        scope = "session_id = ?"
-        scope_values: tuple[Any, ...] = (session_id,)
-        if root_turn_id is not None:
-            scope += " AND root_turn_id = ?"
-            scope_values += (root_turn_id,)
+        scope = "session_id = ? AND root_turn_id = ?"
+        scope_values: tuple[Any, ...] = (session_id, root_turn_id)
         replies = int(
             connection.execute(
                 f"SELECT COUNT(*) FROM events WHERE {scope} AND topic = ?",
@@ -181,9 +190,8 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
             "AND status IN ('queued', 'running')"
         )
         activation_values: tuple[Any, ...] = (session_id,)
-        if root_turn_id is not None:
-            activation_query += " AND root_turn_id = ?"
-            activation_values += (root_turn_id,)
+        activation_query += " AND root_turn_id = ?"
+        activation_values += (root_turn_id,)
         now = datetime.now(UTC)
         active_activations: list[dict[str, Any]] = []
         for activation_id, status, lease, updated, activation_root in connection.execute(
