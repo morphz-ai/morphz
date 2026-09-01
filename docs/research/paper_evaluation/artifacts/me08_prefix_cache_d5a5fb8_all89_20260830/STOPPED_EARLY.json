@@ -1,0 +1,82 @@
+{
+  "schema_version": "me08-prefix-cache-stopped-early-v1",
+  "stopped_at": "2026-08-29T22:34:10Z",
+  "disposition": "stopped_early_not_a_release_gate",
+  "reason": "Provider-visible tool schemas were found to vary across ordinary work requests, invalidating the intended stable prefix-cache contract for the frozen candidate.",
+  "resume_or_splice_allowed": false,
+  "server_run_root_preserved": "/opt/morphz-benchmark/repeat-runs/me08-prefix-cache-d5a5fb8-r1-20260830",
+  "systemd_unit": "morphz-me08-prefix-cache-d5a5fb8-r1-20260830.service",
+  "service_after_stop": {
+    "active_state": "inactive",
+    "sub_state": "dead",
+    "main_pid": 0,
+    "active_task_containers": 0
+  },
+  "frozen_identity": {
+    "protocol": "me08-terminal-bench-prefix-cache-structured-deltas-all89-morphz-v1",
+    "runtime_commit": "d5a5fb806183f44fb5b47df65bf4def8ff8ab093",
+    "runtime_binary_sha256": "917d540f7da8d448b6ed086ec8f0021d6a18e398cee8123ad746cd42aa7b7faa",
+    "runtime_elf_build_id_sha1": "604657b94e1be9e702df0b4f00c15acfb32563eb",
+    "watcher_sha256": "70b33e20d661574543a478cd2bf9781355be8b2031c6e2124c8aa509d444c97d",
+    "infrastructure_commit": "2ced8ba71621c9ddf1f584541d452c4060f2c066",
+    "prompt_cache_strategy": "experimental-structured-deltas",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "concurrency": 8
+  },
+  "official_partial_result": {
+    "completed_tasks": 55,
+    "intended_tasks": 89,
+    "passes": 40,
+    "failures": 15,
+    "unfinished_tasks_are_not_failures": true
+  },
+  "paired_preserved_morphz_72_of_89_on_same_55_tasks": {
+    "passes": 42,
+    "failures": 13,
+    "gained": [
+      "kv-store-grpc",
+      "raman-fitting",
+      "sam-cell-seg"
+    ],
+    "regressed": [
+      "cancel-async-tasks",
+      "configure-git-webserver",
+      "financial-document-processor",
+      "gpt2-codegolf",
+      "torch-pipeline-parallelism"
+    ]
+  },
+  "provider_cache_snapshot": {
+    "outcomes": 874,
+    "input_tokens": 40877714,
+    "cached_input_tokens": 32960512,
+    "uncached_input_tokens": 7917202,
+    "cache_hit_rate": 0.8063198445979636,
+    "sequence_1_cache_hit_rate": 0.0,
+    "sequence_2_cache_hit_rate": 0.024068433035081476,
+    "sequence_3_plus_cache_hit_rate": 0.8618638796013409,
+    "sequence_4_plus_cache_hit_rate": 0.867289585058467,
+    "token_identity_verified": true
+  },
+  "completed_trial_exceptions": {
+    "agent_timeout_tasks": [
+      "gpt2-codegolf",
+      "make-doom-for-mips"
+    ],
+    "provider_or_quota_tasks": [],
+    "runtime_or_harness_tasks": [],
+    "verifier_anomaly_tasks": []
+  },
+  "cancelled_in_flight_on_authorized_stop": [
+    "break-filter-js-from-html",
+    "install-windows-3.11",
+    "large-scale-text-editing",
+    "largest-eigenval",
+    "pytorch-model-cli",
+    "query-optimize"
+  ],
+  "completed_during_stop_cleanup_with_cancelled_agent": [
+    "train-fasttext"
+  ]
+}
