@@ -6849,6 +6849,165 @@ struct AppliedContextTransition {
     mutations: Vec<ContextStateMutation>,
 }
 
+#[derive(Debug)]
+struct ContextMutationAccumulator<'a> {
+    baseline: &'a MindState,
+    writes: BTreeMap<(ContextCollection, String), ContextStateMutation>,
+    orders: BTreeMap<ContextCollection, Vec<String>>,
+    broad_replace: bool,
+}
+
+impl<'a> ContextMutationAccumulator<'a> {
+    fn new(baseline: &'a MindState) -> Self {
+        Self {
+            baseline,
+            writes: BTreeMap::new(),
+            orders: BTreeMap::new(),
+            broad_replace: false,
+        }
+    }
+
+    fn upsert<T: Serialize>(
+        &mut self,
+        collection: ContextCollection,
+        logical_id: impl Into<String>,
+        value: &T,
+        order: Option<u64>,
+    ) -> Result<(), String> {
+        let logical_id = logical_id.into();
+        let body = serde_json::to_value(value).map_err(|error| {
+            format!(
+                "failed to encode {} '{}': {error}",
+                collection.as_str(),
+                logical_id
+            )
+        })?;
+        self.writes.insert(
+            (collection, logical_id.clone()),
+            ContextStateMutation::Upsert {
+                collection,
+                logical_id,
+                body,
+                order,
+            },
+        );
+        Ok(())
+    }
+
+    fn upsert_ordered<T: Serialize>(
+        &mut self,
+        collection: ContextCollection,
+        logical_id: impl Into<String>,
+        value: &T,
+        order: usize,
+    ) -> Result<(), String> {
+        self.upsert(
+            collection,
+            logical_id,
+            value,
+            Some(
+                u64::try_from(order)
+                    .map_err(|_| format!("{} order exceeds u64", collection.as_str()))?,
+            ),
+        )
+    }
+
+    fn remove(&mut self, collection: ContextCollection, logical_id: impl Into<String>) {
+        let logical_id = logical_id.into();
+        let key = (collection, logical_id.clone());
+        if baseline_contains_context_record(self.baseline, collection, &logical_id) {
+            self.writes.insert(
+                key,
+                ContextStateMutation::Remove {
+                    collection,
+                    logical_id,
+                },
+            );
+        } else {
+            // A record created and then removed inside one transaction has no
+            // durable net effect and must not become a remove of a row which
+            // never existed at the transaction fence.
+            self.writes.remove(&key);
+        }
+    }
+
+    fn set_order(&mut self, collection: ContextCollection, logical_ids: Vec<String>) {
+        if baseline_context_order(self.baseline, collection).as_deref()
+            == Some(logical_ids.as_slice())
+        {
+            self.orders.remove(&collection);
+        } else {
+            self.orders.insert(collection, logical_ids);
+        }
+    }
+
+    fn mark_broad_replace(&mut self) {
+        self.broad_replace = true;
+    }
+
+    fn finish(self, next: &MindState) -> Result<Vec<ContextStateMutation>, String> {
+        if self.broad_replace {
+            return Ok(vec![ContextStateMutation::ReplaceMind {
+                state: serde_json::to_value(next)
+                    .map_err(|error| format!("failed to encode replacement Mind: {error}"))?,
+            }]);
+        }
+        let mut mutations = self.writes.into_values().collect::<Vec<_>>();
+        mutations.extend(self.orders.into_iter().map(|(collection, logical_ids)| {
+            ContextStateMutation::SetOrder {
+                collection,
+                logical_ids,
+            }
+        }));
+        Ok(mutations)
+    }
+}
+
+fn baseline_contains_context_record(
+    state: &MindState,
+    collection: ContextCollection,
+    logical_id: &str,
+) -> bool {
+    match collection {
+        ContextCollection::Frame => state.frames.iter().any(|frame| frame.id == logical_id),
+        ContextCollection::Relation => state
+            .relations
+            .iter()
+            .any(|relation| context_relation_identity(relation) == logical_id),
+        ContextCollection::Retired => state.retired.contains(logical_id),
+        ContextCollection::Retiring => state.retiring.contains_key(logical_id),
+        ContextCollection::Protected => state.protected.contains(logical_id),
+        ContextCollection::Checkpoint => state
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.id == logical_id),
+        ContextCollection::MutationClocks => logical_id == "mutation-clocks",
+    }
+}
+
+fn baseline_context_order(state: &MindState, collection: ContextCollection) -> Option<Vec<String>> {
+    match collection {
+        ContextCollection::Frame => {
+            Some(state.frames.iter().map(|frame| frame.id.clone()).collect())
+        }
+        ContextCollection::Relation => Some(
+            state
+                .relations
+                .iter()
+                .map(context_relation_identity)
+                .collect(),
+        ),
+        ContextCollection::Checkpoint => Some(
+            state
+                .checkpoints
+                .iter()
+                .map(|checkpoint| checkpoint.id.clone())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 /// Transitional semantic oracle for the native Context Mutation protocol.
 ///
 /// This compiler exists once in the Context domain and is shared by every
@@ -6863,22 +7022,17 @@ fn apply_parsed_transaction_with_policy_and_provenance_planned(
     formation: &FrameFormationContext<'_>,
     track_mutations: bool,
 ) -> Result<AppliedContextTransition, String> {
-    let (next, changes) = apply_parsed_transaction_with_policy_and_provenance(
+    apply_parsed_transaction_with_policy_and_provenance_native(
         current,
         tx,
         observation_ids,
         retirement_policy,
         formation,
         track_mutations,
-    )?;
-    let mutations = compile_context_state_mutations(current, &next, &changes)?;
-    Ok(AppliedContextTransition {
-        next,
-        changes,
-        mutations,
-    })
+    )
 }
 
+#[cfg(test)]
 fn compile_context_state_mutations(
     current: &MindState,
     next: &MindState,
@@ -7073,6 +7227,7 @@ fn context_relation_identity(relation: &ContextRelation) -> String {
     relation_mutation_key(&relation.subject, &relation.relation, &relation.object)
 }
 
+#[cfg(test)]
 fn compile_set_mutations(
     output: &mut Vec<ContextStateMutation>,
     collection: ContextCollection,
@@ -7098,6 +7253,7 @@ fn compile_set_mutations(
     );
 }
 
+#[cfg(test)]
 fn compile_map_mutations<T>(
     output: &mut Vec<ContextStateMutation>,
     collection: ContextCollection,
@@ -7141,6 +7297,25 @@ fn apply_parsed_transaction_with_policy_and_provenance(
     formation: &FrameFormationContext<'_>,
     track_mutations: bool,
 ) -> Result<(MindState, Vec<ContextChange>), String> {
+    let applied = apply_parsed_transaction_with_policy_and_provenance_native(
+        current,
+        tx,
+        observation_ids,
+        retirement_policy,
+        formation,
+        track_mutations,
+    )?;
+    Ok((applied.next, applied.changes))
+}
+
+fn apply_parsed_transaction_with_policy_and_provenance_native(
+    current: &MindState,
+    tx: &ParsedTransaction,
+    observation_ids: &HashSet<String>,
+    retirement_policy: FrameRetirementPolicy,
+    formation: &FrameFormationContext<'_>,
+    track_mutations: bool,
+) -> Result<AppliedContextTransition, String> {
     if current.version != tx.base_version {
         return Err(format!(
             "Context version conflict: the transaction is based on version {}, but the current version is {}. Read the latest kernel.version and submit again.",
@@ -7149,6 +7324,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
     }
 
     let mut next = current.clone();
+    let mut mutations = ContextMutationAccumulator::new(current);
     let next_version = current.version + 1;
     if track_mutations && next.mutation_clocks.tracking_started_version.is_none() {
         next.mutation_clocks.tracking_started_version = Some(current.version);
@@ -7177,6 +7353,15 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     created_version: next_version,
                     updated_version: next_version,
                 });
+                let frame_order = next.frames.len() - 1;
+                mutations.upsert_ordered(
+                    ContextCollection::Frame,
+                    id,
+                    next.frames
+                        .last()
+                        .ok_or("created Frame disappeared before mutation emission")?,
+                    frame_order,
+                )?;
                 if track_mutations {
                     next.mutation_clocks.frame_order_version = next_version;
                 }
@@ -7204,6 +7389,15 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     created_version: next_version,
                     updated_version: next_version,
                 });
+                let frame_order = next.frames.len() - 1;
+                mutations.upsert_ordered(
+                    ContextCollection::Frame,
+                    id,
+                    next.frames
+                        .last()
+                        .ok_or("derived Frame disappeared before mutation emission")?,
+                    frame_order,
+                )?;
                 if track_mutations {
                     next.mutation_clocks.frame_order_version = next_version;
                 }
@@ -7256,7 +7450,21 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 frame.revision += 1;
                 frame.updated_version = next_version;
                 let frame_revision = frame.revision;
+                let frame_index = next
+                    .frames
+                    .iter()
+                    .position(|frame| frame.id == id)
+                    .ok_or_else(|| {
+                        format!("revised Frame '{id}' disappeared before mutation emission")
+                    })?;
+                mutations.upsert_ordered(
+                    ContextCollection::Frame,
+                    id,
+                    &next.frames[frame_index],
+                    frame_index,
+                )?;
                 if cancelled_retirement {
+                    mutations.remove(ContextCollection::Retiring, id);
                     record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                 }
                 changes.push(change(
@@ -7329,6 +7537,16 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                                 reason: reason.clone(),
                             },
                         );
+                        mutations.upsert(
+                            ContextCollection::Retiring,
+                            id,
+                            next.retiring.get(id).ok_or_else(|| {
+                                format!(
+                                    "retirement request for '{id}' disappeared before mutation emission"
+                                )
+                            })?,
+                            None,
+                        )?;
                         record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         changes.push(change(
                             "retire-frame-requested",
@@ -7339,6 +7557,12 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         ));
                     } else {
                         if next.retired.insert(id.to_string()) {
+                            mutations.upsert(
+                                ContextCollection::Retired,
+                                id,
+                                &serde_json::json!({ "id": id }),
+                                None,
+                            )?;
                             record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         }
                         changes.push(change("retire", id, Some(reason.clone())));
@@ -7351,6 +7575,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     let id = validated_id(as_atom(item, "restore target")?)?;
                     ensure_known(&next, observation_ids, id)?;
                     if next.retiring.remove(id).is_some() {
+                        mutations.remove(ContextCollection::Retiring, id);
                         record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         changes.push(change(
                             "restore",
@@ -7362,6 +7587,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     if !next.retired.remove(id) {
                         return Err(format!("'{}' is not currently retired", id));
                     }
+                    mutations.remove(ContextCollection::Retired, id);
                     record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                     changes.push(change("restore", id, None));
                 }
@@ -7417,6 +7643,13 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 }
                 next.retiring.remove(id);
                 next.retired.insert(id.to_string());
+                mutations.remove(ContextCollection::Retiring, id);
+                mutations.upsert(
+                    ContextCollection::Retired,
+                    id,
+                    &serde_json::json!({ "id": id }),
+                    None,
+                )?;
                 record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                 changes.push(change(
                     "retire-frame-finalized",
@@ -7474,6 +7707,17 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     if name == "protect" {
                         let retirement_cancelled = next.retiring.remove(id).is_some();
                         let protection_added = next.protected.insert(id.to_string());
+                        if retirement_cancelled {
+                            mutations.remove(ContextCollection::Retiring, id);
+                        }
+                        if protection_added {
+                            mutations.upsert(
+                                ContextCollection::Protected,
+                                id,
+                                &serde_json::json!({ "id": id }),
+                                None,
+                            )?;
+                        }
                         let changed = retirement_cancelled || protection_added;
                         if changed {
                             record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
@@ -7481,6 +7725,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     } else if !next.protected.remove(id) {
                         return Err(format!("'{}' is not currently protected", id));
                     } else {
+                        mutations.remove(ContextCollection::Protected, id);
                         record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                     }
                     changes.push(change(name, id, tx.reason.clone()));
@@ -7494,6 +7739,10 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 )?;
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 place_frame(&mut next, id, &op[2])?;
+                mutations.set_order(
+                    ContextCollection::Frame,
+                    next.frames.iter().map(|frame| frame.id.clone()).collect(),
+                );
                 if track_mutations {
                     next.mutation_clocks.frame_order_version = next_version;
                 }
@@ -7514,6 +7763,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let subject = validated_id(atom_at(op, 1, "relation subject")?)?;
                 let relation = validated_id(atom_at(op, 2, "relation name")?)?;
                 let object = validated_id(atom_at(op, 3, "relation object")?)?;
+                let relation_id = relation_mutation_key(subject, relation, object);
                 ensure_known(&next, observation_ids, subject)?;
                 ensure_known(&next, observation_ids, object)?;
                 let existing = next.relations.iter().position(|candidate| {
@@ -7534,14 +7784,31 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         object: object.to_string(),
                         created_version: next_version,
                     });
+                    let relation_order = next.relations.len() - 1;
+                    mutations.upsert_ordered(
+                        ContextCollection::Relation,
+                        &relation_id,
+                        next.relations
+                            .last()
+                            .ok_or("created Relation disappeared before mutation emission")?,
+                        relation_order,
+                    )?;
                 } else if let Some(index) = existing {
                     next.relations.remove(index);
+                    mutations.remove(ContextCollection::Relation, &relation_id);
                 } else {
                     return Err(format!(
                         "relation '{} {} {}' does not exist and cannot be removed",
                         subject, relation, object
                     ));
                 }
+                mutations.set_order(
+                    ContextCollection::Relation,
+                    next.relations
+                        .iter()
+                        .map(context_relation_identity)
+                        .collect(),
+                );
                 record_relation_mutation(
                     &mut next,
                     subject,
@@ -7577,6 +7844,15 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     protected: next.protected.clone(),
                     created_version: next_version,
                 });
+                let checkpoint_order = next.checkpoints.len() - 1;
+                mutations.upsert_ordered(
+                    ContextCollection::Checkpoint,
+                    id,
+                    next.checkpoints
+                        .last()
+                        .ok_or("created Checkpoint disappeared before mutation emission")?,
+                    checkpoint_order,
+                )?;
                 record_checkpoint_mutation(&mut next, id, next_version, track_mutations);
                 changes.push(change(
                     "checkpoint",
@@ -7605,6 +7881,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 if track_mutations {
                     next.mutation_clocks.global_barrier_version = next_version;
                 }
+                mutations.mark_broad_replace();
                 changes.push(change("rollback", id, Some(reason.clone())));
             }
             "drop-checkpoint" => {
@@ -7621,9 +7898,17 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         .position(|checkpoint| checkpoint.id == id)
                         .ok_or_else(|| format!("checkpoint '{}' does not exist", id))?;
                     next.checkpoints.remove(index);
+                    mutations.remove(ContextCollection::Checkpoint, id);
                     record_checkpoint_mutation(&mut next, id, next_version, track_mutations);
                     changes.push(change("drop-checkpoint", id, Some(reason.clone())));
                 }
+                mutations.set_order(
+                    ContextCollection::Checkpoint,
+                    next.checkpoints
+                        .iter()
+                        .map(|checkpoint| checkpoint.id.clone())
+                        .collect(),
+                );
             }
             other => {
                 return Err(format!(
@@ -7652,6 +7937,13 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let successor_id = successor.id.clone();
                 next.retiring.remove(&target);
                 next.retired.insert(target.clone());
+                mutations.remove(ContextCollection::Retiring, &target);
+                mutations.upsert(
+                    ContextCollection::Retired,
+                    &target,
+                    &serde_json::json!({ "id": target.as_str() }),
+                    None,
+                )?;
                 record_lifecycle_mutation(&mut next, &target, next_version, track_mutations);
                 changes.push(change(
                     "retire-frame-finalized",
@@ -7662,8 +7954,21 @@ fn apply_parsed_transaction_with_policy_and_provenance(
         }
     }
 
+    if current.mutation_clocks != next.mutation_clocks {
+        mutations.upsert(
+            ContextCollection::MutationClocks,
+            "mutation-clocks",
+            &next.mutation_clocks,
+            None,
+        )?;
+    }
     next.version = next_version;
-    Ok((next, changes))
+    let emitted = mutations.finish(&next)?;
+    Ok(AppliedContextTransition {
+        next,
+        changes,
+        mutations: emitted,
+    })
 }
 
 fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), String> {
@@ -12130,12 +12435,26 @@ mod tests {
         transaction: &str,
         observation_ids: &HashSet<String>,
     ) -> AppliedContextTransition {
+        planned_test_transaction_with_policy(
+            current,
+            transaction,
+            observation_ids,
+            FrameRetirementPolicy::legacy_immediate(),
+        )
+    }
+
+    fn planned_test_transaction_with_policy(
+        current: &MindState,
+        transaction: &str,
+        observation_ids: &HashSet<String>,
+        retirement_policy: FrameRetirementPolicy,
+    ) -> AppliedContextTransition {
         let parsed = parse_transaction(transaction).unwrap();
         apply_parsed_transaction_with_policy_and_provenance_planned(
             current,
             &parsed,
             observation_ids,
-            FrameRetirementPolicy::legacy_immediate(),
+            retirement_policy,
             &FrameFormationContext::default(),
             true,
         )
@@ -12147,16 +12466,29 @@ mod tests {
         current: &MindState,
         applied: &AppliedContextTransition,
     ) {
-        let plan = ContextMutationPlan {
+        let plan_for = |mutations| ContextMutationPlan {
             context_id: context_id.to_string(),
             expected_revision: current.version,
             next_revision: applied.next.version,
             expected_state_hash: mind_state_hash(current).unwrap(),
             next_state_hash: mind_state_hash(&applied.next).unwrap(),
-            mutations: applied.mutations.clone(),
+            mutations,
         };
+        let plan = plan_for(applied.mutations.clone());
         assert_eq!(
             apply_context_mutation_plan_reference(current, &plan).unwrap(),
+            applied.next
+        );
+
+        // Keep the old snapshot compiler only as an independent semantic
+        // oracle. Production emits mutations while applying primitives; this
+        // assertion prevents the new emitter and Store adapter from agreeing
+        // on the same regression unnoticed.
+        let oracle = plan_for(
+            compile_context_state_mutations(current, &applied.next, &applied.changes).unwrap(),
+        );
+        assert_eq!(
+            apply_context_mutation_plan_reference(current, &oracle).unwrap(),
             applied.next
         );
     }
@@ -12201,6 +12533,84 @@ mod tests {
             [ContextStateMutation::ReplaceMind { .. }]
         ));
         assert_compiled_plan_reproduces_transition("context-a", &checkpointed.next, &broad);
+    }
+
+    #[test]
+    fn native_context_mutations_coalesce_multi_operation_net_effects() {
+        let initial = MindState::default();
+        let applied = planned_test_transaction(
+            &initial,
+            "(context-tx (base-version 0) (reason cleanup) (create frame-a (fact a)) (revise frame-a (fact revised)) (protect frame-a) (unprotect frame-a) (retire frame-a) (restore frame-a) (create frame-b (fact b)) (relate frame-a supports frame-b) (unrelate frame-a supports frame-b) (checkpoint cp-a) (drop-checkpoint cp-a))",
+            &HashSet::new(),
+        );
+
+        assert_compiled_plan_reproduces_transition("context-coalesced", &initial, &applied);
+        assert_eq!(applied.next.frames.len(), 2);
+        assert!(applied.next.retired.is_empty());
+        assert!(applied.next.retiring.is_empty());
+        assert!(applied.next.protected.is_empty());
+        assert!(applied.next.relations.is_empty());
+        assert!(applied.next.checkpoints.is_empty());
+        assert!(!applied.mutations.iter().any(|mutation| matches!(
+            mutation,
+            ContextStateMutation::Upsert {
+                collection: ContextCollection::Retired
+                    | ContextCollection::Retiring
+                    | ContextCollection::Protected
+                    | ContextCollection::Relation
+                    | ContextCollection::Checkpoint,
+                ..
+            } | ContextStateMutation::Remove {
+                collection: ContextCollection::Retired
+                    | ContextCollection::Retiring
+                    | ContextCollection::Protected
+                    | ContextCollection::Relation
+                    | ContextCollection::Checkpoint,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn native_context_mutations_preserve_staged_retirement_fences() {
+        let observation_ids = HashSet::new();
+        let initial = MindState::default();
+        let created = planned_test_transaction_with_policy(
+            &initial,
+            "(context-tx (base-version 0) (create frame-a (fact a)) (create frame-b (fact b)))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(10, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &initial, &created);
+
+        let requested = planned_test_transaction_with_policy(
+            &created.next,
+            "(context-tx (base-version 1) (reason cooling) (retire frame-a frame-b))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(10, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &created.next, &requested);
+        assert_eq!(requested.next.retiring["frame-a"].eligible_at_tick, 18);
+        assert_eq!(requested.next.retiring["frame-b"].generation, 2);
+
+        let revised = planned_test_transaction_with_policy(
+            &requested.next,
+            "(context-tx (base-version 2) (revise frame-a (fact revised)))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(15, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &requested.next, &revised);
+        assert!(!revised.next.retiring.contains_key("frame-a"));
+
+        let finalized = planned_test_transaction_with_policy(
+            &revised.next,
+            "(context-tx (base-version 3) (finalize-retirement frame-b 2 1 18))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(18, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &revised.next, &finalized);
+        assert!(!finalized.next.retiring.contains_key("frame-b"));
+        assert!(finalized.next.retired.contains("frame-b"));
     }
 
     #[test]
