@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import math
+import sqlite3
 import statistics
 from collections import Counter
 from datetime import datetime
@@ -108,6 +109,163 @@ def trajectory_metrics(trial_dir: Path) -> dict[str, Any]:
     }
 
 
+def runtime_state_metrics(trial_dir: Path) -> dict[str, Any]:
+    """Read the durable Runtime state left at the Harbor boundary.
+
+    Harbor's ``AgentTimeoutError`` says only that the outer Agent deadline
+    elapsed.  It does not distinguish a reply that was already durable from a
+    legitimate scheduler wait or an Activation that was still executing.  The
+    trial SQLite database is the authority for that distinction.
+    """
+
+    path = trial_dir / "agent" / "morphz.db"
+    unavailable = {
+        "available": False,
+        "reason": "database_missing",
+        "replies": None,
+        "thread_terminal_events": None,
+        "activation_statuses": {},
+        "active_activations": None,
+        "active_objectives": None,
+        "pending_required_dependencies": [],
+        "last_event": None,
+        "last_model_attempt_state": None,
+    }
+    if not path.is_file():
+        return unavailable
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        required = {"events", "thread_activations"}
+        if not required.issubset(tables):
+            return {**unavailable, "reason": "runtime_schema_unavailable"}
+
+        replies = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM events WHERE topic = ?", ("chat/reply",)
+            ).fetchone()[0]
+        )
+        terminal_events = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM events WHERE topic = ?",
+                ("runtime/thread_terminal",),
+            ).fetchone()[0]
+        )
+        activation_statuses = {
+            str(status): int(count)
+            for status, count in connection.execute(
+                "SELECT status, COUNT(*) FROM thread_activations GROUP BY status"
+            )
+        }
+        active_activations = sum(
+            activation_statuses.get(status, 0) for status in ("queued", "running")
+        )
+
+        active_objectives = 0
+        if "objectives" in tables:
+            active_objectives = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM objectives "
+                    "WHERE status IN ('active', 'paused', 'blocked') "
+                    "OR active_evaluation_id IS NOT NULL"
+                ).fetchone()[0]
+            )
+
+        pending_dependencies: list[dict[str, Any]] = []
+        if "scheduler_dependencies" in tables:
+            pending_dependencies = [
+                {
+                    "kind": str(kind),
+                    "id": str(dependency_id),
+                    "count": int(count),
+                }
+                for kind, dependency_id, count in connection.execute(
+                    "SELECT dependency_kind, dependency_id, COUNT(*) "
+                    "FROM scheduler_dependencies "
+                    "WHERE status = 'pending' AND required = 1 "
+                    "GROUP BY dependency_kind, dependency_id "
+                    "ORDER BY dependency_kind, dependency_id"
+                )
+            ]
+
+        event_row = connection.execute(
+            "SELECT topic, timestamp FROM events ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        last_event = (
+            {"topic": str(event_row[0]), "timestamp": str(event_row[1])}
+            if event_row is not None
+            else None
+        )
+
+        attempt_row = connection.execute(
+            "SELECT timestamp, payload FROM events "
+            "WHERE topic = ? ORDER BY timestamp DESC LIMIT 1",
+            ("runtime/model_attempt_state",),
+        ).fetchone()
+        last_attempt = None
+        if attempt_row is not None:
+            try:
+                payload = json.loads(attempt_row[1])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            last_attempt = {
+                "timestamp": str(attempt_row[0]),
+                "attempt_id": payload.get("attempt_id"),
+                "state": payload.get("state"),
+                "terminal": payload.get("terminal"),
+                "detail": payload.get("detail"),
+            }
+
+        return {
+            "available": True,
+            "reason": None,
+            "replies": replies,
+            "thread_terminal_events": terminal_events,
+            "activation_statuses": dict(sorted(activation_statuses.items())),
+            "active_activations": active_activations,
+            "active_objectives": active_objectives,
+            "pending_required_dependencies": pending_dependencies,
+            "last_event": last_event,
+            "last_model_attempt_state": last_attempt,
+        }
+    except sqlite3.Error:
+        return {**unavailable, "reason": "runtime_state_read_failed"}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def classify_timeout(
+    exception_type: Any, runtime_state: dict[str, Any]
+) -> str | None:
+    """Classify timeout evidence without changing the official reward."""
+
+    if exception_type != "AgentTimeoutError":
+        return None
+    if not runtime_state["available"]:
+        return "runtime_state_unavailable"
+    if (
+        int(runtime_state["replies"]) > 0
+        and int(runtime_state["active_activations"]) == 0
+        and int(runtime_state["active_objectives"]) == 0
+    ):
+        return "durable_terminal_present"
+    if runtime_state["pending_required_dependencies"]:
+        return "pending_scheduler_dependency"
+    if int(runtime_state["active_activations"]) > 0:
+        return "active_activation_at_timeout"
+    if int(runtime_state["active_objectives"]) > 0:
+        return "active_objective_at_timeout"
+    return "suspected_scheduler_convergence_gap"
+
+
 def load_trial(path: Path) -> dict[str, Any]:
     payload = load_json(path)
     task = payload.get("task_name")
@@ -125,10 +283,12 @@ def load_trial(path: Path) -> dict[str, Any]:
     if started is not None and finished is not None:
         total_seconds = max(0.0, (finished - started).total_seconds())
     trial_dir = path.parent
+    runtime_state = runtime_state_metrics(trial_dir)
+    exception_type = exception.get("exception_type")
     return {
         "task": task,
         "reward": reward(payload),
-        "exception_type": exception.get("exception_type"),
+        "exception_type": exception_type,
         "exception_message_sha256": text_sha256(exception.get("exception_message")),
         "agent_execution_seconds": interval_seconds(payload.get("agent_execution")),
         "total_trial_seconds": total_seconds,
@@ -137,6 +297,8 @@ def load_trial(path: Path) -> dict[str, Any]:
         "output_tokens": number(agent_result.get("n_output_tokens")),
         "cost_usd": agent_result.get("cost_usd"),
         "trajectory": trajectory_metrics(trial_dir),
+        "runtime_state": runtime_state,
+        "timeout_classification": classify_timeout(exception_type, runtime_state),
     }
 
 
@@ -187,6 +349,11 @@ def arm_summary(trials: dict[str, dict[str, Any]]) -> dict[str, Any]:
         for trial in trials.values()
         if trial["exception_type"] is not None
     )
+    timeout_classifications = Counter(
+        str(trial["timeout_classification"])
+        for trial in trials.values()
+        if trial["timeout_classification"] is not None
+    )
     execution = [
         float(trial["agent_execution_seconds"])
         for trial in trials.values()
@@ -216,6 +383,7 @@ def arm_summary(trials: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "trials": len(trials),
         "passed": sum(int(trial["reward"]) for trial in trials.values()),
         "exception_counts": dict(sorted(exceptions.items())),
+        "timeout_classifications": dict(sorted(timeout_classifications.items())),
         "tokens": {
             "input": sum(int(trial["input_tokens"]) for trial in trials.values()),
             "cached_input": sum(
