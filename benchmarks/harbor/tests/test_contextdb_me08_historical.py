@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,11 +11,16 @@ from benchmarks.harbor import run_contextdb_me08_historical as runner
 
 class ContextDbMe08HistoricalTest(unittest.TestCase):
     @staticmethod
-    def _write_complete_candidate(root: Path, task: str = "task-a") -> Path:
+    def _write_complete_candidate(
+        root: Path,
+        task: str = "task-a",
+        *,
+        write_receipt: bool = True,
+    ) -> Path:
         jobs_dir = root / "jobs"
         job = jobs_dir / "job-1"
-        trial = job / f"{task}__trial"
-        trial.mkdir(parents=True)
+        agent = job / f"{task}__trial" / "agent"
+        agent.mkdir(parents=True)
         (job / "strict_result.json").write_text(
             json.dumps(
                 {
@@ -29,15 +35,27 @@ class ContextDbMe08HistoricalTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        (trial / "context_store_audit.json").write_text(
-            json.dumps(
-                {
-                    "context_store": "contextdb",
-                    "context_db_authority_count": 1,
-                }
-            ),
-            encoding="utf-8",
-        )
+        database = agent / "morphz.db"
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "CREATE TABLE experimental_contextdb_contexts "
+                "(context_id TEXT PRIMARY KEY)"
+            )
+            connection.execute(
+                "INSERT INTO experimental_contextdb_contexts(context_id) "
+                "VALUES ('context-a')"
+            )
+        if write_receipt:
+            (agent / "context_store_audit.json").write_text(
+                json.dumps(
+                    {
+                        "context_store": "contextdb",
+                        "context_id": "context-a",
+                        "context_db_authority_count": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
         return jobs_dir
 
     def test_runtime_image_uses_the_pinned_installed_toolchain(self) -> None:
@@ -138,7 +156,7 @@ class ContextDbMe08HistoricalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
             jobs_dir = self._write_complete_candidate(root)
-            job, rewards = runner.load_candidate_outcome(
+            job, rewards, authority_audit = runner.load_candidate_outcome(
                 jobs_dir=jobs_dir,
                 tasks=["task-a"],
                 return_code=1,
@@ -146,6 +164,35 @@ class ContextDbMe08HistoricalTest(unittest.TestCase):
             )
             self.assertEqual(job, jobs_dir / "job-1")
             self.assertEqual(rewards, {"task-a": 0})
+            self.assertEqual(
+                authority_audit,
+                {
+                    "trial_databases_verified": 1,
+                    "post_run_receipts_verified": 1,
+                    "timeout_database_fallbacks_verified": 0,
+                },
+            )
+
+    def test_timeout_uses_durable_contextdb_authority_when_receipt_is_missing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            jobs_dir = self._write_complete_candidate(root, write_receipt=False)
+            _, _, authority_audit = runner.load_candidate_outcome(
+                jobs_dir=jobs_dir,
+                tasks=["task-a"],
+                return_code=1,
+                logs_dir=root / "logs",
+            )
+            self.assertEqual(
+                authority_audit,
+                {
+                    "trial_databases_verified": 1,
+                    "post_run_receipts_verified": 0,
+                    "timeout_database_fallbacks_verified": 1,
+                },
+            )
 
     def test_nonzero_harbor_status_rejects_incomplete_outcome(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:

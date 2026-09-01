@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -371,18 +372,61 @@ def load_rewards(job: Path, tasks: list[str]) -> dict[str, int]:
     return rewards
 
 
-def audit_context_store_receipts(job: Path, expected: int) -> None:
-    receipts = sorted(job.rglob("context_store_audit.json"))
-    if len(receipts) != expected:
+def audit_context_store_receipts(job: Path, expected: int) -> dict[str, int]:
+    databases = sorted(job.glob("*/agent/morphz.db"))
+    if len(databases) != expected:
         raise RuntimeError(
-            f"ContextDB run has {len(receipts)} Context store receipts, expected {expected}"
+            f"ContextDB run has {len(databases)} trial databases, expected {expected}"
         )
-    for path in receipts:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+
+    receipt_count = 0
+    durable_fallback_count = 0
+    for database_path in databases:
+        connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT context_id FROM experimental_contextdb_contexts"
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise RuntimeError(
+                f"ContextDB authority table is unavailable: {database_path}"
+            ) from error
+        finally:
+            connection.close()
+        if len(rows) != 1:
+            raise RuntimeError(
+                "ContextDB trial did not persist exactly one authoritative Context: "
+                f"{database_path} ({len(rows)})"
+            )
+        context_id = str(rows[0][0])
+
+        receipt_path = database_path.with_name("context_store_audit.json")
+        if not receipt_path.is_file():
+            # Harbor cancels the custom Agent immediately at the task deadline,
+            # before its post-run receipt hook can execute.  The trial database
+            # remains the primary durable evidence for those timeout samples.
+            durable_fallback_count += 1
+            continue
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
         if payload.get("context_store") != "contextdb":
-            raise RuntimeError(f"Context store receipt selected the wrong store: {path}")
+            raise RuntimeError(
+                f"Context store receipt selected the wrong store: {receipt_path}"
+            )
         if payload.get("context_db_authority_count") != 1:
-            raise RuntimeError(f"Context store authority receipt failed: {path}")
+            raise RuntimeError(
+                f"Context store authority receipt failed: {receipt_path}"
+            )
+        if payload.get("context_id") != context_id:
+            raise RuntimeError(
+                f"Context store receipt does not match its database: {receipt_path}"
+            )
+        receipt_count += 1
+
+    return {
+        "trial_databases_verified": len(databases),
+        "post_run_receipts_verified": receipt_count,
+        "timeout_database_fallbacks_verified": durable_fallback_count,
+    }
 
 
 def load_candidate_outcome(
@@ -391,7 +435,7 @@ def load_candidate_outcome(
     tasks: list[str],
     return_code: int,
     logs_dir: Path,
-) -> tuple[Path, dict[str, int]]:
+) -> tuple[Path, dict[str, int], dict[str, int]]:
     """Load a complete Harbor outcome even when individual trials errored.
 
     Harbor returns a nonzero process status when any trial records an Agent
@@ -404,7 +448,7 @@ def load_candidate_outcome(
 
     try:
         job = only_job(jobs_dir)
-        audit_context_store_receipts(job, expected=len(tasks))
+        authority_audit = audit_context_store_receipts(job, expected=len(tasks))
         rewards = load_rewards(job, tasks)
     except (OSError, RuntimeError, ValueError, KeyError) as error:
         if return_code != 0:
@@ -413,7 +457,7 @@ def load_candidate_outcome(
                 f"see {logs_dir}"
             ) from error
         raise
-    return job, rewards
+    return job, rewards, authority_audit
 
 
 def compare_with_history(
@@ -545,7 +589,7 @@ def main() -> int:
             stderr=stderr,
             check=False,
         )
-    job, rewards = load_candidate_outcome(
+    job, rewards, authority_audit = load_candidate_outcome(
         jobs_dir=jobs_dir,
         tasks=tasks,
         return_code=completed.returncode,
@@ -559,6 +603,7 @@ def main() -> int:
         "trial_concurrency": TRIAL_CONCURRENCY,
         "morphz_shared_context_concurrency": False,
         "candidate_return_code": completed.returncode,
+        "context_store_authority_audit": authority_audit,
         "historical_sources": baseline["sources"],
         **compare_with_history(tasks, rewards, baseline),
     }
