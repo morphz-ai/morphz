@@ -10753,6 +10753,45 @@ impl Orchestrator {
         Ok(stored)
     }
 
+    /// Context causality normally derives Objective ownership from immutable
+    /// root/trigger Events. A user message that satisfies an Objective wait is
+    /// adopted only after its Activation is claimed, so that Event cannot
+    /// already contain the newly allocated Evaluation ID. Overlay the exact
+    /// registry binding and revalidate it against the durable Objective row on
+    /// every Context rebuild, including pressure and refusal recovery paths.
+    async fn build_activation_context(
+        &self,
+        context_id: &str,
+        activation: &ThreadActivationRecord,
+        excluded_observation_ids: &HashSet<String>,
+        model_alias: Option<&str>,
+    ) -> Result<ContextView, DynError> {
+        if let Some(binding) = self
+            .objective_evaluations
+            .get_for_activation(&activation.id)
+        {
+            self.context_engine
+                .build_context_encoding_for_objective_activation_with_model(
+                    context_id,
+                    activation,
+                    excluded_observation_ids,
+                    model_alias,
+                    &binding.objective_id,
+                    &binding.evaluation_id,
+                )
+                .await
+        } else {
+            self.context_engine
+                .build_context_encoding_for_activation_with_model(
+                    context_id,
+                    activation,
+                    excluded_observation_ids,
+                    model_alias,
+                )
+                .await
+        }
+    }
+
     fn run_attempt<'a>(
         &'a self,
         session_id: &'a str,
@@ -11162,8 +11201,7 @@ impl Orchestrator {
         // for the tool batch that triggered this Activation. Earlier settled
         // outputs remain ordinary observations and are never replayed here.
         let mut context = self
-            .context_engine
-            .build_context_encoding_for_activation_with_model(
+            .build_activation_context(
                 &context_id,
                 activation,
                 &HashSet::new(),
@@ -11212,8 +11250,7 @@ impl Orchestrator {
         let continuation_messages = continuation.messages.clone();
         if !continuation.delivered_output_ids.is_empty() {
             context = self
-                .context_engine
-                .build_context_encoding_for_activation_with_model(
+                .build_activation_context(
                     &context_id,
                     activation,
                     &continuation.delivered_output_ids,
@@ -11475,8 +11512,12 @@ impl Orchestrator {
             // is retired here and no settled Provider history is replayed.
             let full_pressure = context.pressure.clone();
             let mut recovery_context = self
-                .context_engine
-                .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
+                .build_activation_context(
+                    &context_id,
+                    activation,
+                    &HashSet::new(),
+                    Some(&activation_model_alias),
+                )
                 .await?;
             recovery_observation_limit = recovery_context.observations.len().max(1);
             recovery_context.pressure = full_pressure;
@@ -12314,11 +12355,11 @@ impl Orchestrator {
                         recovery_observation_limit = (recovery_observation_limit / 2).max(1);
                     } else {
                         let mut recovery_context = self
-                            .context_engine
-                            .build_context_encoding_for_activation(
+                            .build_activation_context(
                                 &context_id,
                                 activation,
                                 &HashSet::new(),
+                                Some(&activation_model_alias),
                             )
                             .await?;
                         recovery_observation_limit = recovery_context.observations.len().max(1);
@@ -12620,11 +12661,11 @@ impl Orchestrator {
                         .unwrap_or(SAFETY_REFUSAL_RECOVERY_OBSERVATIONS);
                     safety_refusal_recovery_limit = Some(recovery_limit);
                     let mut recovery_context = self
-                        .context_engine
-                        .build_context_encoding_for_activation(
+                        .build_activation_context(
                             &context_id,
                             activation,
                             &HashSet::new(),
+                            Some(&activation_model_alias),
                         )
                         .await?;
                     let recovery_model_alias = error
