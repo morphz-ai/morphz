@@ -77,9 +77,11 @@ def _is_timeout_like(job: dict[str, Any]) -> bool:
 def _classify_timeout(state: dict[str, Any]) -> str:
     if not state.get("available"):
         return "runtime_state_unavailable"
-    if int(state.get("replies", 0)) > 0 or int(
-        state.get("thread_terminal_events", 0)
-    ) > 0:
+    if (
+        int(state.get("replies", 0)) > 0
+        or int(state.get("terminal_threads", 0)) > 0
+        or int(state.get("thread_terminal_events", 0)) > 0
+    ):
         return "durable_terminal_present"
     if state.get("pending_required_dependencies"):
         return "pending_scheduler_dependency"
@@ -177,12 +179,32 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
                 (*scope_values, "chat/reply"),
             ).fetchone()[0]
         )
-        terminal_events = int(
-            connection.execute(
-                f"SELECT COUNT(*) FROM events WHERE {scope} AND topic = ?",
-                (*scope_values, "runtime/thread_terminal"),
-            ).fetchone()[0]
-        )
+        terminal_threads = 0
+        terminal_events = 0
+        if "threads" in tables:
+            terminal_threads = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM threads WHERE session_id = ? "
+                    "AND root_turn_id = ? "
+                    "AND status IN ('completed', 'failed', 'cancelled')",
+                    (session_id, root_turn_id),
+                ).fetchone()[0]
+            )
+            # runtime/thread_terminal is a supervisor event: its own
+            # root_turn_id is intentionally NULL.  Resolve it through the
+            # durable Thread named in the event payload instead of filtering
+            # the event column directly.
+            terminal_events = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM events AS event "
+                    "JOIN threads AS thread "
+                    "ON thread.id = json_extract(event.payload, '$.thread_id') "
+                    "WHERE event.session_id = ? "
+                    "AND event.topic = 'runtime/thread_terminal' "
+                    "AND thread.session_id = ? AND thread.root_turn_id = ?",
+                    (session_id, session_id, root_turn_id),
+                ).fetchone()[0]
+            )
 
         activation_query = (
             "SELECT id, status, lease_expires_at, updated_at, root_turn_id "
@@ -305,6 +327,7 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
             "session_id": session_id,
             "root_turn_id": root_turn_id,
             "replies": replies,
+            "terminal_threads": terminal_threads,
             "thread_terminal_events": terminal_events,
             "active_activations": active_activations,
             "active_objectives": active_objectives,

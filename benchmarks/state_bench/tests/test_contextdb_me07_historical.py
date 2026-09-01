@@ -45,6 +45,7 @@ def _state(**values):
     return {
         "available": True,
         "replies": 0,
+        "terminal_threads": 0,
         "thread_terminal_events": 0,
         "active_activations": [],
         "active_objectives": [],
@@ -88,6 +89,7 @@ def test_public_runtime_adapter_has_an_external_receipt_timeout() -> None:
 
 def test_timeout_classification_prioritizes_durable_terminal_and_dependencies() -> None:
     assert _classify_timeout(_state(replies=1)) == "durable_terminal_present"
+    assert _classify_timeout(_state(terminal_threads=1)) == "durable_terminal_present"
     assert (
         _classify_timeout(
             _state(pending_required_dependencies=[{"kind": "model_attempt"}])
@@ -133,6 +135,9 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
                 id TEXT, status TEXT, lease_expires_at TEXT, updated_at TEXT,
                 root_turn_id TEXT, session_id TEXT
             );
+            CREATE TABLE threads (
+                id TEXT, status TEXT, root_turn_id TEXT, session_id TEXT
+            );
             CREATE TABLE objectives (
                 id TEXT, status TEXT, active_evaluation_id TEXT, updated_at TEXT,
                 coordinator_session_id TEXT, delivery_session_id TEXT
@@ -152,6 +157,14 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
             INSERT INTO events VALUES (
                 'old-reply', '2025-12-31T23:59:59Z', 'chat/reply',
                 'current-session', 'old-turn', '{}'
+            );
+            INSERT INTO threads VALUES (
+                'old-thread', 'completed', 'old-turn', 'current-session'
+            );
+            INSERT INTO events VALUES (
+                'old-terminal', '2025-12-31T23:59:59.5Z',
+                'runtime/thread_terminal', 'current-session', NULL,
+                '{"thread_id":"old-thread"}'
             );
             INSERT INTO events VALUES (
                 'turn-1', '2026-01-01T00:00:00Z', 'chat/user_message',
@@ -187,6 +200,8 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
     assert state["session_id"] == "current-session"
     assert state["root_turn_id"] == "turn-1"
     assert state["replies"] == 0
+    assert state["terminal_threads"] == 0
+    assert state["thread_terminal_events"] == 0
     assert state["active_activations"][0]["lease_expired"] is True
     assert state["pending_required_dependencies"] == [
         {
