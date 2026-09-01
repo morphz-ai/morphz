@@ -7,6 +7,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Stable logical identity for a relation value.
+///
+/// This encoding is deliberately owned by the Store protocol rather than by
+/// an individual Runtime or database backend.  A previous preview used the
+/// JSON serialization in the SQLite adapter while MVCC used this tuple
+/// encoding, which would make an incremental remove address a different Node
+/// from the corresponding insert.
+pub fn relation_logical_id(subject: &str, relation: &str, object: &str) -> String {
+    format!("{subject}\u{1f}{relation}\u{1f}{object}")
+}
+
 /// Stable logical collections inside the persisted Mind AST.
 ///
 /// Physical table names, Node encodings and indexes are backend details. The
@@ -99,7 +110,11 @@ impl ContextMutationPlan {
         if self.context_id.trim().is_empty() {
             return Err("Context mutation plan has an empty context_id".to_string());
         }
-        if self.next_revision != self.expected_revision.saturating_add(1) {
+        let expected_next = self
+            .expected_revision
+            .checked_add(1)
+            .ok_or_else(|| "Context mutation plan revision overflow".to_string())?;
+        if self.next_revision != expected_next {
             return Err(format!(
                 "Context mutation plan revision must advance exactly once: expected {}, next {}",
                 self.expected_revision, self.next_revision
@@ -122,13 +137,65 @@ impl ContextMutationPlan {
                     .to_string(),
             );
         }
+        let mut written = std::collections::HashSet::new();
+        let mut ordered = std::collections::HashSet::new();
         for mutation in &self.mutations {
             match mutation {
-                ContextStateMutation::Upsert { logical_id, .. }
-                | ContextStateMutation::Remove { logical_id, .. }
-                    if logical_id.trim().is_empty() =>
-                {
+                ContextStateMutation::Upsert { logical_id, .. } if logical_id.trim().is_empty() => {
                     return Err("Context mutation contains an empty logical identity".to_string());
+                }
+                ContextStateMutation::Remove { logical_id, .. } if logical_id.trim().is_empty() => {
+                    return Err("Context mutation contains an empty logical identity".to_string());
+                }
+                ContextStateMutation::Upsert {
+                    collection,
+                    logical_id,
+                    order,
+                    ..
+                } => {
+                    if !written.insert((*collection, logical_id.as_str())) {
+                        return Err(format!(
+                            "Context mutation writes '{}:{}' more than once",
+                            collection.as_str(),
+                            logical_id
+                        ));
+                    }
+                    let requires_order = matches!(
+                        collection,
+                        ContextCollection::Frame
+                            | ContextCollection::Relation
+                            | ContextCollection::Checkpoint
+                    );
+                    if requires_order != order.is_some() {
+                        return Err(format!(
+                            "Context mutation order shape is invalid for '{}:{}'",
+                            collection.as_str(),
+                            logical_id
+                        ));
+                    }
+                    if *collection == ContextCollection::MutationClocks
+                        && logical_id != "mutation-clocks"
+                    {
+                        return Err(
+                            "mutation_clocks must use logical identity 'mutation-clocks'"
+                                .to_string(),
+                        );
+                    }
+                }
+                ContextStateMutation::Remove {
+                    collection,
+                    logical_id,
+                } => {
+                    if *collection == ContextCollection::MutationClocks {
+                        return Err("mutation_clocks cannot be removed".to_string());
+                    }
+                    if !written.insert((*collection, logical_id.as_str())) {
+                        return Err(format!(
+                            "Context mutation writes '{}:{}' more than once",
+                            collection.as_str(),
+                            logical_id
+                        ));
+                    }
                 }
                 ContextStateMutation::SetOrder {
                     collection,
@@ -149,6 +216,12 @@ impl ContextMutationPlan {
                     if unique.len() != logical_ids.len() {
                         return Err(format!(
                             "collection '{}' order contains duplicate logical identities",
+                            collection.as_str()
+                        ));
+                    }
+                    if !ordered.insert(*collection) {
+                        return Err(format!(
+                            "collection '{}' is ordered more than once",
                             collection.as_str()
                         ));
                     }
@@ -220,5 +293,17 @@ mod tests {
         .validate_shape()
         .unwrap_err();
         assert!(unordered.contains("no observable vector order"));
+    }
+
+    #[test]
+    fn relation_identity_is_structural_and_unambiguous() {
+        assert_eq!(
+            relation_logical_id("subject", "supersedes", "object"),
+            "subject\u{1f}supersedes\u{1f}object"
+        );
+        assert_ne!(
+            relation_logical_id("a", "bc", "d"),
+            relation_logical_id("ab", "c", "d")
+        );
     }
 }

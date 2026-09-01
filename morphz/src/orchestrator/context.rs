@@ -1,5 +1,7 @@
 use crate::config::OrchestratorConfig;
-use crate::context_store::{ContextCollection, ContextMutationPlan, ContextStateMutation};
+use crate::context_store::{
+    relation_logical_id, ContextCollection, ContextMutationPlan, ContextStateMutation,
+};
 use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_RUNTIME_WAKE,
     TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -2454,6 +2456,7 @@ impl ContextEngine {
                     &event,
                     &attention_updates,
                     &session_projection,
+                    Some(&mutation_plan),
                     current.version,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -6598,7 +6601,7 @@ fn ensure_lifecycle_write_is_current(
 }
 
 fn relation_mutation_key(subject: &str, relation: &str, object: &str) -> String {
-    format!("{subject}\u{1f}{relation}\u{1f}{object}")
+    relation_logical_id(subject, relation, object)
 }
 
 fn record_lifecycle_mutation(state: &mut MindState, id: &str, version: u64, track_mutations: bool) {

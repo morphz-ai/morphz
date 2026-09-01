@@ -8439,9 +8439,20 @@ impl MindProjectionStore for SqliteStore {
         event: &Event,
         attention_updates: &[SessionAttentionUpdate],
         session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(plan) = mutation_plan {
+            plan.validate_shape()?;
+            if plan.context_id != next_projection.context_id
+                || plan.expected_revision != expected_revision
+                || plan.next_revision != next_projection.revision
+                || plan.next_state_hash != next_projection.state_hash
+            {
+                return Err("Context Mutation plan and SQLite projection fence differ".into());
+            }
+        }
         if next_projection.head_event_id.as_deref() != Some(event.id.as_str()) {
             return Err(
                 "Mind Projection head_event_id 必须指向本次 Context transaction Event".into(),
@@ -8512,11 +8523,20 @@ impl MindProjectionStore for SqliteStore {
         }
         #[cfg(feature = "experimental-context-db")]
         let context_db_projection = if let Some(context_db) = &self.context_db {
-            Some(
+            Some(if let Some(plan) = mutation_plan {
+                context_db
+                    .apply_mutation_plan_in_transaction(
+                        &mut tx,
+                        plan,
+                        &next_projection,
+                        now_instant,
+                    )
+                    .await?
+            } else {
                 context_db
                     .sync_projection_in_transaction(&mut tx, &next_projection, now_instant)
-                    .await?,
-            )
+                    .await?
+            })
         } else {
             None
         };
@@ -36891,6 +36911,7 @@ mod tests {
                 &event,
                 &[],
                 &SessionProjectionMutation::default(),
+                None,
                 0,
                 NewMindProjection {
                     context_id: "projection-context".to_string(),
@@ -36925,6 +36946,7 @@ mod tests {
                 &stale_event,
                 &[],
                 &SessionProjectionMutation::default(),
+                None,
                 0,
                 NewMindProjection {
                     context_id: "projection-context".to_string(),
@@ -37083,6 +37105,21 @@ mod tests {
             format!("{:x}", Sha256::digest(serde_json::to_vec(state).unwrap()))
         }
 
+        fn mutation_plan(
+            current: &MindState,
+            next: &MindState,
+            mutations: Vec<crate::context_store::ContextStateMutation>,
+        ) -> crate::context_store::ContextMutationPlan {
+            crate::context_store::ContextMutationPlan {
+                context_id: "context-db-runtime-context".to_string(),
+                expected_revision: current.version,
+                next_revision: next.version,
+                expected_state_hash: state_hash(current),
+                next_state_hash: state_hash(next),
+                mutations,
+            }
+        }
+
         let tmp_file = NamedTempFile::new().unwrap();
         let enabled = BTreeSet::from([CONTEXT_DB.to_string()]);
         let permit = require_enabled(&enabled, CONTEXT_DB).unwrap();
@@ -37168,6 +37205,24 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
+        let first_plan = mutation_plan(
+            &initial_state,
+            &next_state,
+            vec![
+                crate::context_store::ContextStateMutation::Upsert {
+                    collection: crate::context_store::ContextCollection::Frame,
+                    logical_id: next_state.frames[0].id.clone(),
+                    body: serde_json::to_value(&next_state.frames[0]).unwrap(),
+                    order: Some(0),
+                },
+                crate::context_store::ContextStateMutation::Upsert {
+                    collection: crate::context_store::ContextCollection::Retired,
+                    logical_id: observation.id.clone(),
+                    body: serde_json::json!({"id": observation.id}),
+                    order: None,
+                },
+            ],
+        );
         let committed = store
             .commit_mind_projection_transaction(
                 &event,
@@ -37176,6 +37231,7 @@ mod tests {
                     retired_event_ids: vec![observation.id.clone()],
                     restored_event_ids: Vec::new(),
                 },
+                Some(&first_plan),
                 0,
                 NewMindProjection {
                     context_id: "context-db-runtime-context".to_string(),
@@ -37208,21 +37264,58 @@ mod tests {
         rejected_state.frames[0].body = "(fact rejected)".to_string();
         rejected_state.frames[0].revision = 2;
         rejected_state.frames[0].updated_version = 2;
+        let rejected_event = Event::new(
+            "context-db-runtime-event-rejected".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store
+            .append(Event::new(
+                rejected_event.id.clone(),
+                "conflicting-test-actor".to_string(),
+                "test-conflict".to_string(),
+                "test/conflict".to_string(),
+                serde_json::Map::new(),
+            ))
+            .await
+            .unwrap();
+        let rejected_plan = mutation_plan(
+            &next_state,
+            &rejected_state,
+            vec![
+                crate::context_store::ContextStateMutation::Upsert {
+                    collection: crate::context_store::ContextCollection::Frame,
+                    logical_id: rejected_state.frames[0].id.clone(),
+                    body: serde_json::to_value(&rejected_state.frames[0]).unwrap(),
+                    order: Some(0),
+                },
+                crate::context_store::ContextStateMutation::Remove {
+                    collection: crate::context_store::ContextCollection::Retired,
+                    logical_id: observation.id.clone(),
+                },
+            ],
+        );
         let rejected = store
             .commit_mind_projection_transaction(
-                &event,
+                &rejected_event,
                 &[],
                 &SessionProjectionMutation {
                     retired_event_ids: Vec::new(),
                     restored_event_ids: vec![observation.id.clone()],
                 },
+                Some(&rejected_plan),
                 1,
                 NewMindProjection {
                     context_id: "context-db-runtime-context".to_string(),
                     revision: rejected_state.version,
                     state: serde_json::to_value(&rejected_state).unwrap(),
                     state_hash: state_hash(&rejected_state),
-                    head_event_id: Some(event.id.clone()),
+                    head_event_id: Some(rejected_event.id.clone()),
                     recall_documents: Vec::new(),
                 },
             )
@@ -37263,6 +37356,22 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
+        let second_plan = mutation_plan(
+            &next_state,
+            &final_state,
+            vec![
+                crate::context_store::ContextStateMutation::Upsert {
+                    collection: crate::context_store::ContextCollection::Frame,
+                    logical_id: final_state.frames[0].id.clone(),
+                    body: serde_json::to_value(&final_state.frames[0]).unwrap(),
+                    order: Some(0),
+                },
+                crate::context_store::ContextStateMutation::Remove {
+                    collection: crate::context_store::ContextCollection::Retired,
+                    logical_id: observation.id.clone(),
+                },
+            ],
+        );
         store
             .commit_mind_projection_transaction(
                 &second_event,
@@ -37271,6 +37380,7 @@ mod tests {
                     retired_event_ids: Vec::new(),
                     restored_event_ids: vec![observation.id.clone()],
                 },
+                Some(&second_plan),
                 1,
                 NewMindProjection {
                     context_id: "context-db-runtime-context".to_string(),
@@ -37602,6 +37712,7 @@ mod tests {
                     retired_event_ids: vec![observation.id.clone(), other_observation.id.clone()],
                     restored_event_ids: vec![],
                 },
+                None,
                 0,
                 NewMindProjection {
                     context_id: "session-projection-context".to_string(),
@@ -37662,6 +37773,7 @@ mod tests {
                     retired_event_ids: vec![],
                     restored_event_ids: vec![observation.id.clone()],
                 },
+                None,
                 1,
                 NewMindProjection {
                     context_id: "session-projection-context".to_string(),
@@ -37747,6 +37859,7 @@ mod tests {
                         retired_event_ids: vec![retired.id.clone()],
                         restored_event_ids: Vec::new(),
                     },
+                    None,
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -37864,6 +37977,7 @@ mod tests {
                     retired_event_ids: vec![retired.id.clone()],
                     restored_event_ids: Vec::new(),
                 },
+                None,
                 0,
                 NewMindProjection {
                     context_id: context_id.to_string(),
@@ -38101,6 +38215,7 @@ mod tests {
                 &event_a,
                 &[],
                 &mutation_a,
+                None,
                 0,
                 NewMindProjection {
                     context_id: "sqlite-shared-context".to_string(),
@@ -38115,6 +38230,7 @@ mod tests {
                 &event_b,
                 &[],
                 &mutation_b,
+                None,
                 0,
                 NewMindProjection {
                     context_id: "sqlite-shared-context".to_string(),

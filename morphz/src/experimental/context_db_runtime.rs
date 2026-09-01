@@ -11,6 +11,9 @@ use super::context_db::{
     SqliteContextDb,
 };
 use super::ExperimentalFeaturePermit;
+use crate::context_store::{
+    relation_logical_id, ContextCollection, ContextMutationPlan, ContextStateMutation,
+};
 use crate::memory::{MindProjectionHead, MindProjectionRecord, NewMindProjection};
 use crate::orchestrator::context::{
     ContextFrame, ContextMutationClocks, ContextRelation, FrameRetirement, MindCheckpoint,
@@ -22,7 +25,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const ROOT_NODE_ID: &str = "morphz/root";
@@ -76,6 +79,13 @@ struct RuntimeContextSnapshot {
     root_node_id: String,
     root_hash: String,
     nodes: Vec<ContextNodeRecord>,
+}
+
+#[derive(Debug)]
+struct RuntimeMutationBasis {
+    context_revision: u64,
+    meta_node: ContextNodeRecord,
+    nodes: HashMap<String, ContextNodeRecord>,
 }
 
 impl From<ContextSnapshot> for RuntimeContextSnapshot {
@@ -195,6 +205,91 @@ impl ContextDbRuntimeAdapter {
             })?;
         self.sync_projection_against_snapshot(transaction, projection, updated_at, state, snapshot)
             .await
+    }
+
+    /// Applies the domain-emitted Context Mutation plan without reconstructing
+    /// and diffing the complete persisted Mind.
+    ///
+    /// Local mutations read only the addressed leaves. A SetOrder operation
+    /// additionally reads that one ordered collection because exact membership
+    /// is part of its fail-closed precondition. Rollback remains the explicit
+    /// broad barrier and intentionally uses the full-state replacement path.
+    pub(crate) async fn apply_mutation_plan_in_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        plan: &ContextMutationPlan,
+        projection: &NewMindProjection,
+        updated_at: DateTime<Utc>,
+    ) -> ContextDbResult<MindProjectionRecord> {
+        plan.validate_shape().map_err(ContextDbError::Invalid)?;
+        let state = validate_new_projection(projection)?;
+        validate_plan_projection(plan, projection)?;
+
+        if matches!(
+            plan.mutations.as_slice(),
+            [ContextStateMutation::ReplaceMind { .. }]
+        ) {
+            let ContextStateMutation::ReplaceMind { state: replacement } = &plan.mutations[0]
+            else {
+                unreachable!("ReplaceMind shape was checked above")
+            };
+            if replacement != &projection.state {
+                return Err(ContextDbError::Precondition(
+                    "ReplaceMind body differs from the fenced next projection".to_string(),
+                ));
+            }
+            return self
+                .sync_projection_in_transaction(transaction, projection, updated_at)
+                .await;
+        }
+
+        let basis = self.load_runtime_mutation_basis(transaction, plan).await?;
+        let current_meta =
+            decode_record::<ProjectionMeta>(&basis.meta_node.body_sexpr, "projection-meta")?;
+        if current_meta.revision != plan.expected_revision
+            || current_meta.state_hash != plan.expected_state_hash
+        {
+            return Err(ContextDbError::Conflict {
+                context_id: plan.context_id.clone(),
+                expected: plan.expected_revision,
+                actual: current_meta.revision,
+            });
+        }
+
+        let operations = compile_runtime_operations(
+            plan,
+            projection,
+            updated_at,
+            &basis.meta_node,
+            &basis.nodes,
+        )?;
+        let transaction_identity = projection.head_event_id.as_deref().ok_or_else(|| {
+            ContextDbError::Precondition(
+                "a Context Mutation projection must name its trajectory Event".to_string(),
+            )
+        })?;
+        self.db
+            .apply_transaction_in_transaction(
+                transaction,
+                ContextTransaction {
+                    transaction_id: format!("runtime-context-{transaction_identity}"),
+                    idempotency_key: format!("runtime-context-{transaction_identity}"),
+                    context_id: plan.context_id.clone(),
+                    base_revision: basis.context_revision,
+                    authority: runtime_authority(),
+                    operations,
+                },
+            )
+            .await?;
+
+        Ok(MindProjectionRecord {
+            context_id: projection.context_id.clone(),
+            revision: projection.revision,
+            state: serde_json::to_value(state)?,
+            state_hash: projection.state_hash.clone(),
+            head_event_id: projection.head_event_id.clone(),
+            updated_at,
+        })
     }
 
     async fn sync_projection_against_snapshot(
@@ -401,6 +496,629 @@ impl ContextDbRuntimeAdapter {
         validate_runtime_snapshot(&snapshot)?;
         Ok(Some(snapshot))
     }
+
+    async fn load_runtime_mutation_basis(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        plan: &ContextMutationPlan,
+    ) -> ContextDbResult<RuntimeMutationBasis> {
+        let context_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM experimental_contextdb_contexts WHERE context_id = ?",
+        )
+        .bind(&plan.context_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or_else(|| ContextDbError::NotFound(format!("Context '{}'", plan.context_id)))?;
+        let context_revision = u64::try_from(context_revision).map_err(|_| {
+            ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' has an invalid storage revision",
+                plan.context_id
+            ))
+        })?;
+
+        let mut node_ids = BTreeSet::from([META_NODE_ID.to_string()]);
+        let mut collection_parents = BTreeSet::new();
+        for mutation in &plan.mutations {
+            match mutation {
+                ContextStateMutation::Upsert {
+                    collection,
+                    logical_id,
+                    ..
+                }
+                | ContextStateMutation::Remove {
+                    collection,
+                    logical_id,
+                } => {
+                    node_ids.insert(runtime_node_id(*collection, logical_id)?);
+                }
+                ContextStateMutation::SetOrder { collection, .. } => {
+                    collection_parents.insert(runtime_collection_spec(*collection)?.parent_id);
+                }
+                ContextStateMutation::ReplaceMind { .. } => {
+                    return Err(ContextDbError::Invalid(
+                        "ReplaceMind must use the broad replacement path".to_string(),
+                    ));
+                }
+            }
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            r#"SELECT node_id, parent_id, order_key, owner_domain, node_revision,
+                      body_sexpr, content_hash, subtree_hash
+               FROM experimental_contextdb_nodes
+               WHERE context_id = "#,
+        );
+        query.push_bind(&plan.context_id).push(" AND (");
+        query.push("node_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for node_id in &node_ids {
+                separated.push_bind(node_id);
+            }
+        }
+        query.push(")");
+        let query_parents = collection_parents
+            .iter()
+            .copied()
+            .map(ToOwned::to_owned)
+            .chain(node_ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        if !query_parents.is_empty() {
+            query.push(" OR parent_id IN (");
+            {
+                let mut separated = query.separated(", ");
+                for parent_id in &query_parents {
+                    separated.push_bind(parent_id);
+                }
+            }
+            query.push(")");
+        }
+        query.push(") ORDER BY parent_id, order_key, node_id");
+        let rows = query.build().fetch_all(&mut **transaction).await?;
+        let mut nodes = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let record = runtime_node_from_row(&row)?;
+            if nodes.insert(record.node_id.clone(), record).is_some() {
+                return Err(ContextDbError::Corrupt(format!(
+                    "Runtime Context '{}' contains duplicate Node identities",
+                    plan.context_id
+                )));
+            }
+        }
+        let meta_node = nodes.remove(META_NODE_ID).ok_or_else(|| {
+            ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' is missing its projection metadata",
+                plan.context_id
+            ))
+        })?;
+        if meta_node.parent_id.as_deref() != Some(ROOT_NODE_ID)
+            || meta_node.order_key != 0
+            || meta_node.owner_domain != AuthorityDomain::RuntimeControl
+        {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' has invalid projection metadata placement",
+                plan.context_id
+            )));
+        }
+        if nodes
+            .values()
+            .any(|node| node.parent_id.as_deref() == Some(META_NODE_ID))
+        {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' projection metadata unexpectedly owns child Nodes",
+                plan.context_id
+            )));
+        }
+        Ok(RuntimeMutationBasis {
+            context_revision,
+            meta_node,
+            nodes,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeCollectionSpec {
+    physical_kind: &'static str,
+    record_kind: &'static str,
+    parent_id: &'static str,
+    ordered: bool,
+    default_order: i64,
+}
+
+fn runtime_collection_spec(
+    collection: ContextCollection,
+) -> ContextDbResult<RuntimeCollectionSpec> {
+    Ok(match collection {
+        ContextCollection::Frame => RuntimeCollectionSpec {
+            physical_kind: "frame",
+            record_kind: "frame",
+            parent_id: FRAMES_NODE_ID,
+            ordered: true,
+            default_order: 0,
+        },
+        ContextCollection::Relation => RuntimeCollectionSpec {
+            physical_kind: "relation",
+            record_kind: "relation",
+            parent_id: RELATIONS_NODE_ID,
+            ordered: true,
+            default_order: 0,
+        },
+        ContextCollection::Retired => RuntimeCollectionSpec {
+            physical_kind: "retired",
+            record_kind: "retired-entry",
+            parent_id: RETIRED_NODE_ID,
+            ordered: false,
+            default_order: 0,
+        },
+        ContextCollection::Retiring => RuntimeCollectionSpec {
+            physical_kind: "retiring",
+            record_kind: "retiring-entry",
+            parent_id: RETIRING_NODE_ID,
+            ordered: false,
+            default_order: 0,
+        },
+        ContextCollection::Protected => RuntimeCollectionSpec {
+            physical_kind: "protected",
+            record_kind: "protected-entry",
+            parent_id: PROTECTED_NODE_ID,
+            ordered: false,
+            default_order: 0,
+        },
+        ContextCollection::Checkpoint => RuntimeCollectionSpec {
+            physical_kind: "checkpoint",
+            record_kind: "checkpoint",
+            parent_id: CHECKPOINTS_NODE_ID,
+            ordered: true,
+            default_order: 0,
+        },
+        ContextCollection::MutationClocks => RuntimeCollectionSpec {
+            physical_kind: "mutation-clocks",
+            record_kind: "mutation-clocks",
+            parent_id: ROOT_NODE_ID,
+            ordered: false,
+            default_order: 70,
+        },
+    })
+}
+
+fn runtime_node_id(collection: ContextCollection, logical_id: &str) -> ContextDbResult<String> {
+    if collection == ContextCollection::MutationClocks {
+        if logical_id != "mutation-clocks" {
+            return Err(ContextDbError::Invalid(format!(
+                "mutation_clocks logical identity must be 'mutation-clocks', got '{logical_id}'"
+            )));
+        }
+        Ok(CLOCKS_NODE_ID.to_string())
+    } else {
+        let spec = runtime_collection_spec(collection)?;
+        Ok(stable_node_id(spec.physical_kind, logical_id))
+    }
+}
+
+fn runtime_node_from_row(row: &sqlx::sqlite::SqliteRow) -> ContextDbResult<ContextNodeRecord> {
+    Ok(ContextNodeRecord {
+        node_id: row.get("node_id"),
+        parent_id: row.get("parent_id"),
+        order_key: row.get("order_key"),
+        owner_domain: AuthorityDomain::from_storage(&row.get::<String, _>("owner_domain"))?,
+        node_revision: u64::try_from(row.get::<i64, _>("node_revision"))
+            .map_err(|_| ContextDbError::Corrupt("invalid Node revision".to_string()))?,
+        body_sexpr: row.get("body_sexpr"),
+        content_hash: row.get("content_hash"),
+        subtree_hash: row.get("subtree_hash"),
+    })
+}
+
+fn validate_plan_projection(
+    plan: &ContextMutationPlan,
+    projection: &NewMindProjection,
+) -> ContextDbResult<()> {
+    if plan.context_id != projection.context_id {
+        return Err(ContextDbError::Precondition(format!(
+            "Context Mutation targets '{}', projection targets '{}'",
+            plan.context_id, projection.context_id
+        )));
+    }
+    if plan.next_revision != projection.revision {
+        return Err(ContextDbError::Precondition(format!(
+            "Context Mutation next revision {} differs from projection revision {}",
+            plan.next_revision, projection.revision
+        )));
+    }
+    if plan.next_state_hash != projection.state_hash {
+        return Err(ContextDbError::Precondition(format!(
+            "Context Mutation next hash '{}' differs from projection hash '{}'",
+            plan.next_state_hash, projection.state_hash
+        )));
+    }
+    Ok(())
+}
+
+fn compile_runtime_operations(
+    plan: &ContextMutationPlan,
+    projection: &NewMindProjection,
+    updated_at: DateTime<Utc>,
+    meta_node: &ContextNodeRecord,
+    existing_nodes: &HashMap<String, ContextNodeRecord>,
+) -> ContextDbResult<Vec<ContextOperation>> {
+    let mut upserts =
+        BTreeMap::<(ContextCollection, String), (serde_json::Value, Option<u64>)>::new();
+    let mut removes = BTreeSet::<(ContextCollection, String)>::new();
+    let mut orders = BTreeMap::<ContextCollection, Vec<String>>::new();
+
+    for mutation in &plan.mutations {
+        match mutation {
+            ContextStateMutation::Upsert {
+                collection,
+                logical_id,
+                body,
+                order,
+            } => {
+                let key = (*collection, logical_id.clone());
+                if removes.contains(&key)
+                    || upserts
+                        .insert(key.clone(), (body.clone(), *order))
+                        .is_some()
+                {
+                    return Err(ContextDbError::Invalid(format!(
+                        "Context Mutation contains conflicting writes for '{}:{}'",
+                        collection.as_str(),
+                        logical_id
+                    )));
+                }
+            }
+            ContextStateMutation::Remove {
+                collection,
+                logical_id,
+            } => {
+                if *collection == ContextCollection::MutationClocks {
+                    return Err(ContextDbError::Invalid(
+                        "mutation_clocks cannot be removed".to_string(),
+                    ));
+                }
+                let key = (*collection, logical_id.clone());
+                if upserts.contains_key(&key) || !removes.insert(key) {
+                    return Err(ContextDbError::Invalid(format!(
+                        "Context Mutation contains conflicting removes for '{}:{}'",
+                        collection.as_str(),
+                        logical_id
+                    )));
+                }
+            }
+            ContextStateMutation::SetOrder {
+                collection,
+                logical_ids,
+            } => {
+                if orders.insert(*collection, logical_ids.clone()).is_some() {
+                    return Err(ContextDbError::Invalid(format!(
+                        "Context Mutation orders collection '{}' more than once",
+                        collection.as_str()
+                    )));
+                }
+            }
+            ContextStateMutation::ReplaceMind { .. } => {
+                return Err(ContextDbError::Invalid(
+                    "ReplaceMind cannot be compiled as a local mutation".to_string(),
+                ));
+            }
+        }
+    }
+
+    let mut operations = Vec::new();
+
+    // Deletes happen first. A missing addressed record means the authoritative
+    // tree is corrupt or the plan was built from a stale state; silently
+    // treating it as an idempotent delete would conceal either condition.
+    for (collection, logical_id) in &removes {
+        let node_id = runtime_node_id(*collection, logical_id)?;
+        let current = existing_nodes.get(&node_id).ok_or_else(|| {
+            ContextDbError::Precondition(format!(
+                "Context Mutation removes missing '{}:{}'",
+                collection.as_str(),
+                logical_id
+            ))
+        })?;
+        ensure_runtime_leaf(existing_nodes, current)?;
+        operations.push(ContextOperation::DeleteSubtree {
+            node_id,
+            expected_subtree_hash: current.subtree_hash.clone(),
+        });
+    }
+
+    // Validate each explicit final order against final collection membership,
+    // then index it for both upserts and order-only moves.
+    let mut final_orders = BTreeMap::<ContextCollection, BTreeMap<String, i64>>::new();
+    for (collection, logical_ids) in &orders {
+        let spec = runtime_collection_spec(*collection)?;
+        if !spec.ordered {
+            return Err(ContextDbError::Invalid(format!(
+                "collection '{}' has no observable order",
+                collection.as_str()
+            )));
+        }
+        let current_ids = existing_nodes
+            .values()
+            .filter(|node| node.parent_id.as_deref() == Some(spec.parent_id))
+            .map(|node| node.node_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut expected_final_ids = current_ids;
+        for (candidate_collection, logical_id) in &removes {
+            if candidate_collection == collection {
+                expected_final_ids.remove(&runtime_node_id(*collection, logical_id)?);
+            }
+        }
+        for (candidate_collection, logical_id) in upserts.keys() {
+            if candidate_collection == collection {
+                expected_final_ids.insert(runtime_node_id(*collection, logical_id)?);
+            }
+        }
+        let ordered_ids = logical_ids
+            .iter()
+            .map(|logical_id| runtime_node_id(*collection, logical_id))
+            .collect::<ContextDbResult<BTreeSet<_>>>()?;
+        if ordered_ids.len() != logical_ids.len() || ordered_ids != expected_final_ids {
+            return Err(ContextDbError::Precondition(format!(
+                "SetOrder for '{}' does not exactly describe final collection membership",
+                collection.as_str()
+            )));
+        }
+        let positions = logical_ids
+            .iter()
+            .enumerate()
+            .map(|(index, logical_id)| {
+                Ok((
+                    logical_id.clone(),
+                    i64::try_from(index).map_err(|_| {
+                        ContextDbError::Invalid(format!(
+                            "collection '{}' order exceeds SQLite INTEGER",
+                            collection.as_str()
+                        ))
+                    })?,
+                ))
+            })
+            .collect::<ContextDbResult<BTreeMap<_, _>>>()?;
+        final_orders.insert(*collection, positions);
+    }
+
+    for ((collection, logical_id), (body, supplied_order)) in &upserts {
+        let spec = runtime_collection_spec(*collection)?;
+        let order_key = if spec.ordered {
+            match final_orders
+                .get(collection)
+                .and_then(|positions| positions.get(logical_id))
+            {
+                Some(order) => *order,
+                None => i64::try_from(supplied_order.ok_or_else(|| {
+                    ContextDbError::Invalid(format!(
+                        "ordered collection '{}:{}' is missing its order",
+                        collection.as_str(),
+                        logical_id
+                    ))
+                })?)
+                .map_err(|_| {
+                    ContextDbError::Invalid(format!(
+                        "collection '{}:{}' order exceeds SQLite INTEGER",
+                        collection.as_str(),
+                        logical_id
+                    ))
+                })?,
+            }
+        } else {
+            if supplied_order.is_some() {
+                return Err(ContextDbError::Invalid(format!(
+                    "unordered collection '{}:{}' supplied an order",
+                    collection.as_str(),
+                    logical_id
+                )));
+            }
+            spec.default_order
+        };
+        let node_id = runtime_node_id(*collection, logical_id)?;
+        let desired = DesiredNode {
+            node_id: node_id.clone(),
+            parent_id: spec.parent_id.to_string(),
+            order_key,
+            owner_domain: AuthorityDomain::AgentMind,
+            body_sexpr: encode_mutation_record(*collection, logical_id, body)?,
+        };
+        let Some(current) = existing_nodes.get(&node_id) else {
+            operations.push(ContextOperation::InsertNode {
+                node: desired.draft(),
+            });
+            continue;
+        };
+        if current.owner_domain != AuthorityDomain::AgentMind {
+            return Err(ContextDbError::Corrupt(format!(
+                "managed Node '{}' changed authority domain",
+                current.node_id
+            )));
+        }
+        ensure_runtime_leaf(existing_nodes, current)?;
+        let moved = current.parent_id.as_deref() != Some(spec.parent_id)
+            || current.order_key != desired.order_key;
+        let replaced = current.body_sexpr != desired.body_sexpr;
+        if moved && replaced {
+            operations.push(ContextOperation::DeleteSubtree {
+                node_id: current.node_id.clone(),
+                expected_subtree_hash: current.subtree_hash.clone(),
+            });
+            operations.push(ContextOperation::InsertNode {
+                node: desired.draft(),
+            });
+        } else if moved {
+            operations.push(ContextOperation::MoveSubtree {
+                node_id: current.node_id.clone(),
+                expected_node_revision: current.node_revision,
+                expected_subtree_hash: current.subtree_hash.clone(),
+                new_parent_id: spec.parent_id.to_string(),
+                new_order_key: desired.order_key,
+            });
+        } else if replaced {
+            operations.push(ContextOperation::ReplaceNode {
+                node_id: current.node_id.clone(),
+                expected_node_revision: current.node_revision,
+                body_sexpr: desired.body_sexpr,
+            });
+        }
+    }
+
+    // Apply order-only moves after accounting for locally upserted records.
+    for (collection, positions) in &final_orders {
+        let spec = runtime_collection_spec(*collection)?;
+        for (logical_id, order_key) in positions {
+            if upserts.contains_key(&(*collection, logical_id.clone())) {
+                continue;
+            }
+            let node_id = runtime_node_id(*collection, logical_id)?;
+            let current = existing_nodes.get(&node_id).ok_or_else(|| {
+                ContextDbError::Precondition(format!(
+                    "SetOrder addresses missing '{}:{}'",
+                    collection.as_str(),
+                    logical_id
+                ))
+            })?;
+            ensure_runtime_leaf(existing_nodes, current)?;
+            if current.parent_id.as_deref() != Some(spec.parent_id) {
+                return Err(ContextDbError::Corrupt(format!(
+                    "ordered Node '{}' is outside collection '{}'",
+                    node_id,
+                    collection.as_str()
+                )));
+            }
+            if current.order_key != *order_key {
+                operations.push(ContextOperation::MoveSubtree {
+                    node_id,
+                    expected_node_revision: current.node_revision,
+                    expected_subtree_hash: current.subtree_hash.clone(),
+                    new_parent_id: spec.parent_id.to_string(),
+                    new_order_key: *order_key,
+                });
+            }
+        }
+    }
+
+    let desired_meta = desired_record(
+        META_NODE_ID,
+        ROOT_NODE_ID,
+        0,
+        AuthorityDomain::RuntimeControl,
+        "projection-meta",
+        &ProjectionMeta {
+            revision: projection.revision,
+            state_hash: projection.state_hash.clone(),
+            head_event_id: projection.head_event_id.clone(),
+            updated_at,
+        },
+    )?;
+    if desired_meta.body_sexpr == meta_node.body_sexpr {
+        return Err(ContextDbError::Precondition(
+            "Context Mutation did not advance projection metadata".to_string(),
+        ));
+    }
+    operations.push(ContextOperation::ReplaceNode {
+        node_id: META_NODE_ID.to_string(),
+        expected_node_revision: meta_node.node_revision,
+        body_sexpr: desired_meta.body_sexpr,
+    });
+    Ok(operations)
+}
+
+fn ensure_runtime_leaf(
+    existing_nodes: &HashMap<String, ContextNodeRecord>,
+    node: &ContextNodeRecord,
+) -> ContextDbResult<()> {
+    if existing_nodes
+        .values()
+        .any(|candidate| candidate.parent_id.as_deref() == Some(node.node_id.as_str()))
+    {
+        return Err(ContextDbError::Corrupt(format!(
+            "managed Mind record '{}' unexpectedly owns child Nodes",
+            node.node_id
+        )));
+    }
+    Ok(())
+}
+
+fn encode_mutation_record(
+    collection: ContextCollection,
+    logical_id: &str,
+    body: &serde_json::Value,
+) -> ContextDbResult<String> {
+    let spec = runtime_collection_spec(collection)?;
+    match collection {
+        ContextCollection::Frame => {
+            let value: ContextFrame = serde_json::from_value(body.clone())?;
+            if value.id != logical_id {
+                return Err(mutation_identity_error(collection, logical_id, &value.id));
+            }
+            encode_record(spec.record_kind, &value)
+        }
+        ContextCollection::Relation => {
+            let value: ContextRelation = serde_json::from_value(body.clone())?;
+            let actual = relation_logical_id(&value.subject, &value.relation, &value.object);
+            if actual != logical_id {
+                return Err(mutation_identity_error(collection, logical_id, &actual));
+            }
+            encode_record(spec.record_kind, &value)
+        }
+        ContextCollection::Retired => {
+            let value: RetiredEntry = serde_json::from_value(body.clone())?;
+            if value.id != logical_id {
+                return Err(mutation_identity_error(collection, logical_id, &value.id));
+            }
+            encode_record(spec.record_kind, &value)
+        }
+        ContextCollection::Retiring => {
+            let value: FrameRetirement = serde_json::from_value(body.clone())?;
+            if value.frame_id != logical_id {
+                return Err(mutation_identity_error(
+                    collection,
+                    logical_id,
+                    &value.frame_id,
+                ));
+            }
+            encode_record(spec.record_kind, &value)
+        }
+        ContextCollection::Protected => {
+            let value: ProtectedEntry = serde_json::from_value(body.clone())?;
+            if value.id != logical_id {
+                return Err(mutation_identity_error(collection, logical_id, &value.id));
+            }
+            encode_record(spec.record_kind, &value)
+        }
+        ContextCollection::Checkpoint => {
+            let value: MindCheckpoint = serde_json::from_value(body.clone())?;
+            if value.id != logical_id {
+                return Err(mutation_identity_error(collection, logical_id, &value.id));
+            }
+            encode_record(spec.record_kind, &value)
+        }
+        ContextCollection::MutationClocks => {
+            if logical_id != "mutation-clocks" {
+                return Err(mutation_identity_error(
+                    collection,
+                    "mutation-clocks",
+                    logical_id,
+                ));
+            }
+            let value: ContextMutationClocks = serde_json::from_value(body.clone())?;
+            encode_record(spec.record_kind, &value)
+        }
+    }
+}
+
+fn mutation_identity_error(
+    collection: ContextCollection,
+    expected: &str,
+    actual: &str,
+) -> ContextDbError {
+    ContextDbError::Precondition(format!(
+        "Context Mutation identity mismatch in '{}': expected '{}', body contains '{}'",
+        collection.as_str(),
+        expected,
+        actual
+    ))
 }
 
 fn runtime_authority() -> ContextAuthority {
@@ -447,10 +1165,14 @@ fn desired_nodes(state: &MindState, meta: ProjectionMeta) -> ContextDbResult<Vec
         )?);
     }
     for (index, relation) in state.relations.iter().enumerate() {
-        // Relations do not currently carry an explicit ID. Their complete
-        // immutable value is therefore their stable identity.
+        // Relations do not currently carry an explicit ID. The shared
+        // ContextStore protocol owns their tuple identity so every backend and
+        // the MVCC layer address the same record.
         nodes.push(desired_record(
-            &stable_node_id("relation", &serde_json::to_string(relation)?),
+            &stable_node_id(
+                "relation",
+                &relation_logical_id(&relation.subject, &relation.relation, &relation.object),
+            ),
             RELATIONS_NODE_ID,
             checked_order(index)?,
             AuthorityDomain::AgentMind,
@@ -865,7 +1587,7 @@ fn decode_projection(snapshot: &RuntimeContextSnapshot) -> ContextDbResult<MindP
         |relation| {
             Ok(stable_node_id(
                 "relation",
-                &serde_json::to_string(relation)?,
+                &relation_logical_id(&relation.subject, &relation.relation, &relation.object),
             ))
         },
     )?;

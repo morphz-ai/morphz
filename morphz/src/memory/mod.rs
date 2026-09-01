@@ -1119,6 +1119,7 @@ pub trait MindProjectionStore: Send + Sync {
         event: &crate::event::Event,
         attention_updates: &[SessionAttentionUpdate],
         session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>>;

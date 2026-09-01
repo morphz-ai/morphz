@@ -7019,9 +7019,21 @@ impl MindProjectionStore for PostgresStore {
         event: &Event,
         attention_updates: &[SessionAttentionUpdate],
         session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, StoreError> {
+        if let Some(plan) = mutation_plan {
+            plan.validate_shape()
+                .map_err(|error| -> StoreError { error.into() })?;
+            if plan.context_id != next_projection.context_id
+                || plan.expected_revision != expected_revision
+                || plan.next_revision != next_projection.revision
+                || plan.next_state_hash != next_projection.state_hash
+            {
+                return Err("Context Mutation plan and PostgreSQL projection fence differ".into());
+            }
+        }
         if next_projection.head_event_id.as_deref() != Some(event.id.as_str()) {
             return Err(
                 "Mind Projection head_event_id 必须指向本次 Context transaction Event".into(),
