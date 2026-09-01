@@ -32,7 +32,8 @@ use crate::llm::{
 use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
-    AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
+    AgentBootstrapRecord, AgentProviderBindingRecord, AgentProviderBindingSet,
+    AgentProviderBindingStore, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
     ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextTokenBudgetMutation,
@@ -1153,6 +1154,9 @@ impl MorphzRuntimeBuilder {
         self.client.attach_provider_account_state_store(
             Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
         );
+        self.client.attach_agent_provider_binding_store(
+            Arc::clone(&store) as Arc<dyn AgentProviderBindingStore>
+        );
         let provider_auth_manager = match self.provider_auth_registry {
             Some(registry) => crate::provider::auth::ProviderAuthManager::new_with_registry(
                 self.config.auth_accounts.clone(),
@@ -1261,6 +1265,9 @@ impl MorphzRuntimeBuilder {
         if let Some(client) = separate_reviewer_client.as_ref() {
             client.attach_provider_account_state_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::ProviderAccountStateStore>
+            );
+            client.attach_agent_provider_binding_store(
+                Arc::clone(&store) as Arc<dyn AgentProviderBindingStore>
             );
             client.attach_provider_auth_manager(Arc::clone(&provider_auth_manager));
         }
@@ -2552,6 +2559,9 @@ impl MorphzRuntime {
             client
                 .attach_provider_account_state_store(Arc::clone(&self.inner.store)
                     as Arc<dyn crate::memory::ProviderAccountStateStore>);
+            client.attach_agent_provider_binding_store(
+                Arc::clone(&self.inner.store) as Arc<dyn AgentProviderBindingStore>
+            );
             client.attach_provider_auth_manager(Arc::clone(&self.inner.provider_auth_manager));
             tracing::info!(
                 route = model,
@@ -2611,6 +2621,23 @@ impl MorphzRuntime {
                     title: "Default Agent".to_string(),
                     root_context_id: self.inner.identity.context_id.clone(),
                 })
+                .await?;
+        }
+        // Adopt Agent-scoped Provider authority without breaking databases
+        // created before that authority existed.  Only Agents without a
+        // policy row receive the current Runtime accounts.  An intentionally
+        // empty policy already has a row and therefore remains empty across
+        // restarts.
+        let existing_account_ids = self
+            .provider_catalog_config()?
+            .auth_accounts
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for agent in self.inner.store.list_agents(true).await? {
+            self.inner
+                .store
+                .initialize_agent_provider_bindings(&agent.id, &existing_account_ids)
                 .await?;
         }
         self.inner
@@ -4181,7 +4208,15 @@ impl MorphzRuntime {
     }
 
     pub async fn ensure_agent(&self, agent: NewAgent) -> Result<AgentRecord, RuntimeError> {
-        self.inner.store.ensure_agent(agent).await
+        let existed = self.inner.store.get_agent(&agent.id).await?.is_some();
+        let record = self.inner.store.ensure_agent(agent).await?;
+        if !existed {
+            self.inner
+                .store
+                .initialize_agent_provider_bindings(&record.id, &[])
+                .await?;
+        }
+        Ok(record)
     }
 
     pub async fn ensure_context(
@@ -4202,6 +4237,10 @@ impl MorphzRuntime {
             .store
             .create_agent_bundle(agent, context, session)
             .await?;
+        self.inner
+            .store
+            .initialize_agent_provider_bindings(&bundle.agent.id, &[])
+            .await?;
         self.bind_default_principal(&bundle.initial_session.id)
             .await?;
         self.inner.orchestrator.register_session_context(
@@ -4217,6 +4256,88 @@ impl MorphzRuntime {
 
     pub async fn get_agent(&self, id: &str) -> Result<Option<AgentRecord>, RuntimeError> {
         self.inner.store.get_agent(id).await
+    }
+
+    /// Return the Auth Accounts that this Agent's operator has made
+    /// available. Principals are deliberately absent from this authority.
+    pub async fn agent_provider_bindings(
+        &self,
+        agent_id: &str,
+    ) -> Result<AgentProviderBindingSet, RuntimeError> {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            return Err("Agent ID cannot be empty".into());
+        }
+        if self.inner.store.get_agent(agent_id).await?.is_none() {
+            return Err(format!("Agent '{agent_id}' does not exist").into());
+        }
+        self.inner
+            .store
+            .get_agent_provider_bindings(agent_id)
+            .await?
+            .ok_or_else(|| format!("Agent '{agent_id}' Provider policy is not initialized").into())
+    }
+
+    /// Associate one reusable Provider Account with an Agent. The Account
+    /// remains a single credential/login authority and may be associated with
+    /// several Agents owned by the same operator.
+    pub async fn bind_agent_provider_account(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> Result<AgentProviderBindingSet, RuntimeError> {
+        let agent_id = agent_id.trim();
+        let account_id = account_id.trim();
+        if agent_id.is_empty() || account_id.is_empty() {
+            return Err("Agent ID and Provider Account ID cannot be empty".into());
+        }
+        if self.inner.store.get_agent(agent_id).await?.is_none() {
+            return Err(format!("Agent '{agent_id}' does not exist").into());
+        }
+        if !self
+            .provider_catalog_config()?
+            .auth_accounts
+            .contains_key(account_id)
+        {
+            return Err(format!("Auth Account '{account_id}' does not exist").into());
+        }
+        self.inner
+            .store
+            .bind_agent_provider_account(agent_id, account_id)
+            .await
+    }
+
+    pub async fn unbind_agent_provider_account(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> Result<AgentProviderBindingSet, RuntimeError> {
+        let agent_id = agent_id.trim();
+        let account_id = account_id.trim();
+        if agent_id.is_empty() || account_id.is_empty() {
+            return Err("Agent ID and Provider Account ID cannot be empty".into());
+        }
+        if self.inner.store.get_agent(agent_id).await?.is_none() {
+            return Err(format!("Agent '{agent_id}' does not exist").into());
+        }
+        self.inner
+            .store
+            .unbind_agent_provider_account(agent_id, account_id)
+            .await
+    }
+
+    pub async fn provider_account_agent_bindings(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<AgentProviderBindingRecord>, RuntimeError> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return Err("Provider Account ID cannot be empty".into());
+        }
+        self.inner
+            .store
+            .list_provider_account_agent_bindings(account_id)
+            .await
     }
 
     pub async fn create_context(
@@ -10244,6 +10365,73 @@ mod tests {
                 '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
             )
         })
+    }
+
+    #[tokio::test]
+    async fn startup_adopts_legacy_agents_but_new_agents_start_unconfigured() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.auth_accounts.insert(
+            "legacy-account".to_string(),
+            AuthAccountConfig {
+                auth_adapter: "none".to_string(),
+                ..AuthAccountConfig::default()
+            },
+        );
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .ensure_agent(NewAgent {
+                id: "legacy-agent".to_string(),
+                title: "Legacy Agent".to_string(),
+                root_context_id: "legacy-context".to_string(),
+            })
+            .await
+            .unwrap();
+
+        runtime.start().await.unwrap();
+        let adopted = runtime
+            .agent_provider_bindings("legacy-agent")
+            .await
+            .unwrap();
+        assert_eq!(adopted.bindings.len(), 1);
+        assert_eq!(adopted.bindings[0].account_id, "legacy-account");
+
+        let created = runtime
+            .create_agent_bundle(
+                NewAgent {
+                    id: "new-agent".to_string(),
+                    title: "New Agent".to_string(),
+                    root_context_id: "new-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "new-context".to_string(),
+                    agent_id: "new-agent".to_string(),
+                    title: "New Context".to_string(),
+                },
+                NewSession {
+                    id: "new-session".to_string(),
+                    agent_id: "new-agent".to_string(),
+                    context_id: "new-context".to_string(),
+                    parent_session_id: None,
+                    title: "New Session".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.agent.id, "new-agent");
+        assert!(runtime
+            .agent_provider_bindings("new-agent")
+            .await
+            .unwrap()
+            .bindings
+            .is_empty());
     }
 
     #[test]

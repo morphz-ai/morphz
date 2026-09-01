@@ -1060,6 +1060,15 @@ impl Server {
                 get(handle_list_agents).post(handle_create_agent),
             )
             .route(
+                "/api/agents/:agent_id/provider-accounts",
+                get(handle_get_agent_provider_bindings),
+            )
+            .route(
+                "/api/agents/:agent_id/provider-accounts/:account_id",
+                axum::routing::put(handle_bind_agent_provider_account)
+                    .delete(handle_unbind_agent_provider_account),
+            )
+            .route(
                 "/api/contexts",
                 get(handle_list_contexts).post(handle_create_context),
             )
@@ -2077,6 +2086,29 @@ async fn handle_put_provider_instance_config(
     }
 }
 
+async fn bind_dashboard_default_agent_provider_account(
+    state: &AppState,
+    account_id: &str,
+) -> Result<(), SdkError> {
+    let agent_exists = state
+        .runtime
+        .get_agent(&state.default_agent_id)
+        .await
+        .map_err(|error| SdkError::new(SdkErrorCode::Internal, error.to_string()))?
+        .is_some();
+    if !agent_exists {
+        // Some embedded hosts construct the HTTP surface before Runtime
+        // start. Startup's legacy-policy adoption will bind the saved account
+        // once the default Agent is materialized.
+        return Ok(());
+    }
+    state
+        .sdk
+        .bind_agent_provider_account(&state.default_agent_id, account_id)
+        .await
+        .map(|_| ())
+}
+
 async fn handle_put_provider_catalog_setup(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2092,6 +2124,7 @@ async fn handle_put_provider_catalog_setup(
             "cannot determine Morphz managed configuration path",
         );
     };
+    let account_id_for_binding = request.account_id.trim().to_string();
     let credential = match (request.credential_id.as_deref(), request.credential) {
         (Some(id), Some(config)) => Some((id, config)),
         (None, None) => None,
@@ -2184,7 +2217,7 @@ async fn handle_put_provider_catalog_setup(
             path,
             request.provider_id.trim(),
             request.provider,
-            request.account_id.trim(),
+            &account_id_for_binding,
             request.account,
             credential,
             request.route_id.trim(),
@@ -2192,7 +2225,15 @@ async fn handle_put_provider_catalog_setup(
         )
         .await;
     match result {
-        Ok(receipt) => Json(receipt).into_response(),
+        Ok(receipt) => match bind_dashboard_default_agent_provider_account(
+            state.as_ref(),
+            &account_id_for_binding,
+        )
+        .await
+        {
+            Ok(_) => Json(receipt).into_response(),
+            Err(error) => sdk_error_response(error),
+        },
         Err(error) => {
             if let Some(name) = created_secret_name {
                 let sdk = state.sdk.clone();
@@ -2256,7 +2297,12 @@ async fn handle_put_auth_account_config(
         .put_auth_account_config(path, &account_id, account)
         .await
     {
-        Ok(receipt) => Json(receipt).into_response(),
+        Ok(receipt) => {
+            match bind_dashboard_default_agent_provider_account(state.as_ref(), &account_id).await {
+                Ok(_) => Json(receipt).into_response(),
+                Err(error) => sdk_error_response(error),
+            }
+        }
         Err(error) => sdk_error_response(error),
     }
 }
@@ -2434,13 +2480,66 @@ async fn handle_delete_provider_account(
             "cannot determine Morphz managed configuration path",
         );
     };
+    let bindings = match state
+        .runtime
+        .provider_account_agent_bindings(&account_id)
+        .await
+    {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
+    };
+    let non_default_agent_ids = bindings
+        .iter()
+        .filter(|binding| binding.agent_id != state.default_agent_id)
+        .map(|binding| binding.agent_id.as_str())
+        .collect::<Vec<_>>();
+    if !non_default_agent_ids.is_empty() {
+        return error_response(
+            StatusCode::CONFLICT,
+            format!(
+                "Auth Account '{account_id}' is shared by Agent(s): {}; remove those Agent bindings before deleting the account",
+                non_default_agent_ids.join(", ")
+            ),
+        );
+    }
+    let default_agent_was_bound = bindings
+        .iter()
+        .any(|binding| binding.agent_id == state.default_agent_id);
+    if default_agent_was_bound {
+        if let Err(error) = state
+            .sdk
+            .unbind_agent_provider_account(&state.default_agent_id, &account_id)
+            .await
+        {
+            return sdk_error_response(error);
+        }
+    }
+
     match state
         .sdk
         .delete_auth_account_config(path, &account_id)
         .await
     {
         Ok(receipt) => Json(receipt).into_response(),
-        Err(error) => sdk_error_response(error),
+        Err(error) => {
+            if default_agent_was_bound {
+                if let Err(restore_error) = state
+                    .sdk
+                    .bind_agent_provider_account(&state.default_agent_id, &account_id)
+                    .await
+                {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!(
+                            "{error}; additionally failed to restore the default Agent binding: {restore_error}"
+                        ),
+                    );
+                }
+            }
+            sdk_error_response(error)
+        }
     }
 }
 
@@ -2674,7 +2773,19 @@ async fn handle_submit_provider_oauth_callback(
         )
         .await
     {
-        Ok(progress) => Json(SubmitOAuthCallbackResponse { login_id, progress }).into_response(),
+        Ok(progress) => {
+            if let OAuthLoginProgress::Complete { account } = &progress {
+                if let Err(error) = bind_dashboard_default_agent_provider_account(
+                    state.as_ref(),
+                    &account.account_id,
+                )
+                .await
+                {
+                    return sdk_error_response(error);
+                }
+            }
+            Json(SubmitOAuthCallbackResponse { login_id, progress }).into_response()
+        }
         Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
     }
 }
@@ -2728,7 +2839,19 @@ async fn handle_continue_provider_oauth_login(
         .continue_provider_oauth_login(&login_id, completion)
         .await
     {
-        Ok(progress) => Json(progress).into_response(),
+        Ok(progress) => {
+            if let OAuthLoginProgress::Complete { account } = &progress {
+                if let Err(error) = bind_dashboard_default_agent_provider_account(
+                    state.as_ref(),
+                    &account.account_id,
+                )
+                .await
+                {
+                    return sdk_error_response(error);
+                }
+            }
+            Json(progress).into_response()
+        }
         Err(error) => error_response(StatusCode::BAD_REQUEST, error.message),
     }
 }
@@ -3687,6 +3810,59 @@ async fn handle_list_agents(
     match state.runtime.list_agents(query.include_archived).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_agent_provider_bindings(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state.sdk.agent_provider_bindings(&agent_id).await {
+        Ok(bindings) => Json(bindings).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_bind_agent_provider_account(
+    State(state): State<Arc<AppState>>,
+    Path((agent_id, account_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state
+        .sdk
+        .bind_agent_provider_account(&agent_id, &account_id)
+        .await
+    {
+        Ok(bindings) => Json(bindings).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_unbind_agent_provider_account(
+    State(state): State<Arc<AppState>>,
+    Path((agent_id, account_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state
+        .sdk
+        .unbind_agent_provider_account(&agent_id, &account_id)
+        .await
+    {
+        Ok(bindings) => Json(bindings).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -10376,6 +10552,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_can_delete_an_account_bound_only_to_its_default_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("morphz.db");
+        let (state, runtime) = test_state_at_with_config_auth_and_secrets(
+            &database_path,
+            true,
+            AppConfig::default(),
+            None,
+            None,
+        )
+        .await;
+
+        let account_id = "dashboard-default-account";
+        let created = handle_put_auth_account_config(
+            State(Arc::clone(&state)),
+            Path(account_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(AuthAccountConfig {
+                auth_adapter: "none".to_string(),
+                ..AuthAccountConfig::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(created.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .agent_provider_bindings("agent-test")
+                .await
+                .unwrap()
+                .bindings
+                .iter()
+                .map(|binding| binding.account_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![account_id]
+        );
+
+        let deleted = handle_delete_provider_account(
+            State(Arc::clone(&state)),
+            Path(account_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(deleted.status(), StatusCode::OK);
+        assert!(!runtime
+            .provider_catalog_config()
+            .unwrap()
+            .auth_accounts
+            .contains_key(account_id));
+        assert!(runtime
+            .agent_provider_bindings("agent-test")
+            .await
+            .unwrap()
+            .bindings
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn dashboard_provider_setup_atomically_persists_a_complete_catalog() {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
@@ -14312,6 +14549,67 @@ account = "xai-account"
             .unwrap()
             .iter()
             .any(|session| session.id == "session-fresh"));
+        let initially_unconfigured = handle_get_agent_provider_bindings(
+            State(Arc::clone(&state)),
+            Path("agent-fresh".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(initially_unconfigured.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(initially_unconfigured.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["bindings"].as_array().unwrap().len(), 0);
+
+        let account_id = "shared-test-account".to_string();
+        let mut provider_catalog = runtime.provider_catalog_config().unwrap();
+        provider_catalog.auth_accounts.insert(
+            account_id.clone(),
+            AuthAccountConfig {
+                auth_adapter: "none".to_string(),
+                ..AuthAccountConfig::default()
+            },
+        );
+        runtime
+            .replace_provider_catalog(provider_catalog)
+            .await
+            .unwrap();
+        let associated = handle_bind_agent_provider_account(
+            State(Arc::clone(&state)),
+            Path(("agent-fresh".to_string(), account_id.clone())),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(associated.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .agent_provider_bindings("agent-fresh")
+                .await
+                .unwrap()
+                .bindings[0]
+                .account_id,
+            account_id
+        );
+        let removed = handle_unbind_agent_provider_account(
+            State(Arc::clone(&state)),
+            Path(("agent-fresh".to_string(), account_id)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert!(runtime
+            .agent_provider_bindings("agent-fresh")
+            .await
+            .unwrap()
+            .bindings
+            .is_empty());
 
         let shared = handle_create_session(
             State(Arc::clone(&state)),

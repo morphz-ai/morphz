@@ -13,9 +13,10 @@ use morphz::memory::{
 };
 use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
-    ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, ContextActivationCausalitySnapshot, ContextExecutionResourcesSnapshot,
+    ActivationOutcomeCommit, AgentProviderBindingStore, ApprovalMutation, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseStatus, CapabilityLeaseStore, CognitiveClockStore,
+    ContextActivationCausalitySnapshot, ContextExecutionResourcesSnapshot,
     ContextRuntimeDirectoryRequest, ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionFilter,
     DelegationFilter, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
     DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
@@ -9472,6 +9473,90 @@ where
     assert_eq!(recovered.status, ProviderAccountStatus::Ready);
 }
 
+async fn assert_agent_provider_binding_conformance<S>(store: Arc<S>)
+where
+    S: AgentProviderBindingStore + SessionDirectoryStore + 'static,
+{
+    let initial = store
+        .get_agent_provider_bindings("conformance-agent")
+        .await
+        .unwrap()
+        .expect("Agent Bootstrap must create an explicit empty Provider policy");
+    assert_eq!(initial.revision, 1);
+    assert!(initial.bindings.is_empty());
+
+    let primary = store
+        .bind_agent_provider_account("conformance-agent", "shared-account")
+        .await
+        .unwrap();
+    assert_eq!(primary.revision, 2);
+    assert_eq!(primary.bindings[0].account_id, "shared-account");
+    let by_context = store
+        .get_context_agent_provider_bindings("conformance-context")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_context.agent_id, "conformance-agent");
+    assert_eq!(by_context.bindings[0].account_id, "shared-account");
+
+    store
+        .ensure_agent(NewAgent {
+            id: "conformance-provider-binding-agent".to_string(),
+            title: "Provider Binding Agent".to_string(),
+            root_context_id: "conformance-provider-binding-context".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .initialize_agent_provider_bindings(
+            "conformance-provider-binding-agent",
+            &["shared-account".to_string()],
+        )
+        .await
+        .unwrap();
+    let shared = store
+        .list_provider_account_agent_bindings("shared-account")
+        .await
+        .unwrap();
+    assert_eq!(shared.len(), 2);
+
+    store
+        .ensure_agent(NewAgent {
+            id: "conformance-empty-provider-agent".to_string(),
+            title: "Empty Provider Agent".to_string(),
+            root_context_id: "conformance-empty-provider-context".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .initialize_agent_provider_bindings("conformance-empty-provider-agent", &[])
+        .await
+        .unwrap();
+    let still_empty = store
+        .initialize_agent_provider_bindings(
+            "conformance-empty-provider-agent",
+            &["must-not-be-adopted".to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(still_empty.bindings.is_empty());
+
+    let unbound = store
+        .unbind_agent_provider_account("conformance-agent", "shared-account")
+        .await
+        .unwrap();
+    assert_eq!(unbound.revision, 3);
+    assert!(unbound.bindings.is_empty());
+    assert_eq!(
+        store
+            .list_provider_account_agent_bindings("shared-account")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 async fn assert_context_runtime_directory_snapshot_conformance<S>(store: Arc<S>)
 where
     S: morphz::memory::RuntimeStore + 'static,
@@ -9855,6 +9940,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         )
         .await
         .unwrap();
+    assert_agent_provider_binding_conformance(Arc::clone(&store)).await;
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
     assert_concurrent_parallel_ingress_conformance(Arc::clone(&store)).await;
@@ -10069,6 +10155,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260816_04_core_domain_constraints",
         "20260820_01_tool_call_history",
         "20260820_02_principal_context_encounters",
+        "20260901_01_agent_provider_bindings",
     ] {
         assert!(
             applied_migrations.contains(version),
@@ -10280,6 +10367,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         )
         .await
         .unwrap();
+    assert_agent_provider_binding_conformance(Arc::clone(&store)).await;
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
     assert_concurrent_parallel_ingress_conformance(Arc::clone(&store)).await;

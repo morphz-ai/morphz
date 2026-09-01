@@ -7729,6 +7729,80 @@ pub struct ProviderModelCatalogRecord {
     pub observed_at: DateTime<Utc>,
 }
 
+/// Operator-authored Provider Account access for one durable Agent.
+///
+/// `account_id` identifies an Auth Account from the Runtime Provider catalog.
+/// The binding deliberately belongs to the Agent rather than to a Principal:
+/// every Principal interacting with this Agent uses the Agent operator's
+/// Provider policy unless a future, explicit delegation protocol says
+/// otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentProviderBindingRecord {
+    pub agent_id: String,
+    pub account_id: String,
+    pub bound_at: DateTime<Utc>,
+}
+
+/// Complete Provider Account policy for one Agent.
+///
+/// The policy row exists independently from its bindings so an intentionally
+/// unconfigured Agent remains distinguishable from a legacy Agent that has
+/// never adopted Agent-scoped Provider routing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentProviderBindingSet {
+    pub agent_id: String,
+    pub revision: u64,
+    pub bindings: Vec<AgentProviderBindingRecord>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Durable Agent-to-Provider-Account authority.
+///
+/// Provider definitions, endpoints and credentials remain in the Provider
+/// catalog/Secret Store. This boundary records only which reusable Auth
+/// Accounts one Agent is allowed to use.
+#[async_trait::async_trait]
+pub trait AgentProviderBindingStore: Send + Sync {
+    /// Initialize one Agent policy exactly once. Concurrent/repeated calls are
+    /// idempotent and never overwrite an already initialized policy.
+    async fn initialize_agent_provider_bindings(
+        &self,
+        agent_id: &str,
+        account_ids: &[String],
+    ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_agent_provider_bindings(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentProviderBindingSet>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Resolve a Context to its owning Agent and Provider policy. `None`
+    /// means that the Context itself is not durable; `Some` may contain zero
+    /// bindings when the Agent was deliberately left unconfigured.
+    async fn get_context_agent_provider_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<AgentProviderBindingSet>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn bind_agent_provider_account(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn unbind_agent_provider_account(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn list_provider_account_agent_bindings(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<AgentProviderBindingRecord>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 #[async_trait::async_trait]
 pub trait ProviderModelCatalogStore: Send + Sync {
     // Catalog replacement is an atomic persistence boundary whose provenance fields must remain
@@ -7963,6 +8037,7 @@ pub trait RuntimeStore:
     + SessionProjectionStore
     + RecallProjectionStore
     + CognitiveClockStore
+    + AgentProviderBindingStore
     + ProviderAccountStateStore
     + ProviderModelCatalogStore
     + StorageMaintenanceStore

@@ -936,6 +936,16 @@ pub trait Client: Send + Sync {
     ) {
     }
 
+    /// Attach the durable Agent-to-Provider-Account authority. Direct clients
+    /// intentionally ignore it; routed clients use it to ensure that a model
+    /// request can consume only accounts explicitly assigned to the owning
+    /// Agent, independently from the request Principal.
+    fn attach_agent_provider_binding_store(
+        &self,
+        _store: Arc<dyn crate::memory::AgentProviderBindingStore>,
+    ) {
+    }
+
     /// Stable Runtime resource identity used for shared backoff and durable
     /// Objective waits.  Custom clients may keep the conservative default;
     /// first-class protocol adapters include endpoint, protocol and model.
