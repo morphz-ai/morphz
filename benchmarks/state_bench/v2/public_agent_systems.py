@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import select
 import shutil
 import subprocess
 import threading
@@ -248,6 +249,24 @@ class MorphzPublicRuntimeAgent(BaseAgent):
         self._ready: dict[str, Any] | None = None
         self._last_turn: dict[str, Any] | None = None
 
+        self._reply_timeout_seconds = max(
+            1,
+            int(os.environ.get("MORPHZ_ME07_REPLY_TIMEOUT_SECONDS", "1800")),
+        )
+        self._receipt_timeout_grace_seconds = max(
+            1,
+            int(
+                os.environ.get(
+                    "MORPHZ_ME07_RECEIPT_TIMEOUT_GRACE_SECONDS",
+                    "60",
+                )
+            ),
+        )
+        self._ready_timeout_seconds = max(
+            1,
+            int(os.environ.get("MORPHZ_ME07_READY_TIMEOUT_SECONDS", "120")),
+        )
+
         binary = Path(os.environ["MORPHZ_ME07_BINARY"]).resolve(strict=True)
         task_root = Path(os.environ["MORPHZ_ME07_TASK_ROOT"]).resolve()
         snapshot_dir_value = os.environ.get("MORPHZ_ME07_SNAPSHOT_DIR")
@@ -314,7 +333,7 @@ class MorphzPublicRuntimeAgent(BaseAgent):
             f"--context-id={context_id}",
             f"--session-id={session_id}",
             "--principal-id=STATE-Bench-User",
-            f"--reply-timeout-seconds={int(os.environ.get('MORPHZ_ME07_REPLY_TIMEOUT_SECONDS', '1800'))}",
+            f"--reply-timeout-seconds={self._reply_timeout_seconds}",
         ]
         if deterministic_gate:
             command.append("--deterministic-fake-client")
@@ -326,13 +345,38 @@ class MorphzPublicRuntimeAgent(BaseAgent):
             text=True,
             cwd=self.output,
         )
-        self._ready = self._read_receipt("ready receipt")
-        self._validate_ready(self._ready, deterministic_gate=deterministic_gate)
-        token_file.unlink(missing_ok=True)
+        try:
+            self._ready = self._read_receipt(
+                "ready receipt",
+                timeout_seconds=self._ready_timeout_seconds,
+            )
+            self._validate_ready(self._ready, deterministic_gate=deterministic_gate)
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            token_file.unlink(missing_ok=True)
 
-    def _read_receipt(self, label: str) -> dict[str, Any]:
+    def _read_receipt(
+        self,
+        label: str,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
         if self._process.stdout is None:
             raise RuntimeError("Morphz adapter stdout is unavailable")
+        ready, _, _ = select.select(
+            [self._process.stdout],
+            [],
+            [],
+            timeout_seconds,
+        )
+        if not ready:
+            return_code = self._process.poll()
+            raise TimeoutError(
+                "Morphz adapter timed out after "
+                f"{timeout_seconds:g}s before {label}; exit={return_code}"
+            )
         line = self._process.stdout.readline()
         if not line:
             return_code = self._process.poll()
@@ -409,7 +453,21 @@ class MorphzPublicRuntimeAgent(BaseAgent):
             + "\n"
         )
         self._process.stdin.flush()
-        turn = self._read_receipt("turn receipt")
+        try:
+            turn = self._read_receipt(
+                "turn receipt",
+                timeout_seconds=(
+                    self._reply_timeout_seconds + self._receipt_timeout_grace_seconds
+                ),
+            )
+        except BaseException:
+            # The wall-clock timeout is deliberately outside the Rust Runtime.
+            # If the Runtime itself deadlocks, closing the adapter releases the
+            # benchmark worker instead of leaving stdout.readline() blocked
+            # forever.  The durable task database remains available for the
+            # ContextDB ME-07 timeout classifier.
+            self.close()
+            raise
         self._last_turn = turn
         usage = turn.get("usage", {})
         current = {

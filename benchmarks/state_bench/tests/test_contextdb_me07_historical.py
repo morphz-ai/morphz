@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from benchmarks.state_bench.v2.morphz_state_bench_adapter_no_model_gate import (
     _contextdb_advanced,
+)
+from benchmarks.state_bench.v2.public_agent_systems import (
+    MorphzPublicRuntimeAgent,
 )
 from benchmarks.state_bench.v2.run_contextdb_me07_historical import (
     _classify_timeout,
@@ -54,6 +60,30 @@ def test_timeout_detection_reads_wrapped_runtime_errors() -> None:
     assert not _is_timeout_like(
         {"runner_result": {"error": "HTTP 502 from model provider"}}
     )
+
+
+def test_public_runtime_adapter_has_an_external_receipt_timeout() -> None:
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, "r", encoding="utf-8")
+
+    class WaitingProcess:
+        stdout = stream
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    agent = object.__new__(MorphzPublicRuntimeAgent)
+    agent._process = WaitingProcess()
+    try:
+        with pytest.raises(
+            TimeoutError,
+            match=r"timed out after 0\.05s before turn receipt; exit=None",
+        ):
+            agent._read_receipt("turn receipt", timeout_seconds=0.05)
+    finally:
+        os.close(write_fd)
+        stream.close()
 
 
 def test_timeout_classification_prioritizes_durable_terminal_and_dependencies() -> None:
