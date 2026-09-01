@@ -1,9 +1,9 @@
 //! Single-node SQLite reference backend for the ContextDB experiment.
 //!
-//! The experiment deliberately does not implement the existing EventStore or
-//! participate in Runtime construction.  Its authority is the current Context
-//! AST itself.  Application Event History, Recall and audit history are not
-//! prerequisites for reading or mutating that state.
+//! Its authority is the current Context AST itself. Application Event History,
+//! Recall and audit history are not prerequisites for reading or mutating that
+//! state. The optional Runtime adapter composes this backend with the existing
+//! Agent Trajectory and Runtime Control capabilities in one SQLite transaction.
 
 use super::{ExperimentalFeaturePermit, CONTEXT_DB};
 use crate::sexpr::{self, SExpr};
@@ -128,7 +128,7 @@ impl AuthorityDomain {
         }
     }
 
-    fn from_storage(value: &str) -> ContextDbResult<Self> {
+    pub(crate) fn from_storage(value: &str) -> ContextDbResult<Self> {
         match value {
             "runtime_input" => Ok(Self::RuntimeInput),
             "agent_mind" => Ok(Self::AgentMind),
@@ -502,8 +502,26 @@ impl SqliteContextDb {
         .bind(&root_hash)
         .execute(&mut **transaction)
         .await?;
-        self.get_context_in_transaction(transaction, &request.context_id)
-            .await
+        build_snapshot(
+            ContextMeta {
+                context_id: request.context_id,
+                tenant_id: request.tenant_id,
+                agent_id: request.agent_id,
+                revision: 1,
+                root_node_id: request.root.node_id.clone(),
+                root_hash: root_hash.clone(),
+            },
+            vec![StoredNode {
+                node_id: request.root.node_id,
+                parent_id: None,
+                order_key: request.root.order_key,
+                owner_domain: request.root.owner_domain,
+                node_revision: 1,
+                body_sexpr,
+                content_hash,
+                subtree_hash: root_hash,
+            }],
+        )
     }
 
     pub(crate) async fn get_context_in_transaction(

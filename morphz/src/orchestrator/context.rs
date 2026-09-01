@@ -16847,6 +16847,21 @@ mod tests {
     async fn mind_seed_inherits_cognition_without_parent_sessions_or_observations() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-mind-seed.db");
+        #[cfg(feature = "experimental-context-db")]
+        let store = Arc::new(
+            SqliteStore::new_with_context_db(
+                db.to_str().unwrap(),
+                &crate::config::SqliteStorageConfig::default(),
+                crate::experimental::require_enabled(
+                    &BTreeSet::from([crate::experimental::CONTEXT_DB.to_string()]),
+                    crate::experimental::CONTEXT_DB,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        #[cfg(not(feature = "experimental-context-db"))]
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         for context_id in ["seed-source", "seed-target"] {
             store

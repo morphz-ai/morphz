@@ -704,10 +704,11 @@ pub enum WorkAssignmentMutationResult {
     NotFound,
 }
 
-/// Rebuildable online materialization of one Cognitive Context's current Mind.
+/// Durable online representation of one Cognitive Context's current Mind.
 ///
-/// The persistence layer deliberately treats `state` as opaque canonical JSON:
-/// Frame body semantics belong to the Agent/Context engine, while the Store
+/// Legacy stores materialize it as opaque canonical JSON; a ContextDB-backed
+/// store reconstructs the same compatibility record from authoritative AST
+/// Nodes. Frame semantics belong to the Agent/Context engine, while the Store
 /// owns revision fencing, hashes and atomic durability.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindProjectionRecord {
@@ -1078,10 +1079,12 @@ pub enum MindProjectionCommit {
 
 /// Durable online Mind projection with database-enforced revision fencing.
 ///
-/// The append-only Event Store remains the source of truth. This store owns the
-/// rebuildable current-state projection and the Context head used for CAS. A
-/// successful Context mutation must persist its Event, Mind Projection,
-/// Session Projection mutation and affected Session attention rows in one
+/// Storage contract for the authoritative current Mind and its atomic Runtime
+/// commit boundary. Legacy implementations can recover Mind from immutable
+/// Agent Trajectory facts; ContextDB implementations make the current AST
+/// authoritative and retain those facts for trajectory, provenance, Recall
+/// and diagnosis. A successful Context mutation must persist all enabled
+/// representations, Session Projection changes and attention rows in one
 /// database transaction.
 #[async_trait::async_trait]
 pub trait MindProjectionStore: Send + Sync {

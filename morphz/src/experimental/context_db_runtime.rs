@@ -7,10 +7,11 @@
 
 use super::context_db::{
     AuthorityDomain, ContextAuthority, ContextDbError, ContextDbResult, ContextNodeDraft,
-    ContextOperation, ContextSnapshot, ContextTransaction, CreateContextRequest, SqliteContextDb,
+    ContextNodeRecord, ContextOperation, ContextSnapshot, ContextTransaction, CreateContextRequest,
+    SqliteContextDb,
 };
 use super::ExperimentalFeaturePermit;
-use crate::memory::{MindProjectionRecord, NewMindProjection};
+use crate::memory::{MindProjectionHead, MindProjectionRecord, NewMindProjection};
 use crate::orchestrator::context::{
     ContextFrame, ContextMutationClocks, ContextRelation, FrameRetirement, MindCheckpoint,
     MindState,
@@ -21,8 +22,8 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Sqlite, SqlitePool};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use sqlx::{Row, Sqlite, SqlitePool};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const ROOT_NODE_ID: &str = "morphz/root";
 const META_NODE_ID: &str = "morphz/meta";
@@ -68,6 +69,27 @@ struct DesiredNode {
     body_sexpr: String,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeContextSnapshot {
+    context_id: String,
+    revision: u64,
+    root_node_id: String,
+    root_hash: String,
+    nodes: Vec<ContextNodeRecord>,
+}
+
+impl From<ContextSnapshot> for RuntimeContextSnapshot {
+    fn from(snapshot: ContextSnapshot) -> Self {
+        Self {
+            context_id: snapshot.context_id,
+            revision: snapshot.revision,
+            root_node_id: snapshot.root_node_id,
+            root_hash: snapshot.root_hash,
+            nodes: snapshot.nodes,
+        }
+    }
+}
+
 impl DesiredNode {
     fn draft(&self) -> ContextNodeDraft {
         ContextNodeDraft {
@@ -96,43 +118,66 @@ impl ContextDbRuntimeAdapter {
         projection: &NewMindProjection,
         updated_at: DateTime<Utc>,
     ) -> ContextDbResult<MindProjectionRecord> {
-        let existing = self
-            .load_projection_in_transaction(transaction, &projection.context_id)
-            .await?;
-        if existing.is_none() {
-            let agent_id = sqlx::query_scalar::<_, String>(
-                "SELECT agent_id FROM cognitive_contexts WHERE id = ?",
-            )
-            .bind(&projection.context_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or_else(|| {
-                ContextDbError::NotFound(format!("Runtime Context '{}'", projection.context_id))
-            })?;
-            self.db
-                .create_context_in_transaction(
-                    transaction,
-                    CreateContextRequest {
-                        context_id: projection.context_id.clone(),
-                        // Runtime does not yet expose a first-class tenant ID.
-                        // Agent ownership is the narrowest durable isolation
-                        // boundary available at this adapter layer.
-                        tenant_id: agent_id.clone(),
-                        agent_id,
-                        authority: runtime_authority(),
-                        root: ContextNodeDraft {
-                            node_id: ROOT_NODE_ID.to_string(),
-                            parent_id: None,
-                            order_key: 0,
-                            owner_domain: AuthorityDomain::RuntimeControl,
-                            body_sexpr: ROOT_BODY.to_string(),
-                        },
-                    },
-                )
-                .await?;
+        let context_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",
+        )
+        .bind(&projection.context_id)
+        .fetch_one(&mut **transaction)
+        .await?
+            != 0;
+        if context_exists {
+            // Match the legacy `initialize_mind_projection` contract: once a
+            // Context has an authoritative Mind, initialization is a read and
+            // cannot overwrite it with a stale caller-side default.
+            return self
+                .load_projection_in_transaction(transaction, &projection.context_id)
+                .await?
+                .ok_or_else(|| {
+                    ContextDbError::Corrupt(format!(
+                        "Runtime Context '{}' exists without an authoritative Mind",
+                        projection.context_id
+                    ))
+                });
         }
-        self.sync_projection_in_transaction(transaction, projection, updated_at)
-            .await
+        let agent_id =
+            sqlx::query_scalar::<_, String>("SELECT agent_id FROM cognitive_contexts WHERE id = ?")
+                .bind(&projection.context_id)
+                .fetch_optional(&mut **transaction)
+                .await?
+                .ok_or_else(|| {
+                    ContextDbError::NotFound(format!("Runtime Context '{}'", projection.context_id))
+                })?;
+        let created = self
+            .db
+            .create_context_in_transaction(
+                transaction,
+                CreateContextRequest {
+                    context_id: projection.context_id.clone(),
+                    // Runtime does not yet expose a first-class tenant ID.
+                    // Agent ownership is the narrowest durable isolation
+                    // boundary available at this adapter layer.
+                    tenant_id: agent_id.clone(),
+                    agent_id,
+                    authority: runtime_authority(),
+                    root: ContextNodeDraft {
+                        node_id: ROOT_NODE_ID.to_string(),
+                        parent_id: None,
+                        order_key: 0,
+                        owner_domain: AuthorityDomain::RuntimeControl,
+                        body_sexpr: ROOT_BODY.to_string(),
+                    },
+                },
+            )
+            .await?;
+        let state = validate_new_projection(projection)?;
+        self.sync_projection_against_snapshot(
+            transaction,
+            projection,
+            updated_at,
+            state,
+            created.into(),
+        )
+        .await
     }
 
     pub(crate) async fn sync_projection_in_transaction(
@@ -141,25 +186,25 @@ impl ContextDbRuntimeAdapter {
         projection: &NewMindProjection,
         updated_at: DateTime<Utc>,
     ) -> ContextDbResult<MindProjectionRecord> {
-        let state: MindState = serde_json::from_value(projection.state.clone())?;
-        let calculated_hash = mind_state_hash(&state)?;
-        if calculated_hash != projection.state_hash {
-            return Err(ContextDbError::Precondition(format!(
-                "Mind state hash '{}' does not match supplied projection hash '{}'",
-                calculated_hash, projection.state_hash
-            )));
-        }
-        if state.version != projection.revision {
-            return Err(ContextDbError::Precondition(format!(
-                "Mind state version {} does not match projection revision {}",
-                state.version, projection.revision
-            )));
-        }
-
+        let state = validate_new_projection(projection)?;
         let snapshot = self
-            .db
-            .get_context_in_transaction(transaction, &projection.context_id)
-            .await?;
+            .load_runtime_snapshot_in_transaction(transaction, &projection.context_id)
+            .await?
+            .ok_or_else(|| {
+                ContextDbError::NotFound(format!("Context '{}'", projection.context_id))
+            })?;
+        self.sync_projection_against_snapshot(transaction, projection, updated_at, state, snapshot)
+            .await
+    }
+
+    async fn sync_projection_against_snapshot(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        projection: &NewMindProjection,
+        updated_at: DateTime<Utc>,
+        state: MindState,
+        snapshot: RuntimeContextSnapshot,
+    ) -> ContextDbResult<MindProjectionRecord> {
         let desired = desired_nodes(
             &state,
             ProjectionMeta {
@@ -178,10 +223,8 @@ impl ContextDbRuntimeAdapter {
                 projection.state_hash,
                 projection.head_event_id.as_deref().unwrap_or("initial")
             );
-            let synchronization_digest = format!(
-                "{:x}",
-                Sha256::digest(synchronization_identity.as_bytes())
-            );
+            let synchronization_digest =
+                format!("{:x}", Sha256::digest(synchronization_identity.as_bytes()));
             self.db
                 .apply_transaction_in_transaction(
                     transaction,
@@ -196,14 +239,18 @@ impl ContextDbRuntimeAdapter {
                 )
                 .await?;
         }
-        self.load_projection_in_transaction(transaction, &projection.context_id)
-            .await?
-            .ok_or_else(|| {
-                ContextDbError::Corrupt(format!(
-                    "Context '{}' disappeared after synchronization",
-                    projection.context_id
-                ))
-            })
+        // `apply_transaction_in_transaction` has already fenced and persisted
+        // the exact diff in this outer SQLite transaction. Re-reading and
+        // reconstructing the entire AST here would add another full Context
+        // query to every successful Mind commit without increasing safety.
+        Ok(MindProjectionRecord {
+            context_id: projection.context_id.clone(),
+            revision: projection.revision,
+            state: serde_json::to_value(state)?,
+            state_hash: projection.state_hash.clone(),
+            head_event_id: projection.head_event_id.clone(),
+            updated_at,
+        })
     }
 
     pub(crate) async fn load_projection_in_transaction(
@@ -211,20 +258,148 @@ impl ContextDbRuntimeAdapter {
         transaction: &mut sqlx::Transaction<'_, Sqlite>,
         context_id: &str,
     ) -> ContextDbResult<Option<MindProjectionRecord>> {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",
+        self.load_runtime_snapshot_in_transaction(transaction, context_id)
+            .await?
+            .map(|snapshot| decode_projection(&snapshot))
+            .transpose()
+    }
+
+    pub(crate) async fn load_projection_heads_in_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        context_ids: &[String],
+    ) -> ContextDbResult<Vec<MindProjectionHead>> {
+        if context_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"SELECT context.context_id, context.revision AS context_revision,
+                      node.body_sexpr
+               FROM experimental_contextdb_contexts context
+               LEFT JOIN experimental_contextdb_nodes node
+                 ON node.context_id = context.context_id
+                AND node.node_id = ?
+               WHERE context.context_id IN (SELECT value FROM json_each(?))"#,
+        )
+        .bind(META_NODE_ID)
+        .bind(serde_json::to_string(context_ids)?)
+        .fetch_all(&mut **transaction)
+        .await?;
+        let mut heads = rows
+            .into_iter()
+            .map(|row| {
+                let context_id = row.get::<String, _>("context_id");
+                let _context_revision = u64::try_from(row.get::<i64, _>("context_revision"))
+                    .map_err(|_| {
+                        ContextDbError::Corrupt(format!(
+                            "Runtime Context '{context_id}' has an invalid revision"
+                        ))
+                    })?;
+                let body = row.get::<Option<String>, _>("body_sexpr").ok_or_else(|| {
+                    ContextDbError::Corrupt(format!(
+                        "Runtime Context '{context_id}' is missing its projection metadata"
+                    ))
+                })?;
+                let meta = decode_record::<ProjectionMeta>(&body, "projection-meta")?;
+                Ok(MindProjectionHead {
+                    context_id,
+                    revision: meta.revision,
+                    updated_at: meta.updated_at,
+                })
+            })
+            .collect::<ContextDbResult<Vec<_>>>()?;
+        heads.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.context_id.cmp(&right.context_id))
+        });
+        Ok(heads)
+    }
+
+    /// Loads the structural Runtime view in one SQL statement without
+    /// materializing the public full canonical S-expression. Runtime decoding
+    /// already parses every managed leaf and verifies the exact Mind hash, so
+    /// constructing a second base64-heavy tree string here would be pure work.
+    async fn load_runtime_snapshot_in_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        context_id: &str,
+    ) -> ContextDbResult<Option<RuntimeContextSnapshot>> {
+        let rows = sqlx::query(
+            r#"SELECT context.context_id, context.revision AS context_revision,
+                      context.root_node_id, context.root_hash,
+                      node.node_id, node.parent_id, node.order_key,
+                      node.owner_domain, node.node_revision, node.body_sexpr,
+                      node.content_hash, node.subtree_hash
+               FROM experimental_contextdb_contexts context
+               LEFT JOIN experimental_contextdb_nodes node
+                 ON node.context_id = context.context_id
+               WHERE context.context_id = ?
+               ORDER BY node.parent_id, node.order_key, node.node_id"#,
         )
         .bind(context_id)
-        .fetch_one(&mut **transaction)
+        .fetch_all(&mut **transaction)
         .await?;
-        if exists == 0 {
+        let Some(first) = rows.first() else {
             return Ok(None);
+        };
+        if first.get::<Option<String>, _>("node_id").is_none() {
+            return Err(ContextDbError::Corrupt(format!(
+                "Context '{context_id}' contains no root Node"
+            )));
         }
-        let snapshot = self
-            .db
-            .get_context_in_transaction(transaction, context_id)
-            .await?;
-        decode_projection(&snapshot).map(Some)
+        let snapshot_context_id = first.get("context_id");
+        let snapshot_revision = u64::try_from(first.get::<i64, _>("context_revision"))
+            .map_err(|_| ContextDbError::Corrupt("invalid ContextDB revision".to_string()))?;
+        let snapshot_root_node_id = first.get("root_node_id");
+        let snapshot_root_hash = first.get("root_hash");
+        let mut nodes = Vec::with_capacity(rows.len());
+        for row in rows {
+            nodes.push(ContextNodeRecord {
+                node_id: row
+                    .get::<Option<String>, _>("node_id")
+                    .ok_or_else(|| ContextDbError::Corrupt("missing Node identity".to_string()))?,
+                parent_id: row.get("parent_id"),
+                order_key: row
+                    .get::<Option<i64>, _>("order_key")
+                    .ok_or_else(|| ContextDbError::Corrupt("missing Node order".to_string()))?,
+                owner_domain: AuthorityDomain::from_storage(
+                    &row.get::<Option<String>, _>("owner_domain")
+                        .ok_or_else(|| {
+                            ContextDbError::Corrupt("missing Node authority domain".to_string())
+                        })?,
+                )?,
+                node_revision: u64::try_from(
+                    row.get::<Option<i64>, _>("node_revision").ok_or_else(|| {
+                        ContextDbError::Corrupt("missing Node revision".to_string())
+                    })?,
+                )
+                .map_err(|_| ContextDbError::Corrupt("invalid Node revision".to_string()))?,
+                body_sexpr: row.get::<Option<String>, _>("body_sexpr").ok_or_else(|| {
+                    ContextDbError::Corrupt("missing Node S-expression".to_string())
+                })?,
+                content_hash: row
+                    .get::<Option<String>, _>("content_hash")
+                    .ok_or_else(|| {
+                        ContextDbError::Corrupt("missing Node content hash".to_string())
+                    })?,
+                subtree_hash: row
+                    .get::<Option<String>, _>("subtree_hash")
+                    .ok_or_else(|| {
+                        ContextDbError::Corrupt("missing Node subtree hash".to_string())
+                    })?,
+            });
+        }
+        let snapshot = RuntimeContextSnapshot {
+            context_id: snapshot_context_id,
+            revision: snapshot_revision,
+            root_node_id: snapshot_root_node_id,
+            root_hash: snapshot_root_hash,
+            nodes,
+        };
+        validate_runtime_snapshot(&snapshot)?;
+        Ok(Some(snapshot))
     }
 }
 
@@ -403,7 +578,7 @@ fn decode_record<T: DeserializeOwned>(body: &str, expected_kind: &str) -> Contex
 }
 
 fn diff_nodes(
-    snapshot: &ContextSnapshot,
+    snapshot: &RuntimeContextSnapshot,
     desired: &[DesiredNode],
 ) -> ContextDbResult<Vec<ContextOperation>> {
     let existing = snapshot
@@ -490,7 +665,175 @@ fn diff_nodes(
     Ok(operations)
 }
 
-fn decode_projection(snapshot: &ContextSnapshot) -> ContextDbResult<MindProjectionRecord> {
+fn validate_runtime_snapshot(snapshot: &RuntimeContextSnapshot) -> ContextDbResult<()> {
+    if snapshot.root_node_id != ROOT_NODE_ID {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{}' has unexpected root Node '{}'",
+            snapshot.context_id, snapshot.root_node_id
+        )));
+    }
+    let by_id = snapshot
+        .nodes
+        .iter()
+        .map(|node| (node.node_id.as_str(), node))
+        .collect::<HashMap<_, _>>();
+    if by_id.len() != snapshot.nodes.len() {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{}' contains duplicate Node identities",
+            snapshot.context_id
+        )));
+    }
+    let root = required_node(&by_id, ROOT_NODE_ID)?;
+    if root.parent_id.is_some()
+        || root.owner_domain != AuthorityDomain::RuntimeControl
+        || root.body_sexpr != ROOT_BODY
+        || root.subtree_hash != snapshot.root_hash
+    {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{}' has an invalid root Node",
+            snapshot.context_id
+        )));
+    }
+
+    let fixed_nodes = [
+        (
+            META_NODE_ID,
+            ROOT_NODE_ID,
+            0,
+            AuthorityDomain::RuntimeControl,
+            None,
+        ),
+        (
+            FRAMES_NODE_ID,
+            ROOT_NODE_ID,
+            10,
+            AuthorityDomain::AgentMind,
+            Some("(frames)"),
+        ),
+        (
+            RELATIONS_NODE_ID,
+            ROOT_NODE_ID,
+            20,
+            AuthorityDomain::AgentMind,
+            Some("(relations)"),
+        ),
+        (
+            RETIRED_NODE_ID,
+            ROOT_NODE_ID,
+            30,
+            AuthorityDomain::AgentMind,
+            Some("(retired)"),
+        ),
+        (
+            RETIRING_NODE_ID,
+            ROOT_NODE_ID,
+            40,
+            AuthorityDomain::AgentMind,
+            Some("(retiring)"),
+        ),
+        (
+            PROTECTED_NODE_ID,
+            ROOT_NODE_ID,
+            50,
+            AuthorityDomain::AgentMind,
+            Some("(protected)"),
+        ),
+        (
+            CHECKPOINTS_NODE_ID,
+            ROOT_NODE_ID,
+            60,
+            AuthorityDomain::AgentMind,
+            Some("(checkpoints)"),
+        ),
+        (
+            CLOCKS_NODE_ID,
+            ROOT_NODE_ID,
+            70,
+            AuthorityDomain::AgentMind,
+            None,
+        ),
+    ];
+    for (node_id, parent_id, order_key, owner_domain, exact_body) in fixed_nodes {
+        let node = required_node(&by_id, node_id)?;
+        if node.parent_id.as_deref() != Some(parent_id)
+            || node.order_key != order_key
+            || node.owner_domain != owner_domain
+            || exact_body.is_some_and(|body| node.body_sexpr != body)
+        {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' has an invalid schema Node '{}'",
+                snapshot.context_id, node_id
+            )));
+        }
+    }
+
+    let fixed_ids = std::iter::once(ROOT_NODE_ID)
+        .chain(fixed_nodes.into_iter().map(|(node_id, ..)| node_id))
+        .collect::<HashSet<_>>();
+    let leaf_parents = HashSet::from([
+        FRAMES_NODE_ID,
+        RELATIONS_NODE_ID,
+        RETIRED_NODE_ID,
+        RETIRING_NODE_ID,
+        PROTECTED_NODE_ID,
+        CHECKPOINTS_NODE_ID,
+    ]);
+    for node in &snapshot.nodes {
+        if fixed_ids.contains(node.node_id.as_str()) {
+            continue;
+        }
+        let parent_id = node.parent_id.as_deref().ok_or_else(|| {
+            ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' has a second root Node '{}'",
+                snapshot.context_id, node.node_id
+            ))
+        })?;
+        if !leaf_parents.contains(parent_id) || node.owner_domain != AuthorityDomain::AgentMind {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' contains unmanaged Node '{}' under '{}'",
+                snapshot.context_id, node.node_id, parent_id
+            )));
+        }
+        if !by_id.contains_key(parent_id) {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' Node '{}' references missing parent '{}'",
+                snapshot.context_id, node.node_id, parent_id
+            )));
+        }
+    }
+
+    let mut children = HashMap::<&str, Vec<&str>>::new();
+    for node in &snapshot.nodes {
+        if let Some(parent_id) = node.parent_id.as_deref() {
+            children
+                .entry(parent_id)
+                .or_default()
+                .push(node.node_id.as_str());
+        }
+    }
+    let mut visited = HashSet::new();
+    let mut pending = vec![ROOT_NODE_ID];
+    while let Some(node_id) = pending.pop() {
+        if !visited.insert(node_id) {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime Context '{}' contains a Node cycle at '{}'",
+                snapshot.context_id, node_id
+            )));
+        }
+        if let Some(descendants) = children.get(node_id) {
+            pending.extend(descendants.iter().copied());
+        }
+    }
+    if visited.len() != snapshot.nodes.len() {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{}' contains Nodes unreachable from its root",
+            snapshot.context_id
+        )));
+    }
+    Ok(())
+}
+
+fn decode_projection(snapshot: &RuntimeContextSnapshot) -> ContextDbResult<MindProjectionRecord> {
     if snapshot.root_node_id != ROOT_NODE_ID {
         return Err(ContextDbError::Corrupt(format!(
             "Runtime Context '{}' has unexpected root Node '{}'",
@@ -511,14 +854,36 @@ fn decode_projection(snapshot: &ContextSnapshot) -> ContextDbResult<MindProjecti
         "mutation-clocks",
     )?;
 
-    let frames = decode_children::<ContextFrame>(snapshot, FRAMES_NODE_ID, "frame")?;
-    let relations = decode_children::<ContextRelation>(snapshot, RELATIONS_NODE_ID, "relation")?;
-    let retired = decode_children::<RetiredEntry>(snapshot, RETIRED_NODE_ID, "retired-entry")?
-        .into_iter()
-        .map(|entry| entry.id)
-        .collect::<BTreeSet<_>>();
-    let retiring_entries =
-        decode_children::<FrameRetirement>(snapshot, RETIRING_NODE_ID, "retiring-entry")?;
+    let frames =
+        decode_runtime_children::<ContextFrame, _>(snapshot, FRAMES_NODE_ID, "frame", |frame| {
+            Ok(stable_node_id("frame", &frame.id))
+        })?;
+    let relations = decode_runtime_children::<ContextRelation, _>(
+        snapshot,
+        RELATIONS_NODE_ID,
+        "relation",
+        |relation| {
+            Ok(stable_node_id(
+                "relation",
+                &serde_json::to_string(relation)?,
+            ))
+        },
+    )?;
+    let retired = decode_runtime_children::<RetiredEntry, _>(
+        snapshot,
+        RETIRED_NODE_ID,
+        "retired-entry",
+        |entry| Ok(stable_node_id("retired", &entry.id)),
+    )?
+    .into_iter()
+    .map(|entry| entry.id)
+    .collect::<BTreeSet<_>>();
+    let retiring_entries = decode_runtime_children::<FrameRetirement, _>(
+        snapshot,
+        RETIRING_NODE_ID,
+        "retiring-entry",
+        |entry| Ok(stable_node_id("retiring", &entry.frame_id)),
+    )?;
     let mut retiring = BTreeMap::new();
     for entry in retiring_entries {
         if retiring.insert(entry.frame_id.clone(), entry).is_some() {
@@ -527,13 +892,21 @@ fn decode_projection(snapshot: &ContextSnapshot) -> ContextDbResult<MindProjecti
             ));
         }
     }
-    let protected =
-        decode_children::<ProtectedEntry>(snapshot, PROTECTED_NODE_ID, "protected-entry")?
-            .into_iter()
-            .map(|entry| entry.id)
-            .collect::<BTreeSet<_>>();
-    let checkpoints =
-        decode_children::<MindCheckpoint>(snapshot, CHECKPOINTS_NODE_ID, "checkpoint")?;
+    let protected = decode_runtime_children::<ProtectedEntry, _>(
+        snapshot,
+        PROTECTED_NODE_ID,
+        "protected-entry",
+        |entry| Ok(stable_node_id("protected", &entry.id)),
+    )?
+    .into_iter()
+    .map(|entry| entry.id)
+    .collect::<BTreeSet<_>>();
+    let checkpoints = decode_runtime_children::<MindCheckpoint, _>(
+        snapshot,
+        CHECKPOINTS_NODE_ID,
+        "checkpoint",
+        |checkpoint| Ok(stable_node_id("checkpoint", &checkpoint.id)),
+    )?;
 
     let state = MindState {
         version: meta.revision,
@@ -572,11 +945,16 @@ fn required_node<'a>(
         .ok_or_else(|| ContextDbError::Corrupt(format!("required Node '{node_id}' is missing")))
 }
 
-fn decode_children<T: DeserializeOwned>(
-    snapshot: &ContextSnapshot,
+fn decode_runtime_children<T, F>(
+    snapshot: &RuntimeContextSnapshot,
     parent_id: &str,
     kind: &str,
-) -> ContextDbResult<Vec<T>> {
+    expected_node_id: F,
+) -> ContextDbResult<Vec<T>>
+where
+    T: DeserializeOwned,
+    F: Fn(&T) -> ContextDbResult<String>,
+{
     let mut children = snapshot
         .nodes
         .iter()
@@ -589,13 +967,41 @@ fn decode_children<T: DeserializeOwned>(
     });
     children
         .into_iter()
-        .map(|node| decode_record(&node.body_sexpr, kind))
+        .map(|node| {
+            let value = decode_record::<T>(&node.body_sexpr, kind)?;
+            let expected = expected_node_id(&value)?;
+            if node.node_id != expected {
+                return Err(ContextDbError::Corrupt(format!(
+                    "Runtime record '{}' has Node identity '{}', expected '{}'",
+                    kind, node.node_id, expected
+                )));
+            }
+            Ok(value)
+        })
         .collect()
 }
 
 fn mind_state_hash(state: &MindState) -> ContextDbResult<String> {
     let bytes = serde_json::to_vec(state)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn validate_new_projection(projection: &NewMindProjection) -> ContextDbResult<MindState> {
+    let state: MindState = serde_json::from_value(projection.state.clone())?;
+    let calculated_hash = mind_state_hash(&state)?;
+    if calculated_hash != projection.state_hash {
+        return Err(ContextDbError::Precondition(format!(
+            "Mind state hash '{}' does not match supplied projection hash '{}'",
+            calculated_hash, projection.state_hash
+        )));
+    }
+    if state.version != projection.revision {
+        return Err(ContextDbError::Precondition(format!(
+            "Mind state version {} does not match projection revision {}",
+            state.version, projection.revision
+        )));
+    }
+    Ok(state)
 }
 
 #[cfg(test)]

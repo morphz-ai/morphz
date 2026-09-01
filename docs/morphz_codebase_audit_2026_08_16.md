@@ -16,7 +16,7 @@
 
 | 原结论 | 状态 | 说明 |
 | --- | --- | --- |
-| `chat/context_inspect` 占 463 MB，Ledger 缺容量治理 | **撤回** | 我读的是仓库根目录的 `morphz.db`，最后一条事件是 2026-07-23。该 topic 已于 2026-08-15 停写，问题已解决。基于该库的容量结论全部不成立。 |
+| `chat/context_inspect` 占 463 MB，Agent Trajectory 缺容量治理 | **撤回** | 我读的是仓库根目录的 `morphz.db`，最后一条事件是 2026-07-23。该 topic 已于 2026-08-15 停写，问题已解决。基于该库的容量结论全部不成立。 |
 | 「单行 payload 无上限」 | **缩小到 `read` 工具** | 后台 exec 输出有 8,192 字符上限并落 archive（`config.rs:1246`、`tool.rs:3941`）；`list_files`/`search` 有结果数上限。**但 `read` 不传 `start_line`/`end_line`/`query` 时返回整文件**（`tool.rs:4841` `selected.extend(start..=end)`），无字节上限。System Prompt 里有「不要整读长文件」的告诫（`orchestrator.rs:518`），那是提示词层约束，不是执行层约束。 |
 
 ---
@@ -68,7 +68,7 @@ Context/Session 一起死**。release 下约 5 KB 的输入（`"(".repeat(5000)`
 
 **影响定级**：这是全仓最严重的问题。Morphz 的整个定位是「确定性事务内核」，而这里
 一个非确定性语义处理器（LLM）的一次畸形输出就能让内核**非优雅终止**——没有事务
-回滚、没有 Ledger 收口、没有错误事件。而且它落在项目自称的核心（「一套语言两个
+回滚、没有 Agent Trajectory 收口、没有错误事件。而且它落在项目自称的核心（「一套语言两个
 求值器」）上。通过工具输出做提示词注入即可远程触发。
 
 **修复方向**：
@@ -130,7 +130,7 @@ _globs` 等测试只断言 deny 规则**出现在 profile 文本里**，从不�
 
 叠加 `CorsLayer::allow_origin(Any)`（允许任意来源跨域并读取响应体），以及 `/ws`
 （`handle_ws_upgrade`）没有任何 `Origin` 校验（WebSocket 本就不受 CORS 约束）：
-用户浏览器打开的任意网页都能读走完整 Ledger/Mind/Session/Secret 元数据，并能 POST
+用户浏览器打开的任意网页都能读走完整 Agent Trajectory/Mind/Session/Secret 元数据，并能 POST
 创建 Session、发消息、批准 Approval（进而触发 `exec`）。
 
 `morphz dashboard` / `morphz setup` 走 `generate_dashboard_token()`（`main.rs:870`）

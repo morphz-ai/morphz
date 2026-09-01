@@ -11546,6 +11546,15 @@ mod tests {
     async fn restart_recovers_background_wake_before_following_user_signal_without_starvation() {
         let database = NamedTempFile::new().unwrap();
         let config = AppConfig::default();
+        #[cfg(feature = "experimental-context-db")]
+        let config = {
+            let mut config = config;
+            config
+                .experimental
+                .enabled
+                .insert(crate::experimental::CONTEXT_DB.to_string());
+            config
+        };
         let tool_policy = RuntimeToolPolicy {
             context_only: true,
             coding_eval: true,
@@ -14205,6 +14214,102 @@ mod tests {
         assert!(session.inspect_context().await.is_ok());
     }
 
+    #[cfg(feature = "experimental-context-db")]
+    #[tokio::test]
+    async fn gated_context_db_runtime_completes_a_real_dialogue_turn() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config
+            .experimental
+            .enabled
+            .insert(crate::experimental::CONTEXT_DB.to_string());
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-context-db-runtime-e2e".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "ContextDB Runtime E2E".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        let receipt = session
+            .send(
+                "exercise the ContextDB runtime path",
+                "User-Test",
+                Some("client-context-db-runtime-e2e".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(!receipt.duplicate);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        assert!(session.inspect_context().await.is_ok());
+        let trajectory = crate::trajectory::AgentTrajectoryExporter::export(
+            &runtime,
+            crate::trajectory::TrajectoryExportRequest {
+                context_id: runtime.identity().context_id.clone(),
+                objective_id: None,
+                activation_id: None,
+                start_time: None,
+                end_time: None,
+                max_events: 1_000,
+                profiles: vec!["AT-Core".to_string()],
+                include_payloads: true,
+                include_user_content: true,
+                rights: crate::trajectory::TrajectoryRights::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(trajectory
+            .nodes
+            .iter()
+            .any(|node| node.source_event_id == receipt.event_id));
+        assert!(trajectory.verify().valid);
+
+        let verifier = sqlx::SqlitePool::connect(database.path().to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",
+            )
+            .bind(&runtime.identity().context_id)
+            .fetch_one(&verifier)
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_nodes WHERE context_id = ?",
+            )
+            .bind(&runtime.identity().context_id)
+            .fetch_one(&verifier)
+            .await
+            .unwrap()
+                >= 9
+        );
+    }
+
     #[tokio::test]
     async fn scheduler_snapshot_joins_the_durable_causal_chain_and_controls() {
         let database = NamedTempFile::new().unwrap();
@@ -15873,7 +15978,7 @@ mod tests {
         assert_eq!(
             events.len(),
             1,
-            "the durable Event ledger must contain exactly one detached completion reply"
+            "the durable Agent Trajectory must contain exactly one detached completion reply"
         );
         assert_eq!(client.calls.load(Ordering::SeqCst), 3);
     }

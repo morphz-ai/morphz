@@ -1862,13 +1862,56 @@ impl SqliteStore {
         permit: crate::experimental::ExperimentalFeaturePermit,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut store = Self::new_with_config(db_path, config).await?;
-        store.context_db = Some(
-            crate::experimental::context_db_runtime::ContextDbRuntimeAdapter::attach(
-                store.pool.clone(),
-                permit,
-            )
-            .await?,
-        );
+        let context_db = crate::experimental::context_db_runtime::ContextDbRuntimeAdapter::attach(
+            store.pool.clone(),
+            permit,
+        )
+        .await?;
+
+        // Enabling ContextDB on an existing Runtime database must preserve its
+        // exact current Mind. Import each legacy compatibility projection only
+        // when no authoritative ContextDB tree exists yet. Once imported,
+        // ContextDB wins even if a derived legacy row is stale or damaged.
+        let legacy_context_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&store.pool)
+        .await?;
+        for context_id in legacy_context_ids {
+            let mut transaction = begin_immediate_sqlite_transaction(&store.pool).await?;
+            if context_db
+                .load_projection_in_transaction(&mut transaction, &context_id)
+                .await?
+                .is_none()
+            {
+                let legacy = get_mind_projection_from_executor(&mut *transaction, &context_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "Context '{context_id}' has an incomplete legacy Mind Projection; refusing ContextDB migration"
+                        )
+                    })?;
+                context_db
+                    .install_projection_in_transaction(
+                        &mut transaction,
+                        &NewMindProjection {
+                            context_id: legacy.context_id,
+                            revision: legacy.revision,
+                            state: legacy.state,
+                            state_hash: legacy.state_hash,
+                            head_event_id: legacy.head_event_id,
+                            recall_documents: Vec::new(),
+                        },
+                        legacy.updated_at,
+                    )
+                    .await?;
+            }
+            transaction.commit().await?;
+        }
+        store.context_db = Some(context_db);
         Ok(store)
     }
 }
@@ -4343,7 +4386,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
         let read_legacy_mind = self.context_db.is_none();
         #[cfg(not(feature = "experimental-context-db"))]
         let read_legacy_mind = true;
-        let mut mind = if read_legacy_mind {
+        let legacy_mind = if read_legacy_mind {
             match (head_revision, projection_revision) {
                 (None, None) => None,
                 (Some(head_revision), Some(projection_revision)) => {
@@ -4373,11 +4416,15 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
             None
         };
         #[cfg(feature = "experimental-context-db")]
-        if let Some(context_db) = &self.context_db {
-            mind = context_db
+        let mind = if let Some(context_db) = &self.context_db {
+            context_db
                 .load_projection_in_transaction(&mut transaction, context_id)
-                .await?;
-        }
+                .await?
+        } else {
+            legacy_mind
+        };
+        #[cfg(not(feature = "experimental-context-db"))]
+        let mind = legacy_mind;
         let snapshot = ContextRuntimeDirectorySnapshot::from_components(
             sqlite_snapshot_component(&row, "context_json")?,
             sqlite_snapshot_component(&row, "cognitive_clock_json")?,
@@ -8223,6 +8270,15 @@ impl MindProjectionStore for SqliteStore {
     ) -> Result<Vec<MindProjectionHead>, Box<dyn std::error::Error + Send + Sync>> {
         if context_ids.is_empty() {
             return Ok(Vec::new());
+        }
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let heads = context_db
+                .load_projection_heads_in_transaction(&mut transaction, context_ids)
+                .await?;
+            transaction.commit().await?;
+            return Ok(heads);
         }
         let context_ids_json = serde_json::to_string(context_ids)?;
         let rows = sqlx::query(
@@ -25205,13 +25261,17 @@ impl SqliteStore {
 mod tests {
     use super::*;
     use crate::approval_authority::stable_approval_identity;
+    #[cfg(feature = "experimental-context-db")]
+    use crate::memory::ContextRuntimeSessionFilter;
     use crate::memory::{
         PlanExecutionFilter, PlanExecutionStatus, PlanExecutionStore, PlanExecutionWaitKind,
         QueryFilter,
     };
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
     use sqlx::{Connection, Executor, SqliteConnection};
-    use std::collections::{BTreeSet, HashMap};
+    #[cfg(feature = "experimental-context-db")]
+    use std::collections::BTreeSet;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::NamedTempFile;
@@ -36902,6 +36962,118 @@ mod tests {
 
     #[cfg(feature = "experimental-context-db")]
     #[tokio::test]
+    async fn context_db_constructor_imports_an_existing_legacy_mind_exactly_once() {
+        use crate::experimental::{require_enabled, CONTEXT_DB};
+        use crate::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
+        use sha2::{Digest, Sha256};
+
+        fn state_hash(state: &MindState) -> String {
+            format!("{:x}", Sha256::digest(serde_json::to_vec(state).unwrap()))
+        }
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let legacy = SqliteStore::new(path).await.unwrap();
+        legacy
+            .create_test_context(NewCognitiveContext {
+                id: "context-db-migration-context".to_string(),
+                agent_id: "context-db-migration-agent".to_string(),
+                title: "ContextDB migration context".to_string(),
+            })
+            .await
+            .unwrap();
+        let legacy_state = MindState {
+            version: 4,
+            frames: vec![ContextFrame {
+                id: "legacy-frame".to_string(),
+                body: "(fact preserved-across-authority-migration)".to_string(),
+                sources: vec!["legacy-source".to_string()],
+                provenance: FrameIdentityProvenance::default(),
+                revision: 3,
+                created_version: 1,
+                updated_version: 4,
+            }],
+            ..Default::default()
+        };
+        legacy
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "context-db-migration-context".to_string(),
+                revision: legacy_state.version,
+                state: serde_json::to_value(&legacy_state).unwrap(),
+                state_hash: state_hash(&legacy_state),
+                head_event_id: None,
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+        legacy.pool.close().await;
+        drop(legacy);
+
+        let permit =
+            require_enabled(&BTreeSet::from([CONTEXT_DB.to_string()]), CONTEXT_DB).unwrap();
+        let migrated =
+            SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default(), permit)
+                .await
+                .unwrap();
+        let authoritative = migrated
+            .get_mind_projection("context-db-migration-context")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(authoritative.revision, legacy_state.version);
+        assert_eq!(
+            authoritative.state,
+            serde_json::to_value(&legacy_state).unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",
+            )
+            .bind("context-db-migration-context")
+            .fetch_one(&migrated.pool)
+            .await
+            .unwrap(),
+            1
+        );
+
+        // Reopening must observe the existing authoritative tree rather than
+        // re-importing or advancing it from compatibility rows.
+        let context_db_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM experimental_contextdb_contexts WHERE context_id = ?",
+        )
+        .bind("context-db-migration-context")
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        migrated.pool.close().await;
+        drop(migrated);
+        let reopened =
+            SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default(), permit)
+                .await
+                .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT revision FROM experimental_contextdb_contexts WHERE context_id = ?",
+            )
+            .bind("context-db-migration-context")
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            context_db_revision
+        );
+        assert_eq!(
+            reopened
+                .get_mind_projection("context-db-migration-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(legacy_state).unwrap()
+        );
+    }
+
+    #[cfg(feature = "experimental-context-db")]
+    #[tokio::test]
     async fn context_db_is_authoritative_while_trajectory_and_control_commit_atomically() {
         use crate::experimental::{require_enabled, CONTEXT_DB};
         use crate::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
@@ -36947,6 +37119,31 @@ mod tests {
             serde_json::to_value(&initial_state).unwrap()
         );
 
+        let observation = Event::new(
+            "context-db-runtime-observation".to_string(),
+            "User-Test".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "context-db-runtime-context",
+                "session_id": "context-db-runtime-session",
+                "text": "ContextDB must retain Session Projection semantics"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(observation.clone()).await.unwrap();
+        let selected_sessions = vec!["context-db-runtime-session".to_string()];
+        assert_eq!(
+            store
+                .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
         let next_state = MindState {
             version: 1,
             frames: vec![ContextFrame {
@@ -36958,6 +37155,7 @@ mod tests {
                 created_version: 1,
                 updated_version: 1,
             }],
+            retired: BTreeSet::from([observation.id.clone()]),
             ..Default::default()
         };
         let event = Event::new(
@@ -36974,7 +37172,10 @@ mod tests {
             .commit_mind_projection_transaction(
                 &event,
                 &[],
-                &SessionProjectionMutation::default(),
+                &SessionProjectionMutation {
+                    retired_event_ids: vec![observation.id.clone()],
+                    restored_event_ids: Vec::new(),
+                },
                 0,
                 NewMindProjection {
                     context_id: "context-db-runtime-context".to_string(),
@@ -36993,6 +37194,193 @@ mod tests {
                 projection: MindProjectionRecord { revision: 1, .. }
             }
         ));
+        assert!(store
+            .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // ContextDB is mutated before the Agent Trajectory fact is appended
+        // in the same SQLite transaction. Force that later append to fail and
+        // prove every preceding AST/control mutation rolls back with it.
+        let mut rejected_state = next_state.clone();
+        rejected_state.version = 2;
+        rejected_state.frames[0].body = "(fact rejected)".to_string();
+        rejected_state.frames[0].revision = 2;
+        rejected_state.frames[0].updated_version = 2;
+        let rejected = store
+            .commit_mind_projection_transaction(
+                &event,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: Vec::new(),
+                    restored_event_ids: vec![observation.id.clone()],
+                },
+                1,
+                NewMindProjection {
+                    context_id: "context-db-runtime-context".to_string(),
+                    revision: rejected_state.version,
+                    state: serde_json::to_value(&rejected_state).unwrap(),
+                    state_hash: state_hash(&rejected_state),
+                    head_event_id: Some(event.id.clone()),
+                    recall_documents: Vec::new(),
+                },
+            )
+            .await;
+        assert!(rejected.is_err());
+        assert_eq!(
+            store
+                .get_mind_projection("context-db-runtime-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(&next_state).unwrap()
+        );
+        assert!(
+            store
+                .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a later Agent Trajectory failure must roll back Session Projection restoration"
+        );
+
+        let mut final_state = next_state.clone();
+        final_state.version = 2;
+        final_state.frames[0].body = "(fact accepted)".to_string();
+        final_state.frames[0].revision = 2;
+        final_state.frames[0].updated_version = 2;
+        final_state.retired.clear();
+        let final_state_hash = state_hash(&final_state);
+        let second_event = Event::new(
+            "context-db-runtime-event-2".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store
+            .commit_mind_projection_transaction(
+                &second_event,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: Vec::new(),
+                    restored_event_ids: vec![observation.id.clone()],
+                },
+                1,
+                NewMindProjection {
+                    context_id: "context-db-runtime-context".to_string(),
+                    revision: final_state.version,
+                    state: serde_json::to_value(&final_state).unwrap(),
+                    state_hash: final_state_hash.clone(),
+                    head_event_id: Some(second_event.id.clone()),
+                    recall_documents: vec![RecallDocument {
+                        context_id: "context-db-runtime-context".to_string(),
+                        document_kind: RecallDocumentKind::Frame,
+                        document_id: "durable-frame".to_string(),
+                        revision: 2,
+                        searchable_text: "accepted ContextDB Frame for Recall".to_string(),
+                        legacy_searchable_chunks: Vec::new(),
+                        preview: "accepted ContextDB Frame".to_string(),
+                        retired: false,
+                        updated_sequence: 2,
+                        state_hash: final_state_hash,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|event| event.id == observation.id)
+                .count(),
+            1,
+            "restoring one Observation must restore its Session Projection exactly once"
+        );
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("context-db-runtime-recall-worker", 32)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM recall_documents
+                   WHERE context_id = ? AND document_kind = 'frame'
+                     AND document_id = ?"#,
+            )
+            .bind("context-db-runtime-context")
+            .bind("durable-frame")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1,
+            "ContextDB commits must preserve the existing Recall projection path"
+        );
+        assert!(store
+            .search_recall_documents("context-db-runtime-context", "accepted", 8)
+            .await
+            .unwrap()
+            .iter()
+            .any(|hit| hit.document_id == "durable-frame"));
+
+        let repeated_initialization = store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "context-db-runtime-context".to_string(),
+                revision: initial_state.version,
+                state: serde_json::to_value(&initial_state).unwrap(),
+                state_hash: state_hash(&initial_state),
+                head_event_id: None,
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repeated_initialization.state,
+            serde_json::to_value(&final_state).unwrap(),
+            "initialization must never replace an existing authoritative ContextDB Mind"
+        );
+        let structural_rows = sqlx::query(
+            r#"SELECT node_id, node_revision
+               FROM experimental_contextdb_nodes
+               WHERE context_id = ?
+                 AND (node_id = 'morphz/frames' OR parent_id = 'morphz/frames')
+               ORDER BY node_id"#,
+        )
+        .bind("context-db-runtime-context")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(structural_rows.len(), 2);
+        assert_eq!(
+            structural_rows
+                .iter()
+                .find(|row| row.get::<String, _>("node_id") == "morphz/frames")
+                .unwrap()
+                .get::<i64, _>("node_revision"),
+            1,
+            "an unchanged parent Node must not be rewritten"
+        );
+        assert_eq!(
+            structural_rows
+                .iter()
+                .find(|row| row.get::<String, _>("node_id") != "morphz/frames")
+                .unwrap()
+                .get::<i64, _>("node_revision"),
+            2,
+            "only the changed Frame leaf should advance"
+        );
 
         // Deliberately corrupt the legacy compatibility projection. An
         // authoritative ContextDB read must remain exact and must not consult
@@ -37011,12 +37399,31 @@ mod tests {
             .unwrap();
         assert_eq!(
             authoritative.state,
-            serde_json::to_value(&next_state).unwrap()
+            serde_json::to_value(&final_state).unwrap()
         );
         assert_eq!(
             authoritative.head_event_id.as_deref(),
-            Some(event.id.as_str())
+            Some(second_event.id.as_str())
         );
+        let directory = store
+            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+                context_id: "context-db-runtime-context".to_string(),
+                active_session_id: "no-session-required-for-this-read".to_string(),
+                active_after: Utc::now() - chrono::Duration::hours(24),
+                max_full_sessions: 50,
+                max_metadata_sessions: 50,
+                session_filter: ContextRuntimeSessionFilter::default(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(directory.mind.unwrap().state, authoritative.state);
+        let heads = store
+            .list_mind_projection_heads(&["context-db-runtime-context".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].revision, final_state.version);
 
         let trajectory = store
             .query(QueryFilter {
@@ -37025,8 +37432,50 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(trajectory.len(), 1);
-        assert_eq!(trajectory[0].id, event.id);
+        assert_eq!(trajectory.len(), 3);
+        assert_eq!(trajectory[0].id, observation.id);
+        assert_eq!(trajectory[1].id, event.id);
+        assert_eq!(trajectory[2].id, second_event.id);
+
+        // The optimized Runtime loader skips the public full-tree rendering,
+        // but it must still reject a physically altered stable Node identity.
+        let frame_node_id = sqlx::query_scalar::<_, String>(
+            r#"SELECT node_id FROM experimental_contextdb_nodes
+               WHERE context_id = ? AND parent_id = 'morphz/frames'"#,
+        )
+        .bind("context-db-runtime-context")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let corrupted_frame_node_id = format!("{frame_node_id}-corrupt");
+        sqlx::query(
+            r#"UPDATE experimental_contextdb_nodes SET node_id = ?
+               WHERE context_id = ? AND node_id = ?"#,
+        )
+        .bind(&corrupted_frame_node_id)
+        .bind("context-db-runtime-context")
+        .bind(&frame_node_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let corruption = store
+            .get_mind_projection("context-db-runtime-context")
+            .await
+            .unwrap_err();
+        assert!(
+            corruption.to_string().contains("Node identity"),
+            "stable Node identity corruption must fail closed: {corruption}"
+        );
+        sqlx::query(
+            r#"UPDATE experimental_contextdb_nodes SET node_id = ?
+               WHERE context_id = ? AND node_id = ?"#,
+        )
+        .bind(&frame_node_id)
+        .bind("context-db-runtime-context")
+        .bind(&corrupted_frame_node_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
 
         store.pool.close().await;
         drop(store);
@@ -37044,7 +37493,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             after_restart.state,
-            serde_json::to_value(next_state).unwrap()
+            serde_json::to_value(final_state).unwrap()
         );
         assert_eq!(
             restarted
@@ -37055,7 +37504,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            1
+            3
         );
     }
 

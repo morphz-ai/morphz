@@ -173,7 +173,7 @@ CompanyMatter
   completed_at
 ```
 
-CompanyMatter 是公司运营的结构化事实来源；Morphz Context 和 Ledger 保存其认知、因果和审计投影。二者不能相互替代。
+CompanyMatter 是公司运营的结构化事实来源；Morphz Context 和 Agent Trajectory 保存其认知、因果和审计投影。二者不能相互替代。
 
 ### 5.1 建议生命周期
 
@@ -355,7 +355,7 @@ WorkItem / CompanyMatter
 
 原则：
 
-- Prompt、普通 Ledger Event 和 CompanyMatter 不保存秘密值；
+- Prompt、普通 Trajectory Event 和 CompanyMatter 不保存秘密值；
 - Agent 获得 Secret reference，而不是长期持有原始凭证；
 - 资料访问按 Matter、用途、Principal 和有效期授权；
 - 可以脱敏时只提供脱敏版本；
@@ -433,7 +433,7 @@ Approval 也不能只展示 AI 的流畅总结。审批界面应优先展示原�
 - Objective、Thread、Activation、Schedule；
 - Tool、ExecutionJob、ExecutionTarget；
 - Approval 和 Capability Lease；
-- Ledger、Artifact、Signal 与可恢复执行；
+- Agent Trajectory、Artifact、Signal 与可恢复执行；
 - Shared Mind 与 per-Evaluation projection；
 - Secret reference 和所属信任域。
 

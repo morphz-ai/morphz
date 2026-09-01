@@ -1,12 +1,18 @@
 # ContextDB：面向认知 Runtime 的分布式 AST 数据库架构 v1
 
-> 状态：Architecture Baseline / 独立项目目标架构
+> 状态：Architecture Baseline / SQLite Runtime Integration Preview
 >
 > 日期：2026-09-01
 >
 > 适用范围：ContextDB、Morphz Runtime、Morphz Cloud 的长期存储边界
 >
-> 本文是目标架构，不表示当前 Morphz Runtime 已经切换到该实现。2026-09-01 已增加默认关闭的 `experimental-context-db` SQLite 单机实验，验证 Node 级事务、OCC、authority、幂等、一致快照、局部 Merkle 更新与持久恢复；Edge、Watch、Selector、Reference Model、PostgreSQL 后端以及 Runtime 迁移仍需通过后续门禁。当前 Runtime 的 Event History、Mind Projection、Session Projection 与控制表保持不变。
+> 本文同时描述长期目标与 2026-09-01 的实现基线。默认关闭的
+> `experimental-context-db` 已接入 SQLite Runtime：Context AST 是当前 Mind 的权威状态，
+> Agent Trajectory、Session Projection、Recall Projection 与 Runtime Control 在同一 SQLite
+> 事务域内原子提交，现有数据库可进行一次性精确导入，真实对话和重启恢复已经通过测试。
+> 兼容 `mind_projections` / `context_heads` 行仍在迁移期同步维护，但不参与 ContextDB 模式的
+> 当前 Mind 读取。完整 Runtime Control AST 化、Edge、Watch、Selector、Reference Model、
+> PostgreSQL 后端和分布式复制仍属于后续阶段。
 
 ## 1. 核心决策
 
@@ -19,22 +25,25 @@ Context AST 是当前权威状态。
 Context Transaction 是修改权威状态的原生事务语言。
 Context ID 是默认的一致性、隔离、路由和分片边界。
 规范化 S 表达式是 Context AST 的模型可读表示。
-Event Log、Recall、审计和历史版本是可选扩展，不是核心语义的前提。
+ContextDB 核心不依赖历史重放；Morphz Runtime 仍将完整 Agent Trajectory 作为可追溯、
+可导出、可恢复的独立能力保留。
 ```
 
-这与 Morphz 当前实现的主要区别是：
+三种架构状态的区别是：
 
-| 维度 | 当前实现 | ContextDB 目标架构 |
-| --- | --- | --- |
-| 权威事实 | Event History 与多类 Runtime 关系状态 | 当前 Context AST |
-| 模型 Context | 从多表和 Projection 临时组装 | ContextDB 当前状态的规范化视图 |
-| Mind 修改 | Event + Mind Projection 原子提交 | AST Transaction 直接修改 Context |
-| Thread | 独立权威关系表，再编码进 Context | Context AST 中的 Runtime-owned 节点 |
-| Retire | 修改 Projection，原内容仍可 Recall | 从 Active Context 移除；是否归档由可选扩展决定 |
-| Event Log | 核心持久化事实源 | 可选审计或历史能力 |
-| 分布式复制 | 依赖外部关系数据库 | ContextDB 自身的 Shard / Raft 能力 |
+| 维度 | 旧 Runtime | 当前 SQLite Integration Preview | ContextDB 长期目标 |
+| --- | --- | --- | --- |
+| 当前 Mind 权威 | `mind_projections` + `context_heads` | Context AST | Context AST |
+| 模型 Context | 从多表和 Projection 组装 | Mind 从 ContextDB 读取，其余控制投影保持现状 | ContextDB View / Selector |
+| Mind 修改 | Agent Trajectory Event + Projection 原子提交 | AST Diff、Agent Trajectory 和控制投影同事务提交 | 原生 Context Transaction |
+| Thread / Session Control | 规范化 Runtime 表 | 规范化 Runtime 表，同事务保留全部既有语义 | Runtime-owned AST Node + 可重建索引 |
+| Retire / Recall | Active Projection + Recall Projection | 行为与旧 Runtime 等价 | Active Context 与可选 Archive / Recall 明确解耦 |
+| Agent Trajectory | 完整保留 | 完整保留并可验证导出 | Morphz 能力；不作为 ContextDB 当前状态的重放前提 |
+| 分布式复制 | 依赖外部关系数据库 | SQLite 单机 | ContextDB Shard / Raft 或成熟分布式 KV |
 
-ContextDB 不要求 Morphz 立即重写。首先固定语义和接口，再让独立存储实现逐步成熟，最后通过兼容层和双写验证迁移。
+当前接入以默认关闭的实验特性提供可回滚边界。SQLite 路径已经证明 Mind authority 可以
+切换而不牺牲 Agent Trajectory、Session/Thread、调度、Recall 和恢复语义；后续仍按
+兼容矩阵逐域迁移，不能把“接入了 Mind”误写成“全部 Runtime 状态已经 AST 化”。
 
 ## 2. 目标与非目标
 
