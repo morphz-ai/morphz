@@ -340,6 +340,7 @@ class HarborCommandTest(unittest.TestCase):
         args = argparse.Namespace(
             attempts=1,
             concurrency=5,
+            context_store="contextdb",
             harness_mode="bound",
             harness_profile="dialectical-practice-v0.1",
             task=["db-wal-recovery", "git-multibranch"],
@@ -380,6 +381,7 @@ class HarborCommandTest(unittest.TestCase):
         self.assertEqual(identity["model"], "gpt-5.6-sol")
         self.assertEqual(identity["concurrency"], 5)
         self.assertEqual(identity["max_retries"], 0)
+        self.assertEqual(identity["context_store"], "contextdb")
         self.assertEqual(
             identity["harness"]["id"], "terminal-task-dialectical-practice"
         )
@@ -404,6 +406,7 @@ class HarborCommandTest(unittest.TestCase):
         args = argparse.Namespace(
             attempts=1,
             concurrency=1,
+            context_store="legacy",
             harness_mode="none",
             task=["raman-fitting"],
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -258,6 +259,63 @@ class HarnessBindingSetupTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw_dir:
             asyncio.run(scenario(Path(raw_dir)))
+
+    def test_context_db_arm_is_explicitly_enabled_and_preflighted(self) -> None:
+        async def scenario(root: Path) -> None:
+            (root / "logs").mkdir()
+            binary = root / "morphz"
+            watcher = root / "morphz-harbor-wait"
+            binary.write_text("binary", encoding="utf-8")
+            watcher.write_text("watcher", encoding="utf-8")
+            environment = _SetupEnvironment()
+            agent = MorphzAgent(
+                logs_dir=root / "logs",
+                model_name="custom/gpt-5.6-sol",
+                extra_env={
+                    "MORPHZ_HARBOR_BINARY": str(binary),
+                    "MORPHZ_HARBOR_WATCHER": str(watcher),
+                    "MORPHZ_PROVIDER_BASE_URL": "http://127.0.0.1:8317/v1",
+                    "MORPHZ_CONTEXT_STORE": "contextdb",
+                },
+            )
+
+            await agent.setup(environment)
+
+            config = (root / "logs" / "morphz-harbor.toml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('[experimental]\nenabled = ["context-db"]', config)
+            self.assertEqual(len(environment.commands), 2)
+            self.assertIn("experiment check context-db", environment.commands[1])
+
+        with tempfile.TemporaryDirectory() as raw_dir:
+            asyncio.run(scenario(Path(raw_dir)))
+
+    def test_context_db_arm_audits_the_exact_context_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            logs = root / "logs"
+            logs.mkdir()
+            connection = sqlite3.connect(logs / "morphz.db")
+            connection.execute(
+                "CREATE TABLE experimental_contextdb_contexts "
+                "(context_id TEXT PRIMARY KEY)"
+            )
+            connection.execute(
+                "INSERT INTO experimental_contextdb_contexts(context_id) VALUES (?)",
+                ("harbor-context",),
+            )
+            connection.commit()
+            connection.close()
+            agent = MorphzAgent(
+                logs_dir=logs,
+                extra_env={"MORPHZ_CONTEXT_STORE": "contextdb"},
+            )
+
+            audit = agent._audit_context_store()
+
+            self.assertEqual(audit["context_db_authority_count"], 1)
+            self.assertEqual(audit["context_store"], "contextdb")
 
 
 if __name__ == "__main__":

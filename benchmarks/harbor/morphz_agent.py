@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shlex
+import sqlite3
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
@@ -36,6 +38,7 @@ PROMPT_CACHE_STRATEGIES = {
     "experimental-structured-deltas",
     "explicit-content-boundaries",
 }
+CONTEXT_STORES = {"legacy", "contextdb"}
 
 
 class MorphzAgent(BaseAgent):
@@ -145,11 +148,15 @@ class MorphzAgent(BaseAgent):
                 "MORPHZ_PROMPT_CACHE_STRATEGY must be one of: "
                 + ", ".join(sorted(PROMPT_CACHE_STRATEGIES))
             )
+        context_store = self._setting("MORPHZ_CONTEXT_STORE", "legacy")
+        if context_store not in CONTEXT_STORES:
+            raise ValueError(
+                "MORPHZ_CONTEXT_STORE must be one of: "
+                + ", ".join(sorted(CONTEXT_STORES))
+            )
 
         config = self.logs_dir / "morphz-harbor.toml"
-        config.write_text(
-            "\n".join(
-                [
+        config_lines = [
                     '[llm]',
                     'provider = "harbor"',
                     f'model = {model!r}',
@@ -181,8 +188,15 @@ class MorphzAgent(BaseAgent):
                     'shell_environment_policy = "remove_sensitive"',
                     '',
                 ]
+        if context_store == "contextdb":
+            config_lines.extend(
+                [
+                    '[experimental]',
+                    'enabled = ["context-db"]',
+                    '',
+                ]
             )
-        )
+        config.write_text("\n".join(config_lines))
         runner = Path(__file__).with_name("run_morphz_harbor.sh")
         await environment.upload_file(binary, "/tmp/morphz")
         await environment.upload_file(watcher, "/tmp/morphz-harbor-wait")
@@ -195,6 +209,18 @@ class MorphzAgent(BaseAgent):
         )
         if result.return_code != 0:
             raise RuntimeError(result.stderr or "failed to install Morphz")
+        if context_store == "contextdb":
+            result = await environment.exec(
+                command=(
+                    "/tmp/morphz --config-file /tmp/morphz-harbor.toml "
+                    "experiment check context-db --format=json"
+                )
+            )
+            if result.return_code != 0:
+                raise RuntimeError(
+                    "ContextDB benchmark binary/config preflight failed: "
+                    + (result.stderr or result.stdout or f"exit {result.return_code}")
+                )
 
     async def run(
         self,
@@ -264,6 +290,45 @@ class MorphzAgent(BaseAgent):
                 "Morphz Harbor run failed: "
                 + (result.stderr or result.stdout or f"exit {result.return_code}")[-4000:]
             )
+        self._audit_context_store()
+
+    def _audit_context_store(self) -> dict[str, object]:
+        context_store = self._setting("MORPHZ_CONTEXT_STORE", "legacy")
+        if context_store not in CONTEXT_STORES:
+            raise ValueError(f"unsupported Context store arm: {context_store}")
+        context_id = str(self.context_id or "harbor-context")
+        authority_count = 0
+        if context_store == "contextdb":
+            db_path = self.logs_dir / "morphz.db"
+            connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM experimental_contextdb_contexts "
+                    "WHERE context_id = ?",
+                    (context_id,),
+                ).fetchone()
+            except sqlite3.Error as error:
+                raise RuntimeError(
+                    "ContextDB benchmark arm did not expose its authoritative store"
+                ) from error
+            finally:
+                connection.close()
+            authority_count = int(row[0]) if row is not None else 0
+            if authority_count != 1:
+                raise RuntimeError(
+                    "ContextDB benchmark arm did not persist exactly one authoritative "
+                    f"row for Context {context_id!r}: {authority_count}"
+                )
+        audit = {
+            "context_store": context_store,
+            "context_id": context_id,
+            "context_db_authority_count": authority_count,
+        }
+        (self.logs_dir / "context_store_audit.json").write_text(
+            json.dumps(audit, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return audit
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         db_path = self.logs_dir / "morphz.db"

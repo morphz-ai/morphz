@@ -1,0 +1,18 @@
+{
+  "protocol": "contextdb-me08-isolated-context-pilot-v1",
+  "purpose": "Precommitted eight-trial semantic regression gate before the complete ME-08 ContextDB A/B run.",
+  "selection_policy": "The first eight tasks in the frozen ME-08 all-89 order; selected without task-specific result filtering.",
+  "attempts_per_task": 1,
+  "trial_concurrency_per_arm": 8,
+  "morphz_shared_context_concurrency": false,
+  "tasks": [
+    "caffe-cifar-10",
+    "circuit-fibsqrt",
+    "dna-assembly",
+    "kv-store-grpc",
+    "llm-inference-batching-scheduler",
+    "log-summary-date-ranges",
+    "merge-diff-arc-agi-task",
+    "model-extraction-relu-logits"
+  ]
+}

@@ -135,11 +135,13 @@ def provider_config(config: dict[str, object]) -> tuple[str, str, str | None]:
     return base_url, protocol, str(credential_ref) if credential_ref else None
 
 
-def runtime_provider_config() -> tuple[str, str, str]:
+def runtime_provider_config(
+    lock: dict[str, object] | None = None,
+) -> tuple[str, str, str]:
     """Resolve one explicit cloud route or the legacy host-configured route."""
     direct_base_url = os.environ.get("MORPHZ_PROVIDER_BASE_URL", "").strip()
     if direct_base_url:
-        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        lock = lock or json.loads(LOCK_PATH.read_text(encoding="utf-8"))
         protocol = os.environ.get(
             "MORPHZ_PROVIDER_PROTOCOL",
             str(lock["model"]["provider_protocol"]),
@@ -159,12 +161,12 @@ def runtime_provider_config() -> tuple[str, str, str]:
     return base_url, protocol, credential
 
 
-def runtime_provider_model() -> str:
+def runtime_provider_model(lock: dict[str, object] | None = None) -> str:
     """Return the exact model identifier sent on the configured provider wire."""
     configured = os.environ.get("MORPHZ_PROVIDER_MODEL", "").strip()
     if configured:
         return configured
-    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    lock = lock or json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     return str(lock["model"]["physical_model"])
 
 
@@ -423,6 +425,7 @@ def preflight(
     logical_host: str,
     provider_address: str,
     provider_model: str,
+    lock: dict[str, object],
 ) -> None:
     require_tool("docker")
     require_tool("harbor")
@@ -445,7 +448,6 @@ def preflight(
     ).stdout
     if "ELF" not in file_result or "x86-64" not in file_result:
         raise RuntimeError(f"Expected an x86-64 Linux ELF binary, got: {file_result.strip()}")
-    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     expected_sha = str(lock["runtime"]["binary_sha256"])
     actual_sha = sha256_file(binary)
     if actual_sha != expected_sha:
@@ -616,6 +618,7 @@ def frozen_run_identity(
             "concurrency": args.concurrency,
             "max_retries": 0,
             "task_filters": sorted(args.task or []),
+            "context_store": getattr(args, "context_store", "legacy"),
         }
     )
     return identity
@@ -629,6 +632,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
     parser.add_argument("--watcher", type=Path, default=DEFAULT_WATCHER)
+    parser.add_argument(
+        "--toolchain-lock",
+        type=Path,
+        default=LOCK_PATH,
+        help="immutable toolchain identity for this Runtime build",
+    )
     parser.add_argument(
         "--dataset-path",
         type=Path,
@@ -646,6 +655,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--attempts", type=int)
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument(
+        "--context-store",
+        choices=("legacy", "contextdb"),
+        default="legacy",
+        help="cognitive Context authority selected for every isolated trial",
+    )
     parser.add_argument(
         "--harness-mode",
         choices=("bound", "none"),
@@ -744,8 +759,12 @@ def expected_trial_count_error(
 
 def main() -> int:
     args = parse_args()
-    base_url, protocol, credential = runtime_provider_config()
-    provider_model = runtime_provider_model()
+    toolchain_lock = args.toolchain_lock.expanduser().resolve()
+    if not toolchain_lock.is_file():
+        raise RuntimeError(f"Toolchain lock does not exist: {toolchain_lock}")
+    lock = json.loads(toolchain_lock.read_text(encoding="utf-8"))
+    base_url, protocol, credential = runtime_provider_config(lock)
+    provider_model = runtime_provider_model(lock)
     if protocol != "openai-responses":
         raise RuntimeError(f"Expected openai-responses, got {protocol}")
     effective_base_url, provider_host, provider_address = provider_ipv4_base_url(base_url)
@@ -758,12 +777,12 @@ def main() -> int:
         provider_host,
         provider_address,
         provider_model,
+        lock,
     )
     if args.mode == "preflight":
         return 0
     if args.dataset_path is not None and not args.dataset_path.is_dir():
         raise RuntimeError(f"Local Terminal-Bench task directory is missing: {args.dataset_path}")
-    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     harness: dict[str, object] | None = None
     if args.harness_mode == "bound":
         if args.harness_profile is None:
@@ -788,6 +807,7 @@ def main() -> int:
         )
 
     run_identity = frozen_run_identity(args, lock)
+    run_identity["toolchain_lock_sha256"] = sha256_file(toolchain_lock)
     run_identity["prompt_cache_strategy"] = prompt_cache_strategy
     run_identity["provider_model"] = provider_model
 
@@ -806,6 +826,7 @@ def main() -> int:
             "MORPHZ_PROMPT_CACHE_STRATEGY": prompt_cache_strategy,
             "MORPHZ_REASONING_EFFORT": "max",
             "MORPHZ_HARNESS_MODE": args.harness_mode,
+            "MORPHZ_CONTEXT_STORE": args.context_store,
             "DOCKER_DEFAULT_PLATFORM": "linux/amd64",
         }
     )
