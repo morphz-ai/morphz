@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,37 @@ from benchmarks.harbor import run_contextdb_me08_historical as runner
 
 
 class ContextDbMe08HistoricalTest(unittest.TestCase):
+    @staticmethod
+    def _write_complete_candidate(root: Path, task: str = "task-a") -> Path:
+        jobs_dir = root / "jobs"
+        job = jobs_dir / "job-1"
+        trial = job / f"{task}__trial"
+        trial.mkdir(parents=True)
+        (job / "strict_result.json").write_text(
+            json.dumps(
+                {
+                    "audit_complete": True,
+                    "trials": [
+                        {
+                            "task_name": f"terminal-bench/{task}",
+                            "raw_reward": 0.0,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (trial / "context_store_audit.json").write_text(
+            json.dumps(
+                {
+                    "context_store": "contextdb",
+                    "context_db_authority_count": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return jobs_dir
+
     def test_runtime_image_uses_the_pinned_installed_toolchain(self) -> None:
         dockerfile = (runner.REPO_ROOT / "benchmarks/harbor/runtime.Dockerfile").read_text(
             encoding="utf-8"
@@ -101,6 +133,35 @@ class ContextDbMe08HistoricalTest(unittest.TestCase):
             comparison["historically_always_passed_contextdb_failed"],
             ["task-a"],
         )
+
+    def test_nonzero_harbor_status_keeps_complete_strict_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            jobs_dir = self._write_complete_candidate(root)
+            job, rewards = runner.load_candidate_outcome(
+                jobs_dir=jobs_dir,
+                tasks=["task-a"],
+                return_code=1,
+                logs_dir=root / "logs",
+            )
+            self.assertEqual(job, jobs_dir / "job-1")
+            self.assertEqual(rewards, {"task-a": 0})
+
+    def test_nonzero_harbor_status_rejects_incomplete_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            jobs_dir = root / "jobs"
+            jobs_dir.mkdir()
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "failed before a complete strict outcome",
+            ):
+                runner.load_candidate_outcome(
+                    jobs_dir=jobs_dir,
+                    tasks=["task-a"],
+                    return_code=1,
+                    logs_dir=root / "logs",
+                )
 
 
 if __name__ == "__main__":

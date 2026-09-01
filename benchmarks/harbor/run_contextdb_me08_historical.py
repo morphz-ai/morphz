@@ -385,6 +385,37 @@ def audit_context_store_receipts(job: Path, expected: int) -> None:
             raise RuntimeError(f"Context store authority receipt failed: {path}")
 
 
+def load_candidate_outcome(
+    *,
+    jobs_dir: Path,
+    tasks: list[str],
+    return_code: int,
+    logs_dir: Path,
+) -> tuple[Path, dict[str, int]]:
+    """Load a complete Harbor outcome even when individual trials errored.
+
+    Harbor returns a nonzero process status when any trial records an Agent
+    exception.  That status does not mean the benchmark itself stopped early:
+    it can still contain the complete, strictly audited task set and all
+    ContextStore receipts.  The durable artifacts are therefore authoritative
+    for completeness; the process status remains part of the comparison for
+    diagnostics.
+    """
+
+    try:
+        job = only_job(jobs_dir)
+        audit_context_store_receipts(job, expected=len(tasks))
+        rewards = load_rewards(job, tasks)
+    except (OSError, RuntimeError, ValueError, KeyError) as error:
+        if return_code != 0:
+            raise RuntimeError(
+                "ContextDB ME-08 run failed before a complete strict outcome; "
+                f"see {logs_dir}"
+            ) from error
+        raise
+    return job, rewards
+
+
 def compare_with_history(
     tasks: list[str], candidate: dict[str, int], baseline: dict[str, Any]
 ) -> dict[str, Any]:
@@ -514,14 +545,12 @@ def main() -> int:
             stderr=stderr,
             check=False,
         )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "ContextDB ME-08 run failed before comparison; "
-            f"see {logs_dir}"
-        )
-    job = only_job(jobs_dir)
-    audit_context_store_receipts(job, expected=len(tasks))
-    rewards = load_rewards(job, tasks)
+    job, rewards = load_candidate_outcome(
+        jobs_dir=jobs_dir,
+        tasks=tasks,
+        return_code=completed.returncode,
+        logs_dir=logs_dir,
+    )
     comparison = {
         "protocol": PROTOCOL,
         "completed_at": datetime.now(UTC).isoformat(),
