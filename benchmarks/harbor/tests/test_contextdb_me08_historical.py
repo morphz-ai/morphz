@@ -8,6 +8,17 @@ from benchmarks.harbor import run_contextdb_me08_historical as runner
 
 
 class ContextDbMe08HistoricalTest(unittest.TestCase):
+    def test_runtime_image_uses_the_pinned_installed_toolchain(self) -> None:
+        dockerfile = (runner.REPO_ROOT / "benchmarks/harbor/runtime.Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "ARG RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu",
+            dockerfile,
+        )
+        self.assertIn("ENV RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN}", dockerfile)
+        self.assertNotIn("cargo-config.china.toml", dockerfile)
+
     def test_pilot_is_the_frozen_first_eight_me08_tasks(self) -> None:
         self.assertEqual(runner.load_pilot_tasks(), runner.load_all_tasks()[:8])
         self.assertEqual(len(runner.load_pilot_tasks()), 8)
