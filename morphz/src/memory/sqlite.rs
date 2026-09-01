@@ -1971,9 +1971,8 @@ impl SqliteStore {
                     "Context '{context_id}' has an incomplete legacy Mind Projection; refusing ContextDB migration"
                 )
             })?;
-            let imported = context_db
-                .install_projection_in_transaction(
-                    &mut transaction,
+            let canonical =
+                crate::experimental::context_db_runtime::canonicalize_legacy_projection(
                     &NewMindProjection {
                         context_id: legacy.context_id.clone(),
                         revision: legacy.revision,
@@ -1982,12 +1981,19 @@ impl SqliteStore {
                         head_event_id: legacy.head_event_id.clone(),
                         recall_documents: Vec::new(),
                     },
-                    legacy.updated_at,
-                )
+                )?;
+            let imported = context_db
+                .install_projection_in_transaction(&mut transaction, &canonical, legacy.updated_at)
                 .await?;
-            if imported != legacy {
+            if imported.context_id != canonical.context_id
+                || imported.revision != canonical.revision
+                || imported.state != canonical.state
+                || imported.state_hash != canonical.state_hash
+                || imported.head_event_id != canonical.head_event_id
+                || imported.updated_at != legacy.updated_at
+            {
                 return Err(format!(
-                    "Context '{context_id}' ContextDB migration did not reproduce the exact legacy Mind Projection"
+                    "Context '{context_id}' ContextDB migration did not reproduce the canonicalized legacy Mind Projection"
                 )
                 .into());
             }
@@ -25612,9 +25618,9 @@ mod tests {
     };
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
     use sqlx::{Connection, Executor, SqliteConnection};
-    #[cfg(feature = "experimental-context-db")]
-    use std::collections::BTreeSet;
     use std::collections::HashMap;
+    #[cfg(feature = "experimental-context-db")]
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::NamedTempFile;
@@ -37385,13 +37391,38 @@ mod tests {
 
     #[cfg(feature = "experimental-context-db")]
     #[tokio::test]
-    async fn context_db_constructor_imports_an_existing_legacy_mind_exactly_once() {
+    async fn context_db_constructor_imports_and_canonicalizes_a_v34_legacy_mind_once() {
         use crate::experimental::{require_enabled, CONTEXT_DB};
         use crate::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
+        use serde::Serialize;
         use sha2::{Digest, Sha256};
 
         fn state_hash(state: &MindState) -> String {
             format!("{:x}", Sha256::digest(serde_json::to_vec(state).unwrap()))
+        }
+
+        #[derive(Serialize)]
+        struct MindStateHashV34<'a> {
+            version: u64,
+            frames: &'a [ContextFrame],
+            relations: &'a [crate::orchestrator::context::ContextRelation],
+            retired: &'a BTreeSet<String>,
+            retiring: &'a BTreeMap<String, crate::orchestrator::context::FrameRetirement>,
+            protected: &'a BTreeSet<String>,
+            checkpoints: Vec<serde_json::Value>,
+        }
+
+        fn v34_state_hash(state: &MindState) -> String {
+            let legacy = MindStateHashV34 {
+                version: state.version,
+                frames: &state.frames,
+                relations: &state.relations,
+                retired: &state.retired,
+                retiring: &state.retiring,
+                protected: &state.protected,
+                checkpoints: Vec::new(),
+            };
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&legacy).unwrap()))
         }
 
         let tmp_file = NamedTempFile::new().unwrap();
@@ -37418,12 +37449,19 @@ mod tests {
             }],
             ..Default::default()
         };
+        let legacy_state_hash = v34_state_hash(&legacy_state);
+        assert_ne!(legacy_state_hash, state_hash(&legacy_state));
+        let mut legacy_state_json = serde_json::to_value(&legacy_state).unwrap();
+        legacy_state_json
+            .as_object_mut()
+            .unwrap()
+            .remove("mutation_clocks");
         legacy
             .initialize_mind_projection(NewMindProjection {
                 context_id: "context-db-migration-context".to_string(),
                 revision: legacy_state.version,
-                state: serde_json::to_value(&legacy_state).unwrap(),
-                state_hash: state_hash(&legacy_state),
+                state: legacy_state_json,
+                state_hash: legacy_state_hash.clone(),
                 head_event_id: None,
                 recall_documents: Vec::new(),
             })
@@ -37486,6 +37524,8 @@ mod tests {
             authoritative.state,
             serde_json::to_value(&legacy_state).unwrap()
         );
+        assert_eq!(authoritative.state_hash, state_hash(&legacy_state));
+        assert_ne!(authoritative.state_hash, legacy_state_hash);
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",

@@ -516,9 +516,8 @@ impl PostgresStore {
                         "Context '{context_id}' has an incomplete legacy PostgreSQL Mind Projection; refusing ContextDB migration"
                     )
                 })?;
-            let imported = context_db
-                .install_projection_in_transaction(
-                    &mut transaction,
+            let canonical =
+                crate::experimental::context_db_runtime::canonicalize_legacy_projection(
                     &NewMindProjection {
                         context_id: legacy.context_id.clone(),
                         revision: legacy.revision,
@@ -527,12 +526,19 @@ impl PostgresStore {
                         head_event_id: legacy.head_event_id.clone(),
                         recall_documents: Vec::new(),
                     },
-                    legacy.updated_at,
-                )
+                )?;
+            let imported = context_db
+                .install_projection_in_transaction(&mut transaction, &canonical, legacy.updated_at)
                 .await?;
-            if imported != legacy {
+            if imported.context_id != canonical.context_id
+                || imported.revision != canonical.revision
+                || imported.state != canonical.state
+                || imported.state_hash != canonical.state_hash
+                || imported.head_event_id != canonical.head_event_id
+                || imported.updated_at != legacy.updated_at
+            {
                 return Err(format!(
-                    "Context '{context_id}' PostgreSQL ContextDB migration did not reproduce the exact legacy Mind Projection"
+                    "Context '{context_id}' PostgreSQL ContextDB migration did not reproduce the canonicalized legacy Mind Projection"
                 )
                 .into());
             }

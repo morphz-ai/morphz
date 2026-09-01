@@ -16,8 +16,8 @@ use crate::context_store::{
 };
 use crate::memory::{MindProjectionHead, MindProjectionRecord, NewMindProjection};
 use crate::orchestrator::context::{
-    ContextFrame, ContextMutationClocks, ContextRelation, FrameRetirement, MindCheckpoint,
-    MindState,
+    mind_state_hash, mind_state_hash_matches, ContextFrame, ContextMutationClocks, ContextRelation,
+    FrameRetirement, MindCheckpoint, MindState,
 };
 use crate::sexpr::{self, SExpr};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -2239,7 +2239,7 @@ pub(crate) fn decode_projection(
         checkpoints,
         mutation_clocks: clocks,
     };
-    let state_hash = mind_state_hash(&state)?;
+    let state_hash = canonical_mind_state_hash(&state)?;
     if state_hash != meta.state_hash {
         return Err(ContextDbError::Corrupt(format!(
             "Runtime Context '{}' reconstructed Mind hash '{}' differs from '{}'; refusing a partial or mixed state",
@@ -2302,16 +2302,52 @@ where
         .collect()
 }
 
-fn mind_state_hash(state: &MindState) -> ContextDbResult<String> {
-    let bytes = serde_json::to_vec(state)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+fn canonical_mind_state_hash(state: &MindState) -> ContextDbResult<String> {
+    mind_state_hash(state).map_err(ContextDbError::Invalid)
+}
+
+/// Converts a valid historical Mind Projection into the one canonical hash
+/// schema written by ContextDB.
+///
+/// Legacy Projection readers deliberately accept several historical hash
+/// views because serde-defaulted fields changed the serialized fence without
+/// changing the Mind. ContextDB must not carry that compatibility matrix into
+/// its authoritative hot path: explicit migration validates the recorded
+/// historical fence once, materializes all defaults, and writes the current
+/// canonical hash.
+pub(crate) fn canonicalize_legacy_projection(
+    projection: &NewMindProjection,
+) -> ContextDbResult<NewMindProjection> {
+    let state: MindState = serde_json::from_value(projection.state.clone())?;
+    if state.version != projection.revision {
+        return Err(ContextDbError::Precondition(format!(
+            "Mind state version {} does not match projection revision {}",
+            state.version, projection.revision
+        )));
+    }
+    let recorded_hash_matches =
+        mind_state_hash_matches(&state, &projection.state_hash).map_err(ContextDbError::Invalid)?;
+    if !recorded_hash_matches {
+        return Err(ContextDbError::Precondition(format!(
+            "Mind state does not match supplied historical projection hash '{}'",
+            projection.state_hash
+        )));
+    }
+    Ok(NewMindProjection {
+        context_id: projection.context_id.clone(),
+        revision: projection.revision,
+        state: serde_json::to_value(&state)?,
+        state_hash: canonical_mind_state_hash(&state)?,
+        head_event_id: projection.head_event_id.clone(),
+        recall_documents: projection.recall_documents.clone(),
+    })
 }
 
 pub(crate) fn validate_new_projection(
     projection: &NewMindProjection,
 ) -> ContextDbResult<MindState> {
     let state: MindState = serde_json::from_value(projection.state.clone())?;
-    let calculated_hash = mind_state_hash(&state)?;
+    let calculated_hash = canonical_mind_state_hash(&state)?;
     if calculated_hash != projection.state_hash {
         return Err(ContextDbError::Precondition(format!(
             "Mind state hash '{}' does not match supplied projection hash '{}'",

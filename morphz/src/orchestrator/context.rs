@@ -10960,7 +10960,7 @@ fn project_mind_seed(source: &MindState) -> MindState {
     }
 }
 
-fn mind_state_hash(state: &MindState) -> Result<String, String> {
+pub(crate) fn mind_state_hash(state: &MindState) -> Result<String, String> {
     let bytes = serde_json::to_vec(state)
         .map_err(|error| format!("failed to serialize Mind Snapshot: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -11180,7 +11180,10 @@ fn mind_state_hash_v20(state: &MindState) -> Result<Option<String>, String> {
     Ok(Some(format!("{:x}", Sha256::digest(bytes))))
 }
 
-fn mind_state_hash_matches(state: &MindState, recorded_hash: &str) -> Result<bool, String> {
+pub(crate) fn mind_state_hash_matches(
+    state: &MindState,
+    recorded_hash: &str,
+) -> Result<bool, String> {
     if mind_state_hash(state)? == recorded_hash {
         return Ok(true);
     }
