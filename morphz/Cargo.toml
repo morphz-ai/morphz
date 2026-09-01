@@ -32,7 +32,11 @@ axum = { version = "0.7", features = ["ws"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
-reqwest = { version = "0.11", features = ["json", "stream"] }
+# Keep the provider/Edge transport self-contained on every supported platform.
+# Reqwest's default native-tls feature requires pkg-config and OpenSSL headers on
+# a fresh Linux host; Rustls with native roots preserves OS trust-store behavior
+# without adding a platform C-toolchain dependency.
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 chrono = { version = "0.4", features = ["serde"] }
 iana-time-zone = "0.1"
 dashmap = "5.5"

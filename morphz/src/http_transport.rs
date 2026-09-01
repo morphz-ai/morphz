@@ -85,6 +85,36 @@ pub fn client_builder(scope: HttpProxyScope) -> reqwest::ClientBuilder {
     }
 }
 
+/// Build one HTTP client without allowing platform proxy discovery to abort
+/// the Runtime. Some host APIs (notably macOS SystemConfiguration in a
+/// restricted or headless process) can fail by panicking inside Reqwest. That
+/// is a transport-configuration error, not permission to silently switch the
+/// operator to direct traffic.
+pub fn build_client(
+    builder: reqwest::ClientBuilder,
+    scope: HttpProxyScope,
+) -> Result<reqwest::Client, String> {
+    guarded_client_build(scope, || builder.build())
+}
+
+fn guarded_client_build<T, E>(
+    scope: HttpProxyScope,
+    build: impl FnOnce() -> Result<T, E>,
+) -> Result<T, String>
+where
+    E: std::fmt::Display,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+        .map_err(|_| {
+            format!(
+                "{} system proxy discovery failed; fix the host proxy service, or explicitly set {}=direct if direct routing is intended",
+                scope.label(),
+                scope.primary_override_env(),
+            )
+        })?
+        .map_err(|error| format!("{} HTTP client configuration failed: {error}", scope.label()))
+}
+
 pub fn proxy_failure_hint(scope: HttpProxyScope, endpoint: &str) -> Option<String> {
     (configured_proxy_mode(scope) == HttpProxyMode::System).then(|| {
         format!(
@@ -105,5 +135,16 @@ mod tests {
         assert_eq!(parse_proxy_mode(" DIRECT "), Some(HttpProxyMode::Direct));
         assert_eq!(parse_proxy_mode("off"), None);
         assert_eq!(parse_proxy_mode(""), None);
+    }
+
+    #[test]
+    fn platform_proxy_panics_become_actionable_errors_without_silent_direct_fallback() {
+        let error = guarded_client_build(HttpProxyScope::OAuth, || -> Result<(), &str> {
+            panic!("simulated platform proxy failure")
+        })
+        .unwrap_err();
+
+        assert!(error.contains("OAuth system proxy discovery failed"));
+        assert!(error.contains("MORPHZ_OAUTH_PROXY_MODE=direct"));
     }
 }

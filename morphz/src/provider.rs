@@ -1192,7 +1192,10 @@ impl ProtocolClient {
         if adapter == "google-antigravity" {
             http_builder = http_builder.http1_only();
         }
-        let http = http_builder.build()?;
+        let http = crate::http_transport::build_client(
+            http_builder,
+            crate::http_transport::HttpProxyScope::Provider,
+        )?;
         Ok(Self {
             http,
             protocol: provider.protocol,

@@ -196,12 +196,14 @@ impl CognitiveCoordinationNetworkService {
             (None, None)
         };
         validate_config(&config)?;
-        let client = crate::http_transport::client_builder(
+        let client = crate::http_transport::build_client(
+            crate::http_transport::client_builder(
+                crate::http_transport::HttpProxyScope::Coordination,
+            )
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(config.request_timeout_secs.max(1))),
             crate::http_transport::HttpProxyScope::Coordination,
-        )
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(config.request_timeout_secs.max(1)))
-        .build()?;
+        )?;
         Ok(Self {
             config,
             client,

@@ -193,13 +193,32 @@ fn oauth_adapters_compatible(configured: &str, actual: &str) -> bool {
         )
 }
 
-fn oauth_http_client() -> reqwest::Client {
-    // OAuth follows its explicit override, then the Provider override, then
-    // the global HTTP policy. System routing remains the default; headless
-    // deployments that require deterministic direct traffic can opt out.
-    crate::http_transport::client_builder(crate::http_transport::HttpProxyScope::OAuth)
-        .build()
-        .expect("OAuth HTTP client configuration must be valid")
+#[derive(Clone, Default)]
+struct OAuthHttpClient {
+    inner: Arc<OnceLock<Result<reqwest::Client, String>>>,
+}
+
+impl OAuthHttpClient {
+    fn get(&self) -> Result<&reqwest::Client, String> {
+        match self.inner.get_or_init(|| {
+            // Adapter discovery is a local capability operation. Defer host
+            // proxy discovery until an OAuth request really needs transport.
+            // System routing remains the default and failure never silently
+            // changes the operator to direct traffic.
+            crate::http_transport::build_client(
+                crate::http_transport::client_builder(crate::http_transport::HttpProxyScope::OAuth),
+                crate::http_transport::HttpProxyScope::OAuth,
+            )
+        }) {
+            Ok(client) => Ok(client),
+            Err(error) => Err(error.clone()),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_initialized(&self) -> bool {
+        self.inner.get().is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1658,7 +1677,7 @@ impl Drop for RefreshLeaseGuard {
 
 #[derive(Clone)]
 pub struct CodexOAuthAdapter {
-    http: reqwest::Client,
+    http: OAuthHttpClient,
     auth_url: String,
     token_url: String,
     client_id: String,
@@ -1669,7 +1688,7 @@ pub struct CodexOAuthAdapter {
 impl Default for CodexOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             auth_url: "https://auth.openai.com/oauth/authorize".to_string(),
             token_url: "https://auth.openai.com/oauth/token".to_string(),
             client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
@@ -1696,7 +1715,7 @@ impl CodexOAuthAdapter {
         redirect_uri: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             auth_url: auth_url.into(),
             token_url: token_url.into(),
             client_id: client_id.into(),
@@ -1814,7 +1833,7 @@ impl AuthAdapter for CodexOAuthAdapter {
             ));
         }
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("grant_type", "authorization_code"),
@@ -1839,7 +1858,7 @@ impl AuthAdapter for CodexOAuthAdapter {
             .as_deref()
             .ok_or("Codex OAuth is missing Refresh Token")?;
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("client_id", &self.client_id),
@@ -1867,7 +1886,7 @@ impl AuthAdapter for CodexOAuthAdapter {
 
 #[derive(Clone)]
 pub struct CodexDeviceOAuthAdapter {
-    http: reqwest::Client,
+    http: OAuthHttpClient,
     device_user_code_url: String,
     device_token_url: String,
     token_url: String,
@@ -1878,7 +1897,7 @@ pub struct CodexDeviceOAuthAdapter {
 impl Default for CodexDeviceOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             device_user_code_url: "https://auth.openai.com/api/accounts/deviceauth/usercode"
                 .to_string(),
             device_token_url: "https://auth.openai.com/api/accounts/deviceauth/token".to_string(),
@@ -1899,7 +1918,7 @@ impl CodexDeviceOAuthAdapter {
         client_id: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             device_user_code_url: device_user_code_url.into(),
             device_token_url: device_token_url.into(),
             token_url: token_url.into(),
@@ -1982,6 +2001,7 @@ impl AuthAdapter for CodexDeviceOAuthAdapter {
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
         let response = self
             .http
+            .get()?
             .post(&self.device_user_code_url)
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&serde_json::json!({ "client_id": self.client_id }))
@@ -2052,6 +2072,7 @@ impl AuthAdapter for CodexDeviceOAuthAdapter {
         }
         let response = self
             .http
+            .get()?
             .post(&self.device_token_url)
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&serde_json::json!({
@@ -2096,7 +2117,7 @@ impl AuthAdapter for CodexDeviceOAuthAdapter {
             );
         }
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("grant_type", "authorization_code"),
@@ -2121,7 +2142,7 @@ impl AuthAdapter for CodexDeviceOAuthAdapter {
             .as_deref()
             .ok_or("Codex OAuth is missing Refresh Token")?;
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("client_id", &self.client_id),
@@ -2232,7 +2253,7 @@ fn parse_codex_claims(token: Option<&str>) -> Option<CodexClaims> {
 
 #[derive(Clone)]
 pub struct KimiOAuthAdapter {
-    http: reqwest::Client,
+    http: OAuthHttpClient,
     device_code_url: String,
     token_url: String,
     client_id: String,
@@ -2241,7 +2262,7 @@ pub struct KimiOAuthAdapter {
 impl Default for KimiOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             device_code_url: "https://auth.kimi.com/api/oauth/device_authorization".to_string(),
             token_url: "https://auth.kimi.com/api/oauth/token".to_string(),
             client_id: "17e5f671-d194-4dfb-9706-5516cb48c098".to_string(),
@@ -2258,7 +2279,7 @@ impl KimiOAuthAdapter {
         client_id: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             device_code_url: device_code_url.into(),
             token_url: token_url.into(),
             client_id: client_id.into(),
@@ -2316,6 +2337,7 @@ impl AuthAdapter for KimiOAuthAdapter {
         let headers = kimi_headers(&device_id);
         let response = self
             .http
+            .get()?
             .post(&self.device_code_url)
             .headers(to_header_map(&headers)?)
             .form(&[("client_id", self.client_id.as_str())])
@@ -2378,7 +2400,7 @@ impl AuthAdapter for KimiOAuthAdapter {
             serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
         let headers = kimi_headers(&pending.device_id);
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("client_id", &self.client_id),
@@ -2425,7 +2447,7 @@ impl AuthAdapter for KimiOAuthAdapter {
             .as_deref()
             .ok_or("Kimi OAuth Token is missing a stable Device ID")?;
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("client_id", &self.client_id),
@@ -2507,7 +2529,7 @@ fn kimi_headers(device_id: &str) -> BTreeMap<String, String> {
 
 #[derive(Clone)]
 pub struct ClaudeOAuthAdapter {
-    http: reqwest::Client,
+    http: OAuthHttpClient,
     auth_url: String,
     token_url: String,
     client_id: String,
@@ -2518,7 +2540,7 @@ pub struct ClaudeOAuthAdapter {
 impl Default for ClaudeOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             auth_url: "https://claude.ai/oauth/authorize".to_string(),
             token_url: "https://api.anthropic.com/v1/oauth/token".to_string(),
             client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
@@ -2537,7 +2559,7 @@ impl ClaudeOAuthAdapter {
         redirect_uri: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             auth_url: auth_url.into(),
             token_url: token_url.into(),
             client_id: client_id.into(),
@@ -2589,6 +2611,7 @@ impl ClaudeOAuthAdapter {
     async fn exchange(&self, body: Value) -> Result<ClaudeTokenResponse, String> {
         let response = self
             .http
+            .get()?
             .post(&self.token_url)
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&body)
@@ -2815,7 +2838,7 @@ impl AuthAdapter for ClaudeOAuthAdapter {
 
 #[derive(Clone)]
 pub struct AntigravityOAuthAdapter {
-    http: reqwest::Client,
+    http: OAuthHttpClient,
     auth_url: String,
     token_url: String,
     userinfo_url: String,
@@ -2830,7 +2853,7 @@ pub struct AntigravityOAuthAdapter {
 impl Default for AntigravityOAuthAdapter {
     fn default() -> Self {
         let mut adapter = Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
             token_url: "https://oauth2.googleapis.com/token".to_string(),
             userinfo_url: "https://www.googleapis.com/oauth2/v2/userinfo?alt=json".to_string(),
@@ -2926,7 +2949,7 @@ impl AntigravityOAuthAdapter {
         redirect_uri: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             auth_url: auth_url.into(),
             token_url: token_url.into(),
             userinfo_url: userinfo_url.into(),
@@ -2942,6 +2965,7 @@ impl AntigravityOAuthAdapter {
     async fn user_info(&self, access_token: &str) -> Result<Option<String>, String> {
         let response = self
             .http
+            .get()?
             .get(&self.userinfo_url)
             .bearer_auth(access_token)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -2964,6 +2988,7 @@ impl AntigravityOAuthAdapter {
     async fn project_id(&self, access_token: &str) -> Result<Option<String>, String> {
         let response = self
             .http
+            .get()?
             .post(&self.project_url)
             .bearer_auth(access_token)
             .header(reqwest::header::ACCEPT, "*/*")
@@ -3154,7 +3179,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
             ));
         }
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("code", code.trim()),
@@ -3178,7 +3203,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
             .as_deref()
             .ok_or("Antigravity OAuth is missing Refresh Token")?;
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &self.token_url,
             &[
                 ("client_id", &self.client_id),
@@ -3218,7 +3243,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
 
 #[derive(Clone)]
 pub struct XaiOAuthAdapter {
-    http: reqwest::Client,
+    http: OAuthHttpClient,
     discovery_url: String,
     client_id: String,
     scope: String,
@@ -3228,7 +3253,7 @@ pub struct XaiOAuthAdapter {
 impl Default for XaiOAuthAdapter {
     fn default() -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             discovery_url: "https://auth.x.ai/.well-known/openid-configuration".to_string(),
             client_id: "b1a00492-073a-47ea-816f-4c329264a828".to_string(),
             scope: "openid profile email offline_access grok-cli:access api:access".to_string(),
@@ -3246,7 +3271,7 @@ impl XaiOAuthAdapter {
         scope: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             discovery_url: discovery_url.into(),
             client_id: client_id.into(),
             scope: scope.into(),
@@ -3261,7 +3286,7 @@ impl XaiOAuthAdapter {
         scope: impl Into<String>,
     ) -> Self {
         Self {
-            http: oauth_http_client(),
+            http: OAuthHttpClient::default(),
             discovery_url: discovery_url.into(),
             client_id: client_id.into(),
             scope: scope.into(),
@@ -3280,6 +3305,7 @@ impl XaiOAuthAdapter {
     async fn discover(&self) -> Result<XaiDiscovery, String> {
         let response = self
             .http
+            .get()?
             .get(&self.discovery_url)
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
@@ -3365,6 +3391,7 @@ impl AuthAdapter for XaiOAuthAdapter {
         let discovery = self.discover().await?;
         let response = self
             .http
+            .get()?
             .post(&discovery.device_authorization_endpoint)
             .header(reqwest::header::ACCEPT, "application/json")
             .form(&[
@@ -3433,7 +3460,7 @@ impl AuthAdapter for XaiOAuthAdapter {
             serde_json::from_value(state.clone()).map_err(|error| error.to_string())?;
         self.validate_endpoint(&pending.token_endpoint, "token_endpoint")?;
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &pending.token_endpoint,
             &[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
@@ -3482,7 +3509,7 @@ impl AuthAdapter for XaiOAuthAdapter {
             None => self.discover().await?.token_endpoint,
         };
         let response = post_token_form(
-            &self.http,
+            self.http.get()?,
             &token_endpoint,
             &[
                 ("grant_type", "refresh_token"),
@@ -3715,6 +3742,17 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn builtin_adapter_catalog_defers_oauth_transport_initialization() {
+        assert!(!CodexOAuthAdapter::default().http.is_initialized());
+        assert!(!CodexDeviceOAuthAdapter::default().http.is_initialized());
+        assert!(!KimiOAuthAdapter::default().http.is_initialized());
+        assert!(!XaiOAuthAdapter::default().http.is_initialized());
+        assert!(!ClaudeOAuthAdapter::default().http.is_initialized());
+        assert!(!AntigravityOAuthAdapter::default().http.is_initialized());
+        assert_eq!(AuthAdapterRegistry::builtins().descriptors().len(), 6);
+    }
 
     #[derive(Default)]
     struct MemorySecretBackend {
