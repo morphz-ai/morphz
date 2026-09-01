@@ -1,4 +1,5 @@
 use crate::config::OrchestratorConfig;
+use crate::context_store::{ContextCollection, ContextMutationPlan, ContextStateMutation};
 use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_RUNTIME_WAKE,
     TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -2314,7 +2315,7 @@ impl ContextEngine {
             formed_session_id: Some(acting_session_id),
             observation_origins: Some(&observation_origins),
         };
-        let (next, mut changes) = apply_parsed_transaction_with_policy_and_provenance(
+        let applied = apply_parsed_transaction_with_policy_and_provenance_planned(
             &current,
             &parsed,
             &observation_ids,
@@ -2322,6 +2323,8 @@ impl ContextEngine {
             &formation,
             true,
         )?;
+        let next = applied.next;
+        let mut changes = applied.changes;
         attach_context_change_token_effects(
             &mut changes,
             &current,
@@ -2355,6 +2358,15 @@ impl ContextEngine {
             .await?;
         let before_hash = mind_state_hash(&current)?;
         let after_hash = mind_state_hash(&next)?;
+        let mutation_plan = ContextMutationPlan {
+            context_id: context_id.to_string(),
+            expected_revision: current.version,
+            next_revision: next.version,
+            expected_state_hash: before_hash.clone(),
+            next_state_hash: after_hash.clone(),
+            mutations: applied.mutations,
+        };
+        mutation_plan.validate_shape()?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(acting_session_id)),
@@ -6825,6 +6837,297 @@ fn apply_parsed_transaction_with_policy(
         &FrameFormationContext::default(),
         true,
     )
+}
+
+#[derive(Debug)]
+struct AppliedContextTransition {
+    next: MindState,
+    changes: Vec<ContextChange>,
+    mutations: Vec<ContextStateMutation>,
+}
+
+/// Transitional semantic oracle for the native Context Mutation protocol.
+///
+/// This compiler exists once in the Context domain and is shared by every
+/// Store. Backends never receive two full snapshots and never infer their own
+/// diff. The transaction applicator will emit these records directly; this
+/// compiler then remains as an independent conformance oracle.
+fn apply_parsed_transaction_with_policy_and_provenance_planned(
+    current: &MindState,
+    tx: &ParsedTransaction,
+    observation_ids: &HashSet<String>,
+    retirement_policy: FrameRetirementPolicy,
+    formation: &FrameFormationContext<'_>,
+    track_mutations: bool,
+) -> Result<AppliedContextTransition, String> {
+    let (next, changes) = apply_parsed_transaction_with_policy_and_provenance(
+        current,
+        tx,
+        observation_ids,
+        retirement_policy,
+        formation,
+        track_mutations,
+    )?;
+    let mutations = compile_context_state_mutations(current, &next, &changes)?;
+    Ok(AppliedContextTransition {
+        next,
+        changes,
+        mutations,
+    })
+}
+
+fn compile_context_state_mutations(
+    current: &MindState,
+    next: &MindState,
+    changes: &[ContextChange],
+) -> Result<Vec<ContextStateMutation>, String> {
+    if changes.iter().any(|change| change.operation == "rollback") {
+        return Ok(vec![ContextStateMutation::ReplaceMind {
+            state: serde_json::to_value(next)
+                .map_err(|error| format!("failed to encode rollback Mind: {error}"))?,
+        }]);
+    }
+
+    let operations = changes
+        .iter()
+        .map(|change| change.operation.as_str())
+        .collect::<HashSet<_>>();
+    let mut mutations = Vec::new();
+
+    let changed_frame_ids = changes
+        .iter()
+        .filter(|change| matches!(change.operation.as_str(), "create" | "derive" | "revise"))
+        .map(|change| change.target.as_str())
+        .collect::<BTreeSet<_>>();
+    for frame_id in changed_frame_ids {
+        let (order, frame) = next
+            .frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.id == frame_id)
+            .ok_or_else(|| {
+                format!(
+                    "Context Mutation compiler cannot find changed Frame '{frame_id}' in the next Mind"
+                )
+            })?;
+        mutations.push(ContextStateMutation::Upsert {
+            collection: ContextCollection::Frame,
+            logical_id: frame.id.clone(),
+            body: serde_json::to_value(frame)
+                .map_err(|error| format!("failed to encode Frame '{frame_id}': {error}"))?,
+            order: Some(u64::try_from(order).map_err(|_| "Frame order exceeds u64")?),
+        });
+    }
+    if operations.contains("place") {
+        mutations.push(ContextStateMutation::SetOrder {
+            collection: ContextCollection::Frame,
+            logical_ids: next.frames.iter().map(|frame| frame.id.clone()).collect(),
+        });
+    }
+
+    if operations.contains("relate") || operations.contains("unrelate") {
+        let current_relations = current
+            .relations
+            .iter()
+            .map(|relation| (context_relation_identity(relation), relation))
+            .collect::<BTreeMap<_, _>>();
+        let next_relations = next
+            .relations
+            .iter()
+            .map(|relation| (context_relation_identity(relation), relation))
+            .collect::<BTreeMap<_, _>>();
+        for logical_id in current_relations.keys() {
+            if !next_relations.contains_key(logical_id) {
+                mutations.push(ContextStateMutation::Remove {
+                    collection: ContextCollection::Relation,
+                    logical_id: logical_id.clone(),
+                });
+            }
+        }
+        for (logical_id, relation) in &next_relations {
+            if current_relations.get(logical_id).copied() != Some(*relation) {
+                let order = next
+                    .relations
+                    .iter()
+                    .position(|candidate| candidate == *relation)
+                    .ok_or("new relation disappeared while compiling Context Mutation")?;
+                mutations.push(ContextStateMutation::Upsert {
+                    collection: ContextCollection::Relation,
+                    logical_id: logical_id.clone(),
+                    body: serde_json::to_value(relation).map_err(|error| {
+                        format!("failed to encode Relation '{logical_id}': {error}")
+                    })?,
+                    order: Some(u64::try_from(order).map_err(|_| "Relation order exceeds u64")?),
+                });
+            }
+        }
+        mutations.push(ContextStateMutation::SetOrder {
+            collection: ContextCollection::Relation,
+            logical_ids: next
+                .relations
+                .iter()
+                .map(context_relation_identity)
+                .collect(),
+        });
+    }
+
+    let lifecycle_changed = changes.iter().any(|change| {
+        matches!(
+            change.operation.as_str(),
+            "revise"
+                | "retire"
+                | "restore"
+                | "retire-frame-requested"
+                | "retire-frame-existing"
+                | "retire-frame-finalized"
+                | "finalize-retirement-stale"
+                | "protect"
+                | "unprotect"
+        )
+    });
+    if lifecycle_changed {
+        compile_set_mutations(
+            &mut mutations,
+            ContextCollection::Retired,
+            &current.retired,
+            &next.retired,
+        );
+        compile_map_mutations(
+            &mut mutations,
+            ContextCollection::Retiring,
+            &current.retiring,
+            &next.retiring,
+        )?;
+        compile_set_mutations(
+            &mut mutations,
+            ContextCollection::Protected,
+            &current.protected,
+            &next.protected,
+        );
+    }
+
+    if operations.contains("checkpoint") || operations.contains("drop-checkpoint") {
+        let current_checkpoints = current
+            .checkpoints
+            .iter()
+            .map(|checkpoint| (checkpoint.id.as_str(), checkpoint))
+            .collect::<BTreeMap<_, _>>();
+        let next_checkpoints = next
+            .checkpoints
+            .iter()
+            .map(|checkpoint| (checkpoint.id.as_str(), checkpoint))
+            .collect::<BTreeMap<_, _>>();
+        for logical_id in current_checkpoints.keys() {
+            if !next_checkpoints.contains_key(logical_id) {
+                mutations.push(ContextStateMutation::Remove {
+                    collection: ContextCollection::Checkpoint,
+                    logical_id: (*logical_id).to_string(),
+                });
+            }
+        }
+        for (logical_id, checkpoint) in &next_checkpoints {
+            if current_checkpoints.get(logical_id).copied() != Some(*checkpoint) {
+                let order = next
+                    .checkpoints
+                    .iter()
+                    .position(|candidate| candidate.id == **logical_id)
+                    .ok_or("new checkpoint disappeared while compiling Context Mutation")?;
+                mutations.push(ContextStateMutation::Upsert {
+                    collection: ContextCollection::Checkpoint,
+                    logical_id: (*logical_id).to_string(),
+                    body: serde_json::to_value(checkpoint).map_err(|error| {
+                        format!("failed to encode Checkpoint '{logical_id}': {error}")
+                    })?,
+                    order: Some(u64::try_from(order).map_err(|_| "Checkpoint order exceeds u64")?),
+                });
+            }
+        }
+        if operations.contains("drop-checkpoint") {
+            mutations.push(ContextStateMutation::SetOrder {
+                collection: ContextCollection::Checkpoint,
+                logical_ids: next
+                    .checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.id.clone())
+                    .collect(),
+            });
+        }
+    }
+
+    if current.mutation_clocks != next.mutation_clocks {
+        mutations.push(ContextStateMutation::Upsert {
+            collection: ContextCollection::MutationClocks,
+            logical_id: "mutation-clocks".to_string(),
+            body: serde_json::to_value(&next.mutation_clocks)
+                .map_err(|error| format!("failed to encode Context mutation clocks: {error}"))?,
+            order: None,
+        });
+    }
+    Ok(mutations)
+}
+
+fn context_relation_identity(relation: &ContextRelation) -> String {
+    relation_mutation_key(&relation.subject, &relation.relation, &relation.object)
+}
+
+fn compile_set_mutations(
+    output: &mut Vec<ContextStateMutation>,
+    collection: ContextCollection,
+    current: &BTreeSet<String>,
+    next: &BTreeSet<String>,
+) {
+    output.extend(
+        current
+            .difference(next)
+            .map(|logical_id| ContextStateMutation::Remove {
+                collection,
+                logical_id: logical_id.clone(),
+            }),
+    );
+    output.extend(
+        next.difference(current)
+            .map(|logical_id| ContextStateMutation::Upsert {
+                collection,
+                logical_id: logical_id.clone(),
+                body: serde_json::json!({ "id": logical_id }),
+                order: None,
+            }),
+    );
+}
+
+fn compile_map_mutations<T>(
+    output: &mut Vec<ContextStateMutation>,
+    collection: ContextCollection,
+    current: &BTreeMap<String, T>,
+    next: &BTreeMap<String, T>,
+) -> Result<(), String>
+where
+    T: Serialize + PartialEq,
+{
+    for logical_id in current.keys() {
+        if !next.contains_key(logical_id) {
+            output.push(ContextStateMutation::Remove {
+                collection,
+                logical_id: logical_id.clone(),
+            });
+        }
+    }
+    for (logical_id, value) in next {
+        if current.get(logical_id) != Some(value) {
+            output.push(ContextStateMutation::Upsert {
+                collection,
+                logical_id: logical_id.clone(),
+                body: serde_json::to_value(value).map_err(|error| {
+                    format!(
+                        "failed to encode {} '{logical_id}': {error}",
+                        collection.as_str()
+                    )
+                })?,
+                order: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn apply_parsed_transaction_with_policy_and_provenance(
@@ -11628,6 +11931,274 @@ mod tests {
     };
     use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
+
+    fn apply_context_mutation_plan_reference(
+        current: &MindState,
+        plan: &ContextMutationPlan,
+    ) -> Result<MindState, String> {
+        plan.validate_shape()?;
+        if mind_state_hash(current)? != plan.expected_state_hash {
+            return Err("reference plan before-hash mismatch".to_string());
+        }
+        let mut state = current.clone();
+        for mutation in &plan.mutations {
+            match mutation {
+                ContextStateMutation::ReplaceMind { state: replacement } => {
+                    state = serde_json::from_value(replacement.clone())
+                        .map_err(|error| format!("invalid replacement Mind: {error}"))?;
+                }
+                ContextStateMutation::Upsert {
+                    collection,
+                    logical_id,
+                    body,
+                    order,
+                } => match collection {
+                    ContextCollection::Frame => {
+                        let frame: ContextFrame = serde_json::from_value(body.clone())
+                            .map_err(|error| format!("invalid Frame mutation: {error}"))?;
+                        if frame.id != *logical_id {
+                            return Err("Frame mutation identity mismatch".to_string());
+                        }
+                        if let Some(index) = state
+                            .frames
+                            .iter()
+                            .position(|candidate| candidate.id == *logical_id)
+                        {
+                            state.frames.remove(index);
+                        }
+                        let index = usize::try_from(order.unwrap_or(state.frames.len() as u64))
+                            .map_err(|_| "Frame mutation order exceeds usize")?
+                            .min(state.frames.len());
+                        state.frames.insert(index, frame);
+                    }
+                    ContextCollection::Relation => {
+                        let relation: ContextRelation = serde_json::from_value(body.clone())
+                            .map_err(|error| format!("invalid Relation mutation: {error}"))?;
+                        if context_relation_identity(&relation) != *logical_id {
+                            return Err("Relation mutation identity mismatch".to_string());
+                        }
+                        if let Some(index) = state.relations.iter().position(|candidate| {
+                            context_relation_identity(candidate) == *logical_id
+                        }) {
+                            state.relations.remove(index);
+                        }
+                        let index = usize::try_from(order.unwrap_or(state.relations.len() as u64))
+                            .map_err(|_| "Relation mutation order exceeds usize")?
+                            .min(state.relations.len());
+                        state.relations.insert(index, relation);
+                    }
+                    ContextCollection::Retired => {
+                        state.retired.insert(logical_id.clone());
+                    }
+                    ContextCollection::Retiring => {
+                        let retirement: FrameRetirement = serde_json::from_value(body.clone())
+                            .map_err(|error| format!("invalid Retirement mutation: {error}"))?;
+                        if retirement.frame_id != *logical_id {
+                            return Err("Retirement mutation identity mismatch".to_string());
+                        }
+                        state.retiring.insert(logical_id.clone(), retirement);
+                    }
+                    ContextCollection::Protected => {
+                        state.protected.insert(logical_id.clone());
+                    }
+                    ContextCollection::Checkpoint => {
+                        let checkpoint: MindCheckpoint = serde_json::from_value(body.clone())
+                            .map_err(|error| format!("invalid Checkpoint mutation: {error}"))?;
+                        if checkpoint.id != *logical_id {
+                            return Err("Checkpoint mutation identity mismatch".to_string());
+                        }
+                        if let Some(index) = state
+                            .checkpoints
+                            .iter()
+                            .position(|candidate| candidate.id == *logical_id)
+                        {
+                            state.checkpoints.remove(index);
+                        }
+                        let index =
+                            usize::try_from(order.unwrap_or(state.checkpoints.len() as u64))
+                                .map_err(|_| "Checkpoint mutation order exceeds usize")?
+                                .min(state.checkpoints.len());
+                        state.checkpoints.insert(index, checkpoint);
+                    }
+                    ContextCollection::MutationClocks => {
+                        state.mutation_clocks = serde_json::from_value(body.clone())
+                            .map_err(|error| format!("invalid Context mutation clocks: {error}"))?;
+                    }
+                },
+                ContextStateMutation::Remove {
+                    collection,
+                    logical_id,
+                } => match collection {
+                    ContextCollection::Frame => {
+                        state.frames.retain(|frame| frame.id != *logical_id);
+                    }
+                    ContextCollection::Relation => state
+                        .relations
+                        .retain(|relation| context_relation_identity(relation) != *logical_id),
+                    ContextCollection::Retired => {
+                        state.retired.remove(logical_id);
+                    }
+                    ContextCollection::Retiring => {
+                        state.retiring.remove(logical_id);
+                    }
+                    ContextCollection::Protected => {
+                        state.protected.remove(logical_id);
+                    }
+                    ContextCollection::Checkpoint => {
+                        state
+                            .checkpoints
+                            .retain(|checkpoint| checkpoint.id != *logical_id);
+                    }
+                    ContextCollection::MutationClocks => {
+                        return Err("mutation clocks cannot be removed".to_string());
+                    }
+                },
+                ContextStateMutation::SetOrder {
+                    collection,
+                    logical_ids,
+                } => match collection {
+                    ContextCollection::Frame => {
+                        let mut by_id = state
+                            .frames
+                            .drain(..)
+                            .map(|frame| (frame.id.clone(), frame))
+                            .collect::<BTreeMap<_, _>>();
+                        state.frames = logical_ids
+                            .iter()
+                            .map(|id| {
+                                by_id
+                                    .remove(id)
+                                    .ok_or_else(|| format!("Frame order references missing '{id}'"))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if !by_id.is_empty() {
+                            return Err("Frame order omitted existing identities".to_string());
+                        }
+                    }
+                    ContextCollection::Relation => {
+                        let mut by_id = state
+                            .relations
+                            .drain(..)
+                            .map(|relation| (context_relation_identity(&relation), relation))
+                            .collect::<BTreeMap<_, _>>();
+                        state.relations = logical_ids
+                            .iter()
+                            .map(|id| {
+                                by_id.remove(id).ok_or_else(|| {
+                                    format!("Relation order references missing '{id}'")
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if !by_id.is_empty() {
+                            return Err("Relation order omitted existing identities".to_string());
+                        }
+                    }
+                    ContextCollection::Checkpoint => {
+                        let mut by_id = state
+                            .checkpoints
+                            .drain(..)
+                            .map(|checkpoint| (checkpoint.id.clone(), checkpoint))
+                            .collect::<BTreeMap<_, _>>();
+                        state.checkpoints = logical_ids
+                            .iter()
+                            .map(|id| {
+                                by_id.remove(id).ok_or_else(|| {
+                                    format!("Checkpoint order references missing '{id}'")
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if !by_id.is_empty() {
+                            return Err("Checkpoint order omitted existing identities".to_string());
+                        }
+                    }
+                    _ => return Err("SetOrder used on an unordered collection".to_string()),
+                },
+            }
+        }
+        state.version = plan.next_revision;
+        if mind_state_hash(&state)? != plan.next_state_hash {
+            return Err("reference plan after-hash mismatch".to_string());
+        }
+        Ok(state)
+    }
+
+    fn planned_test_transaction(
+        current: &MindState,
+        transaction: &str,
+        observation_ids: &HashSet<String>,
+    ) -> AppliedContextTransition {
+        let parsed = parse_transaction(transaction).unwrap();
+        apply_parsed_transaction_with_policy_and_provenance_planned(
+            current,
+            &parsed,
+            observation_ids,
+            FrameRetirementPolicy::legacy_immediate(),
+            &FrameFormationContext::default(),
+            true,
+        )
+        .unwrap()
+    }
+
+    fn assert_compiled_plan_reproduces_transition(
+        context_id: &str,
+        current: &MindState,
+        applied: &AppliedContextTransition,
+    ) {
+        let plan = ContextMutationPlan {
+            context_id: context_id.to_string(),
+            expected_revision: current.version,
+            next_revision: applied.next.version,
+            expected_state_hash: mind_state_hash(current).unwrap(),
+            next_state_hash: mind_state_hash(&applied.next).unwrap(),
+            mutations: applied.mutations.clone(),
+        };
+        assert_eq!(
+            apply_context_mutation_plan_reference(current, &plan).unwrap(),
+            applied.next
+        );
+    }
+
+    #[test]
+    fn native_context_mutation_plan_reproduces_local_lifecycle_and_broad_transitions() {
+        let observation_ids = HashSet::from(["observation-a".to_string()]);
+        let initial = MindState::default();
+        let first = planned_test_transaction(
+            &initial,
+            "(context-tx (base-version 0) (create frame-a (fact a)) (derive frame-b (from observation-a) (fact b)) (relate frame-b supports frame-a) (protect frame-a) (checkpoint cp-a))",
+            &observation_ids,
+        );
+        assert_compiled_plan_reproduces_transition("context-a", &initial, &first);
+
+        let second = planned_test_transaction(
+            &first.next,
+            "(context-tx (base-version 1) (reason maintenance) (revise frame-b (from observation-a) (fact b2)) (place frame-b first) (retire observation-a))",
+            &observation_ids,
+        );
+        assert_compiled_plan_reproduces_transition("context-a", &first.next, &second);
+
+        let third = planned_test_transaction(
+            &second.next,
+            "(context-tx (base-version 2) (reason correction) (restore observation-a) (unprotect frame-a) (unrelate frame-b supports frame-a) (drop-checkpoint cp-a))",
+            &observation_ids,
+        );
+        assert_compiled_plan_reproduces_transition("context-a", &second.next, &third);
+
+        let checkpointed = planned_test_transaction(
+            &third.next,
+            "(context-tx (base-version 3) (checkpoint cp-b))",
+            &observation_ids,
+        );
+        let broad = planned_test_transaction(
+            &checkpointed.next,
+            "(context-tx (base-version 4) (reason undo) (revise frame-a (fact changed)) (rollback cp-b))",
+            &observation_ids,
+        );
+        assert!(matches!(
+            broad.mutations.as_slice(),
+            [ContextStateMutation::ReplaceMind { .. }]
+        ));
+        assert_compiled_plan_reproduces_transition("context-a", &checkpointed.next, &broad);
+    }
 
     #[test]
     fn cognitive_coordination_card_exists_only_for_an_enabled_context_binding() {
