@@ -23,6 +23,7 @@ use crate::memory::{
     ThreadGroupRecord, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus, WorkAssignmentRecord, WorkAssignmentStore, WorkerCoordinationMode,
 };
+use crate::objective::OBJECTIVE_CONTINUATION_INSTRUCTION;
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
     EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
@@ -1489,6 +1490,14 @@ pub struct ContextEngine {
     context_locks: DashMap<String, Weak<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
     observability: Arc<crate::observability::Observability>,
+}
+
+#[derive(Clone, Copy)]
+struct ContextEncodingBuildOptions<'a> {
+    activation_record: Option<&'a ThreadActivationRecord>,
+    evaluation_model_alias: Option<&'a str>,
+    objective_evaluation_binding: Option<(&'a str, &'a str)>,
+    include_encoding: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -3228,9 +3237,12 @@ impl ContextEngine {
             context_id,
             active_session_id,
             excluded_observation_ids,
-            None,
-            None,
-            true,
+            ContextEncodingBuildOptions {
+                activation_record: None,
+                evaluation_model_alias: None,
+                objective_evaluation_binding: None,
+                include_encoding: true,
+            },
         )
         .await
     }
@@ -3250,9 +3262,12 @@ impl ContextEngine {
             context_id,
             active_session_id,
             excluded_observation_ids,
-            None,
-            None,
-            false,
+            ContextEncodingBuildOptions {
+                activation_record: None,
+                evaluation_model_alias: None,
+                objective_evaluation_binding: None,
+                include_encoding: false,
+            },
         )
         .await
     }
@@ -3283,9 +3298,39 @@ impl ContextEngine {
             context_id,
             &activation.session_id,
             excluded_observation_ids,
-            Some(activation),
-            model_alias,
-            true,
+            ContextEncodingBuildOptions {
+                activation_record: Some(activation),
+                evaluation_model_alias: model_alias,
+                objective_evaluation_binding: None,
+                include_encoding: true,
+            },
+        )
+        .await
+    }
+
+    /// Build the model projection for an Activation whose Objective binding
+    /// was claimed from a routed Event rather than embedded in that immutable
+    /// Event. The durable Objective lease is authoritative; callers must pass
+    /// the exact binding held by the process-local evaluation registry.
+    pub async fn build_context_encoding_for_objective_activation_with_model(
+        &self,
+        context_id: &str,
+        activation: &ThreadActivationRecord,
+        excluded_observation_ids: &HashSet<String>,
+        model_alias: Option<&str>,
+        objective_id: &str,
+        objective_evaluation_id: &str,
+    ) -> Result<ContextView, DynError> {
+        self.build_context_encoding_for_session(
+            context_id,
+            &activation.session_id,
+            excluded_observation_ids,
+            ContextEncodingBuildOptions {
+                activation_record: Some(activation),
+                evaluation_model_alias: model_alias,
+                objective_evaluation_binding: Some((objective_id, objective_evaluation_id)),
+                include_encoding: true,
+            },
         )
         .await
     }
@@ -3295,10 +3340,9 @@ impl ContextEngine {
         context_id: &str,
         active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
-        activation_record: Option<&ThreadActivationRecord>,
-        evaluation_model_alias: Option<&str>,
-        include_encoding: bool,
+        options: ContextEncodingBuildOptions<'_>,
     ) -> Result<ContextView, DynError> {
+        let activation_record = options.activation_record;
         if let Some(activation) = activation_record {
             self.observability.record_turn_stage_since_boundary(
                 &activation.root_turn_id,
@@ -3319,9 +3363,7 @@ impl ContextEngine {
             context_id,
             active_session_id,
             excluded_observation_ids,
-            activation_record,
-            evaluation_model_alias,
-            include_encoding,
+            options,
         ))
         .await;
         let outcome = if result.is_ok() { "ok" } else { "error" };
@@ -3351,10 +3393,14 @@ impl ContextEngine {
         context_id: &str,
         active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
-        activation_record: Option<&ThreadActivationRecord>,
-        evaluation_model_alias: Option<&str>,
-        include_encoding: bool,
+        options: ContextEncodingBuildOptions<'_>,
     ) -> Result<ContextView, DynError> {
+        let ContextEncodingBuildOptions {
+            activation_record,
+            evaluation_model_alias,
+            objective_evaluation_binding,
+            include_encoding,
+        } = options;
         let mut phase_started = Instant::now();
         let evaluation_started_at = Utc::now();
         let active_window_seconds =
@@ -4002,7 +4048,7 @@ impl ContextEngine {
         } else {
             (Vec::new(), None, None, None, None)
         };
-        let activation = activation_record.map(|current| {
+        let mut activation = activation_record.map(|current| {
             let mut focus = activation_focus(
                 current,
                 &activation_signals,
@@ -4017,6 +4063,38 @@ impl ContextEngine {
             }
             focus
         });
+        if let Some((objective_id, objective_evaluation_id)) = objective_evaluation_binding {
+            let objective = objectives
+                .iter()
+                .find(|objective| objective.id == objective_id)
+                .ok_or_else(|| {
+                    format!(
+                        "Objective-bound Activation '{}' references Objective '{}' outside the current Context projection",
+                        activation_record.map_or("unknown", |activation| activation.id.as_str()),
+                        objective_id
+                    )
+                })?;
+            if objective.coordinator_session_id != active_session_id
+                || objective.active_evaluation_id.as_deref() != Some(objective_evaluation_id)
+            {
+                return Err(format!(
+                    "Objective-bound Activation '{}' has stale Evaluation binding '{}/{}'",
+                    activation_record.map_or("unknown", |activation| activation.id.as_str()),
+                    objective_id,
+                    objective_evaluation_id
+                )
+                .into());
+            }
+            let focus = activation
+                .as_mut()
+                .ok_or("Objective Evaluation binding requires a concrete Thread Activation")?;
+            focus.objective_id = Some(objective_id.to_string());
+            focus.objective_evaluation_id = Some(objective_evaluation_id.to_string());
+            // A routed user input may have created a DialogueTurn before the
+            // Supervisor adopted it. Once the durable Objective claim wins,
+            // its model-facing responsibility is an Objective Execution slice.
+            focus.thread_kind = "execution".to_string();
+        }
         let concurrent_activations = active_activations
             .iter()
             .filter(|item| !item.status.is_terminal())
@@ -8542,6 +8620,27 @@ fn render_evaluation_directive(
             ],
         )
     };
+    let objective_bound = evaluation.objective_id.is_some();
+    let instruction = if thread_kind == "delivery" {
+        "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one ordinary message. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary".to_string()
+    } else if objective_bound {
+        format!(
+            "This is a Runtime-bound Objective Evaluation. Apply root-input as the current wake, correction, or instruction without narrowing the durable Objective, then follow this convergence contract:\n\n{OBJECTIVE_CONTINUATION_INSTRUCTION}"
+        )
+    } else {
+        "Evaluate only root-input now. The DialogueTurn Thread handles current dialogue, while a tool result continues only its owning Execution Thread. Shared Mind, history, other Threads, and unbound Objectives are background and must not replace root-input as the action target".to_string()
+    };
+    let terminal = if objective_bound {
+        "ordinary text or no_reply ends only this Objective Evaluation slice, never the durable Objective. Before claiming completion, call objective_update(status=completed) with authoritative evidence; for a definite wait, persist the exact wait condition"
+    } else {
+        "every DialogueTurn input batch must produce one coherent ordinary-text reply to the current Session that covers all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"
+    };
+    // Keep objective-binding's long-standing scalar shape for prompt/VM
+    // compatibility. The exact lease identity is a separate adjacent fact.
+    let objective_binding = pair(
+        "objective-binding",
+        atom(evaluation.objective_id.as_deref().unwrap_or("none")),
+    );
     let mut fields = vec![
             list(
                 "activation",
@@ -8566,10 +8665,7 @@ fn render_evaluation_directive(
             ),
             thread,
             pair("mode", atom(mode)),
-            pair(
-                "objective-binding",
-                atom(evaluation.objective_id.as_deref().unwrap_or("none")),
-            ),
+            objective_binding,
             list(
                 "supervision",
                 vec![
@@ -8586,14 +8682,7 @@ fn render_evaluation_directive(
                 "identity-boundary",
                 atom("interpret first-person root-input and address the current interlocutor only as activation.principal. Do not transfer another Principal's names, preferences, relationships, permissions, or past statements to this Principal; when attribution is absent or ambiguous, use neutral wording"),
             ),
-            pair(
-                "instruction",
-                atom(if thread_kind == "delivery" {
-                    "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one ordinary message. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary"
-                } else {
-                    "Evaluate only root-input now. The DialogueTurn Thread handles current dialogue, while a tool result continues only its owning Execution Thread. Shared Mind, history, other Threads, and unbound Objectives are background and must not replace root-input as the action target"
-                }),
-            ),
+            pair("instruction", atom(instruction)),
             pair(
                 "tool-gate",
                 atom(if thread_kind == "delivery" {
@@ -8602,11 +8691,11 @@ fn render_evaluation_directive(
                     "call a tool only when root-input truly requires a new external result that does not yet exist; when the current Encoding can answer directly, return ordinary text immediately and never call tools for an unbound Objective"
                 }),
             ),
-            pair(
-                "terminal",
-                atom("every DialogueTurn input batch must produce one coherent ordinary-text reply to the current Session that covers all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"),
-            ),
+            pair("terminal", atom(terminal)),
         ];
+    if let Some(evaluation_id) = &evaluation.objective_evaluation_id {
+        fields.push(pair("objective-evaluation", atom(evaluation_id)));
+    }
     if evaluation.principal_first_seen_in_context {
         fields.insert(
             1,
@@ -15793,6 +15882,74 @@ mod tests {
         assert!(rendered.contains("(status active)"));
         assert!(rendered.contains("(role background-read-only)"));
         assert!(rendered.contains("(goal 继续后台编码任务)"));
+    }
+
+    #[test]
+    fn routed_user_wake_keeps_exact_objective_binding_and_convergence_contract() {
+        let evaluation = ActivationFocus {
+            activation_id: "work-objective-user-wake".to_string(),
+            session_id: "session-a".to_string(),
+            principal_id: Some("principal:a".to_string()),
+            principal_first_seen_in_context: false,
+            principal_encounter_id: None,
+            root_turn_id: "message-resume".to_string(),
+            root_event_id: "message-resume".to_string(),
+            // The physical route began as a user message, but the durable
+            // Objective claim promotes its responsibility to Execution.
+            thread_kind: "execution".to_string(),
+            root_kind: "chat/user_message".to_string(),
+            root_preview: "立刻开干".to_string(),
+            trigger_event_id: "message-resume".to_string(),
+            trigger_kind: "chat/user_message".to_string(),
+            trigger_preview: "立刻开干".to_string(),
+            trigger_fallback_preview: None,
+            signal_batch: Vec::new(),
+            objective_id: Some("objective-active".to_string()),
+            objective_evaluation_id: Some("objective-evaluation-resumed".to_string()),
+            supervisor_kind: "objective".to_string(),
+            supervisor_id: Some("objective-active".to_string()),
+            model_alias: None,
+        };
+        let now = Utc::now();
+        let objectives = vec![ObjectiveRecord {
+            id: "objective-active".to_string(),
+            agent_id: "agent-a".to_string(),
+            context_id: "context-a".to_string(),
+            coordinator_session_id: "session-a".to_string(),
+            delivery_session_id: "session-a".to_string(),
+            parent_objective_id: None,
+            source_event_id: "objective-source".to_string(),
+            initiating_principal_id: None,
+            stated_objective: "完成完整绘画项目".to_string(),
+            revision: 8,
+            generation: 1,
+            status: ObjectiveStatus::Active,
+            status_reason: Some("用户输入已满足等待".to_string()),
+            wait_condition: None,
+            completion_intent: None,
+            active_evaluation_id: Some("objective-evaluation-resumed".to_string()),
+            evaluation_lease_expires_at: None,
+            continuation_sequence: 7,
+            token_budget: None,
+            tokens_used: 100,
+            time_used_seconds: 12,
+            created_at: now,
+            updated_at: now,
+        }];
+
+        let rendered =
+            render_evaluation_directive(&evaluation, &objectives, &ContextReferences::default())
+                .to_string();
+        assert!(rendered.contains("(mode objective-evaluation)"));
+        assert!(rendered.contains("(objective-binding objective-active)"));
+        assert!(rendered.contains("(objective-evaluation objective-evaluation-resumed)"));
+        assert!(rendered.contains("(root-kind chat/user_message)"));
+        assert!(rendered.contains("(root-input 立刻开干)"));
+        assert!(rendered.contains("classify the previous Objective Evaluation"));
+        assert!(rendered.contains("take the next materially different safe action"));
+        assert!(rendered.contains("call objective_update(status=completed)"));
+        assert!(rendered
+            .contains("ordinary text or no_reply ends only this Objective Evaluation slice"));
     }
 
     #[test]

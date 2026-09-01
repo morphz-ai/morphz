@@ -429,6 +429,14 @@ impl SessionDirectoryStore for PostgresStore {
         .execute(&mut *tx)
         .await?;
         sqlx::query(
+            r#"INSERT INTO agent_provider_binding_scopes
+               (agent_id, revision, created_at, updated_at) VALUES ($1, 1, $2, $2)"#,
+        )
+        .bind(&agent.id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
             r#"INSERT INTO cognitive_contexts
                (id, agent_id, title, status, created_at, updated_at)
                VALUES ($1, $2, $3, 'active', $4, $4)"#,

@@ -40,7 +40,7 @@ pub const TYPE_OBJECTIVE_CONTROL: &str = "objective_control";
 /// it.
 pub const MODEL_CONFIGURATION_RESOURCE: &str = "model-configuration";
 pub const TYPE_MODEL_CONFIGURATION_CHANGED: &str = "runtime/model_configuration_changed";
-const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = r#"Continue working autonomously toward the full stated Objective. Ending one Evaluation does not narrow, redefine, or complete the Objective.
+pub(crate) const OBJECTIVE_CONTINUATION_INSTRUCTION: &str = r#"Continue working autonomously toward the full stated Objective. Ending one Evaluation does not narrow, redefine, or complete the Objective.
 
 Work from authoritative current state. Previous conversation and Mind may locate work, but files, tool results, persisted Runtime state, external state, and verified artifacts decide what is true now.
 
@@ -5451,6 +5451,90 @@ mod tests {
             expired.wait_condition, waiting.wait_condition,
             "an expired interrupt Evaluation must retain the original crash-recovery wait"
         );
+    }
+
+    #[tokio::test]
+    async fn same_session_user_wake_claims_an_exact_objective_evaluation_binding() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let created = seed_objective_bundle(&store, "same-session-user-wake").await;
+        let waiting = match store
+            .update_objective_state(
+                &created.id,
+                created.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::UserInput {
+                    session_id: created.coordinator_session_id.clone(),
+                }),
+                Some("等待用户继续"),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected wait mutation: {mutation:?}"),
+        };
+        let evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::clone(&evaluations),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_scheduler_dependency_store(
+                Arc::clone(&store) as Arc<dyn SchedulerDependencyStore>
+            ),
+        );
+        supervisor.register_timer_handlers().unwrap();
+        Arc::clone(&supervisor).start().await.unwrap();
+
+        // This immutable user Event intentionally has no Objective fields. It
+        // acquires the Objective only after the routed Activation exists.
+        let wake = Event::new(
+            "message-resume-objective".to_string(),
+            "User".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                ("context_id".to_string(), json!(waiting.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(waiting.coordinator_session_id),
+                ),
+                ("text".to_string(), json!("立刻开干")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert!(wake.payload.get("objective_id").is_none());
+        store.append(wake.clone()).await.unwrap();
+        assert_eq!(
+            supervisor
+                .prepare_routed_event(&wake, "activation-user-wake")
+                .await
+                .unwrap(),
+            RoutedObjectiveEventDisposition::Admitted
+        );
+
+        let resumed = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        assert!(resumed.wait_condition.is_none());
+        let evaluation_id = resumed
+            .active_evaluation_id
+            .as_deref()
+            .expect("same-session user wake must claim an Evaluation");
+        let binding = evaluations
+            .get_for_activation("activation-user-wake")
+            .expect("routed Activation must retain its exact Objective binding");
+        assert_eq!(binding.objective_id, resumed.id);
+        assert_eq!(binding.evaluation_id, evaluation_id);
+        assert_eq!(binding.revision, resumed.revision);
     }
 
     #[tokio::test]

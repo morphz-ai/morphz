@@ -83,6 +83,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+mod agent_provider;
 mod plan_execution;
 
 pub struct SqliteStore {
@@ -477,6 +478,25 @@ impl SqliteStore {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS agent_provider_binding_scopes (
+            agent_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_provider_bindings (
+            agent_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            bound_at TEXT NOT NULL,
+            PRIMARY KEY(agent_id, account_id),
+            FOREIGN KEY(agent_id) REFERENCES agent_provider_binding_scopes(agent_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_provider_bindings_account
+            ON agent_provider_bindings(account_id, agent_id);
 
         CREATE TABLE IF NOT EXISTS cognitive_contexts (
             id TEXT PRIMARY KEY,
@@ -9212,6 +9232,15 @@ impl SessionDirectoryStore for SqliteStore {
         .bind(&agent.id)
         .bind(&agent.title)
         .bind(&agent.root_context_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO agent_provider_binding_scopes
+               (agent_id, revision, created_at, updated_at) VALUES (?, 1, ?, ?)"#,
+        )
+        .bind(&agent.id)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)

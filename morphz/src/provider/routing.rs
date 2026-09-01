@@ -17,7 +17,8 @@ use crate::llm::{
     ProviderAccountDiagnostic, ReasoningEffort, Response, ToolDefinition,
 };
 use crate::memory::{
-    ProviderAccountStateMutation, ProviderAccountStateStore, ProviderAccountStatus,
+    AgentProviderBindingStore, ProviderAccountStateMutation, ProviderAccountStateStore,
+    ProviderAccountStatus,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use sha2::{Digest, Sha256};
@@ -383,6 +384,7 @@ pub struct RoutedClient {
     selected_alias: RwLock<String>,
     state: Arc<Mutex<RoutingState>>,
     account_store: RwLock<Option<Arc<dyn ProviderAccountStateStore>>>,
+    agent_binding_store: RwLock<Option<Arc<dyn AgentProviderBindingStore>>>,
     auth_manager: RwLock<Option<Arc<ProviderAuthManager>>>,
     clients: Mutex<HashMap<String, Arc<ProtocolClient>>>,
     prompt_counters: Mutex<HashMap<String, Arc<ProtocolClient>>>,
@@ -421,6 +423,7 @@ impl RoutedClient {
             selected_alias: RwLock::new(String::new()),
             state: Arc::new(Mutex::new(RoutingState::default())),
             account_store: RwLock::new(None),
+            agent_binding_store: RwLock::new(None),
             auth_manager: RwLock::new(None),
             clients: Mutex::new(HashMap::new()),
             prompt_counters: Mutex::new(HashMap::new()),
@@ -437,6 +440,7 @@ impl RoutedClient {
             selected_alias: RwLock::new(selected_alias),
             state: Arc::new(Mutex::new(RoutingState::default())),
             account_store: RwLock::new(None),
+            agent_binding_store: RwLock::new(None),
             auth_manager: RwLock::new(None),
             clients: Mutex::new(HashMap::new()),
             prompt_counters: Mutex::new(HashMap::new()),
@@ -455,7 +459,7 @@ impl RoutedClient {
         let catalog = self.catalog()?;
         let (route_id, route) = catalog.resolve_route(&alias)?;
         let (candidate, account_id) = self
-            .select_candidate_and_account_local(&catalog, route_id, route, &request)
+            .select_candidate_and_account_local(&catalog, route_id, route, &request, None)
             .map_err(|error| error.to_string())?;
         let provider = catalog
             .provider_instances
@@ -566,6 +570,7 @@ impl RoutedClient {
                     objective_id: None,
                     required_capabilities: Vec::new(),
                 },
+                None,
             )
             .await
             .map_err(|error| error.to_string())?
@@ -619,7 +624,7 @@ impl RoutedClient {
             required_capabilities: Vec::new(),
         };
         let (candidate, _) =
-            self.select_candidate_and_account_local(&catalog, route_id, route, &request)?;
+            self.select_candidate_and_account_local(&catalog, route_id, route, &request, None)?;
         let provider = catalog
             .provider_instances
             .get(&candidate.provider)
@@ -694,6 +699,13 @@ impl RoutedClient {
         Ok(accounts)
     }
 
+    fn account_is_agent_allowed(
+        allowed_accounts: Option<&BTreeMap<String, ()>>,
+        account_id: &str,
+    ) -> bool {
+        allowed_accounts.is_none_or(|allowed| allowed.contains_key(account_id))
+    }
+
     fn affinity_key(
         route_id: &str,
         route: &ModelRouteConfig,
@@ -753,6 +765,7 @@ impl RoutedClient {
         route_id: &str,
         route: &ModelRouteConfig,
         request: &ModelRequestContext,
+        allowed_accounts: Option<&BTreeMap<String, ()>>,
     ) -> Result<(ModelRouteCandidateConfig, String), ModelAttemptBindingError> {
         let candidates = Self::eligible_route_candidates(route_id, route, request)?;
 
@@ -769,6 +782,7 @@ impl RoutedClient {
                 if Self::candidate_accounts(catalog, candidate)
                     .map_err(ModelAttemptBindingError::configuration)?
                     .contains(&account_id.as_str())
+                    && Self::account_is_agent_allowed(allowed_accounts, &account_id)
                 {
                     return Ok((candidate.clone(), account_id));
                 }
@@ -780,6 +794,9 @@ impl RoutedClient {
             for account_id in Self::candidate_accounts(catalog, &candidate)
                 .map_err(ModelAttemptBindingError::configuration)?
             {
+                if !Self::account_is_agent_allowed(allowed_accounts, account_id) {
+                    continue;
+                }
                 if !catalog
                     .auth_accounts
                     .get(account_id)
@@ -819,6 +836,50 @@ impl RoutedClient {
             .read()
             .ok()
             .and_then(|store| store.clone())
+    }
+
+    fn agent_binding_store(&self) -> Option<Arc<dyn AgentProviderBindingStore>> {
+        self.agent_binding_store
+            .read()
+            .ok()
+            .and_then(|store| store.clone())
+    }
+
+    async fn agent_allowed_accounts(
+        &self,
+        request: &ModelRequestContext,
+    ) -> Result<Option<BTreeMap<String, ()>>, ModelAttemptBindingError> {
+        let Some(store) = self.agent_binding_store() else {
+            return Ok(None);
+        };
+        let binding_set = store
+            .get_context_agent_provider_bindings(&request.context_id)
+            .await
+            .map_err(|error| {
+                ModelAttemptBindingError::runtime(format!(
+                    "failed to resolve Agent Provider policy for Context '{}': {error}",
+                    request.context_id
+                ))
+            })?
+            .ok_or_else(|| {
+                ModelAttemptBindingError::runtime(format!(
+                    "Context '{}' is not durable, so its Agent Provider authority cannot be resolved",
+                    request.context_id
+                ))
+            })?;
+        if binding_set.bindings.is_empty() {
+            return Err(ModelAttemptBindingError::account_unavailable(format!(
+                "Agent '{}' has no Provider Account binding; its operator must configure one before model evaluation",
+                binding_set.agent_id
+            )));
+        }
+        Ok(Some(
+            binding_set
+                .bindings
+                .into_iter()
+                .map(|binding| (binding.account_id, ()))
+                .collect(),
+        ))
     }
 
     async fn account_availability(
@@ -929,9 +990,16 @@ impl RoutedClient {
         route_id: &str,
         route: &ModelRouteConfig,
         request: &ModelRequestContext,
+        allowed_accounts: Option<&BTreeMap<String, ()>>,
     ) -> Result<(ModelRouteCandidateConfig, String), ModelAttemptBindingError> {
         let Some(store) = self.account_store() else {
-            return self.select_candidate_and_account_local(catalog, route_id, route, request);
+            return self.select_candidate_and_account_local(
+                catalog,
+                route_id,
+                route,
+                request,
+                allowed_accounts,
+            );
         };
         let candidates = Self::eligible_route_candidates(route_id, route, request)?;
 
@@ -957,6 +1025,7 @@ impl RoutedClient {
                     if Self::candidate_accounts(catalog, candidate)
                         .map_err(ModelAttemptBindingError::configuration)?
                         .contains(&affinity.account_id.as_str())
+                        && Self::account_is_agent_allowed(allowed_accounts, &affinity.account_id)
                     {
                         let availability = Self::account_availability(
                             store.as_ref(),
@@ -1009,6 +1078,9 @@ impl RoutedClient {
             for account_id in Self::candidate_accounts(catalog, &candidate)
                 .map_err(ModelAttemptBindingError::configuration)?
             {
+                if !Self::account_is_agent_allowed(allowed_accounts, account_id) {
+                    continue;
+                }
                 let account = catalog
                     .auth_accounts
                     .get(account_id)
@@ -1529,8 +1601,15 @@ impl RoutedClient {
         let (route_id, route) = catalog
             .resolve_route(&alias)
             .map_err(ModelAttemptBindingError::configuration)?;
+        let allowed_accounts = self.agent_allowed_accounts(request).await?;
         let (candidate, account_id) = self
-            .select_candidate_and_account(&catalog, route_id, route, request)
+            .select_candidate_and_account(
+                &catalog,
+                route_id,
+                route,
+                request,
+                allowed_accounts.as_ref(),
+            )
             .await?;
         let provider = catalog
             .provider_instances
@@ -1656,6 +1735,12 @@ impl Client for RoutedClient {
 
     fn attach_provider_account_state_store(&self, store: Arc<dyn ProviderAccountStateStore>) {
         if let Ok(mut target) = self.account_store.write() {
+            *target = Some(store);
+        }
+    }
+
+    fn attach_agent_provider_binding_store(&self, store: Arc<dyn AgentProviderBindingStore>) {
+        if let Ok(mut target) = self.agent_binding_store.write() {
             *target = Some(store);
         }
     }
@@ -2151,6 +2236,7 @@ mod tests {
     use super::*;
     use crate::config::{CredentialSource, ModelProtocol, ProviderModelConfig};
     use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{NewAgent, NewCognitiveContext, SessionDirectoryStore};
     use tempfile::NamedTempFile;
 
     fn routed_config() -> AppConfig {
@@ -2661,6 +2747,104 @@ mod tests {
         assert_eq!(binding.requested_alias, "coding");
         assert_eq!(binding.physical_model, "physical-model-alpha");
         assert_eq!(binding.auth_account_id, "account-b");
+    }
+
+    #[tokio::test]
+    async fn durable_agent_binding_filters_accounts_by_context_owner() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-provider-b".into(),
+                title: "Agent B".into(),
+                root_context_id: "context-provider-b".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-provider-b".into(),
+                agent_id: "agent-provider-b".into(),
+                title: "Provider B".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_agent_provider_bindings("agent-provider-b", &["account-b".to_string()])
+            .await
+            .unwrap();
+
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-provider-empty".into(),
+                title: "Agent without Provider".into(),
+                root_context_id: "context-provider-empty".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-provider-empty".into(),
+                agent_id: "agent-provider-empty".into(),
+                title: "No Provider".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_agent_provider_bindings("agent-provider-empty", &[])
+            .await
+            .unwrap();
+
+        let client = RoutedClient::new(&routed_config(), "coding".to_string()).unwrap();
+        client.attach_provider_account_state_store(store.clone());
+        client.attach_agent_provider_binding_store(store);
+
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-provider-b".into(),
+                session_id: "session-provider-b".into(),
+                attempt_id: "attempt-provider-b".into(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(binding.auth_account_id, "account-b");
+
+        let error = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-provider-empty".into(),
+                session_id: "session-provider-empty".into(),
+                attempt_id: "attempt-provider-empty".into(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ModelAttemptBindingError::AccountUnavailable(_)
+        ));
+        assert!(error
+            .to_string()
+            .contains("has no Provider Account binding"));
+
+        let error = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "unknown-context".into(),
+                session_id: "unknown-session".into(),
+                attempt_id: "unknown-attempt".into(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ModelAttemptBindingError::Runtime(_)));
+        assert!(error.to_string().contains("is not durable"));
     }
 
     fn cross_model_fallback_config(fallback: bool) -> AppConfig {

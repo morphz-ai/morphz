@@ -27,8 +27,8 @@ use crate::identity::PrincipalAssertion;
 use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
 pub use crate::memory::MessageDispatchMode;
 use crate::memory::{
-    is_transient_storage_contention, ArtifactTransferExecutionRecord, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
+    is_transient_storage_contention, AgentProviderBindingSet, ArtifactTransferExecutionRecord,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
     ContextCapabilityBindingRecord, ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk,
     EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
@@ -977,6 +977,109 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn agent_provider_bindings(
+        &self,
+        agent_id: &str,
+    ) -> SdkResult<AgentProviderBindingSet> {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Agent ID cannot be empty",
+            ));
+        }
+        if self
+            .runtime
+            .get_agent(agent_id)
+            .await
+            .map_err(SdkError::internal)?
+            .is_none()
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Agent '{agent_id}' does not exist"),
+            ));
+        }
+        self.runtime
+            .agent_provider_bindings(agent_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn bind_agent_provider_account(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> SdkResult<AgentProviderBindingSet> {
+        let agent_id = agent_id.trim();
+        let account_id = account_id.trim();
+        if agent_id.is_empty() || account_id.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Agent ID and Provider Account ID cannot be empty",
+            ));
+        }
+        if self
+            .runtime
+            .get_agent(agent_id)
+            .await
+            .map_err(SdkError::internal)?
+            .is_none()
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Agent '{agent_id}' does not exist"),
+            ));
+        }
+        if !self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?
+            .auth_accounts
+            .contains_key(account_id)
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Auth Account '{account_id}' does not exist"),
+            ));
+        }
+        self.runtime
+            .bind_agent_provider_account(agent_id, account_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn unbind_agent_provider_account(
+        &self,
+        agent_id: &str,
+        account_id: &str,
+    ) -> SdkResult<AgentProviderBindingSet> {
+        let agent_id = agent_id.trim();
+        let account_id = account_id.trim();
+        if agent_id.is_empty() || account_id.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Agent ID and Provider Account ID cannot be empty",
+            ));
+        }
+        if self
+            .runtime
+            .get_agent(agent_id)
+            .await
+            .map_err(SdkError::internal)?
+            .is_none()
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Agent '{agent_id}' does not exist"),
+            ));
+        }
+        self.runtime
+            .unbind_agent_provider_account(agent_id, account_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn discover_provider_models(
         &self,
         protocol: ModelProtocol,
@@ -1425,6 +1528,24 @@ impl MorphzSdk {
             return Err(SdkError::new(
                 SdkErrorCode::InvalidArgument,
                 "Auth Account ID cannot be empty",
+            ));
+        }
+        let agent_bindings = self
+            .runtime
+            .provider_account_agent_bindings(account_id)
+            .await
+            .map_err(SdkError::internal)?;
+        if !agent_bindings.is_empty() {
+            let agent_ids = agent_bindings
+                .iter()
+                .map(|binding| binding.agent_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                format!(
+                    "Auth Account '{account_id}' is still associated with Agent(s): {agent_ids}; remove those Agent bindings before deleting the account"
+                ),
             ));
         }
         let managed_contents =

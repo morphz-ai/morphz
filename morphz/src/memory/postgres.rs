@@ -55,6 +55,7 @@ const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
 
 mod action_group;
 mod activation;
+mod agent_provider;
 mod approval;
 mod delegation;
 mod delivery;
@@ -362,6 +363,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260801_01_provider_accounts",
                     store.migrate_provider_accounts(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260901_01_agent_provider_bindings",
+                    agent_provider::migrate(&store.pool),
                 )
                 .await?;
             store
