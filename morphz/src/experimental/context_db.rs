@@ -352,6 +352,23 @@ impl SqliteContextDb {
         Ok(store)
     }
 
+    /// Attaches ContextDB to an already initialized Runtime SQLite pool.
+    ///
+    /// Sharing the pool is essential for the Runtime adapter: one physical
+    /// SQLite transaction can then commit the authoritative Context AST,
+    /// immutable Agent Trajectory facts and scheduler/control state together.
+    pub(crate) async fn attach(
+        pool: SqlitePool,
+        permit: ExperimentalFeaturePermit,
+    ) -> ContextDbResult<Self> {
+        if !permit.permits(CONTEXT_DB) {
+            return Err(ContextDbError::FeatureDenied);
+        }
+        let store = Self { pool };
+        store.initialize().await?;
+        Ok(store)
+    }
+
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -417,6 +434,221 @@ impl SqliteContextDb {
         .await?;
         Ok(())
     }
+
+    pub(crate) async fn create_context_in_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        request: CreateContextRequest,
+    ) -> ContextDbResult<ContextSnapshot> {
+        validate_identifier("context_id", &request.context_id)?;
+        validate_identifier("tenant_id", &request.tenant_id)?;
+        validate_identifier("agent_id", &request.agent_id)?;
+        validate_identifier("authority.actor_id", &request.authority.actor_id)?;
+        validate_identifier("root.node_id", &request.root.node_id)?;
+        if request.root.parent_id.is_some() {
+            return Err(ContextDbError::Invalid(
+                "the Context root must not have a parent".to_string(),
+            ));
+        }
+        request.authority.require(request.root.owner_domain)?;
+        let (body_sexpr, content_hash) = canonicalize_body(&request.root.body_sexpr)?;
+        let root_head = sexpr_head(&body_sexpr)?;
+        if root_head != "context" {
+            return Err(ContextDbError::Invalid(format!(
+                "the root Node must be a (context ...) expression, got ({root_head} ...)"
+            )));
+        }
+        let root_hash = calculate_subtree_hash(
+            &request.root.node_id,
+            request.root.owner_domain,
+            &body_sexpr,
+            &[],
+        );
+        let now = now_string();
+        let inserted = sqlx::query(
+            r#"INSERT OR IGNORE INTO experimental_contextdb_contexts
+               (context_id, tenant_id, agent_id, revision, root_node_id,
+                root_hash, schema_version, created_at, updated_at)
+               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&request.context_id)
+        .bind(&request.tenant_id)
+        .bind(&request.agent_id)
+        .bind(&request.root.node_id)
+        .bind(&root_hash)
+        .bind(i64::from(SCHEMA_VERSION))
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut **transaction)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            return Err(ContextDbError::AlreadyExists(format!(
+                "Context '{}'",
+                request.context_id
+            )));
+        }
+        sqlx::query(
+            r#"INSERT INTO experimental_contextdb_nodes
+               (context_id, node_id, parent_id, order_key, owner_domain,
+                node_revision, body_sexpr, content_hash, subtree_hash)
+               VALUES (?, ?, NULL, ?, ?, 1, ?, ?, ?)"#,
+        )
+        .bind(&request.context_id)
+        .bind(&request.root.node_id)
+        .bind(request.root.order_key)
+        .bind(request.root.owner_domain.as_str())
+        .bind(&body_sexpr)
+        .bind(&content_hash)
+        .bind(&root_hash)
+        .execute(&mut **transaction)
+        .await?;
+        self.get_context_in_transaction(transaction, &request.context_id)
+            .await
+    }
+
+    pub(crate) async fn get_context_in_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        context_id: &str,
+    ) -> ContextDbResult<ContextSnapshot> {
+        validate_identifier("context_id", context_id)?;
+        let meta = load_context_meta_tx(transaction, context_id).await?;
+        let nodes = load_nodes_tx(transaction, context_id).await?;
+        build_snapshot(meta, nodes)
+    }
+
+    pub(crate) async fn apply_transaction_in_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, Sqlite>,
+        mut request: ContextTransaction,
+    ) -> ContextDbResult<TransactionReceipt> {
+        validate_transaction(&request)?;
+        // Canonicalize before mutation. Runtime callers normally construct
+        // small component Nodes, while the public path additionally performs
+        // this work before acquiring SQLite's writer lock.
+        normalize_transaction_bodies(&mut request)?;
+        let request_hash = digest_bytes(&serde_json::to_vec(&request)?);
+
+        if let Some(row) = sqlx::query(
+            r#"SELECT request_hash, receipt_json
+               FROM experimental_contextdb_receipts
+               WHERE context_id = ? AND idempotency_key = ?"#,
+        )
+        .bind(&request.context_id)
+        .bind(&request.idempotency_key)
+        .fetch_optional(&mut **transaction)
+        .await?
+        {
+            let stored_hash = row.get::<String, _>("request_hash");
+            if stored_hash != request_hash {
+                return Err(ContextDbError::IdempotencyReuse(request.idempotency_key));
+            }
+            let mut receipt =
+                serde_json::from_str::<TransactionReceipt>(&row.get::<String, _>("receipt_json"))?;
+            receipt.idempotent_replay = true;
+            return Ok(receipt);
+        }
+
+        let meta = load_context_meta_tx(transaction, &request.context_id).await?;
+        if request.base_revision > meta.revision {
+            return Err(ContextDbError::Conflict {
+                context_id: request.context_id,
+                expected: request.base_revision,
+                actual: meta.revision,
+            });
+        }
+        let rebased = request.base_revision != meta.revision;
+        let after_revision = meta
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| ContextDbError::Invalid("Context revision overflow".to_string()))?;
+        let claimed = sqlx::query(
+            r#"UPDATE experimental_contextdb_contexts
+               SET revision = ?, updated_at = ?
+               WHERE context_id = ? AND revision = ?"#,
+        )
+        .bind(i64::try_from(after_revision).map_err(|_| {
+            ContextDbError::Invalid("Context revision exceeds SQLite INTEGER".to_string())
+        })?)
+        .bind(now_string())
+        .bind(&request.context_id)
+        .bind(i64::try_from(meta.revision).map_err(|_| {
+            ContextDbError::Corrupt("negative or overflowing Context revision".to_string())
+        })?)
+        .execute(&mut **transaction)
+        .await?;
+        if claimed.rows_affected() != 1 {
+            let actual = load_context_meta_tx(transaction, &request.context_id)
+                .await?
+                .revision;
+            return Err(ContextDbError::Conflict {
+                context_id: request.context_id,
+                expected: meta.revision,
+                actual,
+            });
+        }
+
+        let mut dirty_hash_nodes = BTreeSet::new();
+        let mut changed_node_ids = BTreeSet::new();
+        for operation in &request.operations {
+            apply_operation(
+                transaction,
+                &request.context_id,
+                &meta.root_node_id,
+                &request.authority,
+                operation,
+                &mut dirty_hash_nodes,
+                &mut changed_node_ids,
+            )
+            .await?;
+        }
+        let root_hash = recompute_dirty_hashes(
+            transaction,
+            &request.context_id,
+            &meta.root_node_id,
+            dirty_hash_nodes,
+        )
+        .await?;
+        sqlx::query(
+            r#"UPDATE experimental_contextdb_contexts
+               SET root_hash = ?, updated_at = ?
+               WHERE context_id = ? AND revision = ?"#,
+        )
+        .bind(&root_hash)
+        .bind(now_string())
+        .bind(&request.context_id)
+        .bind(i64::try_from(after_revision).map_err(|_| {
+            ContextDbError::Invalid("Context revision exceeds SQLite INTEGER".to_string())
+        })?)
+        .execute(&mut **transaction)
+        .await?;
+
+        let committed_at = now_string();
+        let receipt = TransactionReceipt {
+            transaction_id: request.transaction_id,
+            context_id: request.context_id.clone(),
+            before_revision: meta.revision,
+            after_revision,
+            rebased,
+            changed_node_ids: changed_node_ids.into_iter().collect(),
+            root_hash,
+            committed_at: committed_at.clone(),
+            idempotent_replay: false,
+        };
+        sqlx::query(
+            r#"INSERT INTO experimental_contextdb_receipts
+               (context_id, idempotency_key, request_hash, receipt_json, committed_at)
+               VALUES (?, ?, ?, ?, ?)"#,
+        )
+        .bind(&request.context_id)
+        .bind(&request.idempotency_key)
+        .bind(&request_hash)
+        .bind(serde_json::to_string(&receipt)?)
+        .bind(&committed_at)
+        .execute(&mut **transaction)
+        .await?;
+        Ok(receipt)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -462,71 +694,12 @@ impl ContextStore for SqliteContextDb {
         &self,
         request: CreateContextRequest,
     ) -> ContextDbResult<ContextSnapshot> {
-        validate_identifier("context_id", &request.context_id)?;
-        validate_identifier("tenant_id", &request.tenant_id)?;
-        validate_identifier("agent_id", &request.agent_id)?;
-        validate_identifier("authority.actor_id", &request.authority.actor_id)?;
-        validate_identifier("root.node_id", &request.root.node_id)?;
-        if request.root.parent_id.is_some() {
-            return Err(ContextDbError::Invalid(
-                "the Context root must not have a parent".to_string(),
-            ));
-        }
-        request.authority.require(request.root.owner_domain)?;
-        let (body_sexpr, content_hash) = canonicalize_body(&request.root.body_sexpr)?;
-        let root_head = sexpr_head(&body_sexpr)?;
-        if root_head != "context" {
-            return Err(ContextDbError::Invalid(format!(
-                "the root Node must be a (context ...) expression, got ({root_head} ...)"
-            )));
-        }
-        let root_hash = calculate_subtree_hash(
-            &request.root.node_id,
-            request.root.owner_domain,
-            &body_sexpr,
-            &[],
-        );
-        let now = now_string();
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let inserted = sqlx::query(
-            r#"INSERT OR IGNORE INTO experimental_contextdb_contexts
-               (context_id, tenant_id, agent_id, revision, root_node_id,
-                root_hash, schema_version, created_at, updated_at)
-               VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(&request.context_id)
-        .bind(&request.tenant_id)
-        .bind(&request.agent_id)
-        .bind(&request.root.node_id)
-        .bind(&root_hash)
-        .bind(i64::from(SCHEMA_VERSION))
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
-        if inserted.rows_affected() == 0 {
-            return Err(ContextDbError::AlreadyExists(format!(
-                "Context '{}'",
-                request.context_id
-            )));
-        }
-        sqlx::query(
-            r#"INSERT INTO experimental_contextdb_nodes
-               (context_id, node_id, parent_id, order_key, owner_domain,
-                node_revision, body_sexpr, content_hash, subtree_hash)
-               VALUES (?, ?, NULL, ?, ?, 1, ?, ?, ?)"#,
-        )
-        .bind(&request.context_id)
-        .bind(&request.root.node_id)
-        .bind(request.root.order_key)
-        .bind(request.root.owner_domain.as_str())
-        .bind(&body_sexpr)
-        .bind(&content_hash)
-        .bind(&root_hash)
-        .execute(&mut *transaction)
-        .await?;
+        let snapshot = self
+            .create_context_in_transaction(&mut transaction, request)
+            .await?;
         transaction.commit().await?;
-        self.get_context(&request.context_id).await
+        Ok(snapshot)
     }
 
     async fn get_context(&self, context_id: &str) -> ContextDbResult<ContextSnapshot> {
@@ -535,145 +708,28 @@ impl ContextStore for SqliteContextDb {
         // them through separate pool acquisitions can otherwise combine a
         // pre-commit head with post-commit Nodes (or vice versa).
         let mut transaction = self.pool.begin().await?;
-        let meta = load_context_meta_tx(&mut transaction, context_id).await?;
-        let nodes = load_nodes_tx(&mut transaction, context_id).await?;
-        let snapshot = build_snapshot(meta, nodes)?;
+        let snapshot = self
+            .get_context_in_transaction(&mut transaction, context_id)
+            .await?;
         transaction.commit().await?;
         Ok(snapshot)
     }
 
     async fn apply_transaction(
         &self,
-        mut request: ContextTransaction,
+        request: ContextTransaction,
     ) -> ContextDbResult<TransactionReceipt> {
-        validate_transaction(&request)?;
         // Parse and canonicalize model-sized bodies before acquiring SQLite's
         // single writer. A large Tool Result must not hold the write lock while
         // the CPU validates S-expression syntax, and equivalent whitespace
         // must produce the same idempotency digest.
+        let mut request = request;
+        validate_transaction(&request)?;
         normalize_transaction_bodies(&mut request)?;
-        let request_hash = digest_bytes(&serde_json::to_vec(&request)?);
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-
-        if let Some(row) = sqlx::query(
-            r#"SELECT request_hash, receipt_json
-               FROM experimental_contextdb_receipts
-               WHERE context_id = ? AND idempotency_key = ?"#,
-        )
-        .bind(&request.context_id)
-        .bind(&request.idempotency_key)
-        .fetch_optional(&mut *transaction)
-        .await?
-        {
-            let stored_hash = row.get::<String, _>("request_hash");
-            if stored_hash != request_hash {
-                return Err(ContextDbError::IdempotencyReuse(request.idempotency_key));
-            }
-            let mut receipt =
-                serde_json::from_str::<TransactionReceipt>(&row.get::<String, _>("receipt_json"))?;
-            receipt.idempotent_replay = true;
-            transaction.commit().await?;
-            return Ok(receipt);
-        }
-
-        let meta = load_context_meta_tx(&mut transaction, &request.context_id).await?;
-        if request.base_revision > meta.revision {
-            return Err(ContextDbError::Conflict {
-                context_id: request.context_id,
-                expected: request.base_revision,
-                actual: meta.revision,
-            });
-        }
-        let rebased = request.base_revision != meta.revision;
-        let after_revision = meta
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| ContextDbError::Invalid("Context revision overflow".to_string()))?;
-        let claimed = sqlx::query(
-            r#"UPDATE experimental_contextdb_contexts
-               SET revision = ?, updated_at = ?
-               WHERE context_id = ? AND revision = ?"#,
-        )
-        .bind(i64::try_from(after_revision).map_err(|_| {
-            ContextDbError::Invalid("Context revision exceeds SQLite INTEGER".to_string())
-        })?)
-        .bind(now_string())
-        .bind(&request.context_id)
-        .bind(i64::try_from(meta.revision).map_err(|_| {
-            ContextDbError::Corrupt("negative or overflowing Context revision".to_string())
-        })?)
-        .execute(&mut *transaction)
-        .await?;
-        if claimed.rows_affected() != 1 {
-            let actual = load_context_meta_tx(&mut transaction, &request.context_id)
-                .await?
-                .revision;
-            return Err(ContextDbError::Conflict {
-                context_id: request.context_id,
-                expected: meta.revision,
-                actual,
-            });
-        }
-
-        let mut dirty_hash_nodes = BTreeSet::new();
-        let mut changed_node_ids = BTreeSet::new();
-        for operation in &request.operations {
-            apply_operation(
-                &mut transaction,
-                &request.context_id,
-                &meta.root_node_id,
-                &request.authority,
-                operation,
-                &mut dirty_hash_nodes,
-                &mut changed_node_ids,
-            )
+        let receipt = self
+            .apply_transaction_in_transaction(&mut transaction, request)
             .await?;
-        }
-        let root_hash = recompute_dirty_hashes(
-            &mut transaction,
-            &request.context_id,
-            &meta.root_node_id,
-            dirty_hash_nodes,
-        )
-        .await?;
-        sqlx::query(
-            r#"UPDATE experimental_contextdb_contexts
-               SET root_hash = ?, updated_at = ?
-               WHERE context_id = ? AND revision = ?"#,
-        )
-        .bind(&root_hash)
-        .bind(now_string())
-        .bind(&request.context_id)
-        .bind(i64::try_from(after_revision).map_err(|_| {
-            ContextDbError::Invalid("Context revision exceeds SQLite INTEGER".to_string())
-        })?)
-        .execute(&mut *transaction)
-        .await?;
-
-        let committed_at = now_string();
-        let receipt = TransactionReceipt {
-            transaction_id: request.transaction_id,
-            context_id: request.context_id.clone(),
-            before_revision: meta.revision,
-            after_revision,
-            rebased,
-            changed_node_ids: changed_node_ids.into_iter().collect(),
-            root_hash,
-            committed_at: committed_at.clone(),
-            idempotent_replay: false,
-        };
-        sqlx::query(
-            r#"INSERT INTO experimental_contextdb_receipts
-               (context_id, idempotency_key, request_hash, receipt_json, committed_at)
-               VALUES (?, ?, ?, ?, ?)"#,
-        )
-        .bind(&request.context_id)
-        .bind(&request.idempotency_key)
-        .bind(&request_hash)
-        .bind(serde_json::to_string(&receipt)?)
-        .bind(&committed_at)
-        .execute(&mut *transaction)
-        .await?;
         transaction.commit().await?;
         Ok(receipt)
     }
