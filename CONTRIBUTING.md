@@ -64,14 +64,18 @@ On macOS, Rust's fast `unpacked` debug-info mode leaves `*.rcgu.o` files beside 
 They make iterative linking faster, but frequent test and feature combinations can accumulate
 hundreds of gigabytes because Cargo does not impose a target-directory size limit.
 
-Run the repository maintenance command after a long development session:
+Inspect the repository cache after a long development or test session:
 
 ```sh
-./scripts/prune-cargo-unpacked-debuginfo.sh
+./scripts/prune-cargo-target.sh --dry-run
+./scripts/prune-cargo-target.sh
 ```
 
-It removes only unpacked debug objects older than 24 hours. It deliberately preserves Cargo's
-incremental state, dependency libraries, metadata, fingerprints, binaries, and current-day debug
-objects, so ordinary build-cache hits are unchanged. Use
-`MORPHZ_CARGO_DEBUG_OBJECT_MIN_AGE_MINUTES` to choose another retention window, or pass a Cargo
-target directory as the first argument.
+It removes unpacked debug objects and incremental sessions that have not been used for 24 hours.
+When `cargo-sweep` is installed it also removes stale hashed artifacts from the same retention
+window. Current-day incremental state, dependency libraries, metadata, fingerprints, and binaries
+remain available, so the hot edit/build loop stays incremental. The command refuses to run while
+Cargo or rustc is active, validates `CACHEDIR.TAG`, and reports target size and reclaimed space.
+Use `MORPHZ_CARGO_CACHE_MIN_AGE_MINUTES` to choose another retention window, or pass a Cargo target
+directory as the first argument. The former `prune-cargo-unpacked-debuginfo.sh` name remains as a
+compatibility entrypoint.

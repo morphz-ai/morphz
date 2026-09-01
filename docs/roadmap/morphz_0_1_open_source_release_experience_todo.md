@@ -302,10 +302,10 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 - [ ] 记录 Release 二进制大小、冷/热启动、RSS 与空闲连接数；
 - [ ] 非模型管理命令不得初始化 Provider、Keychain 或完整 Runtime；
 - [ ] 为数据库、Artifact、日志和缓存提供可见磁盘用量及安全清理命令；
-- [ ] 将 Cargo debug object 清理脚本封装为容易发现的开发命令，并增加 dry-run/预算提示；
+- [x] 将 Cargo target 清理封装为容易发现的开发命令，覆盖旧 debug object、incremental 与可选 hashed artifact，并增加 dry-run/预算提示；
 - [ ] CI 或本地检查在 target/cache 异常增长时给出建议，不自动删除用户产物。
 
-**审查数据**：本机 `target/` 约 209 GB；已有 `scripts/prune-cargo-unpacked-debuginfo.sh`，但需要更明显的入口和预算反馈。
+**审查数据**：2026-09-01 本机 `target/` 峰值超过 700 GB，清理前仍实际分配约 285 GB，其中旧 incremental 是最大来源；按 24 小时保留热缓存后降至约 108 GB，可用磁盘由约 1 GB 恢复至约 176 GB。`scripts/prune-cargo-target.sh` 现提供 dry-run、目标目录验证、活动编译保护、候选/回收预算与兼容入口。
 
 ### OSR-108 `[ ]` 发布运维与已知问题入口
 
