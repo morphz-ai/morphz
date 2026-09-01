@@ -8273,8 +8273,11 @@ impl Orchestrator {
             // authoritative `ensure_thread` fallback below.
             match existing_thread {
                 Some(existing)
-                    if existing.id == new_thread.id
-                        && existing.agent_id == new_thread.agent_id
+                    // The root route is authoritative. Legacy and imported
+                    // Threads may predate the current deterministic ID
+                    // derivation, so their physical ID is not an immutable
+                    // routing field and must not block startup recovery.
+                    if existing.agent_id == new_thread.agent_id
                         && existing.context_id == new_thread.context_id
                         && existing.session_id == new_thread.session_id
                         && existing.initiating_principal_id
@@ -8707,7 +8710,23 @@ impl Orchestrator {
         context_version: u64,
     ) -> Result<(), DynError> {
         let mut last_conflict = None;
-        let mut current = activation.clone();
+        // `run_attempt` deliberately keeps the original Activation immutable
+        // across retries. Its first Provider request has already persisted the
+        // pre-maintenance Context snapshot, so the exceptional rebind must
+        // begin from the authoritative row rather than treating that durable
+        // vN binding as a conflicting first bind of vN+1.
+        let mut current = self
+            .context_engine
+            .session_store()
+            .ok_or("Context snapshot rebind requires a persistent SessionStore")?
+            .get_thread_activation(&activation.id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Thread Activation '{}' disappeared before rebinding its Context snapshot after maintenance",
+                    activation.id
+                )
+            })?;
         for retry in 0..5u64 {
             if current.status.is_terminal()
                 || current.context_snapshot_version == Some(context_version)

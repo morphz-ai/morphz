@@ -2159,7 +2159,8 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
     for session_id in &recovery_sessions {
         assert_eq!(
             wait_for_topic(&store, "chat/reply", session_id).await.len(),
-            1
+            1,
+            "startup did not recover Session '{session_id}'"
         );
         assert!(store
             .query(QueryFilter {

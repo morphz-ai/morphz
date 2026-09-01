@@ -1610,7 +1610,7 @@ impl DeliveryIngressStore for PostgresStore {
         {
             if let Some(claim) = claim_ordered_message_fast_path(
                 self,
-                &mut *tx,
+                &mut tx,
                 OrderedMessageIngress {
                     session_id,
                     client_message_id,
