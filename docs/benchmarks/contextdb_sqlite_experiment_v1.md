@@ -117,17 +117,17 @@ SQLite `BEGIN IMMEDIATE` 为单文件写入提供确定提交顺序。全局 Con
 cargo test -p morphz --lib --features experimental-context-db context_db::tests
 ```
 
-当前分支在合入最新主线前的回归结果：
+变基到主线 `d86f815c` 后的最终回归结果：
 
-- 默认特性单线程全量回归：1099 passed，6 ignored；
-- 启用 `experimental-context-db` 的全量回归：1117 passed，6 ignored；
+- 默认特性单线程全量回归：1100 passed，6 ignored；
+- 启用 `experimental-context-db` 的单线程全量回归：1118 passed，6 ignored；
 - ContextDB 定向测试：18 passed。
+- `cargo check -p morphz --all-targets --all-features` 通过；
+- `cargo clippy -p morphz --all-targets --all-features -- -D warnings` 通过。
 
-合入最新主线后的最终测试与严格 Clippy 门禁以本节后续更新为准，不能用本组数字替代。
-
-并行全量回归两次只出现同一个既有
-`runtime::tests::live_session_signal_is_symmetric_and_runs_target_concurrently`
-60 秒时序超时；该用例单独复跑通过，完整套件使用单线程调度也通过。它没有依赖 ContextDB，但说明现有测试套件仍有一个负载敏感的稳定性问题，应独立跟踪，不能把失败轮次隐藏成全绿。
+并行全量回归曾出现一个权限测试命中 SQLite busy 保护分支；该用例单独复跑通过，包含它的
+完整单线程套件也通过。它没有依赖 ContextDB，但说明现有并行测试套件仍存在负载敏感性，
+应独立跟踪，不能把失败轮次隐藏成全绿。
 
 ## 5. Release 基准
 
@@ -174,17 +174,17 @@ Event 和事务控制，只改变当前 Mind authority。每轮修改一个 Fram
 
 | Mind JSON | Frame 数 | 路径 | 完整 Runtime commit p50 / p95 / p99 | 权威 Mind read p50 / p95 / p99 |
 |---:|---:|---|---:|---:|
-| 193,809 B | 256 | 旧 SQLite | 1.176 / 1.579 / 1.868 ms | 0.187 / 0.199 / 0.214 ms |
-| 193,809 B | 256 | ContextDB | 3.061 / 3.658 / 4.009 ms | 1.950 / 1.977 / 2.017 ms |
-| 1,111,313 B | 256 | 旧 SQLite | 4.462 / 5.635 / 8.193 ms | 0.396 / 0.408 / 0.441 ms |
-| 1,111,313 B | 256 | ContextDB | 9.166 / 10.606 / 10.862 ms | 6.702 / 6.925 / 6.987 ms |
+| 193,809 B | 256 | 旧 SQLite | 1.193 / 1.618 / 6.012 ms | 0.181 / 0.189 / 0.196 ms |
+| 193,809 B | 256 | ContextDB | 3.060 / 3.674 / 4.224 ms | 1.937 / 2.137 / 2.201 ms |
+| 1,111,313 B | 256 | 旧 SQLite | 4.488 / 6.171 / 11.096 ms | 0.405 / 0.419 / 0.438 ms |
+| 1,111,313 B | 256 | ContextDB | 9.096 / 10.427 / 12.124 ms | 6.723 / 6.994 / 7.076 ms |
 
 当前结论必须诚实分成两层：
 
 - ContextDB 核心局部 AST Mutation 已证明不随未触碰大子树线性重写；
 - 兼容 Runtime Adapter 仍接收完整 `MindState`，因此需要一次结构快照加载、逐 Node
-  校验和 AST Diff。它在约 1.1 MB Mind 下仍保持本机 p95 commit 10.606 ms、read
-  6.925 ms，但尚未比旧单 JSON 行更快。
+  校验和 AST Diff。它在约 1.1 MB Mind 下仍保持本机 p95 commit 10.427 ms、read
+  6.994 ms，但尚未比旧单 JSON 行更快。
 
 这不是通过减少语义换性能：Agent Trajectory、Session Projection、Recall 与 Runtime
 Control 仍完整提交。后续优化方向是让 Context domain 直接提交已确定的 Node operations，
