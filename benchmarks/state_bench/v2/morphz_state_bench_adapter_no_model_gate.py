@@ -108,6 +108,8 @@ def run(
         agent_output = Path(trajectory.metadata["me07_agent_system"]["runtime_output"])
 
     jobs = _execution_jobs(agent_output / "morphz.sqlite")
+    initial_context_tx_commits = int(agent._ready["initial_context_tx_commits"])
+    final_context_tx_commits = int(agent._last_turn["context_tx_commits"])
     checks = {
         "reply_completed": text == "me07-deterministic-gate-complete",
         "state_bench_handler_called_once": calls == [{}],
@@ -119,6 +121,8 @@ def run(
             job["tool_name"] == "gate_probe" and job["status"] == "succeeded"
             for job in jobs
         ),
+        "context_tx_committed_once": final_context_tx_commits
+        == initial_context_tx_commits + 1,
         "runtime_closed": agent._process.poll() == 0,  # gate-only lifecycle assertion
         "token_file_removed": not (agent_output / "bridge.token").exists(),
         "non_reportable_marked": trajectory.metadata["me07_agent_system"]["ready"].get(
@@ -132,6 +136,10 @@ def run(
         "passed": all(checks.values()),
         "checks": checks,
         "execution_jobs": jobs,
+        "context_tx_commits": {
+            "initial": initial_context_tx_commits,
+            "final": final_context_tx_commits,
+        },
         "domain": domain,
         "learning_database_source": (
             str(learning_database.resolve()) if learning_database is not None else None

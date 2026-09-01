@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+from benchmarks.state_bench.v2.run_contextdb_me07_historical import (
+    _classify_timeout,
+    _is_timeout_like,
+    _runtime_state,
+)
+
+
+def _state(**values):
+    return {
+        "available": True,
+        "replies": 0,
+        "thread_terminal_events": 0,
+        "active_activations": [],
+        "active_objectives": [],
+        "pending_required_dependencies": [],
+        **values,
+    }
+
+
+def test_timeout_detection_reads_wrapped_runtime_errors() -> None:
+    assert _is_timeout_like(
+        {"runner_result": {"error": "RuntimeError: Agent timed out after 1800s"}}
+    )
+    assert not _is_timeout_like(
+        {"runner_result": {"error": "HTTP 502 from model provider"}}
+    )
+
+
+def test_timeout_classification_prioritizes_durable_terminal_and_dependencies() -> None:
+    assert _classify_timeout(_state(replies=1)) == "durable_terminal_present"
+    assert (
+        _classify_timeout(
+            _state(pending_required_dependencies=[{"kind": "model_attempt"}])
+        )
+        == "pending_scheduler_dependency"
+    )
+
+
+def test_timeout_classification_distinguishes_live_expired_and_idle_scheduler() -> None:
+    assert (
+        _classify_timeout(
+            _state(active_activations=[{"id": "a", "lease_expired": False}])
+        )
+        == "active_activation_at_timeout"
+    )
+    assert (
+        _classify_timeout(
+            _state(active_activations=[{"id": "a", "lease_expired": True}])
+        )
+        == "expired_active_activation"
+    )
+    assert _classify_timeout(_state()) == "suspected_scheduler_convergence_gap"
+
+
+def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime" / "morphz" / "trial"
+    runtime.mkdir(parents=True)
+    (runtime / "tool-manifest.json").write_text(
+        json.dumps({"domain": "travel", "task_id": "task-1"}), encoding="utf-8"
+    )
+    database = runtime / "morphz.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT, title TEXT, created_at TEXT
+            );
+            CREATE TABLE events (
+                timestamp TEXT, topic TEXT, session_id TEXT,
+                root_turn_id TEXT, payload TEXT
+            );
+            CREATE TABLE thread_activations (
+                id TEXT, status TEXT, lease_expires_at TEXT, updated_at TEXT,
+                root_turn_id TEXT, session_id TEXT
+            );
+            CREATE TABLE objectives (
+                id TEXT, status TEXT, active_evaluation_id TEXT, updated_at TEXT,
+                coordinator_session_id TEXT, delivery_session_id TEXT
+            );
+            CREATE TABLE scheduler_dependencies (
+                owner_kind TEXT, owner_id TEXT, dependency_kind TEXT,
+                dependency_id TEXT, status TEXT, required INTEGER
+            );
+            CREATE TABLE experimental_contextdb_contexts (context_id TEXT);
+            INSERT INTO sessions VALUES ('current-session', 'STATE-Bench task-1', '2026-01-01T00:00:00Z');
+            INSERT INTO sessions VALUES ('old-session', 'old', '2025-01-01T00:00:00Z');
+            INSERT INTO events VALUES ('2026-01-01T00:00:00Z', 'chat/message', 'current-session', 'turn-1', '{}');
+            INSERT INTO events VALUES ('2025-01-01T00:00:00Z', 'chat/reply', 'old-session', 'old-turn', '{}');
+            INSERT INTO thread_activations VALUES (
+                'activation-1', 'running', '2000-01-01T00:00:00Z',
+                '2000-01-01T00:00:00Z', 'turn-1', 'current-session'
+            );
+            INSERT INTO scheduler_dependencies VALUES (
+                'activation', 'activation-1', 'model_attempt', 'attempt-1',
+                'pending', 1
+            );
+            INSERT INTO experimental_contextdb_contexts VALUES ('context-1');
+            """
+        )
+
+    state = _runtime_state(
+        tmp_path,
+        {"domain": "travel", "task_id": "task-1"},
+    )
+
+    assert state["available"] is True
+    assert state["session_id"] == "current-session"
+    assert state["replies"] == 0
+    assert state["active_activations"][0]["lease_expired"] is True
+    assert state["pending_required_dependencies"] == [
+        {
+            "owner_kind": "activation",
+            "owner_id": "activation-1",
+            "kind": "model_attempt",
+            "id": "attempt-1",
+        }
+    ]
+    assert state["contextdb_authority_rows"] == 1

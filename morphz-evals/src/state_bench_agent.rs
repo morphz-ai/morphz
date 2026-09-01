@@ -306,6 +306,28 @@ struct DeterministicStateBenchClient {
     calls: AtomicUsize,
 }
 
+fn observation_ref_before<'a>(prompt: &'a str, marker: &str) -> Option<&'a str> {
+    let marker_index = prompt.find(marker)?;
+    let prefix = &prompt[..marker_index];
+    let start = prefix.rfind("@e")?;
+    let end = prefix[start + 2..]
+        .find(|character: char| !character.is_ascii_digit())
+        .map(|offset| start + 2 + offset)
+        .unwrap_or(prefix.len());
+    (end > start + 2).then_some(&prefix[start..end])
+}
+
+fn kernel_context_version(prompt: &str) -> Option<u64> {
+    let kernel = prompt.rfind("(kernel")?;
+    let suffix = &prompt[kernel..];
+    let version = suffix.find("(version ")? + "(version ".len();
+    let digits = suffix[version..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
+
 #[async_trait]
 impl Client for DeterministicStateBenchClient {
     async fn create_completion(
@@ -314,6 +336,11 @@ impl Client for DeterministicStateBenchClient {
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, StateBenchError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let prompt = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         if call == 0 {
             if !tools.iter().any(|tool| tool.name == self.tool_name)
                 || !tools.iter().any(|tool| tool.name == "context_tx")
@@ -330,11 +357,29 @@ impl Client for DeterministicStateBenchClient {
                 }],
             });
         }
-        if !messages
-            .iter()
-            .any(|message| message.role == "tool" && message.content.contains("gate-ok"))
-        {
+        if !prompt.contains("gate-ok") {
             return Err("deterministic Gate did not receive bridge result".into());
+        }
+        if call == 1 {
+            let version = kernel_context_version(&prompt)
+                .ok_or("deterministic Gate could not read the Context version")?;
+            let source_ref = observation_ref_before(&prompt, "Run the gate.")
+                .ok_or("deterministic Gate could not read the current observation ref")?;
+            let transaction = format!(
+                "(context-tx (base-version {version}) (reason \"ME-07 deterministic ContextStore gate\") (derive me07-deterministic-context-store-gate (from {source_ref}) (state (status gate-ok))))"
+            );
+            return Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "me07-gate-context-tx".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: serde_json::json!({"transaction": transaction}).to_string(),
+                }],
+            });
+        }
+        if !prompt.contains("me07-deterministic-context-store-gate") {
+            return Err("deterministic Gate did not observe its Context mutation".into());
         }
         Ok(Response {
             content: "me07-deterministic-gate-complete".to_string(),
