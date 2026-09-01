@@ -94,7 +94,8 @@ nix = { version = "0.31.3", features = ["signal", "process", "poll", "fs"] }
 # this dependency; macOS/Linux builds do not carry the Windows subsystem.
 codex-protocol = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
 codex-utils-absolute-path = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
-codex-windows-sandbox = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+codex-utils-pty = { path = "../third_party/codex-utils-pty" }
+morphz-windows-sandbox = { path = "../third_party/morphz-windows-sandbox" }
 # Codex's audited lock pairs every Rama crate at alpha.4. Without these exact
 # bounds Cargo may select stable 0.3.0 utility crates whose generated APIs are
 # incompatible with rama-core and rama-http 0.3.0-alpha.4.
@@ -103,7 +104,11 @@ rama-macros = "=0.3.0-alpha.4"
 rama-utils = "=0.3.0-alpha.4"
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
+    "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
 

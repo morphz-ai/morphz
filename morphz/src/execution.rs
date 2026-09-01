@@ -946,17 +946,83 @@ fn same_host_cancelled_background_exit_is_proven(
     let Some(process_group_id) = execution_job_process_group_id(job) else {
         return false;
     };
-    #[cfg(unix)]
-    {
-        matches!(
-            nix::sys::signal::killpg(nix::unistd::Pid::from_raw(process_group_id), None),
-            Err(nix::errno::Errno::ESRCH)
-        )
+    matches!(local_process_tree_exists(process_group_id), Ok(false))
+}
+
+/// Inspect the durable process-tree owner used by a managed local exec.
+///
+/// Unix persists a process-group ID, while Windows persists the Morphz sandbox
+/// runner PID whose Job Object owns the descendants. Unknown inspection errors
+/// stay fail-closed: only an operating-system proof of absence returns `false`.
+#[cfg(unix)]
+pub(crate) fn local_process_tree_exists(process_group_id: i32) -> Result<bool, String> {
+    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(process_group_id), None) {
+        Ok(()) | Err(nix::errno::Errno::EPERM) => Ok(true),
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect managed process group {process_group_id}: {error}"
+        )),
     }
-    #[cfg(not(unix))]
-    {
-        let _ = process_group_id;
-        false
+}
+
+#[cfg(windows)]
+pub(crate) fn local_process_tree_exists(process_id: i32) -> Result<bool, String> {
+    windows_process_exists(process_id)
+}
+
+/// Inspect an ordinary local process owner such as a Runtime claimant.
+#[cfg(unix)]
+pub(crate) fn local_process_id_exists(process_id: i32) -> Result<bool, String> {
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(process_id), None) {
+        Ok(()) | Err(nix::errno::Errno::EPERM) => Ok(true),
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(error) => Err(format!(
+            "failed to inspect local process {process_id}: {error}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn local_process_id_exists(process_id: i32) -> Result<bool, String> {
+    windows_process_exists(process_id)
+}
+
+#[cfg(windows)]
+fn windows_process_exists(process_id: i32) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, WAIT_FAILED,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+
+    let process_id = u32::try_from(process_id)
+        .map_err(|_| format!("managed Windows process ID {process_id} is invalid"))?;
+    const SYNCHRONIZE_PROCESS: u32 = 0x0010_0000;
+    let handle = unsafe { OpenProcess(SYNCHRONIZE_PROCESS, 0, process_id) };
+    if handle == 0 {
+        let error = unsafe { GetLastError() };
+        return match error {
+            ERROR_INVALID_PARAMETER => Ok(false),
+            // An access-denied handle is still proof that the PID currently
+            // names a process; it is not proof that the owner exited.
+            ERROR_ACCESS_DENIED => Ok(true),
+            _ => Err(format!(
+                "failed to inspect managed Windows process {process_id}: OS error {error}"
+            )),
+        };
+    }
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    let wait_error = (wait == WAIT_FAILED).then(|| unsafe { GetLastError() });
+    unsafe {
+        CloseHandle(handle);
+    }
+    match wait {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        _ => Err(format!(
+            "failed to wait on managed Windows process {process_id}: OS error {}",
+            wait_error.unwrap_or_default()
+        )),
     }
 }
 

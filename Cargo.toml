@@ -6,10 +6,15 @@ members = [
     "extensions/morphz-memory-vector",
     "morphz",
     "morphz-evals",
+    "third_party/morphz-windows-sandbox",
     "tools/morphz-cli-docs",
     "yao",
 ]
-exclude = ["third_party/codex-otel-stub", "third_party/codex-utils-pty"]
+exclude = [
+    "third_party/codex-otel-stub",
+    "third_party/codex-utils-absolute-path",
+    "third_party/codex-utils-pty",
+]
 default-members = ["morphz"]
 
 [workspace.package]
@@ -26,6 +31,10 @@ rust-version = "1.97.1"
 # API as a deliberate no-op adapter instead of importing Codex's HTTP/OTEL
 # stack into the product.
 codex-otel = { path = "third_party/codex-otel-stub" }
+# The sandbox command runner must start in non-interactive Windows sessions before any Shell32
+# initialization. Keep the pinned path type API, but resolve `~` from the explicit environment so
+# this low-level helper does not import SHGetKnownFolderPath during process bootstrap.
+codex-utils-absolute-path = { path = "third_party/codex-utils-absolute-path" }
 # Upstream's pinned Windows PTY implementation crosses a RawHandle boundary
 # with two different c_void aliases. Keep the small crate local until the
 # equivalent ABI fix is available in the Codex revision Morphz consumes.

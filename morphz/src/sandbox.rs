@@ -329,7 +329,7 @@ fn platform_backend() -> Arc<dyn SandboxBackend> {
 
 #[cfg(windows)]
 fn platform_backend() -> Arc<dyn SandboxBackend> {
-    Arc::new(windows::WindowsCodexBackend)
+    Arc::new(windows::WindowsMorphzBackend)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -680,10 +680,7 @@ mod linux {
             match find_bwrap(None) {
                 Some(path) => BackendReport::enforced(
                     BackendKind::LinuxNative,
-                    format!(
-                        "Linux Bubblewrap is available through '{}'",
-                        path.display()
-                    ),
+                    format!("Linux Bubblewrap is available through '{}'", path.display()),
                 ),
                 None => BackendReport::unavailable(
                     BackendKind::LinuxNative,
@@ -1122,9 +1119,9 @@ mod windows {
     use walkdir::WalkDir;
 
     const RUNNER_EXE: &str = "morphz-windows-sandbox-runner.exe";
-    const COMMAND_RUNNER_EXE: &str = "codex-command-runner.exe";
-    const SETUP_EXE: &str = "codex-windows-sandbox-setup.exe";
-    const CODEX_WINDOWS_REVISION: &str = "94cbbddafc1776d5e377bca1b05932c697e82238";
+    const COMMAND_RUNNER_EXE: &str = "morphz-windows-command-runner.exe";
+    const SETUP_EXE: &str = "morphz-windows-sandbox-setup.exe";
+    const UPSTREAM_CODEX_REVISION: &str = "94cbbddafc1776d5e377bca1b05932c697e82238";
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct WindowsLaunchRequest {
@@ -1136,17 +1133,67 @@ mod windows {
         network: NetworkPolicy,
         command: String,
         morphz_home: PathBuf,
+        #[serde(default)]
+        developer_toolchain_env: HashMap<String, String>,
     }
 
-    pub struct WindowsCodexBackend;
+    #[derive(Debug, Default)]
+    struct WindowsDeveloperToolchain {
+        read_roots: Vec<PathBuf>,
+        env: HashMap<String, String>,
+    }
 
-    impl SandboxBackend for WindowsCodexBackend {
+    fn windows_env_value<'a>(env: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn set_windows_env(env: &mut HashMap<String, String>, name: &str, value: String) {
+        env.retain(|key, _| !key.eq_ignore_ascii_case(name));
+        env.insert(name.to_string(), value);
+    }
+
+    fn discover_windows_developer_toolchain(
+        env: &HashMap<String, String>,
+    ) -> WindowsDeveloperToolchain {
+        let mut discovered = WindowsDeveloperToolchain::default();
+        let user_profile = windows_env_value(env, "USERPROFILE").map(PathBuf::from);
+        let cargo_home = windows_env_value(env, "CARGO_HOME")
+            .map(PathBuf::from)
+            .or_else(|| user_profile.as_ref().map(|profile| profile.join(".cargo")));
+        if let Some(bin) = cargo_home.map(|home| home.join("bin")) {
+            if bin.is_dir() {
+                push_unique(&mut discovered.read_roots, bin);
+            }
+        }
+
+        let rustup_home = windows_env_value(env, "RUSTUP_HOME")
+            .map(PathBuf::from)
+            .or_else(|| user_profile.map(|profile| profile.join(".rustup")));
+        if let Some(rustup_home) = rustup_home {
+            if rustup_home.is_dir() {
+                let rustup_home = std::fs::canonicalize(&rustup_home).unwrap_or(rustup_home);
+                set_windows_env(
+                    &mut discovered.env,
+                    "RUSTUP_HOME",
+                    rustup_home.to_string_lossy().into_owned(),
+                );
+                push_unique(&mut discovered.read_roots, rustup_home);
+            }
+        }
+        discovered
+    }
+
+    pub struct WindowsMorphzBackend;
+
+    impl SandboxBackend for WindowsMorphzBackend {
         fn report(&self) -> BackendReport {
             match helper_bundle(None) {
                 Ok(bundle) => BackendReport::enforced(
                     BackendKind::WindowsNative,
                     format!(
-                        "Windows restricted-token, ACL, WFP, private-desktop, and Job Object helpers are available at '{}' (Codex revision {CODEX_WINDOWS_REVISION})",
+                        "Morphz Windows restricted-token, ACL, WFP, private-desktop, and Job Object helpers are available at '{}' (implementation derived from OpenAI Codex revision {UPSTREAM_CODEX_REVISION})",
                         bundle.runner.display()
                     ),
                 ),
@@ -1162,7 +1209,18 @@ mod windows {
                     request.cwd.display()
                 ))
             })?;
-            let read_roots = canonical_roots(&request.policy.read_roots, "read")?;
+            let mut read_roots = canonical_roots(&request.policy.read_roots, "read")?;
+            let host_env = std::env::vars().collect::<HashMap<_, _>>();
+            let developer_toolchain = discover_windows_developer_toolchain(&host_env);
+            for root in developer_toolchain.read_roots {
+                let root = std::fs::canonicalize(&root).map_err(|error| {
+                    SandboxError::new(format!(
+                        "failed to resolve Windows developer toolchain root '{}': {error}",
+                        root.display()
+                    ))
+                })?;
+                push_unique(&mut read_roots, root);
+            }
             let write_roots = canonical_roots(&request.policy.write_roots, "write")?;
             if write_roots.is_empty() {
                 return Err(SandboxError::new(
@@ -1205,6 +1263,7 @@ mod windows {
                 network: request.policy.network,
                 command: request.command.clone(),
                 morphz_home,
+                developer_toolchain_env: developer_toolchain.env,
             };
             let encoded = serde_json::to_string(&launch).map_err(|error| {
                 SandboxError::new(format!(
@@ -1337,8 +1396,32 @@ mod windows {
         let request: WindowsLaunchRequest = serde_json::from_slice(&request)
             .map_err(|error| format!("invalid Windows sandbox launch request: {error}"))?;
         let cwd = absolute(&request.cwd, "cwd")?;
-        let workspace_roots = request
-            .write_roots
+        let sandbox_runtime = tempfile::Builder::new()
+            .prefix("morphz-windows-sandbox-")
+            .tempdir()
+            .map_err(|error| {
+                format!("failed to create isolated Windows sandbox runtime: {error}")
+            })?;
+        let sandbox_profile = sandbox_runtime.path().join("profile");
+        let sandbox_roaming = sandbox_profile.join("AppData").join("Roaming");
+        let sandbox_local = sandbox_profile.join("AppData").join("Local");
+        let sandbox_temp = sandbox_runtime.path().join("tmp");
+        for directory in [
+            &sandbox_profile,
+            &sandbox_roaming,
+            &sandbox_local,
+            &sandbox_temp,
+        ] {
+            std::fs::create_dir_all(directory).map_err(|error| {
+                format!(
+                    "failed to create isolated Windows sandbox directory '{}': {error}",
+                    directory.display()
+                )
+            })?;
+        }
+        let mut effective_write_roots = request.write_roots.clone();
+        effective_write_roots.push(sandbox_runtime.path().to_path_buf());
+        let workspace_roots = effective_write_roots
             .iter()
             .map(|root| absolute(root, "workspace root"))
             .collect::<Result<Vec<_>, _>>()?;
@@ -1363,8 +1446,35 @@ mod windows {
             /*exclude_slash_tmp*/ true,
         );
         let mut env_map = std::env::vars().collect::<HashMap<_, _>>();
+        let profile = sandbox_profile.to_string_lossy().into_owned();
+        set_windows_env(&mut env_map, "USERPROFILE", profile.clone());
+        set_windows_env(&mut env_map, "HOME", profile.clone());
+        if profile.as_bytes().get(1) == Some(&b':') {
+            set_windows_env(&mut env_map, "HOMEDRIVE", profile[..2].to_string());
+            set_windows_env(&mut env_map, "HOMEPATH", profile[2..].to_string());
+        } else {
+            env_map.retain(|name, _| {
+                !name.eq_ignore_ascii_case("HOMEDRIVE") && !name.eq_ignore_ascii_case("HOMEPATH")
+            });
+        }
+        set_windows_env(
+            &mut env_map,
+            "APPDATA",
+            sandbox_roaming.to_string_lossy().into_owned(),
+        );
+        set_windows_env(
+            &mut env_map,
+            "LOCALAPPDATA",
+            sandbox_local.to_string_lossy().into_owned(),
+        );
+        let sandbox_temp = sandbox_temp.to_string_lossy().into_owned();
+        set_windows_env(&mut env_map, "TEMP", sandbox_temp.clone());
+        set_windows_env(&mut env_map, "TMP", sandbox_temp);
+        for (name, value) in request.developer_toolchain_env {
+            set_windows_env(&mut env_map, &name, value);
+        }
         if request.network == NetworkPolicy::Deny {
-            // Codex can deliberately permit a loopback proxy inside its
+            // Morphz can deliberately permit a loopback proxy inside its
             // restricted network identity. Morphz's NetworkPolicy::Deny is
             // stricter: no proxy or local-binding escape is part of this
             // command's capability set.
@@ -1379,8 +1489,8 @@ mod windows {
                 "all_proxy",
                 "ws_proxy",
                 "wss_proxy",
-                "CODEX_WINDOWS_SANDBOX_PROXY_PORTS",
-                "CODEX_NETWORK_ALLOW_LOCAL_BINDING",
+                "MORPHZ_WINDOWS_SANDBOX_PROXY_PORTS",
+                "MORPHZ_NETWORK_ALLOW_LOCAL_BINDING",
             ];
             env_map.retain(|name, _| {
                 !denied_proxy_names
@@ -1388,8 +1498,8 @@ mod windows {
                     .any(|denied| name.eq_ignore_ascii_case(denied))
             });
         }
-        let spawned = codex_windows_sandbox::spawn_windows_sandbox_session_for_level(
-            codex_windows_sandbox::WindowsSandboxSessionRequest {
+        let spawned = morphz_windows_sandbox::spawn_windows_sandbox_session_for_level(
+            morphz_windows_sandbox::WindowsSandboxSessionRequest {
                 permission_profile: &permission_profile,
                 workspace_roots: workspace_roots.as_slice(),
                 codex_home: &request.morphz_home,
@@ -1406,11 +1516,11 @@ mod windows {
                 proxy_enforced: false,
                 network_proxy_restricting_sid: None,
                 proxy_settings_mode:
-                    codex_windows_sandbox::WindowsSandboxProxySettingsMode::Reconcile,
+                    morphz_windows_sandbox::WindowsSandboxProxySettingsMode::Reconcile,
                 timeout_ms: None,
                 read_roots_override: Some(request.read_roots.as_slice()),
                 read_roots_include_platform_defaults: true,
-                write_roots_override: Some(request.write_roots.as_slice()),
+                write_roots_override: Some(effective_write_roots.as_slice()),
                 deny_read_paths_override: denied_read_paths.as_slice(),
                 deny_write_paths_override: denied_write_paths.as_slice(),
                 tty: false,
@@ -1420,13 +1530,23 @@ mod windows {
         )
         .await
         .map_err(|error| format!("Windows sandbox launch failed: {error:#}"))?;
-        Ok(codex_windows_sandbox::forward_sandbox_session_stdio(spawned).await)
+        Ok(morphz_windows_sandbox::forward_sandbox_session_stdio(spawned).await)
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use base64::Engine as _;
         use std::io::Write as _;
+
+        fn powershell_encoded_command(script: &str) -> String {
+            let utf16_le = script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>();
+            let encoded = base64::engine::general_purpose::STANDARD.encode(utf16_le);
+            format!("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}")
+        }
 
         fn spawn_prepared(prepared: PreparedCommand, cwd: &Path) -> std::process::Child {
             let mut command = std::process::Command::new(prepared.program);
@@ -1477,11 +1597,13 @@ mod windows {
             let temp = tempfile::TempDir::new().unwrap();
             let workspace = temp.path().join("workspace");
             let outside = temp.path().join("outside.txt");
+            let outside_existing = temp.path().join("outside-existing.txt");
             std::fs::create_dir_all(&workspace).unwrap();
             std::fs::write(workspace.join(".env"), "SECRET=value\r\n").unwrap();
+            std::fs::write(&outside_existing, "preserve\r\n").unwrap();
             let mut policy = SandboxPolicy::workspace(&workspace);
             policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
-            let sandbox = NativeSandbox::with_backend(Arc::new(WindowsCodexBackend));
+            let sandbox = NativeSandbox::with_backend(Arc::new(WindowsMorphzBackend));
 
             let allowed = sandbox
                 .prepare_shell(&ShellRequest {
@@ -1514,6 +1636,23 @@ mod windows {
             assert!(!outside_write.status.success());
             assert!(!outside.exists());
 
+            let outside_delete = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: format!("del /f /q \"{}\"", outside_existing.display()),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let outside_delete = execute_prepared(outside_delete, &workspace);
+            assert!(
+                !outside_delete.status.success(),
+                "the elevated Windows sandbox must reject deletion of an existing file outside the writable roots"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&outside_existing).unwrap(),
+                "preserve\r\n"
+            );
+
             let protected_read = sandbox
                 .prepare_shell(&ShellRequest {
                     command: "type .env".to_string(),
@@ -1525,9 +1664,40 @@ mod windows {
             assert!(!protected_read.status.success());
             assert!(!String::from_utf8_lossy(&protected_read.stdout).contains("SECRET=value"));
 
+            let powershell_ready = workspace.join("powershell-ready.txt");
+            let powershell_script = format!(
+                "$ErrorActionPreference='Stop'; Set-Content -LiteralPath '{}' -Value ready; Write-Output MORPHZ-WINDOWS-POWERSHELL-5-1-OK",
+                powershell_ready.display()
+            );
+            let powershell = sandbox
+                .prepare_shell(&ShellRequest {
+                    command: powershell_encoded_command(&powershell_script),
+                    cwd: workspace.clone(),
+                    policy: policy.clone(),
+                })
+                .unwrap();
+            let powershell = execute_prepared(powershell, &workspace);
+            assert!(
+                powershell.status.success(),
+                "sandboxed PowerShell failed with status {:?}: stdout={} stderr={}",
+                powershell.status.code(),
+                String::from_utf8_lossy(&powershell.stdout),
+                String::from_utf8_lossy(&powershell.stderr),
+            );
+            assert!(
+                powershell_ready.exists()
+                    && String::from_utf8_lossy(&powershell.stdout)
+                        .contains("MORPHZ-WINDOWS-POWERSHELL-5-1-OK"),
+                "sandboxed PowerShell did not complete its workspace write: stdout={} stderr={}",
+                String::from_utf8_lossy(&powershell.stdout),
+                String::from_utf8_lossy(&powershell.stderr),
+            );
+
             let network = sandbox
                 .prepare_shell(&ShellRequest {
-                    command: "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$client = New-Object Net.Sockets.TcpClient; $client.Connect('1.1.1.1', 53)\"".to_string(),
+                    command: powershell_encoded_command(
+                        "$ErrorActionPreference='Stop'; $client = New-Object Net.Sockets.TcpClient; $client.Connect('1.1.1.1', 53)",
+                    ),
                     cwd: workspace.clone(),
                     policy,
                 })
@@ -1537,9 +1707,14 @@ mod windows {
 
             let escaped = workspace.join("escaped.txt");
             let ready = workspace.join("runner-ready.txt");
+            let managed_tree_script = format!(
+                "$ErrorActionPreference='Stop'; Set-Content -LiteralPath '{}' -Value ready; Start-Sleep -Seconds 4; Set-Content -LiteralPath '{}' -Value escaped",
+                ready.display(),
+                escaped.display(),
+            );
             let managed_tree = sandbox
                 .prepare_shell(&ShellRequest {
-                    command: "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Set-Content -Path runner-ready.txt -Value ready; Start-Sleep -Seconds 4; Set-Content -Path escaped.txt -Value escaped\"".to_string(),
+                    command: powershell_encoded_command(&managed_tree_script),
                     cwd: workspace.clone(),
                     policy: SandboxPolicy::workspace(&workspace),
                 })
@@ -1550,10 +1725,15 @@ mod windows {
             while !ready.exists() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            assert!(
-                ready.exists(),
-                "sandboxed process did not reach its ready point"
-            );
+            if !ready.exists() {
+                let output = managed_tree.wait_with_output().unwrap();
+                panic!(
+                    "sandboxed process did not reach its ready point; status={:?} stdout={} stderr={}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
             assert!(crate::tool::terminate_process_tree(process_id).unwrap());
             let _ = managed_tree.wait();
             std::thread::sleep(std::time::Duration::from_secs(5));

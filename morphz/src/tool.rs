@@ -54,6 +54,39 @@ const BACKGROUND_TERMINAL_COMMIT_RETRY_INITIAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 const BACKGROUND_TERMINAL_COMMIT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Keep process-lifecycle tests semantic across the native host shells.
+/// Windows PowerShell receives UTF-16LE through `-EncodedCommand`, matching the
+/// launch boundary used by Windows OpenSSH/Codex tests without nested `cmd /C`
+/// quote ambiguity.
+#[cfg(all(test, windows))]
+pub(crate) fn platform_test_shell_command(
+    _unix_command: impl AsRef<str>,
+    windows_powershell_script: impl AsRef<str>,
+) -> String {
+    let bytes = windows_powershell_script
+        .as_ref()
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    format!(
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn platform_test_shell_command(
+    unix_command: impl AsRef<str>,
+    _windows_powershell_script: impl AsRef<str>,
+) -> String {
+    unix_command.as_ref().to_string()
+}
+
+#[cfg(test)]
+pub(crate) fn powershell_test_literal(value: impl AsRef<str>) -> String {
+    value.as_ref().replace('\'', "''")
+}
+
 /// A physical process exit is an irreversible fact. Once the watcher has
 /// observed it, losing one Store transaction must not strand the durable Job
 /// in `running`/`kill_requested`. Keep the observation alive and retry the
@@ -7832,56 +7865,17 @@ pub(crate) fn managed_exec_background_request(
 fn terminate_residual_process_group(
     pgid: i32,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if process_tree_exists(pgid)? {
+    if crate::execution::local_process_tree_exists(pgid)? {
         terminate_process_tree(pgid).map_err(Into::into)
     } else {
         Ok(false)
     }
 }
 
-#[cfg(unix)]
-fn process_tree_exists(process_group_id: i32) -> Result<bool, String> {
-    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(process_group_id), None) {
-        Ok(()) => Ok(true),
-        Err(nix::errno::Errno::ESRCH) => Ok(false),
-        Err(error) => Err(format!(
-            "failed to inspect managed process group {process_group_id}: {error}"
-        )),
-    }
-}
-
-#[cfg(windows)]
-fn process_tree_exists(process_id: i32) -> Result<bool, String> {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT,
-    };
-    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
-
-    let process_id = u32::try_from(process_id)
-        .map_err(|_| format!("managed Windows process ID {process_id} is invalid"))?;
-    const SYNCHRONIZE_PROCESS: u32 = 0x0010_0000;
-    let handle = unsafe { OpenProcess(SYNCHRONIZE_PROCESS, 0, process_id) };
-    if handle == 0 {
-        let error = unsafe { GetLastError() };
-        return if error == ERROR_INVALID_PARAMETER {
-            Ok(false)
-        } else {
-            Err(format!(
-                "failed to inspect managed Windows process {process_id}: OS error {error}"
-            ))
-        };
-    }
-    let wait = unsafe { WaitForSingleObject(handle, 0) };
-    unsafe {
-        CloseHandle(handle);
-    }
-    Ok(wait == WAIT_TIMEOUT)
-}
-
 /// Terminates the operating-system process-tree owner used by one managed exec.
 ///
 /// Unix stores a real process-group ID. Windows stores the PID of the Morphz
-/// sandbox runner: closing that client process also closes its Codex command-
+/// sandbox runner: closing that client process also closes its Morphz command-
 /// runner transport, whose Job Object then terminates every sandbox descendant.
 #[cfg(unix)]
 pub(crate) fn terminate_process_tree(process_group_id: i32) -> Result<bool, String> {
@@ -7941,14 +7935,18 @@ struct ManagedProcessTreeGuard {
     pgid: i32,
     armed: bool,
     task_id: Option<String>,
+    #[cfg(windows)]
+    job: Option<codex_utils_pty::JobObject>,
 }
 
 impl ManagedProcessTreeGuard {
-    fn new(pgid: i32) -> Self {
+    fn new(pgid: i32, #[cfg(windows)] job: Option<codex_utils_pty::JobObject>) -> Self {
         Self {
             pgid,
             armed: true,
             task_id: None,
+            #[cfg(windows)]
+            job,
         }
     }
 
@@ -7965,6 +7963,10 @@ impl Drop for ManagedProcessTreeGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
+        }
+        #[cfg(windows)]
+        if let Some(job) = self.job.as_ref() {
+            let _ = job.terminate();
         }
         let _ = terminate_process_tree(self.pgid);
         if let Some(task_id) = self.task_id.as_deref() {
@@ -8524,6 +8526,30 @@ impl Tool for ExecuteCommandTool {
         // the real spawn boundary before crossing it so preflight failures can
         // remain safely terminal without masquerading as side-effect loss.
         mark_physical_side_effect().await?;
+        #[cfg(windows)]
+        let outer_job = {
+            let job = match codex_utils_pty::JobObject::create_without_breakaway() {
+                Ok(job) => job,
+                Err(error) => {
+                    if let Some((scheduler, reserved)) = reserved_background {
+                        scheduler
+                            .fail_reserved_execution(
+                                reserved,
+                                format!(
+                                    "Managed background process Job could not be created: {error}"
+                                ),
+                            )
+                            .await?;
+                    }
+                    return Err(format!(
+                        "failed to create the managed Windows process Job: {error}"
+                    )
+                    .into());
+                }
+            };
+            job.prepare_suspended_spawn(&mut cmd);
+            Some(job)
+        };
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -8537,6 +8563,32 @@ impl Tool for ExecuteCommandTool {
                 }
                 return Err(error.into());
             }
+        };
+        let raw_pid = child.id().ok_or("Failed to obtain process ID")?;
+        #[cfg(windows)]
+        let outer_job = match outer_job {
+            Some(job) => match job.assign_and_resume_process(raw_pid) {
+                Ok(true) => Some(job),
+                Ok(false) => None,
+                Err(error) => {
+                    let _ = child.kill().await;
+                    if let Some((scheduler, reserved)) = reserved_background {
+                        scheduler
+                            .fail_reserved_execution(
+                                reserved,
+                                format!(
+                                    "Managed background process could not enter its Windows Job: {error}"
+                                ),
+                            )
+                            .await?;
+                    }
+                    return Err(format!(
+                        "failed to assign the managed Windows process to its Job: {error}"
+                    )
+                    .into());
+                }
+            },
+            None => None,
         };
         if let Some(payload) = startup_stdin {
             let mut stdin = child
@@ -8556,11 +8608,14 @@ impl Tool for ExecuteCommandTool {
                 .into());
             }
         }
-        let raw_pid = child.id().ok_or("Failed to obtain process ID")?;
         let pid = i32::try_from(raw_pid).map_err(|_| {
             format!("spawned process ID {raw_pid} exceeds Morphz's durable process-owner range")
         })?;
-        let mut process_tree_guard = ManagedProcessTreeGuard::new(pid);
+        let mut process_tree_guard = ManagedProcessTreeGuard::new(
+            pid,
+            #[cfg(windows)]
+            outer_job,
+        );
 
         let task_id = durable_task_id.unwrap_or_else(|| {
             format!(
@@ -10157,10 +10212,8 @@ Body
         );
         let encoded = serde_json::to_value(&skills).unwrap();
         assert_eq!(encoded[0]["description"], "First capability");
-        assert!(encoded[0]["path"]
-            .as_str()
-            .unwrap()
-            .ends_with("a-first/SKILL.md"));
+        assert!(std::path::Path::new(encoded[0]["path"].as_str().unwrap())
+            .ends_with(std::path::Path::new("a-first").join("SKILL.md")));
     }
 
     #[tokio::test]
@@ -13096,11 +13149,15 @@ Body
             artifact_dir: tmp.path().join("artifacts").to_string_lossy().to_string(),
             ..BackgroundTaskConfig::default()
         });
+        let command = platform_test_shell_command(
+            "rustc --edition=2021 --test check.rs -o check-bin && ./check-bin",
+            "rustc --edition=2021 --test check.rs -o check-bin.exe; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; & .\\check-bin.exe; exit $LASTEXITCODE",
+        );
         let result = ExecuteCommandTool::new_with_configs(bus, background, security, 30)
             .execute(
                 &serde_json::json!({
                     "cwd": ".",
-                    "command": "rustc --edition=2021 --test check.rs -o check-bin && ./check-bin",
+                    "command": command,
                     "wait_ms": 30000
                 })
                 .to_string(),
@@ -13108,7 +13165,10 @@ Body
             .await
             .unwrap();
         let result_json: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(result_json["exit_code"], 0);
+        assert_eq!(
+            result_json["exit_code"], 0,
+            "cross-platform coding smoke failed: {result_json}"
+        );
         assert_eq!(result_json["process_status"], "succeeded");
         assert!(result.contains("1 passed"));
     }
@@ -13213,10 +13273,14 @@ Body
 
     #[tokio::test]
     async fn exec_preserves_arbitrary_text_and_isolates_only_named_environment_secrets() {
+        let literal_command = platform_test_shell_command(
+            "printf agtk_1234567890",
+            "[Console]::Out.Write('agtk_1234567890')",
+        );
         let literal_result = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
             .execute(
                 &serde_json::json!({
-                    "command": "printf agtk_1234567890"
+                    "command": literal_command
                 })
                 .to_string(),
             )
@@ -13228,10 +13292,14 @@ Body
         let _environment_guard = SECRET_ENV_TEST_LOCK.lock().await;
         const NAME: &str = "MORPHZ_TEST_OPAQUE";
         unsafe { std::env::set_var(NAME, "test-secret-value-123") };
+        let secret_command = platform_test_shell_command(
+            "printf \"$MORPHZ_TEST_OPAQUE\"",
+            "[Console]::Out.Write($env:MORPHZ_TEST_OPAQUE)",
+        );
         let result = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
             .execute(
                 &serde_json::json!({
-                    "command": "printf \"$MORPHZ_TEST_OPAQUE\"",
+                    "command": secret_command,
                     "requested_permissions": { "secret_env": [NAME] }
                 })
                 .to_string(),
@@ -13366,6 +13434,7 @@ Body
         assert!(stderr_task.is_finished());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn exec_kills_residual_process_group_when_detachment_is_constructed_dynamically() {
         let workspace = TempDir::new().unwrap();
@@ -13711,8 +13780,10 @@ Body
             ..BackgroundTaskConfig::default()
         });
         let tool = ExecuteCommandTool::new_with_configs(bus, background, permissive_security(), 30);
+        let command =
+            platform_test_shell_command("printf abcdefghi", "[Console]::Out.Write('abcdefghi')");
         let result = tool
-            .execute(&serde_json::json!({ "command": "printf abcdefghi" }).to_string())
+            .execute(&serde_json::json!({ "command": command }).to_string())
             .await
             .unwrap();
         assert!(result.contains("Context preview was truncated at the buffer limit"));
@@ -13731,9 +13802,13 @@ Body
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let tool = exec_tool_for_tests(Arc::clone(&bus));
 
+        let command = platform_test_shell_command(
+            "sleep 10 && echo 'finished'",
+            "Start-Sleep -Seconds 10; [Console]::Out.WriteLine('finished')",
+        );
         // Start a long-running command with a short synchronous wait interval.
         let args = serde_json::json!({
-            "command": "sleep 10 && echo 'finished'",
+            "command": command,
             "wait_ms": 1000
         });
 
@@ -13797,6 +13872,18 @@ Body
             "trigger-explicit-background",
         )
         .await;
+        let release_literal = powershell_test_literal(release.display().to_string());
+        let completed_literal = powershell_test_literal(completed.display().to_string());
+        let command = platform_test_shell_command(
+            format!(
+                "while [ ! -f '{}' ]; do sleep 0.02; done; touch '{}'",
+                release.display(),
+                completed.display()
+            ),
+            format!(
+                "while (-not (Test-Path -LiteralPath '{release_literal}')) {{ Start-Sleep -Milliseconds 20 }}; New-Item -ItemType File -Force -Path '{completed_literal}' | Out-Null"
+            ),
+        );
         let started = tokio::time::Instant::now();
         let result = CURRENT_EXECUTION_JOB
             .scope(
@@ -13809,10 +13896,7 @@ Body
                             parent.activation_id.clone(),
                             tool.execute(
                                 &serde_json::json!({
-                                    "command": format!(
-                                        "while [ ! -f '{}' ]; do sleep 0.02; done; touch '{}'",
-                                        release.display(), completed.display()
-                                    ),
+                                    "command": command,
                                     "background": true,
                                     "keep_running": true
                                 })
@@ -13824,7 +13908,15 @@ Body
             )
             .await
             .unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let receipt_deadline = if cfg!(windows) {
+            // Includes cold PowerShell startup and the durable child
+            // reservation on Windows, while remaining far shorter than the
+            // intentionally unbounded service lifetime.
+            std::time::Duration::from_secs(5)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        assert!(started.elapsed() < receipt_deadline);
         let receipt: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(receipt["execution"], "background");
         assert_eq!(receipt["background_source"], "explicit_parameter");
@@ -13911,9 +14003,15 @@ Body
             Some(scheduler),
         );
         let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(1);
-        let command = format!(
-            "sleep 0.05; i=0; while [ \"$i\" -lt 20000 ]; do printf '0123456789abcdef0123456789abcdef\\n'; i=$((i + 1)); done; touch '{}'",
-            completed.display()
+        let completed_literal = powershell_test_literal(completed.display().to_string());
+        let command = platform_test_shell_command(
+            format!(
+                "sleep 0.05; i=0; while [ \"$i\" -lt 20000 ]; do printf '0123456789abcdef0123456789abcdef\\n'; i=$((i + 1)); done; touch '{}'",
+                completed.display()
+            ),
+            format!(
+                "Start-Sleep -Milliseconds 50; [Console]::Out.Write(('0123456789abcdef0123456789abcdef' + [Environment]::NewLine) * 20000); New-Item -ItemType File -Force -Path '{completed_literal}' | Out-Null"
+            ),
         );
 
         // Edge execution intentionally has no CURRENT_EXECUTION_JOB: the
@@ -13983,7 +14081,6 @@ Body
         let workspace = TempDir::new().unwrap();
         let artifacts = workspace.path().join("artifacts");
         let started = workspace.path().join("started");
-        let completed = workspace.path().join("completed");
         let tool = Arc::new(ExecuteCommandTool::new_with_configs(
             Arc::new(crate::event::InMemoryEventBus::new()),
             Arc::new(BackgroundTaskConfig {
@@ -13993,12 +14090,18 @@ Body
             permissive_security(),
             30,
         ));
-        let arguments = serde_json::json!({
-            "command": format!(
-                "touch '{}' && sleep 1 && touch '{}'",
-                started.display(),
-                completed.display()
+        let started_literal = powershell_test_literal(started.display().to_string());
+        let command = platform_test_shell_command(
+            format!(
+                "/bin/sh -c 'sleep 30 & child=$!; printf \"%s %s\\n\" \"$$\" \"$child\" > \"{}\"; wait \"$child\"'",
+                started.display()
             ),
+            format!(
+                "$child = Start-Process -FilePath \"$PSHOME\\powershell.exe\" -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30') -PassThru; Set-Content -LiteralPath '{started_literal}' -Value \"$PID $($child.Id)\"; Wait-Process -Id $child.Id"
+            ),
+        );
+        let arguments = serde_json::json!({
+            "command": command.clone(),
             "wait_ms": 10_000
         })
         .to_string();
@@ -14007,22 +14110,68 @@ Body
             tokio::spawn(async move { tool.execute(&arguments).await })
         };
 
-        tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
-            while !started.exists() {
+        let startup_deadline = if cfg!(windows) {
+            tokio::time::Duration::from_secs(8)
+        } else {
+            tokio::time::Duration::from_secs(2)
+        };
+        let process_ids = tokio::time::timeout(startup_deadline, async {
+            loop {
+                if let Ok(marker) = std::fs::read_to_string(&started) {
+                    let process_ids = marker
+                        .split_whitespace()
+                        .filter_map(|value| value.parse::<i32>().ok())
+                        .collect::<Vec<_>>();
+                    if process_ids.len() == 2 {
+                        break process_ids;
+                    }
+                }
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("exec process should start before cancellation");
+        .expect("exec process should publish readable process IDs before cancellation");
+        assert_eq!(process_ids.len(), 2, "unexpected process marker");
+        let wrapper_pid = get_tasks_map()
+            .iter()
+            .find(|task| task.cmd_str == command)
+            .map(|task| task.pgid)
+            .expect("exec wrapper must be registered before cancellation");
         execution.abort();
         let _ = execution.await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(1_200)).await;
+
+        let terminated = tokio::time::timeout(tokio::time::Duration::from_secs(8), async {
+            loop {
+                let any_alive = process_ids.iter().any(|process_id| {
+                    crate::execution::local_process_id_exists(*process_id).unwrap_or(true)
+                });
+                if !any_alive {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        if terminated.is_err() {
+            let alive = process_ids
+                .iter()
+                .copied()
+                .filter(|process_id| {
+                    crate::execution::local_process_id_exists(*process_id).unwrap_or(true)
+                })
+                .collect::<Vec<_>>();
+            let wrapper_alive =
+                crate::execution::local_process_id_exists(wrapper_pid).unwrap_or(true);
+            let forced_cleanup = terminate_process_tree(wrapper_pid);
+            panic!(
+                "aborted exec future left its shell or a descendant process running: wrapper={wrapper_pid}, wrapper_alive={wrapper_alive}, forced_cleanup={forced_cleanup:?}, all={process_ids:?}, alive={alive:?}"
+            );
+        }
 
         assert!(started.exists());
-        assert!(
-            !completed.exists(),
-            "aborted exec future left a descendant process running"
-        );
+        assert!(process_ids.iter().all(|process_id| {
+            !crate::execution::local_process_id_exists(*process_id).unwrap_or(true)
+        }));
     }
 
     #[tokio::test]
@@ -14078,6 +14227,10 @@ Body
             "trigger-durable-background-success",
         )
         .await;
+        let command = platform_test_shell_command(
+            "sleep 0.2 && printf durable-done",
+            "Start-Sleep -Milliseconds 200; [Console]::Out.Write('durable-done')",
+        );
         let result = CURRENT_EXECUTION_JOB
             .scope(
                 Some(parent.clone()),
@@ -14089,7 +14242,7 @@ Body
                             parent.activation_id.clone(),
                             tool.execute(
                                 &serde_json::json!({
-                                    "command": "sleep 0.2 && printf durable-done",
+                                    "command": command,
                                     "wait_ms": 10
                                 })
                                 .to_string(),
@@ -14104,7 +14257,12 @@ Body
         let task_id = result["task_id"].as_str().unwrap().to_string();
         assert_eq!(result["execution"], "background");
 
-        let completion = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+        let completion_deadline = if cfg!(windows) {
+            std::time::Duration::from_secs(8)
+        } else {
+            std::time::Duration::from_secs(3)
+        };
+        let completion = tokio::time::timeout(completion_deadline, receiver.recv())
             .await
             .expect("background process must complete")
             .expect("completion channel must remain open");
@@ -14611,6 +14769,7 @@ Body
             "trigger-durable-background",
         )
         .await;
+        let command = platform_test_shell_command("sleep 30", "Start-Sleep -Seconds 30");
         let result = CURRENT_EXECUTION_JOB
             .scope(
                 Some(parent.clone()),
@@ -14631,7 +14790,7 @@ Body
                                 }),
                                 tool.execute(
                                     &serde_json::json!({
-                                        "command": "sleep 30",
+                                        "command": command,
                                         "wait_ms": 10
                                     })
                                     .to_string(),
@@ -15686,9 +15845,13 @@ Body
         };
         let result = CURRENT_CAUSAL_ROUTE
             .scope(Some(route.clone()), async {
+                let command = platform_test_shell_command(
+                    "sleep 1 && printf done",
+                    "Start-Sleep -Seconds 1; [Console]::Out.Write('done')",
+                );
                 tool.execute(
                     &serde_json::json!({
-                        "command": "sleep 1 && printf done",
+                        "command": command,
                         "wait_ms": 10
                     })
                     .to_string(),
@@ -15700,7 +15863,12 @@ Body
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(result["execution"], "background");
 
-        let completion = tokio::time::timeout(tokio::time::Duration::from_secs(3), receiver.recv())
+        let completion_deadline = if cfg!(windows) {
+            tokio::time::Duration::from_secs(8)
+        } else {
+            tokio::time::Duration::from_secs(3)
+        };
+        let completion = tokio::time::timeout(completion_deadline, receiver.recv())
             .await
             .expect("background task must finish")
             .expect("completion event must be published");
@@ -16684,8 +16852,9 @@ Body
         let exec_tool = exec_tool_for_tests(Arc::clone(&bus));
         let kill_tool = KillTaskTool::without_scheduler();
 
+        let command = platform_test_shell_command("sleep 100", "Start-Sleep -Seconds 100");
         let exec_args = serde_json::json!({
-            "command": "sleep 100",
+            "command": command,
             "wait_ms": 1000
         });
 

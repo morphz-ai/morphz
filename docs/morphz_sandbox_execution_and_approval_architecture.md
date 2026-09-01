@@ -52,7 +52,7 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 
 macOS 与 Linux 为了让编译器和动态链接器可运行，会保留系统公共路径的只读可见性，同时默认遮蔽用户 HOME 与临时数据目录，再显式放行工作区、Cargo/Rustup 和配置的 read roots。Linux/Windows 的 glob protected path 会在每次命令启动时解析已有匹配项；命令在其 writable root 中新建的、此前不存在的同名文件不包含启动前秘密，并会在下一次命令启动时进入保护快照。能力报告和后续评测必须如实保留这些边界，不能描述成“除 read roots 外任何字节都不可读”。
 
-Windows 安装不是单个 `morphz.exe`：`morphz.exe`、`morphz-edge.exe`、`morphz-windows-sandbox-runner.exe`、`codex-command-runner.exe` 与 `codex-windows-sandbox-setup.exe` 构成一个版本一致的发布单元。首次受限执行可能触发系统提权以建立隔离账户、ACL 与 WFP 规则；日常命令随后使用已配置的受限身份。`morphz doctor` 会在 helper 缺失时明确报告 `missing`，而不是静默退回无沙箱执行。
+Windows 安装不是单个 `morphz.exe`：`morphz.exe`、`morphz-edge.exe`、`morphz-windows-sandbox-runner.exe`、`morphz-windows-command-runner.exe` 与 `morphz-windows-sandbox-setup.exe` 构成一个版本一致的发布单元。公开 helper、隔离账户/组、命名管道、私有桌面与 WFP/防火墙对象都使用 Morphz 产品命名；实现源自固定 OpenAI Codex revision 的事实只在第三方许可证、来源记录和架构说明中署名，不能把 Morphz 的运行行为呈现成 Codex 组件。首次受限执行可能触发系统提权以建立隔离账户、ACL 与 WFP 规则；日常命令随后使用已配置的受限身份。`morphz doctor` 会在 helper 缺失时明确报告 `missing`，而不是静默退回无沙箱执行。
 
 WASM、本地容器、远程容器和远程沙箱不在当前实现范围内。接口不阻止未来重新评估它们，但本阶段不为尚未出现的需求增加实现复杂度。
 

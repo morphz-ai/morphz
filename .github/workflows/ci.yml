@@ -136,14 +136,11 @@ jobs:
           bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid --proc /proc -- /bin/true
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
-      - name: Verify sandbox policy contract
-        run: cargo test -p morphz sandbox::tests -- --nocapture
-      - name: Verify native Bubblewrap attack boundary
-        env:
-          MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
-        run: cargo test -p morphz sandbox::linux::tests -- --nocapture
-      - name: Verify exec permission boundary
-        run: cargo test -p morphz tool::tests::exec_ -- --nocapture
+      - name: Verify native Bubblewrap execution contract
+        # Keep the platform probe small and real: compiling every unit test into
+        # one lib-test executable can require several GiB before this Linux-only
+        # boundary runs. The workspace test job above still runs the full suite.
+        run: cargo test -p morphz --test native_sandbox_contract -- --nocapture
 
   native-sandbox-windows:
     name: Native Sandbox (Windows)
@@ -156,7 +153,7 @@ jobs:
           toolchain: 1.97.1
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
-      - name: Build Morphz and the pinned Codex sandbox helpers
+      - name: Build Morphz-branded Windows sandbox helpers
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -207,16 +204,16 @@ jobs:
             -CargoArguments @("build", "-p", "morphz", "--bin", "morphz", "--bin", "morphz-edge", "--bin", "morphz-windows-sandbox-runner") `
             -RequiredTargets @("morphz", "morphz-edge", "morphz-windows-sandbox-runner")
           Build-And-Collect `
-            -CargoArguments @("build", "-p", "codex-windows-sandbox", "--bins") `
-            -RequiredTargets @("codex-command-runner", "codex-windows-sandbox-setup")
+            -CargoArguments @("build", "-p", "morphz-windows-sandbox", "--bins") `
+            -RequiredTargets @("morphz-windows-command-runner", "morphz-windows-sandbox-setup")
           cargo test -p morphz --lib --no-run
       - name: Stage the complete helper bundle beside the Rust test executable
         shell: pwsh
         run: |
           $helpers = @(
             "morphz-windows-sandbox-runner.exe",
-            "codex-command-runner.exe",
-            "codex-windows-sandbox-setup.exe"
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe"
           )
           foreach ($helper in $helpers) {
             $source = Join-Path "target/windows-sandbox-tools" $helper
@@ -238,8 +235,8 @@ jobs:
             "morphz.exe",
             "morphz-edge.exe",
             "morphz-windows-sandbox-runner.exe",
-            "codex-command-runner.exe",
-            "codex-windows-sandbox-setup.exe"
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe"
           )
           foreach ($binary in $binaries) {
             Copy-Item "target/windows-sandbox-tools/$binary" "target/morphz-windows-bundle/$binary" -Force

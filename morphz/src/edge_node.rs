@@ -212,7 +212,18 @@ impl EdgeNodeCredentials {
     }
 
     pub fn load(path: &Path) -> Result<Self, EdgeNodeError> {
-        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "this Morphz Edge Node is not paired yet; run 'morphz-edge pair' first (credentials: '{}')",
+                    path.display()
+                )
+                .into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        Ok(serde_json::from_slice(&bytes)?)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), EdgeNodeError> {
@@ -2200,6 +2211,19 @@ mod tests {
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn missing_edge_credentials_explain_the_pairing_action() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("edge/credentials.json");
+        let error = match EdgeNodeCredentials::load(&missing) {
+            Ok(_) => panic!("missing credentials unexpectedly loaded"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("not paired yet"), "{error}");
+        assert!(error.contains("morphz-edge pair"), "{error}");
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+    }
+
     struct EdgeWorkerTestClient;
 
     #[async_trait::async_trait]
@@ -2562,6 +2586,53 @@ mod tests {
         let foreground_completed = workspace.path().join("foreground-completed");
         let node_id = "node-edge-background";
         let target_id = "target-edge-background";
+        let foreground_literal =
+            crate::tool::powershell_test_literal(foreground_completed.display().to_string());
+        let release_first_literal =
+            crate::tool::powershell_test_literal(release_first.display().to_string());
+        let release_second_literal =
+            crate::tool::powershell_test_literal(release_second.display().to_string());
+        let first_completed_literal =
+            crate::tool::powershell_test_literal(first_completed.display().to_string());
+        let second_completed_literal =
+            crate::tool::powershell_test_literal(second_completed.display().to_string());
+        let sibling_literal =
+            crate::tool::powershell_test_literal(sibling_completed.display().to_string());
+        let foreground_command = crate::tool::platform_test_shell_command(
+            format!(
+                "dd if=/dev/zero bs=16384 count=96 2>/dev/null; sleep 0.15; printf foreground; touch '{}'",
+                foreground_completed.display()
+            ),
+            format!(
+                "[Console]::Out.Write(('0' * (16384 * 96))); Start-Sleep -Milliseconds 150; [Console]::Out.Write('foreground'); New-Item -ItemType File -Force -Path '{foreground_literal}' | Out-Null"
+            ),
+        );
+        let first_service_command = crate::tool::platform_test_shell_command(
+            format!(
+                "i=0; while [ ! -f '{}' ] && [ \"$i\" -lt 250 ]; do sleep 0.02; i=$((i + 1)); done; touch '{}'",
+                release_first.display(),
+                first_completed.display()
+            ),
+            format!(
+                "$i=0; while (-not (Test-Path -LiteralPath '{release_first_literal}') -and $i -lt 250) {{ Start-Sleep -Milliseconds 20; $i++ }}; New-Item -ItemType File -Force -Path '{first_completed_literal}' | Out-Null"
+            ),
+        );
+        let second_service_command = crate::tool::platform_test_shell_command(
+            format!(
+                "i=0; while [ ! -f '{}' ] && [ \"$i\" -lt 250 ]; do sleep 0.02; i=$((i + 1)); done; touch '{}'",
+                release_second.display(),
+                second_completed.display()
+            ),
+            format!(
+                "$i=0; while (-not (Test-Path -LiteralPath '{release_second_literal}') -and $i -lt 250) {{ Start-Sleep -Milliseconds 20; $i++ }}; New-Item -ItemType File -Force -Path '{second_completed_literal}' | Out-Null"
+            ),
+        );
+        let sibling_command = crate::tool::platform_test_shell_command(
+            format!("touch '{}'", sibling_completed.display()),
+            format!("New-Item -ItemType File -Force -Path '{sibling_literal}' | Out-Null"),
+        );
+        let foreground_wait_ms = if cfg!(windows) { 8_000 } else { 1_000 };
+        let sibling_wait_ms = if cfg!(windows) { 5_000 } else { 1_000 };
         let commands = VecDeque::from([
             edge_worker_test_command(
                 "edge-preflight-failure",
@@ -2577,12 +2648,9 @@ mod tests {
                 node_id,
                 target_id,
                 serde_json::json!({
-                    "command": format!(
-                        "dd if=/dev/zero bs=16384 count=96 2>/dev/null; sleep 0.15; printf foreground; touch '{}'",
-                        foreground_completed.display()
-                    ),
+                    "command": foreground_command,
                     "cwd": workspace.path(),
-                    "wait_ms": 1_000
+                    "wait_ms": foreground_wait_ms
                 }),
             ),
             edge_worker_test_command(
@@ -2590,11 +2658,7 @@ mod tests {
                 node_id,
                 target_id,
                 serde_json::json!({
-                    "command": format!(
-                        "i=0; while [ ! -f '{}' ] && [ \"$i\" -lt 250 ]; do sleep 0.02; i=$((i + 1)); done; touch '{}'",
-                        release_first.display(),
-                        first_completed.display()
-                    ),
+                    "command": first_service_command,
                     "cwd": workspace.path(),
                     "wait_ms": 10,
                     "keep_running": true
@@ -2605,11 +2669,7 @@ mod tests {
                 node_id,
                 target_id,
                 serde_json::json!({
-                    "command": format!(
-                        "i=0; while [ ! -f '{}' ] && [ \"$i\" -lt 250 ]; do sleep 0.02; i=$((i + 1)); done; touch '{}'",
-                        release_second.display(),
-                        second_completed.display()
-                    ),
+                    "command": second_service_command,
                     "cwd": workspace.path(),
                     "background": true,
                     "keep_running": true
@@ -2620,9 +2680,9 @@ mod tests {
                 node_id,
                 target_id,
                 serde_json::json!({
-                    "command": format!("touch '{}'", sibling_completed.display()),
+                    "command": sibling_command,
                     "cwd": workspace.path(),
-                    "wait_ms": 1_000
+                    "wait_ms": sibling_wait_ms
                 }),
             ),
         ]);
@@ -2762,7 +2822,16 @@ mod tests {
             // `wait_ms=1_000` boundary. Using the same one-second deadline for
             // both made the test depend on which timer won under CI load,
             // instead of testing whether the worker kept renewing its lease.
-            tokio::time::timeout(std::time::Duration::from_secs(3), worker.poll_once())
+            let harness_deadline = if cfg!(windows) {
+                // A debug Windows build needs longer to forward the 1.5 MiB
+                // high-output fixture through the local HTTP gateway. The
+                // exercised lease remains two seconds and its independent
+                // heartbeat count below still proves it was renewed.
+                std::time::Duration::from_secs(12)
+            } else {
+                std::time::Duration::from_secs(3)
+            };
+            tokio::time::timeout(harness_deadline, worker.poll_once())
                 .await
                 .unwrap_or_else(|_| {
                     panic!("Edge parent command '{expected_job}' occupied its lease")

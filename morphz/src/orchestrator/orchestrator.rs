@@ -19690,17 +19690,10 @@ fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
         // durable expiry clock remains the safe takeover boundary.
         return false;
     }
-    #[cfg(unix)]
-    {
-        matches!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw_pid), None),
-            Err(nix::errno::Errno::ESRCH)
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
+    matches!(
+        crate::execution::local_process_id_exists(raw_pid),
+        Ok(false)
+    )
 }
 
 /// Unique fencing identity for one Runtime instance. The sequence handles

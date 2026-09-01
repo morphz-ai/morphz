@@ -1,0 +1,85 @@
+[package]
+name = "morphz-windows-sandbox"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "morphz_windows_sandbox"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "morphz-windows-sandbox-setup"
+path = "src/bin/setup_main/main.rs"
+
+[[bin]]
+name = "morphz-windows-command-runner"
+path = "src/bin/command_runner/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+codex-utils-pty = { path = "../codex-utils-pty" }
+codex-utils-absolute-path = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+codex-utils-string = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+codex-otel = { path = "../codex-otel-stub" }
+codex-protocol = { git = "https://github.com/openai/codex", rev = "94cbbddafc1776d5e377bca1b05932c697e82238" }
+dunce = "1"
+glob = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["sync", "rt", "macros", "signal", "time"] }
+tracing-appender = "0.2"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+] }
+
+[dependencies.rand]
+version = "0.8"
+default-features = false
+features = ["std", "small_rng"]
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.52"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemServices",
+    "Win32_System_Environment",
+    "Win32_System_Pipes",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Kernel",
+    "Win32_System_Console",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_Networking_WinSock",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Com",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Authentication_Identity",
+    "Win32_System_Rpc",
+    "Win32_Graphics_Gdi",
+    "Win32_System_StationsAndDesktops",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_Registry",
+]
+
+[dev-dependencies]
+pretty_assertions = "1.4"

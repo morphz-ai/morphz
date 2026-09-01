@@ -92,6 +92,9 @@ fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError>
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
+    if morphz::execution_target::run_windows_ssh_askpass_if_requested()? {
+        return Ok(());
+    }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     // Language is needed before Clap can render help or parse errors. Load the
     // host-owned environment and the non-secret configuration layers without
@@ -1219,7 +1222,7 @@ async fn dispatch_runtime_command(
         "trajectory episode" => derive_training_episode_command(&runtime, &invocation),
         "job" | "job list" => list_jobs(&runtime, &invocation).await,
         "job cancel" => cancel_job(&runtime, &invocation).await,
-        "doctor" => doctor(&runtime, &app_config),
+        "doctor" => doctor(&runtime, &app_config, &invocation),
         command => Err(format!("命令尚未实现: {command}").into()),
     }
 }
@@ -3865,39 +3868,78 @@ async fn cancel_job(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<
     Ok(())
 }
 
-fn doctor(runtime: &MorphzRuntime, app_config: &config::AppConfig) -> Result<(), AppError> {
+fn doctor(
+    runtime: &MorphzRuntime,
+    app_config: &config::AppConfig,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
     let workspace = std::fs::canonicalize(&app_config.permissions.workspace_root)?;
-    println!("[ok] storage: {}", runtime.storage_label());
-    println!("[ok] workspace: {}", workspace.display());
-    println!(
-        "[ok] sandbox: {:?}, approval: {:?}",
-        app_config.permissions.preset().0,
-        app_config.permissions.preset().1
-    );
+    let storage = runtime.storage_label();
+    let (sandbox_mode, approval_policy, reviewer) = app_config.permissions.preset();
     let native_sandbox = NativeSandbox::for_current_platform().report();
-    let native_label = match native_sandbox.status {
+    let native_status = match native_sandbox.status {
         EnforcementStatus::Enforced => "ok",
         EnforcementStatus::Unavailable => "missing",
     };
+    let (provider_status, provider_summary) =
+        if let Some(provider) = app_config.llm.provider.as_deref() {
+            match build_configured_client(app_config, Some(provider), None) {
+                Ok((_, selected)) => (
+                    "ok",
+                    format!(
+                        "{}/{} ({})",
+                        selected.id,
+                        selected.model,
+                        selected.protocol.as_str()
+                    ),
+                ),
+                Err(error) => ("error", format!("{provider}: {error}")),
+            }
+        } else {
+            ("missing", "run `morphz setup`".to_string())
+        };
+    let tools = runtime.tool_names();
+
+    if json_output(invocation) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "storage": { "status": "ok", "backend": storage },
+                "workspace": { "status": "ok", "path": workspace },
+                "sandbox": {
+                    "status": "ok",
+                    "mode": format!("{sandbox_mode:?}"),
+                    "approval": format!("{approval_policy:?}"),
+                    "reviewer": format!("{reviewer:?}"),
+                },
+                "native_sandbox": {
+                    "status": native_status,
+                    "backend": native_sandbox.backend.as_str(),
+                    "notes": native_sandbox.notes,
+                },
+                "provider": {
+                    "status": provider_status,
+                    "summary": provider_summary,
+                },
+                "tools": { "status": "ok", "names": tools },
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("[ok] storage: {storage}");
+    println!("[ok] workspace: {}", workspace.display());
     println!(
-        "[{native_label}] native sandbox backend: {} ({})",
+        "[ok] sandbox: {:?}, approval: {:?}",
+        sandbox_mode, approval_policy
+    );
+    println!(
+        "[{native_status}] native sandbox backend: {} ({})",
         native_sandbox.backend.as_str(),
         native_sandbox.notes.join("; ")
     );
-    if let Some(provider) = app_config.llm.provider.as_deref() {
-        match build_configured_client(app_config, Some(provider), None) {
-            Ok((_, selected)) => println!(
-                "[ok] provider: {}/{} ({})",
-                selected.id,
-                selected.model,
-                selected.protocol.as_str()
-            ),
-            Err(error) => println!("[error] provider: {provider}: {error}"),
-        }
-    } else {
-        println!("[missing] provider: run `morphz setup`");
-    }
-    println!("[ok] tools: {}", runtime.tool_names().join(", "));
+    println!("[{provider_status}] provider: {provider_summary}");
+    println!("[ok] tools: {}", tools.join(", "));
     Ok(())
 }
 
@@ -4915,6 +4957,7 @@ fn open_dashboard_browser(url: &str) -> std::io::Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShutdownSignal {
     Interrupt,
+    #[cfg(unix)]
     Terminate,
 }
 
@@ -4922,6 +4965,7 @@ impl ShutdownSignal {
     fn as_str(self) -> &'static str {
         match self {
             Self::Interrupt => "SIGINT",
+            #[cfg(unix)]
             Self::Terminate => "SIGTERM",
         }
     }

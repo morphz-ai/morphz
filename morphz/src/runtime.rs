@@ -13062,7 +13062,14 @@ mod tests {
                         id: "long-lived-exec".to_string(),
                         r#type: "function".to_string(),
                         func_name: "exec".to_string(),
-                        arguments: json!({ "command": "sleep 3", "wait_ms": 1 }).to_string(),
+                        arguments: json!({
+                            "command": crate::tool::platform_test_shell_command(
+                                "sleep 3",
+                                "Start-Sleep -Seconds 3",
+                            ),
+                            "wait_ms": 1
+                        })
+                        .to_string(),
                     }],
                 }),
                 _ => Ok(text_response("dev server is listening on 3001")),
@@ -13087,7 +13094,10 @@ mod tests {
                         r#type: "function".to_string(),
                         func_name: "exec".to_string(),
                         arguments: json!({
-                            "command": "sleep 3",
+                            "command": crate::tool::platform_test_shell_command(
+                                "sleep 3",
+                                "Start-Sleep -Seconds 3",
+                            ),
                             "wait_ms": 1,
                             "keep_running": true
                         })
@@ -15799,8 +15809,11 @@ mod tests {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.permissions.mode = PermissionMode::Custom;
-        config.permissions.reviewer = ReviewerKind::Deny;
+        // This test exercises reply/background lifecycle, not filesystem
+        // sandbox setup. On Windows, applying ACLs to the repository-sized
+        // default workspace can synchronously dominate the ten-second turn
+        // deadline and hide the lifecycle behavior under test.
+        config.permissions.mode = PermissionMode::FullAccess;
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         let client = Arc::new(LongLivedProcessReplyClient {
             calls: AtomicU64::new(0),
@@ -15900,8 +15913,9 @@ mod tests {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
-        config.permissions.mode = PermissionMode::Custom;
-        config.permissions.reviewer = ReviewerKind::Deny;
+        // Keep the lifecycle test independent from native sandbox setup; the
+        // Windows sandbox has its own fail-closed and attack regressions.
+        config.permissions.mode = PermissionMode::FullAccess;
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         let client = Arc::new(DeclaredServiceClient {
             calls: AtomicU64::new(0),

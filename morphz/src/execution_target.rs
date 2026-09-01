@@ -6,8 +6,11 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-#[cfg(unix)]
+#[cfg(windows)]
+use std::io::Read as _;
 use std::io::Write as _;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::path::{Component, Path};
 use std::process::Stdio;
@@ -15,6 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+#[cfg(windows)]
+use base64::Engine as _;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -435,7 +440,7 @@ struct ManagedSshAuthentication {
 
 struct ManagedSshAskpass {
     _directory: tempfile::TempDir,
-    _pipes: Vec<std::fs::File>,
+    _pipes: Vec<ManagedSshSecretPipe>,
     helper_path: PathBuf,
     password_pipe_path: Option<PathBuf>,
     key_passphrase_pipe_path: Option<PathBuf>,
@@ -454,16 +459,21 @@ impl ManagedSshAskpass {
         let directory = tempfile::Builder::new()
             .prefix("morphz-ssh-askpass-")
             .tempdir()?;
-        let helper_path = directory.path().join("askpass");
-        std::fs::write(
-            &helper_path,
-            b"#!/bin/sh\nset -eu\ncase \"${1-}\" in\n  *assphrase*|*ASSPHRASE*) fifo=${MORPHZ_SSH_KEY_PASSPHRASE_FIFO-} ;;\n  *assword*|*ASSWORD*) fifo=${MORPHZ_SSH_PASSWORD_FIFO-} ;;\n  *) exit 1 ;;\nesac\n[ -n \"$fifo\" ] || exit 1\nIFS= read -r secret < \"$fifo\"\nprintf '%s\\n' \"$secret\"\n",
-        )?;
         #[cfg(unix)]
-        {
+        let helper_path = {
             use std::os::unix::fs::PermissionsExt;
+            let helper_path = directory.path().join("askpass");
+            std::fs::write(
+                &helper_path,
+                b"#!/bin/sh\nset -eu\ncase \"${1-}\" in\n  *assphrase*|*ASSPHRASE*) fifo=${MORPHZ_SSH_KEY_PASSPHRASE_FIFO-} ;;\n  *assword*|*ASSWORD*) fifo=${MORPHZ_SSH_PASSWORD_FIFO-} ;;\n  *) exit 1 ;;\nesac\n[ -n \"$fifo\" ] || exit 1\nIFS= read -r secret < \"$fifo\"\nprintf '%s\\n' \"$secret\"\n",
+            )?;
             std::fs::set_permissions(&helper_path, std::fs::Permissions::from_mode(0o700))?;
-        }
+            helper_path
+        };
+        #[cfg(windows)]
+        let helper_path = std::env::current_exe().map_err(|error| {
+            format!("failed to locate Morphz for the Windows SSH askpass helper: {error}")
+        })?;
         let mut pipes = Vec::new();
         let password_pipe_path = password
             .map(|secret| create_managed_ssh_secret_pipe(directory.path(), "password.pipe", secret))
@@ -495,6 +505,8 @@ impl ManagedSshAskpass {
             .env("SSH_ASKPASS", &self.helper_path)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("DISPLAY", "morphz-managed-ssh");
+        #[cfg(windows)]
+        command.env("MORPHZ_INTERNAL_SSH_ASKPASS", "1");
         if let Some(path) = self.password_pipe_path.as_ref() {
             command.env("MORPHZ_SSH_PASSWORD_FIFO", path);
         }
@@ -503,6 +515,7 @@ impl ManagedSshAskpass {
         }
     }
 
+    #[cfg(unix)]
     fn command_prefix(&self) -> Vec<String> {
         let mut prefix = vec![
             "env".to_string(),
@@ -517,6 +530,45 @@ impl ManagedSshAskpass {
             prefix.push(format!("MORPHZ_SSH_KEY_PASSPHRASE_FIFO={}", path.display()));
         }
         prefix
+    }
+}
+
+#[cfg(unix)]
+type ManagedSshSecretPipe = std::fs::File;
+
+#[cfg(windows)]
+struct ManagedSshSecretPipe {
+    path: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for ManagedSshSecretPipe {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // Connect once to release a server blocked in ConnectNamedPipe. The
+        // server observes `stop` before writing any credential bytes.
+        for _ in 0..100 {
+            if self
+                .thread
+                .as_ref()
+                .is_none_or(|thread| thread.is_finished())
+            {
+                break;
+            }
+            if std::fs::OpenOptions::new()
+                .read(true)
+                .open(&self.path)
+                .is_ok()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -544,7 +596,7 @@ fn create_managed_ssh_secret_pipe(
     directory: &Path,
     name: &str,
     secret: &str,
-) -> Result<(PathBuf, std::fs::File), TargetExecutionError> {
+) -> Result<(PathBuf, ManagedSshSecretPipe), TargetExecutionError> {
     let path = directory.join(name);
     nix::unistd::mkfifo(
         &path,
@@ -564,13 +616,178 @@ fn create_managed_ssh_secret_pipe(
     Ok((path, pipe))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn create_managed_ssh_secret_pipe(
     _directory: &Path,
-    _name: &str,
-    _secret: &str,
-) -> Result<(PathBuf, std::fs::File), TargetExecutionError> {
-    Err("Managed SSH password/passphrase authentication requires a secure native askpass transport that is not available on this platform; use an SSH key without a passphrase or an Edge Target instead".into())
+    name: &str,
+    secret: &str,
+) -> Result<(PathBuf, ManagedSshSecretPipe), TargetExecutionError> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FlushFileBuffers, WriteFile, PIPE_ACCESS_OUTBOUND,
+    };
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random)?;
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let path = PathBuf::from(format!(
+        r"\\.\pipe\morphz-ssh-askpass-{}-{name}-{suffix}",
+        std::process::id()
+    ));
+    let pipe_name = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let secret = Zeroizing::new(format!("{secret}\n").into_bytes());
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let thread = std::thread::Builder::new()
+        .name(format!("morphz-ssh-askpass-{name}"))
+        .spawn(move || {
+            let mut ready_tx = Some(ready_tx);
+            for _ in 0..4 {
+                let handle = unsafe {
+                    CreateNamedPipeW(
+                        pipe_name.as_ptr(),
+                        PIPE_ACCESS_OUTBOUND,
+                        PIPE_TYPE_BYTE
+                            | PIPE_READMODE_BYTE
+                            | PIPE_WAIT
+                            | PIPE_REJECT_REMOTE_CLIENTS,
+                        1,
+                        u32::try_from(secret.len()).unwrap_or(u32::MAX),
+                        0,
+                        0,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if handle == INVALID_HANDLE_VALUE {
+                    if let Some(sender) = ready_tx.take() {
+                        let _ = sender.send(Err(format!(
+                            "CreateNamedPipeW failed with OS error {}",
+                            unsafe { GetLastError() }
+                        )));
+                    }
+                    return;
+                }
+                if let Some(sender) = ready_tx.take() {
+                    let _ = sender.send(Ok(()));
+                }
+                let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) } != 0
+                    || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+                if connected && !stop_for_thread.load(Ordering::Acquire) {
+                    let mut written = 0_u32;
+                    unsafe {
+                        WriteFile(
+                            handle,
+                            secret.as_ptr().cast(),
+                            u32::try_from(secret.len()).unwrap_or(u32::MAX),
+                            &mut written,
+                            std::ptr::null_mut(),
+                        );
+                        FlushFileBuffers(handle);
+                    }
+                }
+                unsafe {
+                    DisconnectNamedPipe(handle);
+                    CloseHandle(handle);
+                }
+                if stop_for_thread.load(Ordering::Acquire) {
+                    break;
+                }
+            }
+        })?;
+    ready_rx
+        .recv()
+        .map_err(|_| "Windows SSH askpass pipe server exited before startup")??;
+    Ok((
+        path.clone(),
+        ManagedSshSecretPipe {
+            path,
+            stop,
+            thread: Some(thread),
+        },
+    ))
+}
+
+/// Internal Windows OpenSSH askpass entry point. It is called before normal
+/// CLI parsing, reads exactly one credential from a local named pipe, and
+/// never accepts a value through argv or the environment.
+#[cfg(windows)]
+pub fn run_windows_ssh_askpass_if_requested() -> Result<bool, TargetExecutionError> {
+    if std::env::var_os("MORPHZ_INTERNAL_SSH_ASKPASS").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return Ok(false);
+    }
+    let prompt = std::env::args_os()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let password_pipe = std::env::var_os("MORPHZ_SSH_PASSWORD_FIFO").map(PathBuf::from);
+    let key_passphrase_pipe = std::env::var_os("MORPHZ_SSH_KEY_PASSPHRASE_FIFO").map(PathBuf::from);
+    let value = read_windows_ssh_askpass_value(
+        &prompt,
+        password_pipe.as_deref(),
+        key_passphrase_pipe.as_deref(),
+    )?;
+    println!("{}", value.as_str());
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn read_windows_ssh_askpass_value(
+    prompt: &str,
+    password_pipe: Option<&Path>,
+    key_passphrase_pipe: Option<&Path>,
+) -> Result<Zeroizing<String>, TargetExecutionError> {
+    let prompt = prompt.to_ascii_lowercase();
+    let (pipe, label) = if prompt.contains("passphrase") {
+        (key_passphrase_pipe, "MORPHZ_SSH_KEY_PASSPHRASE_FIFO")
+    } else if prompt.contains("password") {
+        (password_pipe, "MORPHZ_SSH_PASSWORD_FIFO")
+    } else {
+        return Err("Windows SSH askpass received an unsupported prompt".into());
+    };
+    let pipe = pipe.ok_or_else(|| format!("Windows SSH askpass is missing {label}"))?;
+    let mut pipe = std::fs::OpenOptions::new().read(true).open(pipe)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    let mut buffer = [0_u8; 1024];
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            // Windows byte-mode named pipes report their normal disconnected
+            // end as either BROKEN_PIPE (109) or NO_DATA (232/233), rather
+            // than a Unix-style zero-byte EOF.
+            Err(error) if matches!(error.raw_os_error(), Some(109 | 232 | 233)) => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut value = Zeroizing::new(String::from_utf8(bytes.to_vec())?);
+    while value.ends_with('\r') || value.ends_with('\n') {
+        value.pop();
+    }
+    if value.is_empty() {
+        return Err("Windows SSH askpass received an empty credential".into());
+    }
+    Ok(value)
+}
+
+#[cfg(not(windows))]
+pub fn run_windows_ssh_askpass_if_requested() -> Result<bool, TargetExecutionError> {
+    Ok(false)
 }
 
 struct ManagedSshIdentityFile {
@@ -589,6 +806,8 @@ impl ManagedSshIdentityFile {
         let directory = tempfile::Builder::new()
             .prefix("morphz-ssh-identity-")
             .tempdir()?;
+        #[cfg(windows)]
+        protect_windows_managed_ssh_path(directory.path(), true)?;
         #[cfg(unix)]
         let identity = {
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -610,10 +829,20 @@ impl ManagedSshIdentityFile {
                 path,
             }
         };
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         let identity = {
             let path = directory.path().join("identity");
-            std::fs::write(&path, private_key.as_bytes())?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(private_key.as_bytes())?;
+            if !private_key.ends_with('\n') {
+                file.write_all(b"\n")?;
+            }
+            file.flush()?;
+            file.sync_all()?;
+            protect_windows_managed_ssh_path(&path, false)?;
             Self {
                 _directory: directory,
                 path,
@@ -621,6 +850,122 @@ impl ManagedSshIdentityFile {
         };
         Ok(identity)
     }
+}
+
+/// Replace inherited Windows ACLs with a protected DACL that grants access
+/// only to the Runtime user. The directory is protected before the private
+/// key is created, so the key is never exposed through the host Temp ACL.
+#[cfg(windows)]
+fn protect_windows_managed_ssh_path(
+    path: &Path,
+    inherit_to_children: bool,
+) -> Result<(), TargetExecutionError> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, GENERIC_ALL,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE,
+        SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY,
+        TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    struct TokenHandle(windows_sys::Win32::Foundation::HANDLE);
+    impl Drop for TokenHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    let mut token = 0;
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let token = TokenHandle(token);
+
+    let mut required = 0_u32;
+    let first =
+        unsafe { GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut required) };
+    if first != 0 || required == 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let words = usize::try_from(required)
+        .unwrap_or(usize::MAX)
+        .div_ceil(std::mem::size_of::<usize>());
+    let mut token_user = vec![0_usize; words];
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            token_user.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let user_sid = unsafe { (*(token_user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    if user_sid.is_null() {
+        return Err("Windows access token did not contain a user SID".into());
+    }
+
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: GENERIC_ALL,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: if inherit_to_children {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            0
+        },
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: user_sid.cast(),
+        },
+    };
+    let mut acl = std::ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &access, std::ptr::null(), &mut acl) };
+    if status != 0 {
+        return Err(format!("SetEntriesInAclW failed with Windows error {status}").into());
+    }
+    struct LocalAcl(*mut windows_sys::Win32::Security::ACL);
+    impl Drop for LocalAcl {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0.cast());
+            }
+        }
+    }
+    let acl = LocalAcl(acl);
+    let mut wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            acl.0,
+            std::ptr::null(),
+        )
+    };
+    if status != 0 {
+        return Err(format!("SetNamedSecurityInfoW failed with Windows error {status}").into());
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -701,6 +1046,7 @@ impl ManagedSshCredentialMaterial {
         }
     }
 
+    #[cfg(unix)]
     fn command_prefix(&self) -> Vec<String> {
         let mut prefix = self
             .askpass
@@ -722,6 +1068,70 @@ impl ManagedSshCredentialMaterial {
             prefix.splice(1..1, removals);
         }
         prefix
+    }
+
+    #[cfg(unix)]
+    fn render_shell_command(&self, ssh: Vec<String>) -> Result<String, TargetExecutionError> {
+        let mut command = self.command_prefix();
+        command.extend(ssh);
+        Ok(command
+            .iter()
+            .map(|part| shell_quote(part))
+            .collect::<Vec<_>>()
+            .join(" "))
+    }
+
+    #[cfg(windows)]
+    fn render_shell_command(&self, mut ssh: Vec<String>) -> Result<String, TargetExecutionError> {
+        if ssh.first().map(String::as_str) != Some("ssh") {
+            return Err("Managed SSH shell command is missing the ssh executable".into());
+        }
+        ssh.remove(0);
+        let decode =
+            |value: &str| base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+        let mut script = "function D([string]$v) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($v)) }; $ErrorActionPreference='Stop'; ".to_string();
+        for name in &self.scrubbed_environment {
+            script.push_str(&format!(
+                "Remove-Item -LiteralPath ('Env:' + (D '{}')) -ErrorAction SilentlyContinue; ",
+                decode(name)
+            ));
+        }
+        if let Some(askpass) = self.askpass.as_ref() {
+            let mut environment = vec![
+                ("SSH_ASKPASS", askpass.helper_path.display().to_string()),
+                ("SSH_ASKPASS_REQUIRE", "force".to_string()),
+                ("DISPLAY", "morphz-managed-ssh".to_string()),
+                ("MORPHZ_INTERNAL_SSH_ASKPASS", "1".to_string()),
+            ];
+            if let Some(path) = askpass.password_pipe_path.as_ref() {
+                environment.push(("MORPHZ_SSH_PASSWORD_FIFO", path.display().to_string()));
+            }
+            if let Some(path) = askpass.key_passphrase_pipe_path.as_ref() {
+                environment.push(("MORPHZ_SSH_KEY_PASSPHRASE_FIFO", path.display().to_string()));
+            }
+            for (name, value) in environment {
+                script.push_str(&format!(
+                    "Set-Item -LiteralPath ('Env:' + (D '{}')) -Value (D '{}'); ",
+                    decode(name),
+                    decode(&value)
+                ));
+            }
+        }
+        let arguments = serde_json::to_string(&ssh)?;
+        script.push_str(&format!(
+            "$a = @(ConvertFrom-Json -InputObject (D '{}')); & (D '{}') @a; exit $LASTEXITCODE",
+            decode(&arguments),
+            decode("ssh.exe")
+        ));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            script
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        Ok(format!(
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
+        ))
     }
 
     fn append_identity_arguments(&self, arguments: &mut Vec<String>) {
@@ -1049,10 +1459,12 @@ fn build_managed_ssh_exec_arguments(
         }
         _ => remote_command.to_string(),
     };
-    let mut ssh = credentials.command_prefix();
-    ssh.push("ssh".to_string());
+    let mut ssh = vec!["ssh".to_string()];
     if endpoint.destination.is_none() {
-        ssh.extend(["-F".to_string(), "/dev/null".to_string()]);
+        ssh.extend([
+            "-F".to_string(),
+            if cfg!(windows) { "NUL" } else { "/dev/null" }.to_string(),
+        ]);
         if credentials.identity.is_none() {
             ssh.extend(["-o".to_string(), "IdentitiesOnly=no".to_string()]);
         }
@@ -1092,11 +1504,7 @@ fn build_managed_ssh_exec_arguments(
         destination,
         managed_ssh_posix_remote_command(&remote_command),
     ]);
-    let ssh = ssh
-        .iter()
-        .map(|part| shell_quote(part))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let ssh = credentials.render_shell_command(ssh)?;
     let wait_ms = object
         .get("wait_ms")
         .cloned()
@@ -1195,7 +1603,15 @@ fn append_managed_ssh_transport_liveness_options(arguments: &mut Vec<String>) {
 }
 
 pub(crate) fn is_prepared_managed_ssh_exec_command(command: &str) -> bool {
-    command.starts_with("'ssh' ") || (command.starts_with("'env' ") && command.contains(" 'ssh' "))
+    #[cfg(unix)]
+    {
+        command.starts_with("'ssh' ")
+            || (command.starts_with("'env' ") && command.contains(" 'ssh' "))
+    }
+    #[cfg(windows)]
+    {
+        command.starts_with("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ")
+    }
 }
 
 fn tool_result_is_background(
@@ -6466,6 +6882,34 @@ mod tests {
     use crate::secret_store::{SecretScopeKind, SecretStore, SecretValueBackend};
     use std::sync::Mutex;
 
+    #[cfg(windows)]
+    fn decode_windows_managed_ssh_arguments(command: &str) -> Vec<String> {
+        let encoded = command
+            .strip_prefix("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ")
+            .expect("Windows Managed SSH command must use PowerShell EncodedCommand");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert_eq!(bytes.len() % 2, 0);
+        let units = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&units).unwrap();
+        for value in script.split("(D '").skip(1) {
+            let Some(encoded) = value.split_once("')").map(|(encoded, _)| encoded) else {
+                continue;
+            };
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+                continue;
+            };
+            if let Ok(arguments) = serde_json::from_slice::<Vec<String>>(&bytes) {
+                return arguments;
+            }
+        }
+        panic!("Windows Managed SSH EncodedCommand did not contain an SSH argument array");
+    }
+
     struct AlwaysAvailableManagedSshProbe;
 
     #[async_trait::async_trait]
@@ -6832,17 +7276,42 @@ mod tests {
         let prepared: serde_json::Value = serde_json::from_str(&prepared).unwrap();
         let command = prepared["command"].as_str().unwrap();
 
-        assert!(command.contains("'ssh' '-F' '/dev/null'"));
-        assert!(command.contains("'IdentitiesOnly=no'"));
-        assert!(command.contains("'ConnectTimeout=30'"));
-        assert!(command.contains("'ConnectionAttempts=1'"));
-        assert!(command.contains("'ServerAliveInterval=15'"));
-        assert!(command.contains("'ServerAliveCountMax=2'"));
-        assert!(command.contains("'StrictHostKeyChecking=yes'"));
-        assert!(command.contains("'deploy@server.example'"));
-        let expected_remote =
-            managed_ssh_posix_remote_command("cd -- '/srv/app dir' && printf '%s' \"$TOKEN\"");
-        assert!(command.contains(&shell_quote(&expected_remote)));
+        #[cfg(unix)]
+        {
+            assert!(command.contains("'ssh' '-F' '/dev/null'"));
+            assert!(command.contains("'IdentitiesOnly=no'"));
+            assert!(command.contains("'ConnectTimeout=30'"));
+            assert!(command.contains("'ConnectionAttempts=1'"));
+            assert!(command.contains("'ServerAliveInterval=15'"));
+            assert!(command.contains("'ServerAliveCountMax=2'"));
+            assert!(command.contains("'StrictHostKeyChecking=yes'"));
+            assert!(command.contains("'deploy@server.example'"));
+            let expected_remote =
+                managed_ssh_posix_remote_command("cd -- '/srv/app dir' && printf '%s' \"$TOKEN\"");
+            assert!(command.contains(&shell_quote(&expected_remote)));
+        }
+        #[cfg(windows)]
+        {
+            let arguments = decode_windows_managed_ssh_arguments(command);
+            for expected in [
+                "-F",
+                "NUL",
+                "IdentitiesOnly=no",
+                "ConnectTimeout=30",
+                "ConnectionAttempts=1",
+                "ServerAliveInterval=15",
+                "ServerAliveCountMax=2",
+                "StrictHostKeyChecking=yes",
+                "deploy@server.example",
+            ] {
+                assert!(arguments.iter().any(|argument| argument == expected));
+            }
+            let expected_remote =
+                managed_ssh_posix_remote_command("cd -- '/srv/app dir' && printf '%s' \"$TOKEN\"");
+            assert!(arguments
+                .iter()
+                .any(|argument| argument == &expected_remote));
+        }
         assert_eq!(prepared["sandbox_permissions"], "require_escalated");
         assert_eq!(prepared["requested_permissions"]["network"], true);
         assert_eq!(
@@ -6898,41 +7367,69 @@ mod tests {
         let command = prepared_json["command"].as_str().unwrap();
 
         assert!(!prepared.contains(password));
+        #[cfg(unix)]
         assert!(!std::fs::read_to_string(&askpass.helper_path)
             .unwrap()
             .contains(password));
+        #[cfg(unix)]
         assert!(command.starts_with("'env' "));
+        #[cfg(windows)]
+        assert!(command.starts_with("powershell.exe "));
+        #[cfg(unix)]
         assert!(command.contains("'PreferredAuthentications=password'"));
+        #[cfg(unix)]
         assert!(command.contains("'PubkeyAuthentication=no'"));
         assert_eq!(
             prepared_json["requested_permissions"]["secret_env"],
             serde_json::json!(["FEATURIZE_SSH_PASSWORD"])
         );
 
-        let output = std::process::Command::new(&askpass.helper_path)
-            .arg("Enter passphrase for key")
-            .env(
-                "MORPHZ_SSH_PASSWORD_FIFO",
-                askpass.password_pipe_path.as_ref().unwrap(),
-            )
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        #[cfg(unix)]
+        {
+            let output = std::process::Command::new(&askpass.helper_path)
+                .arg("Enter passphrase for key")
+                .env(
+                    "MORPHZ_SSH_PASSWORD_FIFO",
+                    askpass.password_pipe_path.as_ref().unwrap(),
+                )
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
 
-        let output = std::process::Command::new(&askpass.helper_path)
-            .arg("featurize@workspace.featurize.cn's password:")
-            .env(
-                "MORPHZ_SSH_PASSWORD_FIFO",
-                askpass.password_pipe_path.as_ref().unwrap(),
+            let output = std::process::Command::new(&askpass.helper_path)
+                .arg("featurize@workspace.featurize.cn's password:")
+                .env(
+                    "MORPHZ_SSH_PASSWORD_FIFO",
+                    askpass.password_pipe_path.as_ref().unwrap(),
+                )
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{password}\n")
+            );
+        }
+        #[cfg(windows)]
+        {
+            assert!(read_windows_ssh_askpass_value(
+                "Enter passphrase for key",
+                askpass.password_pipe_path.as_deref(),
+                None,
             )
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!("{password}\n")
-        );
+            .is_err());
+            assert_eq!(
+                read_windows_ssh_askpass_value(
+                    "featurize@workspace.featurize.cn's password:",
+                    askpass.password_pipe_path.as_deref(),
+                    None,
+                )
+                .unwrap()
+                .as_str(),
+                password
+            );
+        }
     }
 
     #[test]
@@ -6989,36 +7486,61 @@ mod tests {
         let command = prepared_json["command"].as_str().unwrap();
         assert!(!prepared.contains(private_key));
         assert!(!prepared.contains(passphrase));
+        #[cfg(unix)]
         assert!(command.starts_with("'env' "));
+        #[cfg(unix)]
         assert!(command.contains("'-u' 'SCNET_SSH_KEY'"));
+        #[cfg(unix)]
         assert!(command.contains("'-u' 'SCNET_SSH_KEY_PASSPHRASE'"));
+        #[cfg(unix)]
         assert!(command.contains("'-u' 'SSH_AUTH_SOCK'"));
+        #[cfg(unix)]
         assert!(command.contains("'IdentityFile=none'"));
+        #[cfg(unix)]
         assert!(command.contains("'IdentitiesOnly=yes'"));
+        #[cfg(unix)]
         assert!(command.contains(&shell_quote(&identity_path.display().to_string())));
+        #[cfg(unix)]
         assert!(command.contains("'BatchMode=no'"));
+        #[cfg(unix)]
         assert!(command.contains("'PreferredAuthentications=publickey'"));
+        #[cfg(windows)]
+        assert!(command.starts_with("powershell.exe "));
         assert_eq!(
             prepared_json["requested_permissions"]["secret_env"],
             serde_json::json!(["SCNET_SSH_KEY", "SCNET_SSH_KEY_PASSPHRASE"])
         );
 
         let askpass = credentials.askpass.as_ref().unwrap();
-        let output = std::process::Command::new(&askpass.helper_path)
-            .arg(format!(
-                "Enter passphrase for key '{}':",
-                identity_path.display()
-            ))
-            .env(
-                "MORPHZ_SSH_KEY_PASSPHRASE_FIFO",
-                askpass.key_passphrase_pipe_path.as_ref().unwrap(),
-            )
-            .output()
-            .unwrap();
-        assert!(output.status.success());
+        #[cfg(unix)]
+        {
+            let output = std::process::Command::new(&askpass.helper_path)
+                .arg(format!(
+                    "Enter passphrase for key '{}':",
+                    identity_path.display()
+                ))
+                .env(
+                    "MORPHZ_SSH_KEY_PASSPHRASE_FIFO",
+                    askpass.key_passphrase_pipe_path.as_ref().unwrap(),
+                )
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{passphrase}\n")
+            );
+        }
+        #[cfg(windows)]
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!("{passphrase}\n")
+            read_windows_ssh_askpass_value(
+                &format!("Enter passphrase for key '{}':", identity_path.display()),
+                None,
+                askpass.key_passphrase_pipe_path.as_deref(),
+            )
+            .unwrap()
+            .as_str(),
+            passphrase
         );
 
         drop(credentials);
@@ -7125,17 +7647,43 @@ mod tests {
         .unwrap();
         let prepared: serde_json::Value = serde_json::from_str(&prepared).unwrap();
         let command = prepared["command"].as_str().unwrap();
-        assert!(command.starts_with("'ssh' "));
-        assert!(!command.contains("'-F' '/dev/null'"));
-        assert!(!command.contains("'IdentitiesOnly=no'"));
-        assert!(command.contains("'ConnectTimeout=30'"));
-        assert!(command.contains("'ConnectionAttempts=1'"));
-        assert!(command.contains("'ServerAliveInterval=15'"));
-        assert!(command.contains("'ServerAliveCountMax=2'"));
-        assert!(command.contains("'StrictHostKeyChecking=yes'"));
-        assert!(command.contains("'-l' 'deploy'"));
-        assert!(command.contains("'-p' '2222'"));
-        assert!(command.contains("'--' 'production'"));
+        #[cfg(unix)]
+        {
+            assert!(command.starts_with("'ssh' "));
+            assert!(!command.contains("'-F' '/dev/null'"));
+            assert!(!command.contains("'IdentitiesOnly=no'"));
+            assert!(command.contains("'ConnectTimeout=30'"));
+            assert!(command.contains("'ConnectionAttempts=1'"));
+            assert!(command.contains("'ServerAliveInterval=15'"));
+            assert!(command.contains("'ServerAliveCountMax=2'"));
+            assert!(command.contains("'StrictHostKeyChecking=yes'"));
+            assert!(command.contains("'-l' 'deploy'"));
+            assert!(command.contains("'-p' '2222'"));
+            assert!(command.contains("'--' 'production'"));
+        }
+        #[cfg(windows)]
+        {
+            let arguments = decode_windows_managed_ssh_arguments(command);
+            assert!(!arguments.iter().any(|argument| argument == "-F"));
+            assert!(!arguments
+                .iter()
+                .any(|argument| argument == "IdentitiesOnly=no"));
+            for expected in [
+                "ConnectTimeout=30",
+                "ConnectionAttempts=1",
+                "ServerAliveInterval=15",
+                "ServerAliveCountMax=2",
+                "StrictHostKeyChecking=yes",
+                "-l",
+                "deploy",
+                "-p",
+                "2222",
+                "--",
+                "production",
+            ] {
+                assert!(arguments.iter().any(|argument| argument == expected));
+            }
+        }
         assert_eq!(prepared["requested_permissions"]["network"], true);
         assert_eq!(
             prepared["requested_permissions"]["read_paths"],
@@ -7869,11 +8417,10 @@ mod tests {
 
     #[test]
     fn managed_ssh_protocol_supports_core_file_tools() {
-        if std::process::Command::new("python3")
+        let python = std::process::Command::new("python3")
             .arg("--version")
-            .output()
-            .is_err()
-        {
+            .output();
+        if !python.is_ok_and(|output| output.status.success()) {
             return;
         }
         fn invoke(request: serde_json::Value) -> serde_json::Value {
@@ -7882,6 +8429,7 @@ mod tests {
                 .arg(MANAGED_SSH_FILE_TOOL_SCRIPT)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
             std::io::Write::write_all(
@@ -7890,7 +8438,13 @@ mod tests {
             )
             .unwrap();
             let output = child.wait_with_output().unwrap();
-            assert!(output.status.success());
+            assert!(
+                output.status.success(),
+                "Managed SSH file protocol helper failed with status {:?}; stdout={}; stderr={}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
             serde_json::from_slice(&output.stdout).unwrap()
         }
 
