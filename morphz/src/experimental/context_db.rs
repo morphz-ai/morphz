@@ -80,7 +80,7 @@ impl fmt::Display for ContextDbError {
                 "idempotency key '{key}' was already used by a different transaction"
             ),
             Self::Corrupt(message) => write!(formatter, "ContextDB integrity error: {message}"),
-            Self::Storage(error) => write!(formatter, "ContextDB SQLite error: {error}"),
+            Self::Storage(error) => write!(formatter, "ContextDB storage error: {error}"),
             Self::Syntax(error) => write!(formatter, "ContextDB S-expression error: {error}"),
             Self::Codec(error) => write!(formatter, "ContextDB codec error: {error}"),
         }
@@ -860,7 +860,7 @@ fn normalize_transaction_bodies(transaction: &mut ContextTransaction) -> Context
     Ok(())
 }
 
-fn canonicalize_body(input: &str) -> ContextDbResult<(String, String)> {
+pub(crate) fn canonicalize_body(input: &str) -> ContextDbResult<(String, String)> {
     let mut parsed_forms = sexpr::parse_all(input)?;
     if parsed_forms.len() != 1 {
         return Err(ContextDbError::Invalid(format!(
@@ -911,7 +911,7 @@ fn digest_bytes(bytes: &[u8]) -> String {
     output
 }
 
-fn calculate_subtree_hash(
+pub(crate) fn calculate_subtree_hash(
     node_id: &str,
     owner_domain: AuthorityDomain,
     body_sexpr: &str,

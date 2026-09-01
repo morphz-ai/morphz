@@ -1,5 +1,7 @@
 use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
+#[cfg(feature = "experimental-context-db")]
+use morphz::memory::NewMindProjection;
 use morphz::memory::{
     ActivationStore, CognitiveClockStore, ContextCapabilityBindingStore,
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
@@ -10,8 +12,6 @@ use morphz::memory::{
     SessionDirectoryStore, SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore,
     SessionUpdate, ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
 };
-#[cfg(feature = "experimental-context-db")]
-use morphz::memory::NewMindProjection;
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
 #[cfg(feature = "experimental-context-db")]

@@ -27,6 +27,8 @@ pub mod cognitive_coordination_sdk;
 #[cfg(feature = "experimental-context-db")]
 pub mod context_db;
 #[cfg(feature = "experimental-context-db")]
+pub(crate) mod context_db_postgres_runtime;
+#[cfg(feature = "experimental-context-db")]
 pub(crate) mod context_db_runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

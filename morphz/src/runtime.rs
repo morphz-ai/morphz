@@ -1089,17 +1089,6 @@ impl MorphzRuntimeBuilder {
                     )
                 }
                 StorageBackend::Postgres => {
-                    if self
-                        .config
-                        .experimental
-                        .enabled
-                        .contains(crate::experimental::CONTEXT_DB)
-                    {
-                        return Err(
-                            "the context-db experiment currently requires SQLite; PostgreSQL selection is explicit and never silently falls back"
-                                .into(),
-                        );
-                    }
                     let url_env = self.config.storage.postgres.url_env.trim();
                     if url_env.is_empty() {
                         return Err("storage.postgres.url_env must not be empty".into());
@@ -1109,6 +1098,27 @@ impl MorphzRuntimeBuilder {
                             "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
                         )
                     })?;
+                    #[cfg(feature = "experimental-context-db")]
+                    let store = if let Ok(permit) = crate::experimental::require_enabled(
+                        &self.config.experimental.enabled,
+                        crate::experimental::CONTEXT_DB,
+                    ) {
+                        PostgresStore::new_with_context_db(
+                            &database_url,
+                            self.config.storage.postgres.max_connections,
+                            Arc::clone(&observability),
+                            permit,
+                        )
+                        .await?
+                    } else {
+                        PostgresStore::new_with_observability(
+                            &database_url,
+                            self.config.storage.postgres.max_connections,
+                            Arc::clone(&observability),
+                        )
+                        .await?
+                    };
+                    #[cfg(not(feature = "experimental-context-db"))]
                     let store = PostgresStore::new_with_observability(
                         &database_url,
                         self.config.storage.postgres.max_connections,

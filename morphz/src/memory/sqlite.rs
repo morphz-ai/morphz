@@ -37364,6 +37364,63 @@ mod tests {
             serde_json::to_value(&initial_state).unwrap()
         );
 
+        // A syntactically valid plan may still be semantically incomplete.
+        // The ContextDB Merkle commitment must reject it inside the same
+        // transaction rather than advancing metadata to a state whose AST was
+        // never persisted.
+        let mut omitted_state = initial_state.clone();
+        omitted_state.version = 1;
+        omitted_state
+            .protected
+            .insert("omitted-protected-frame".to_string());
+        let omitted_event = Event::new(
+            "context-db-runtime-event-omitted".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let omitted_plan = mutation_plan(&initial_state, &omitted_state, Vec::new());
+        let omitted = store
+            .commit_mind_projection_transaction(
+                &omitted_event,
+                &[],
+                &SessionProjectionMutation::default(),
+                Some(&omitted_plan),
+                0,
+                NewMindProjection {
+                    context_id: "context-db-runtime-context".to_string(),
+                    revision: omitted_state.version,
+                    state: serde_json::to_value(&omitted_state).unwrap(),
+                    state_hash: state_hash(&omitted_state),
+                    head_event_id: Some(omitted_event.id.clone()),
+                    recall_documents: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(omitted.to_string().contains("fenced projection requires"));
+        assert_eq!(
+            store
+                .get_mind_projection("context-db-runtime-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(&initial_state).unwrap()
+        );
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(omitted_event.id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
         let observation = Event::new(
             "context-db-runtime-observation".to_string(),
             "User-Test".to_string(),
@@ -37844,8 +37901,9 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            corruption.to_string().contains("Node identity"),
-            "stable Node identity corruption must fail closed: {corruption}"
+            corruption.to_string().contains("Node identity")
+                || corruption.to_string().contains("subtree hash is invalid"),
+            "stable Node identity corruption must fail closed at identity or Merkle validation: {corruption}"
         );
         sqlx::query(
             r#"UPDATE experimental_contextdb_nodes SET node_id = ?

@@ -834,36 +834,63 @@ async fn dispatch_experiment_command(
             &app_config.experimental.enabled,
             morphz::experimental::CONTEXT_DB,
         )?;
-        if app_config.storage.backend != config::StorageBackend::Sqlite {
-            return Err(
-                "ContextDB legacy migration currently requires storage.backend=sqlite".into(),
-            );
-        }
-        if app_config.storage.sqlite.path.trim() == ":memory:" {
-            return Err("ContextDB legacy migration requires a persistent SQLite path".into());
-        }
         #[cfg(feature = "experimental-context-db")]
         {
-            let report =
-                morphz::memory::sqlite::SqliteStore::migrate_legacy_mind_projections_to_context_db(
+            let (discovered, imported, already_authoritative) = match app_config.storage.backend {
+                config::StorageBackend::Sqlite => {
+                    if app_config.storage.sqlite.path.trim() == ":memory:" {
+                        return Err(
+                            "ContextDB legacy migration requires a persistent SQLite path".into(),
+                        );
+                    }
+                    let report = morphz::memory::sqlite::SqliteStore::migrate_legacy_mind_projections_to_context_db(
                     &app_config.storage.sqlite.path,
                     &app_config.storage.sqlite,
                     permit,
                 )
                 .await?;
+                    (
+                        report.discovered,
+                        report.imported,
+                        report.already_authoritative,
+                    )
+                }
+                config::StorageBackend::Postgres => {
+                    let url_env = app_config.storage.postgres.url_env.trim();
+                    if url_env.is_empty() {
+                        return Err("storage.postgres.url_env must not be empty".into());
+                    }
+                    let database_url = std::env::var(url_env).map_err(|_| {
+                        format!(
+                            "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
+                        )
+                    })?;
+                    let report = morphz::memory::postgres::PostgresStore::migrate_legacy_mind_projections_to_context_db(
+                        &database_url,
+                        app_config.storage.postgres.max_connections,
+                        permit,
+                    )
+                    .await?;
+                    (
+                        report.discovered,
+                        report.imported,
+                        report.already_authoritative,
+                    )
+                }
+            };
             if json_output(invocation) {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "discovered": report.discovered,
-                        "imported": report.imported,
-                        "already_authoritative": report.already_authoritative,
+                        "discovered": discovered,
+                        "imported": imported,
+                        "already_authoritative": already_authoritative,
                     }))?
                 );
             } else {
                 println!(
                     "ContextDB migration complete: discovered={}, imported={}, already_authoritative={}",
-                    report.discovered, report.imported, report.already_authoritative
+                    discovered, imported, already_authoritative
                 );
             }
             return Ok(true);

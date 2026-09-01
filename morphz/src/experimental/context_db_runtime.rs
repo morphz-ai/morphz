@@ -6,9 +6,9 @@
 //! physical transaction.
 
 use super::context_db::{
-    AuthorityDomain, ContextAuthority, ContextDbError, ContextDbResult, ContextNodeDraft,
-    ContextNodeRecord, ContextOperation, ContextSnapshot, ContextTransaction, CreateContextRequest,
-    SqliteContextDb,
+    calculate_subtree_hash, canonicalize_body, AuthorityDomain, ContextAuthority, ContextDbError,
+    ContextDbResult, ContextNodeDraft, ContextNodeRecord, ContextOperation, ContextSnapshot,
+    ContextTransaction, CreateContextRequest, SqliteContextDb,
 };
 use super::ExperimentalFeaturePermit;
 use crate::context_store::{
@@ -28,16 +28,16 @@ use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-const ROOT_NODE_ID: &str = "morphz/root";
-const META_NODE_ID: &str = "morphz/meta";
-const CLOCKS_NODE_ID: &str = "morphz/clocks";
-const FRAMES_NODE_ID: &str = "morphz/frames";
-const RELATIONS_NODE_ID: &str = "morphz/relations";
-const RETIRED_NODE_ID: &str = "morphz/retired";
-const RETIRING_NODE_ID: &str = "morphz/retiring";
-const PROTECTED_NODE_ID: &str = "morphz/protected";
-const CHECKPOINTS_NODE_ID: &str = "morphz/checkpoints";
-const ROOT_BODY: &str = "(context (schema morphz-runtime-mind-v1))";
+pub(crate) const ROOT_NODE_ID: &str = "morphz/root";
+pub(crate) const META_NODE_ID: &str = "morphz/meta";
+pub(crate) const CLOCKS_NODE_ID: &str = "morphz/clocks";
+pub(crate) const FRAMES_NODE_ID: &str = "morphz/frames";
+pub(crate) const RELATIONS_NODE_ID: &str = "morphz/relations";
+pub(crate) const RETIRED_NODE_ID: &str = "morphz/retired";
+pub(crate) const RETIRING_NODE_ID: &str = "morphz/retiring";
+pub(crate) const PROTECTED_NODE_ID: &str = "morphz/protected";
+pub(crate) const CHECKPOINTS_NODE_ID: &str = "morphz/checkpoints";
+pub(crate) const ROOT_BODY: &str = "(context (schema morphz-runtime-mind-v1))";
 const INTERNAL_ACTOR_ID: &str = "morphz-runtime-context-adapter";
 
 #[derive(Debug, Clone)]
@@ -46,11 +46,11 @@ pub(crate) struct ContextDbRuntimeAdapter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ProjectionMeta {
-    revision: u64,
-    state_hash: String,
-    head_event_id: Option<String>,
-    updated_at: DateTime<Utc>,
+pub(crate) struct ProjectionMeta {
+    pub(crate) revision: u64,
+    pub(crate) state_hash: String,
+    pub(crate) head_event_id: Option<String>,
+    pub(crate) updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,28 +64,38 @@ struct ProtectedEntry {
 }
 
 #[derive(Debug, Clone)]
-struct DesiredNode {
-    node_id: String,
-    parent_id: String,
-    order_key: i64,
-    owner_domain: AuthorityDomain,
-    body_sexpr: String,
+pub(crate) struct DesiredNode {
+    pub(crate) node_id: String,
+    pub(crate) parent_id: String,
+    pub(crate) order_key: i64,
+    pub(crate) owner_domain: AuthorityDomain,
+    pub(crate) body_sexpr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RuntimeContextSnapshot {
-    context_id: String,
-    revision: u64,
-    root_node_id: String,
-    root_hash: String,
-    nodes: Vec<ContextNodeRecord>,
+pub(crate) struct RuntimeContextSnapshot {
+    pub(crate) context_id: String,
+    pub(crate) revision: u64,
+    pub(crate) root_node_id: String,
+    pub(crate) root_hash: String,
+    pub(crate) nodes: Vec<ContextNodeRecord>,
 }
 
 #[derive(Debug)]
-struct RuntimeMutationBasis {
-    context_revision: u64,
-    meta_node: ContextNodeRecord,
-    nodes: HashMap<String, ContextNodeRecord>,
+pub(crate) struct RuntimeMutationBasis {
+    pub(crate) context_revision: u64,
+    pub(crate) meta_node: ContextNodeRecord,
+    pub(crate) nodes: HashMap<String, ContextNodeRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeStoragePatch {
+    pub(crate) expected_context_revision: u64,
+    pub(crate) next_context_revision: u64,
+    pub(crate) root_hash: String,
+    pub(crate) deleted_node_ids: Vec<String>,
+    pub(crate) inserted_nodes: Vec<ContextNodeRecord>,
+    pub(crate) updated_nodes: Vec<ContextNodeRecord>,
 }
 
 impl From<ContextSnapshot> for RuntimeContextSnapshot {
@@ -224,6 +234,14 @@ impl ContextDbRuntimeAdapter {
         plan.validate_shape().map_err(ContextDbError::Invalid)?;
         let state = validate_new_projection(projection)?;
         validate_plan_projection(plan, projection)?;
+        // The domain emits local mutations for performance, while the fenced
+        // projection remains the semantic oracle for the complete next Mind.
+        // Materializing its Merkle root is CPU-only: it never reloads the
+        // current Context or derives a second database diff. Comparing this
+        // commitment after applying the bounded mutation plan prevents an
+        // omitted mutation from committing a structurally incomplete Mind.
+        let expected_root_hash =
+            expected_runtime_root_hash(&projection.context_id, projection, updated_at)?;
 
         if matches!(
             plan.mutations.as_slice(),
@@ -268,7 +286,8 @@ impl ContextDbRuntimeAdapter {
                 "a Context Mutation projection must name its trajectory Event".to_string(),
             )
         })?;
-        self.db
+        let receipt = self
+            .db
             .apply_transaction_in_transaction(
                 transaction,
                 ContextTransaction {
@@ -281,6 +300,12 @@ impl ContextDbRuntimeAdapter {
                 },
             )
             .await?;
+        if receipt.root_hash != expected_root_hash {
+            return Err(ContextDbError::Precondition(format!(
+                "Context Mutation produced root '{}' but its fenced projection requires '{}'",
+                receipt.root_hash, expected_root_hash
+            )));
+        }
 
         Ok(MindProjectionRecord {
             context_id: projection.context_id.clone(),
@@ -310,7 +335,9 @@ impl ContextDbRuntimeAdapter {
             },
         )?;
         let operations = diff_nodes(&snapshot, &desired)?;
-        if !operations.is_empty() {
+        let expected_root_hash =
+            expected_runtime_root_hash(&projection.context_id, projection, updated_at)?;
+        let actual_root_hash = if !operations.is_empty() {
             let synchronization_identity = format!(
                 "{}:{}:{}:{}",
                 projection.context_id,
@@ -332,7 +359,15 @@ impl ContextDbRuntimeAdapter {
                         operations,
                     },
                 )
-                .await?;
+                .await?
+                .root_hash
+        } else {
+            snapshot.root_hash
+        };
+        if actual_root_hash != expected_root_hash {
+            return Err(ContextDbError::Precondition(format!(
+                "broad Context synchronization produced root '{actual_root_hash}' but its fenced projection requires '{expected_root_hash}'"
+            )));
         }
         // `apply_transaction_in_transaction` has already fenced and persisted
         // the exact diff in this outer SQLite transaction. Re-reading and
@@ -638,15 +673,15 @@ impl ContextDbRuntimeAdapter {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RuntimeCollectionSpec {
-    physical_kind: &'static str,
-    record_kind: &'static str,
-    parent_id: &'static str,
-    ordered: bool,
-    default_order: i64,
+pub(crate) struct RuntimeCollectionSpec {
+    pub(crate) physical_kind: &'static str,
+    pub(crate) record_kind: &'static str,
+    pub(crate) parent_id: &'static str,
+    pub(crate) ordered: bool,
+    pub(crate) default_order: i64,
 }
 
-fn runtime_collection_spec(
+pub(crate) fn runtime_collection_spec(
     collection: ContextCollection,
 ) -> ContextDbResult<RuntimeCollectionSpec> {
     Ok(match collection {
@@ -702,7 +737,10 @@ fn runtime_collection_spec(
     })
 }
 
-fn runtime_node_id(collection: ContextCollection, logical_id: &str) -> ContextDbResult<String> {
+pub(crate) fn runtime_node_id(
+    collection: ContextCollection,
+    logical_id: &str,
+) -> ContextDbResult<String> {
     if collection == ContextCollection::MutationClocks {
         if logical_id != "mutation-clocks" {
             return Err(ContextDbError::Invalid(format!(
@@ -730,7 +768,7 @@ fn runtime_node_from_row(row: &sqlx::sqlite::SqliteRow) -> ContextDbResult<Conte
     })
 }
 
-fn validate_plan_projection(
+pub(crate) fn validate_plan_projection(
     plan: &ContextMutationPlan,
     projection: &NewMindProjection,
 ) -> ContextDbResult<()> {
@@ -755,7 +793,7 @@ fn validate_plan_projection(
     Ok(())
 }
 
-fn compile_runtime_operations(
+pub(crate) fn compile_runtime_operations(
     plan: &ContextMutationPlan,
     projection: &NewMindProjection,
     updated_at: DateTime<Utc>,
@@ -1044,6 +1082,312 @@ fn compile_runtime_operations(
     Ok(operations)
 }
 
+/// Applies already-validated Runtime operations to a bounded structural basis.
+///
+/// The caller must supply the root, every root child, every directly addressed
+/// Node, descendants of directly addressed Nodes, and every child of a touched
+/// collection parent.  This makes local mutation cost proportional to changed
+/// collections while still producing the exact global Merkle root.  The pure
+/// transition is shared by PostgreSQL persistence and deterministic tests;
+/// SQL is responsible only for locking and atomically storing this patch.
+pub(crate) fn apply_runtime_operations_to_basis(
+    context_id: &str,
+    basis: &RuntimeMutationBasis,
+    operations: &[ContextOperation],
+) -> ContextDbResult<RuntimeStoragePatch> {
+    let mut nodes = basis.nodes.clone();
+    if nodes
+        .insert(META_NODE_ID.to_string(), basis.meta_node.clone())
+        .is_some()
+    {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{context_id}' mutation basis duplicates projection metadata"
+        )));
+    }
+    let original = nodes.clone();
+    let mut dirty_parents = BTreeSet::new();
+
+    for operation in operations {
+        match operation {
+            ContextOperation::InsertNode { node } => {
+                require_runtime_domain(node.owner_domain)?;
+                let parent_id = node.parent_id.as_deref().ok_or_else(|| {
+                    ContextDbError::Invalid(
+                        "Runtime mutation cannot insert a second root".to_string(),
+                    )
+                })?;
+                let parent = nodes.get(parent_id).ok_or_else(|| {
+                    ContextDbError::Precondition(format!(
+                        "Runtime mutation parent Node '{parent_id}' is absent from its locked basis"
+                    ))
+                })?;
+                require_runtime_domain(parent.owner_domain)?;
+                if nodes.contains_key(&node.node_id) {
+                    return Err(ContextDbError::AlreadyExists(format!(
+                        "Node '{}' in Context '{context_id}'",
+                        node.node_id
+                    )));
+                }
+                let (body_sexpr, content_hash) = canonicalize_body(&node.body_sexpr)?;
+                let subtree_hash =
+                    calculate_subtree_hash(&node.node_id, node.owner_domain, &body_sexpr, &[]);
+                nodes.insert(
+                    node.node_id.clone(),
+                    ContextNodeRecord {
+                        node_id: node.node_id.clone(),
+                        parent_id: Some(parent_id.to_string()),
+                        order_key: node.order_key,
+                        owner_domain: node.owner_domain,
+                        node_revision: 1,
+                        body_sexpr,
+                        content_hash,
+                        subtree_hash,
+                    },
+                );
+                dirty_parents.insert(parent_id.to_string());
+            }
+            ContextOperation::ReplaceNode {
+                node_id,
+                expected_node_revision,
+                body_sexpr,
+            } => {
+                let children = runtime_child_descriptors(&nodes, node_id);
+                let current = nodes
+                    .get_mut(node_id)
+                    .ok_or_else(|| ContextDbError::NotFound(format!("Node '{node_id}'")))?;
+                require_runtime_domain(current.owner_domain)?;
+                if current.node_revision != *expected_node_revision {
+                    return Err(ContextDbError::Precondition(format!(
+                        "Node '{node_id}' revision is {}, expected {expected_node_revision}",
+                        current.node_revision
+                    )));
+                }
+                let (canonical, content_hash) = canonicalize_body(body_sexpr)?;
+                current.node_revision = current
+                    .node_revision
+                    .checked_add(1)
+                    .ok_or_else(|| ContextDbError::Invalid("Node revision overflow".to_string()))?;
+                current.body_sexpr = canonical;
+                current.content_hash = content_hash;
+                current.subtree_hash = calculate_subtree_hash(
+                    &current.node_id,
+                    current.owner_domain,
+                    &current.body_sexpr,
+                    &children,
+                );
+                if let Some(parent_id) = &current.parent_id {
+                    dirty_parents.insert(parent_id.clone());
+                }
+            }
+            ContextOperation::DeleteSubtree {
+                node_id,
+                expected_subtree_hash,
+            } => {
+                if node_id == ROOT_NODE_ID {
+                    return Err(ContextDbError::Invalid(
+                        "the Runtime Context root cannot be deleted".to_string(),
+                    ));
+                }
+                let current = nodes
+                    .get(node_id)
+                    .cloned()
+                    .ok_or_else(|| ContextDbError::NotFound(format!("Node '{node_id}'")))?;
+                require_runtime_domain(current.owner_domain)?;
+                if current.subtree_hash != *expected_subtree_hash {
+                    return Err(ContextDbError::Precondition(format!(
+                        "Node '{node_id}' subtree changed since it was read"
+                    )));
+                }
+                let descendants = runtime_descendants(&nodes, node_id)?;
+                for descendant_id in &descendants {
+                    let descendant = nodes.get(descendant_id).ok_or_else(|| {
+                        ContextDbError::Corrupt(format!(
+                            "Runtime descendant '{descendant_id}' disappeared"
+                        ))
+                    })?;
+                    require_runtime_domain(descendant.owner_domain)?;
+                }
+                if let Some(parent_id) = &current.parent_id {
+                    let parent = nodes.get(parent_id).ok_or_else(|| {
+                        ContextDbError::Corrupt(format!(
+                            "Node '{node_id}' references missing parent '{parent_id}'"
+                        ))
+                    })?;
+                    require_runtime_domain(parent.owner_domain)?;
+                    dirty_parents.insert(parent_id.clone());
+                }
+                for descendant_id in descendants {
+                    nodes.remove(&descendant_id);
+                }
+            }
+            ContextOperation::MoveSubtree {
+                node_id,
+                expected_node_revision,
+                expected_subtree_hash,
+                new_parent_id,
+                new_order_key,
+            } => {
+                if node_id == ROOT_NODE_ID {
+                    return Err(ContextDbError::Invalid(
+                        "the Runtime Context root cannot be moved".to_string(),
+                    ));
+                }
+                let current = nodes
+                    .get(node_id)
+                    .cloned()
+                    .ok_or_else(|| ContextDbError::NotFound(format!("Node '{node_id}'")))?;
+                require_runtime_domain(current.owner_domain)?;
+                if current.node_revision != *expected_node_revision
+                    || current.subtree_hash != *expected_subtree_hash
+                {
+                    return Err(ContextDbError::Precondition(format!(
+                        "Node '{node_id}' changed since it was read"
+                    )));
+                }
+                let parent = nodes
+                    .get(new_parent_id)
+                    .ok_or_else(|| ContextDbError::NotFound(format!("Node '{new_parent_id}'")))?;
+                require_runtime_domain(parent.owner_domain)?;
+                if runtime_descendants(&nodes, node_id)?
+                    .iter()
+                    .any(|descendant| descendant == new_parent_id)
+                {
+                    return Err(ContextDbError::Invalid(format!(
+                        "moving Node '{node_id}' below '{new_parent_id}' would create a cycle"
+                    )));
+                }
+                if let Some(old_parent_id) = &current.parent_id {
+                    dirty_parents.insert(old_parent_id.clone());
+                }
+                let current = nodes.get_mut(node_id).expect("Node was checked above");
+                current.parent_id = Some(new_parent_id.clone());
+                current.order_key = *new_order_key;
+                current.node_revision = current
+                    .node_revision
+                    .checked_add(1)
+                    .ok_or_else(|| ContextDbError::Invalid("Node revision overflow".to_string()))?;
+                dirty_parents.insert(new_parent_id.clone());
+            }
+        }
+    }
+
+    // Runtime's schema is two levels deep. Recompute changed collection roots
+    // before the global root; untouched collections contribute their persisted
+    // Merkle roots without loading their leaf bodies.
+    let mut collection_parents = dirty_parents
+        .iter()
+        .filter(|node_id| node_id.as_str() != ROOT_NODE_ID)
+        .cloned()
+        .collect::<Vec<_>>();
+    collection_parents.sort();
+    for parent_id in collection_parents {
+        refresh_materialized_subtree_hash(&mut nodes, &parent_id)?;
+        dirty_parents.insert(ROOT_NODE_ID.to_string());
+    }
+    if dirty_parents.contains(ROOT_NODE_ID) {
+        refresh_materialized_subtree_hash(&mut nodes, ROOT_NODE_ID)?;
+    }
+    let root_hash = nodes
+        .get(ROOT_NODE_ID)
+        .ok_or_else(|| {
+            ContextDbError::Corrupt("Runtime root is absent from mutation basis".to_string())
+        })?
+        .subtree_hash
+        .clone();
+
+    let mut deleted_node_ids = original
+        .keys()
+        .filter(|node_id| !nodes.contains_key(*node_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    deleted_node_ids.sort();
+    let mut inserted_nodes = nodes
+        .iter()
+        .filter(|(node_id, _)| !original.contains_key(*node_id))
+        .map(|(_, node)| node.clone())
+        .collect::<Vec<_>>();
+    inserted_nodes.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+    let mut updated_nodes = nodes
+        .iter()
+        .filter_map(|(node_id, node)| {
+            original
+                .get(node_id)
+                .filter(|current| *current != node)
+                .map(|_| node.clone())
+        })
+        .collect::<Vec<_>>();
+    updated_nodes.sort_by(|left, right| left.node_id.cmp(&right.node_id));
+    let next_context_revision = basis
+        .context_revision
+        .checked_add(1)
+        .ok_or_else(|| ContextDbError::Invalid("Context revision overflow".to_string()))?;
+    Ok(RuntimeStoragePatch {
+        expected_context_revision: basis.context_revision,
+        next_context_revision,
+        root_hash,
+        deleted_node_ids,
+        inserted_nodes,
+        updated_nodes,
+    })
+}
+
+fn require_runtime_domain(domain: AuthorityDomain) -> ContextDbResult<()> {
+    if matches!(
+        domain,
+        AuthorityDomain::RuntimeControl | AuthorityDomain::AgentMind
+    ) {
+        Ok(())
+    } else {
+        Err(ContextDbError::AuthorityDenied {
+            actor_id: INTERNAL_ACTOR_ID.to_string(),
+            domain,
+        })
+    }
+}
+
+fn runtime_child_descriptors(
+    nodes: &HashMap<String, ContextNodeRecord>,
+    parent_id: &str,
+) -> Vec<(i64, String, String)> {
+    let mut children = nodes
+        .values()
+        .filter(|candidate| candidate.parent_id.as_deref() == Some(parent_id))
+        .map(|candidate| {
+            (
+                candidate.order_key,
+                candidate.node_id.clone(),
+                candidate.subtree_hash.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    children
+}
+
+fn runtime_descendants(
+    nodes: &HashMap<String, ContextNodeRecord>,
+    node_id: &str,
+) -> ContextDbResult<Vec<String>> {
+    let mut descendants = Vec::new();
+    let mut pending = vec![node_id.to_string()];
+    let mut visited = HashSet::new();
+    while let Some(candidate) = pending.pop() {
+        if !visited.insert(candidate.clone()) {
+            return Err(ContextDbError::Corrupt(format!(
+                "Runtime mutation basis contains a Node cycle at '{candidate}'"
+            )));
+        }
+        pending.extend(
+            nodes
+                .values()
+                .filter(|node| node.parent_id.as_deref() == Some(candidate.as_str()))
+                .map(|node| node.node_id.clone()),
+        );
+        descendants.push(candidate);
+    }
+    Ok(descendants)
+}
+
 fn ensure_runtime_leaf(
     existing_nodes: &HashMap<String, ContextNodeRecord>,
     node: &ContextNodeRecord,
@@ -1148,7 +1492,10 @@ fn runtime_authority() -> ContextAuthority {
     )
 }
 
-fn desired_nodes(state: &MindState, meta: ProjectionMeta) -> ContextDbResult<Vec<DesiredNode>> {
+pub(crate) fn desired_nodes(
+    state: &MindState,
+    meta: ProjectionMeta,
+) -> ContextDbResult<Vec<DesiredNode>> {
     let mut nodes = vec![
         desired_record(
             META_NODE_ID,
@@ -1243,6 +1590,164 @@ fn desired_nodes(state: &MindState, meta: ProjectionMeta) -> ContextDbResult<Vec
     Ok(nodes)
 }
 
+/// Materializes the exact Runtime AST used by every ContextDB backend.
+///
+/// PostgreSQL migration/initialization and SQLite creation must not each
+/// invent their own schema tree or Merkle calculation.  This pure constructor
+/// is the shared compatibility boundary: if it decodes back to a projection,
+/// that projection is byte-for-byte equivalent to the supplied Mind record.
+pub(crate) fn materialize_runtime_snapshot(
+    context_id: &str,
+    projection: &NewMindProjection,
+    updated_at: DateTime<Utc>,
+) -> ContextDbResult<RuntimeContextSnapshot> {
+    if context_id != projection.context_id {
+        return Err(ContextDbError::Precondition(format!(
+            "Runtime Context identity '{context_id}' differs from projection identity '{}'",
+            projection.context_id
+        )));
+    }
+    let state = validate_new_projection(projection)?;
+    let desired = desired_nodes(
+        &state,
+        ProjectionMeta {
+            revision: projection.revision,
+            state_hash: projection.state_hash.clone(),
+            head_event_id: projection.head_event_id.clone(),
+            updated_at,
+        },
+    )?;
+    let (root_body, root_content_hash) = canonicalize_body(ROOT_BODY)?;
+    let mut nodes = HashMap::<String, ContextNodeRecord>::new();
+    nodes.insert(
+        ROOT_NODE_ID.to_string(),
+        ContextNodeRecord {
+            node_id: ROOT_NODE_ID.to_string(),
+            parent_id: None,
+            order_key: 0,
+            owner_domain: AuthorityDomain::RuntimeControl,
+            node_revision: 1,
+            body_sexpr: root_body,
+            content_hash: root_content_hash,
+            subtree_hash: String::new(),
+        },
+    );
+    for desired_node in desired {
+        let (body_sexpr, content_hash) = canonicalize_body(&desired_node.body_sexpr)?;
+        let subtree_hash = calculate_subtree_hash(
+            &desired_node.node_id,
+            desired_node.owner_domain,
+            &body_sexpr,
+            &[],
+        );
+        let record = ContextNodeRecord {
+            node_id: desired_node.node_id.clone(),
+            parent_id: Some(desired_node.parent_id),
+            order_key: desired_node.order_key,
+            owner_domain: desired_node.owner_domain,
+            node_revision: 1,
+            body_sexpr,
+            content_hash,
+            subtree_hash,
+        };
+        if nodes.insert(desired_node.node_id.clone(), record).is_some() {
+            return Err(ContextDbError::Invalid(format!(
+                "Runtime Mind contains duplicate Node identity '{}'",
+                desired_node.node_id
+            )));
+        }
+    }
+    for node_id in [
+        FRAMES_NODE_ID,
+        RELATIONS_NODE_ID,
+        RETIRED_NODE_ID,
+        RETIRING_NODE_ID,
+        PROTECTED_NODE_ID,
+        CHECKPOINTS_NODE_ID,
+        ROOT_NODE_ID,
+    ] {
+        refresh_materialized_subtree_hash(&mut nodes, node_id)?;
+    }
+    let root_hash = nodes
+        .get(ROOT_NODE_ID)
+        .ok_or_else(|| ContextDbError::Corrupt("materialized root disappeared".to_string()))?
+        .subtree_hash
+        .clone();
+    let mut nodes = nodes.into_values().collect::<Vec<_>>();
+    nodes.sort_by(|left, right| {
+        left.parent_id
+            .cmp(&right.parent_id)
+            .then_with(|| left.order_key.cmp(&right.order_key))
+            .then_with(|| left.node_id.cmp(&right.node_id))
+    });
+    let snapshot = RuntimeContextSnapshot {
+        context_id: context_id.to_string(),
+        revision: 1,
+        root_node_id: ROOT_NODE_ID.to_string(),
+        root_hash,
+        nodes,
+    };
+    validate_runtime_snapshot(&snapshot)?;
+    let reconstructed = decode_projection(&snapshot)?;
+    let expected = MindProjectionRecord {
+        context_id: projection.context_id.clone(),
+        revision: projection.revision,
+        state: projection.state.clone(),
+        state_hash: projection.state_hash.clone(),
+        head_event_id: projection.head_event_id.clone(),
+        updated_at,
+    };
+    if reconstructed != expected {
+        return Err(ContextDbError::Corrupt(format!(
+            "materialized Runtime Context '{context_id}' did not reproduce its exact Mind Projection"
+        )));
+    }
+    Ok(snapshot)
+}
+
+/// Computes the authoritative Runtime-tree commitment for a complete Mind
+/// projection without reading from storage.
+///
+/// Native mutation persistence compares its bounded patch against this value.
+/// This is intentionally distinct from rebuilding a diff: the Store still
+/// writes only addressed Nodes, but a missing domain mutation cannot silently
+/// advance projection metadata to a state the persisted AST does not contain.
+pub(crate) fn expected_runtime_root_hash(
+    context_id: &str,
+    projection: &NewMindProjection,
+    updated_at: DateTime<Utc>,
+) -> ContextDbResult<String> {
+    Ok(materialize_runtime_snapshot(context_id, projection, updated_at)?.root_hash)
+}
+
+fn refresh_materialized_subtree_hash(
+    nodes: &mut HashMap<String, ContextNodeRecord>,
+    node_id: &str,
+) -> ContextDbResult<()> {
+    let mut children = nodes
+        .values()
+        .filter(|candidate| candidate.parent_id.as_deref() == Some(node_id))
+        .map(|candidate| {
+            (
+                candidate.order_key,
+                candidate.node_id.clone(),
+                candidate.subtree_hash.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let node = nodes.get_mut(node_id).ok_or_else(|| {
+        ContextDbError::Corrupt(format!("materialized Node '{node_id}' is missing"))
+    })?;
+    node.subtree_hash = calculate_subtree_hash(
+        &node.node_id,
+        node.owner_domain,
+        &node.body_sexpr,
+        &children,
+    );
+    Ok(())
+}
+
 fn desired_group(node_id: &str, order_key: i64, kind: &str) -> DesiredNode {
     DesiredNode {
         node_id: node_id.to_string(),
@@ -1288,7 +1793,10 @@ fn encode_record<T: Serialize>(kind: &str, value: &T) -> ContextDbResult<String>
     ))
 }
 
-fn decode_record<T: DeserializeOwned>(body: &str, expected_kind: &str) -> ContextDbResult<T> {
+pub(crate) fn decode_record<T: DeserializeOwned>(
+    body: &str,
+    expected_kind: &str,
+) -> ContextDbResult<T> {
     let mut forms = sexpr::parse_all(body)?;
     if forms.len() != 1 {
         return Err(ContextDbError::Corrupt(format!(
@@ -1319,7 +1827,7 @@ fn decode_record<T: DeserializeOwned>(body: &str, expected_kind: &str) -> Contex
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn diff_nodes(
+pub(crate) fn diff_nodes(
     snapshot: &RuntimeContextSnapshot,
     desired: &[DesiredNode],
 ) -> ContextDbResult<Vec<ContextOperation>> {
@@ -1407,7 +1915,7 @@ fn diff_nodes(
     Ok(operations)
 }
 
-fn validate_runtime_snapshot(snapshot: &RuntimeContextSnapshot) -> ContextDbResult<()> {
+pub(crate) fn validate_runtime_snapshot(snapshot: &RuntimeContextSnapshot) -> ContextDbResult<()> {
     if snapshot.root_node_id != ROOT_NODE_ID {
         return Err(ContextDbError::Corrupt(format!(
             "Runtime Context '{}' has unexpected root Node '{}'",
@@ -1572,10 +2080,81 @@ fn validate_runtime_snapshot(snapshot: &RuntimeContextSnapshot) -> ContextDbResu
             snapshot.context_id
         )));
     }
+    let mut verified_hashes = HashMap::new();
+    let mut verifying = HashSet::new();
+    verify_runtime_merkle_node(
+        &snapshot.context_id,
+        ROOT_NODE_ID,
+        &by_id,
+        &mut verified_hashes,
+        &mut verifying,
+    )?;
     Ok(())
 }
 
-fn decode_projection(snapshot: &RuntimeContextSnapshot) -> ContextDbResult<MindProjectionRecord> {
+fn verify_runtime_merkle_node(
+    context_id: &str,
+    node_id: &str,
+    by_id: &HashMap<&str, &ContextNodeRecord>,
+    verified: &mut HashMap<String, String>,
+    verifying: &mut HashSet<String>,
+) -> ContextDbResult<String> {
+    if let Some(hash) = verified.get(node_id) {
+        return Ok(hash.clone());
+    }
+    if !verifying.insert(node_id.to_string()) {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{context_id}' contains a Merkle cycle at '{node_id}'"
+        )));
+    }
+    let node = required_node(by_id, node_id)?;
+    let (canonical, content_hash) = canonicalize_body(&node.body_sexpr).map_err(|error| {
+        ContextDbError::Corrupt(format!(
+            "Runtime Context '{context_id}' Node '{node_id}' has a non-canonical body: {error}"
+        ))
+    })?;
+    if canonical != node.body_sexpr || content_hash != node.content_hash {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{context_id}' Node '{node_id}' content hash is invalid"
+        )));
+    }
+    let mut children = by_id
+        .values()
+        .filter(|candidate| candidate.parent_id.as_deref() == Some(node_id))
+        .copied()
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| {
+        left.order_key
+            .cmp(&right.order_key)
+            .then_with(|| left.node_id.cmp(&right.node_id))
+    });
+    let mut child_hashes = Vec::with_capacity(children.len());
+    for child in children {
+        child_hashes.push((
+            child.order_key,
+            child.node_id.clone(),
+            verify_runtime_merkle_node(context_id, &child.node_id, by_id, verified, verifying)?,
+        ));
+    }
+    let calculated = calculate_subtree_hash(
+        &node.node_id,
+        node.owner_domain,
+        &node.body_sexpr,
+        &child_hashes,
+    );
+    if calculated != node.subtree_hash {
+        return Err(ContextDbError::Corrupt(format!(
+            "Runtime Context '{context_id}' Node '{node_id}' subtree hash is invalid"
+        )));
+    }
+    verifying.remove(node_id);
+    verified.insert(node_id.to_string(), calculated.clone());
+    Ok(calculated)
+}
+
+pub(crate) fn decode_projection(
+    snapshot: &RuntimeContextSnapshot,
+) -> ContextDbResult<MindProjectionRecord> {
     if snapshot.root_node_id != ROOT_NODE_ID {
         return Err(ContextDbError::Corrupt(format!(
             "Runtime Context '{}' has unexpected root Node '{}'",
@@ -1728,7 +2307,9 @@ fn mind_state_hash(state: &MindState) -> ContextDbResult<String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn validate_new_projection(projection: &NewMindProjection) -> ContextDbResult<MindState> {
+pub(crate) fn validate_new_projection(
+    projection: &NewMindProjection,
+) -> ContextDbResult<MindState> {
     let state: MindState = serde_json::from_value(projection.state.clone())?;
     let calculated_hash = mind_state_hash(&state)?;
     if calculated_hash != projection.state_hash {
@@ -1846,5 +2427,140 @@ mod tests {
             .iter()
             .filter(|node| node.parent_id == FRAMES_NODE_ID)
             .all(|node| !node.body_sexpr.contains("(fact a)")));
+    }
+
+    fn projection(state: &MindState, event_id: &str) -> NewMindProjection {
+        NewMindProjection {
+            context_id: "context-a".to_string(),
+            revision: state.version,
+            state: serde_json::to_value(state).unwrap(),
+            state_hash: mind_state_hash(state).unwrap(),
+            head_event_id: Some(event_id.to_string()),
+            recall_documents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn materialized_runtime_tree_round_trips_and_verifies_every_merkle_hash() {
+        let state = sample_state();
+        let projection = projection(&state, "event-seven");
+        let updated_at = DateTime::parse_from_rfc3339("2026-09-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snapshot = materialize_runtime_snapshot("context-a", &projection, updated_at).unwrap();
+
+        validate_runtime_snapshot(&snapshot).unwrap();
+        assert_eq!(
+            decode_projection(&snapshot).unwrap(),
+            MindProjectionRecord {
+                context_id: "context-a".to_string(),
+                revision: 7,
+                state: projection.state,
+                state_hash: projection.state_hash,
+                head_event_id: Some("event-seven".to_string()),
+                updated_at,
+            }
+        );
+
+        let mut corrupt = snapshot;
+        corrupt
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == stable_node_id("frame", "frame-a"))
+            .unwrap()
+            .subtree_hash = "corrupt".to_string();
+        assert!(matches!(
+            validate_runtime_snapshot(&corrupt),
+            Err(ContextDbError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn bounded_native_patch_matches_full_next_state_materialization() {
+        let current = sample_state();
+        let current_projection = projection(&current, "event-seven");
+        let current_time = DateTime::parse_from_rfc3339("2026-09-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let snapshot =
+            materialize_runtime_snapshot("context-a", &current_projection, current_time).unwrap();
+
+        let mut next = current.clone();
+        next.version = 8;
+        next.frames[0].body = "(fact revised)".to_string();
+        next.frames[0].revision += 1;
+        next.frames[0].updated_version = 8;
+        next.frames.swap(0, 1);
+        next.protected.remove("frame-a");
+        next.mutation_clocks.frame_order_version = 8;
+        let next_projection = projection(&next, "event-eight");
+        let next_time = DateTime::parse_from_rfc3339("2026-09-01T00:00:01Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let desired = desired_nodes(
+            &next,
+            ProjectionMeta {
+                revision: 8,
+                state_hash: next_projection.state_hash.clone(),
+                head_event_id: Some("event-eight".to_string()),
+                updated_at: next_time,
+            },
+        )
+        .unwrap();
+        let operations = diff_nodes(&snapshot, &desired).unwrap();
+        let basis = mutation_basis_from_snapshot_for_test(&snapshot);
+        let patch = apply_runtime_operations_to_basis("context-a", &basis, &operations).unwrap();
+
+        let expected =
+            materialize_runtime_snapshot("context-a", &next_projection, next_time).unwrap();
+        assert_eq!(patch.root_hash, expected.root_hash);
+
+        let mut patched = snapshot
+            .nodes
+            .into_iter()
+            .map(|node| (node.node_id.clone(), node))
+            .collect::<HashMap<_, _>>();
+        for node_id in patch.deleted_node_ids {
+            patched.remove(&node_id);
+        }
+        for node in patch.inserted_nodes.into_iter().chain(patch.updated_nodes) {
+            patched.insert(node.node_id.clone(), node);
+        }
+        let mut patched_nodes = patched.into_values().collect::<Vec<_>>();
+        patched_nodes.sort_by(|left, right| {
+            left.parent_id
+                .cmp(&right.parent_id)
+                .then_with(|| left.order_key.cmp(&right.order_key))
+                .then_with(|| left.node_id.cmp(&right.node_id))
+        });
+        let patched_snapshot = RuntimeContextSnapshot {
+            context_id: "context-a".to_string(),
+            revision: patch.next_context_revision,
+            root_node_id: ROOT_NODE_ID.to_string(),
+            root_hash: patch.root_hash,
+            nodes: patched_nodes,
+        };
+        validate_runtime_snapshot(&patched_snapshot).unwrap();
+        assert_eq!(
+            decode_projection(&patched_snapshot).unwrap().state,
+            next_projection.state
+        );
+    }
+
+    fn mutation_basis_from_snapshot_for_test(
+        snapshot: &RuntimeContextSnapshot,
+    ) -> RuntimeMutationBasis {
+        let mut nodes = snapshot
+            .nodes
+            .iter()
+            .cloned()
+            .map(|node| (node.node_id.clone(), node))
+            .collect::<HashMap<_, _>>();
+        let meta_node = nodes.remove(META_NODE_ID).unwrap();
+        RuntimeMutationBasis {
+            context_revision: snapshot.revision,
+            meta_node,
+            nodes,
+        }
     }
 }

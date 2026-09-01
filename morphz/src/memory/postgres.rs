@@ -73,6 +73,17 @@ pub struct PostgresStore {
     observability: Arc<Observability>,
     edge_command_notify: Arc<Notify>,
     thread_signal_notify: Arc<Notify>,
+    #[cfg(feature = "experimental-context-db")]
+    context_db:
+        Option<crate::experimental::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter>,
+}
+
+#[cfg(feature = "experimental-context-db")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostgresContextDbLegacyMigrationReport {
+    pub discovered: usize,
+    pub imported: usize,
+    pub already_authoritative: usize,
 }
 
 impl PostgresStore {
@@ -137,6 +148,8 @@ impl PostgresStore {
             observability,
             edge_command_notify: Arc::new(Notify::new()),
             thread_signal_notify: Arc::new(Notify::new()),
+            #[cfg(feature = "experimental-context-db")]
+            context_db: None,
         };
         let migrations = async {
             store.ensure_schema_migrations().await?;
@@ -407,6 +420,108 @@ impl PostgresStore {
         unlock?;
         store.start_database_change_listener(database_url).await?;
         Ok(store)
+    }
+
+    /// Builds the PostgreSQL Runtime Store with ContextDB as the single
+    /// authoritative current-Mind representation. Startup never imports an
+    /// opaque legacy projection: an operator must run the explicit migration
+    /// first, making rollback and verification a deliberate deployment step.
+    #[cfg(feature = "experimental-context-db")]
+    pub async fn new_with_context_db(
+        database_url: &str,
+        max_connections: u32,
+        observability: Arc<Observability>,
+        permit: crate::experimental::ExperimentalFeaturePermit,
+    ) -> Result<Self, StoreError> {
+        let mut store =
+            Self::new_with_observability(database_url, max_connections, observability).await?;
+        let context_db = crate::experimental::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+            store.pool.clone(),
+            permit,
+        )
+        .await?;
+        let pending_legacy = context_db.pending_legacy_count().await?;
+        if pending_legacy != 0 {
+            return Err(format!(
+                "{pending_legacy} legacy PostgreSQL Mind Projection(s) require explicit ContextDB migration before authoritative startup"
+            )
+            .into());
+        }
+        store.context_db = Some(context_db);
+        Ok(store)
+    }
+
+    /// Explicitly imports complete legacy PostgreSQL Mind Projections into the
+    /// authoritative Context AST. Each Context is locked, reproduced exactly,
+    /// verified through the shared decoder and committed independently so the
+    /// command is restart-safe and idempotent.
+    #[cfg(feature = "experimental-context-db")]
+    pub async fn migrate_legacy_mind_projections_to_context_db(
+        database_url: &str,
+        max_connections: u32,
+        permit: crate::experimental::ExperimentalFeaturePermit,
+    ) -> Result<PostgresContextDbLegacyMigrationReport, StoreError> {
+        let store = Self::new(database_url, max_connections).await?;
+        let context_db = crate::experimental::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+            store.pool.clone(),
+            permit,
+        )
+        .await?;
+        let context_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&store.pool)
+        .await?;
+        let mut report = PostgresContextDbLegacyMigrationReport {
+            discovered: context_ids.len(),
+            imported: 0,
+            already_authoritative: 0,
+        };
+        for context_id in context_ids {
+            let mut transaction = store.pool.begin().await?;
+            if context_db
+                .load_projection_in_transaction(&mut transaction, &context_id)
+                .await?
+                .is_some()
+            {
+                report.already_authoritative += 1;
+                transaction.commit().await?;
+                continue;
+            }
+            let legacy = get_projection(&mut *transaction, &context_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "Context '{context_id}' has an incomplete legacy PostgreSQL Mind Projection; refusing ContextDB migration"
+                    )
+                })?;
+            let imported = context_db
+                .install_projection_in_transaction(
+                    &mut transaction,
+                    &NewMindProjection {
+                        context_id: legacy.context_id.clone(),
+                        revision: legacy.revision,
+                        state: legacy.state.clone(),
+                        state_hash: legacy.state_hash.clone(),
+                        head_event_id: legacy.head_event_id.clone(),
+                        recall_documents: Vec::new(),
+                    },
+                    legacy.updated_at,
+                )
+                .await?;
+            if imported != legacy {
+                return Err(format!(
+                    "Context '{context_id}' PostgreSQL ContextDB migration did not reproduce the exact legacy Mind Projection"
+                )
+                .into());
+            }
+            transaction.commit().await?;
+            report.imported += 1;
+        }
+        Ok(report)
     }
 
     pub(super) async fn acquire_observed(
@@ -2772,8 +2887,7 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         // PostgreSQL gives one MVCC snapshot to the complete statement. Every
         // aggregate therefore describes one real directory state without a
         // client-driven BEGIN + seven sequential protocol round trips.
-        let row = sqlx::query(
-            r#"WITH
+        let directory_sql_prefix = r#"WITH
                scoped_sessions AS MATERIALIZED (
                  SELECT s.*
                  FROM sessions s
@@ -2882,6 +2996,8 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                      'last_signal_batch_id', NULL, 'revision', 0
                    )
                  ) AS cognitive_clock_json,
+"#;
+        let legacy_mind_columns = r#"
                  COALESCE(
                    (SELECT (to_jsonb(projection) - 'state_json')
                              || jsonb_build_object(
@@ -2903,6 +3019,38 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                    AS mind_projection_revision,
                  (SELECT state_hash FROM mind_projections WHERE context_id = c.id)
                    AS mind_projection_hash,
+"#;
+        let context_db_mind_columns = r#"
+                 COALESCE(
+                   (SELECT jsonb_build_object(
+                      'context_id', context_db.context_id,
+                      'revision', context_db.revision,
+                      'root_node_id', context_db.root_node_id,
+                      'root_hash', context_db.root_hash,
+                      'nodes', COALESCE(
+                        (SELECT jsonb_agg(
+                           jsonb_build_object(
+                             'node_id', node.node_id,
+                             'parent_id', node.parent_id,
+                             'order_key', node.order_key,
+                             'owner_domain', node.owner_domain,
+                             'node_revision', node.node_revision,
+                             'body_sexpr', node.body_sexpr,
+                             'content_hash', node.content_hash,
+                             'subtree_hash', node.subtree_hash
+                           ) ORDER BY node.parent_id, node.order_key, node.node_id
+                         )
+                         FROM experimental_contextdb_nodes node
+                         WHERE node.context_id = context_db.context_id),
+                        '[]'::jsonb
+                      )
+                    )
+                    FROM experimental_contextdb_contexts context_db
+                    WHERE context_db.context_id = c.id),
+                   'null'::jsonb
+                 ) AS context_db_mind_json,
+"#;
+        let directory_sql_suffix = r#"
                  COALESCE(
                    (SELECT jsonb_agg(to_jsonb(s)
                                      ORDER BY selected.projection_order,
@@ -2994,46 +3142,79 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                     JOIN selected_session_ids selected ON selected.id = binding.session_id
                     WHERE binding.unbound_at IS NULL),
                    '[]'::jsonb
-                 ) AS principal_bindings_json
+               ) AS principal_bindings_json
                FROM cognitive_contexts c
-               WHERE c.id = $1"#,
-        )
-        .bind(context_id)
-        .bind(active_session_id)
-        .bind(active_after)
-        .bind(max_full_sessions)
-        .bind(max_metadata_sessions)
-        .bind(principal_ids)
-        .fetch_optional(&self.pool)
-        .await?;
+               WHERE c.id = $1"#;
+        #[cfg(feature = "experimental-context-db")]
+        let use_context_db = self.context_db.is_some();
+        #[cfg(not(feature = "experimental-context-db"))]
+        let use_context_db = false;
+        static LEGACY_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        static CONTEXT_DB_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let (directory_sql_cache, mind_columns) = if use_context_db {
+            (&CONTEXT_DB_DIRECTORY_SQL, context_db_mind_columns)
+        } else {
+            (&LEGACY_DIRECTORY_SQL, legacy_mind_columns)
+        };
+        let directory_sql = directory_sql_cache
+            .get_or_init(|| [directory_sql_prefix, mind_columns, directory_sql_suffix].concat());
+        let row = sqlx::query(directory_sql.as_str())
+            .bind(context_id)
+            .bind(active_session_id)
+            .bind(active_after)
+            .bind(max_full_sessions)
+            .bind(max_metadata_sessions)
+            .bind(principal_ids)
+            .fetch_optional(&self.pool)
+            .await?;
 
         let Some(row) = row else {
             return Ok(None);
         };
-        let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
-        let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
-        let mind = match (head_revision, projection_revision) {
-            (None, None) => None,
-            (Some(head_revision), Some(projection_revision)) => {
-                let head_hash = row
-                    .get::<Option<String>, _>("mind_head_hash")
-                    .ok_or("Context Head 缺少 projection_hash")?;
-                let projection_hash = row
-                    .get::<Option<String>, _>("mind_projection_hash")
-                    .ok_or("Mind Projection 缺少 state_hash")?;
-                if head_revision != projection_revision || head_hash != projection_hash {
-                    return Err(format!(
-                        "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
-                    )
-                    .into());
-                }
-                Some(
-                    postgres_snapshot_component::<Option<MindProjectionRecord>>(&row, "mind_json")?
+        #[cfg(feature = "experimental-context-db")]
+        let read_legacy_mind = !use_context_db;
+        #[cfg(not(feature = "experimental-context-db"))]
+        let read_legacy_mind = true;
+        let legacy_mind = if read_legacy_mind {
+            let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
+            let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
+            match (head_revision, projection_revision) {
+                (None, None) => None,
+                (Some(head_revision), Some(projection_revision)) => {
+                    let head_hash = row
+                        .get::<Option<String>, _>("mind_head_hash")
+                        .ok_or("Context Head 缺少 projection_hash")?;
+                    let projection_hash = row
+                        .get::<Option<String>, _>("mind_projection_hash")
+                        .ok_or("Mind Projection 缺少 state_hash")?;
+                    if head_revision != projection_revision || head_hash != projection_hash {
+                        return Err(format!(
+                            "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
+                        )
+                        .into());
+                    }
+                    Some(
+                        postgres_snapshot_component::<Option<MindProjectionRecord>>(
+                            &row,
+                            "mind_json",
+                        )?
                         .ok_or("一致的 Mind Projection 没有返回投影内容")?,
-                )
+                    )
+                }
+                _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
             }
-            _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+        } else {
+            None
         };
+        #[cfg(feature = "experimental-context-db")]
+        let mind = if let Some(context_db) = &self.context_db {
+            context_db
+                .decode_projection_snapshot_value(row.get::<JsonValue, _>("context_db_mind_json"))?
+        } else {
+            legacy_mind
+        };
+        #[cfg(not(feature = "experimental-context-db"))]
+        let mind = legacy_mind;
         ContextRuntimeDirectorySnapshot::from_components(
             postgres_snapshot_component(&row, "context_json")?,
             postgres_snapshot_component(&row, "cognitive_clock_json")?,
@@ -6887,6 +7068,15 @@ impl MindProjectionStore for PostgresStore {
         &self,
         context_id: &str,
     ) -> Result<Option<MindProjectionRecord>, StoreError> {
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let projection = context_db
+                .load_projection_in_transaction(&mut transaction, context_id)
+                .await?;
+            transaction.commit().await?;
+            return Ok(projection);
+        }
         get_projection_consistent(&self.pool, context_id).await
     }
 
@@ -6896,6 +7086,15 @@ impl MindProjectionStore for PostgresStore {
     ) -> Result<Vec<MindProjectionHead>, StoreError> {
         if context_ids.is_empty() {
             return Ok(Vec::new());
+        }
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let heads = context_db
+                .load_projection_heads_in_transaction(&mut transaction, context_ids)
+                .await?;
+            transaction.commit().await?;
+            return Ok(heads);
         }
         let rows = sqlx::query(
             r#"SELECT p.context_id, p.revision, p.updated_at
@@ -6961,6 +7160,23 @@ impl MindProjectionStore for PostgresStore {
             .await?;
         if context.is_none() {
             return Err(format!("Context '{}' 不存在", projection.context_id).into());
+        }
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let already_initialized = context_db
+                .load_projection_in_transaction(&mut tx, &projection.context_id)
+                .await?
+                .is_some();
+            let installed = context_db
+                .install_projection_in_transaction(&mut tx, &projection, parse_time(&now)?)
+                .await?;
+            if !already_initialized {
+                for document in &projection.recall_documents {
+                    enqueue_recall_document_in_tx(&mut tx, document).await?;
+                }
+            }
+            tx.commit().await?;
+            return Ok(installed);
         }
         let counts = sqlx::query(
             r#"SELECT (SELECT COUNT(*) FROM context_heads WHERE context_id = $1) AS heads,
@@ -7051,6 +7267,78 @@ impl MindProjectionStore for PostgresStore {
         let next = i64::try_from(next_projection.revision)?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let plan = mutation_plan.ok_or(
+                "authoritative PostgreSQL ContextDB commits require a domain-emitted Context Mutation plan",
+            )?;
+            let committed = match context_db
+                .apply_mutation_plan_in_transaction(
+                    &mut tx,
+                    plan,
+                    &next_projection,
+                    parse_time(&now)?,
+                )
+                .await
+            {
+                Ok(projection) => projection,
+                Err(crate::experimental::context_db::ContextDbError::Conflict {
+                    actual, ..
+                }) => {
+                    tx.rollback().await?;
+                    return Ok(MindProjectionCommit::Conflict {
+                        current_revision: Some(actual),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            for update in attention_updates {
+                let changed = sqlx::query(
+                    r#"UPDATE sessions SET attention_state = $1,
+                              attention_revision = attention_revision + 1,
+                              attention_reason = $2, attention_changed_at = $3,
+                              attention_event_id = $4, updated_at = $3
+                       WHERE id = $5 AND context_id = $6 AND attention_revision = $7"#,
+                )
+                .bind(update.state.as_str())
+                .bind(&update.reason)
+                .bind(
+                    update
+                        .changed_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                )
+                .bind(&update.event_id)
+                .bind(&update.session_id)
+                .bind(&update.context_id)
+                .bind(i64::try_from(update.expected_revision)?)
+                .execute(&mut *tx)
+                .await?;
+                if changed.rows_affected() != 1 {
+                    return Err(format!(
+                        "Session '{}' attention revision 冲突或 Context 不匹配",
+                        update.session_id
+                    )
+                    .into());
+                }
+            }
+            append_event_in_tx(&mut tx, event).await?;
+            mutate_session_projection_in_tx(
+                &mut tx,
+                &next_projection.context_id,
+                session_projection,
+            )
+            .await?;
+            for document in &next_projection.recall_documents {
+                enqueue_recall_document_in_tx(&mut tx, document).await?;
+            }
+            if requires_snapshot(event, next_projection.revision) {
+                insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
+            }
+            tx.commit().await?;
+            return Ok(MindProjectionCommit::Committed {
+                projection: committed,
+            });
+        }
         let head = sqlx::query(
             r#"UPDATE context_heads SET revision = $1, projection_hash = $2,
                       head_event_id = $3, updated_at = $4
@@ -7161,6 +7449,60 @@ impl MindProjectionStore for PostgresStore {
         }
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let context = sqlx::query("SELECT id FROM cognitive_contexts WHERE id = $1 FOR UPDATE")
+                .bind(&next_projection.context_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if context.is_none() {
+                return Err(format!("Context '{}' 不存在", next_projection.context_id).into());
+            }
+            let current = context_db
+                .load_projection_in_transaction(&mut tx, &next_projection.context_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "Context '{}' 缺少待写入的初始 PostgreSQL ContextDB Mind",
+                        next_projection.context_id
+                    )
+                })?;
+            if current.revision != 0 || current.head_event_id.is_some() {
+                tx.rollback().await?;
+                return Ok(MindProjectionCommit::Conflict {
+                    current_revision: Some(current.revision),
+                });
+            }
+            let committed = context_db
+                .sync_projection_in_transaction(&mut tx, &next_projection, parse_time(&now)?)
+                .await?;
+            let context = sqlx::query(
+                r#"UPDATE cognitive_contexts
+                   SET seed_context_id = $1, seed_context_version = $2,
+                       seed_snapshot_hash = $3, seed_projection = $4, updated_at = $5
+                   WHERE id = $6 AND seed_context_id IS NULL"#,
+            )
+            .bind(source_context_id)
+            .bind(i64::try_from(source_version)?)
+            .bind(snapshot_hash)
+            .bind(projection_kind)
+            .bind(&now)
+            .bind(&next_projection.context_id)
+            .execute(&mut *tx)
+            .await?;
+            if context.rows_affected() != 1 {
+                return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
+            }
+            append_event_in_tx(&mut tx, event).await?;
+            for document in &next_projection.recall_documents {
+                enqueue_recall_document_in_tx(&mut tx, document).await?;
+            }
+            insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
+            tx.commit().await?;
+            return Ok(MindProjectionCommit::Committed {
+                projection: committed,
+            });
+        }
         let head = sqlx::query(
             r#"UPDATE context_heads SET projection_hash = $1, head_event_id = $2, updated_at = $3
                WHERE context_id = $4 AND revision = 0 AND head_event_id IS NULL"#,
