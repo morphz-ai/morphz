@@ -21,7 +21,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, SqlitePool};
+use sqlx::{Sqlite, SqlitePool};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const ROOT_NODE_ID: &str = "morphz/root";
@@ -107,10 +107,7 @@ impl ContextDbRuntimeAdapter {
             .fetch_optional(&mut **transaction)
             .await?
             .ok_or_else(|| {
-                ContextDbError::NotFound(format!(
-                    "Runtime Context '{}'",
-                    projection.context_id
-                ))
+                ContextDbError::NotFound(format!("Runtime Context '{}'", projection.context_id))
             })?;
             self.db
                 .create_context_in_transaction(
@@ -174,20 +171,23 @@ impl ContextDbRuntimeAdapter {
         )?;
         let operations = diff_nodes(&snapshot, &desired)?;
         if !operations.is_empty() {
+            let synchronization_identity = format!(
+                "{}:{}:{}:{}",
+                projection.context_id,
+                projection.revision,
+                projection.state_hash,
+                projection.head_event_id.as_deref().unwrap_or("initial")
+            );
+            let synchronization_digest = format!(
+                "{:x}",
+                Sha256::digest(synchronization_identity.as_bytes())
+            );
             self.db
                 .apply_transaction_in_transaction(
                     transaction,
                     ContextTransaction {
-                        transaction_id: format!(
-                            "runtime-mind:{}:{}:{}",
-                            projection.context_id,
-                            projection.revision,
-                            projection.head_event_id.as_deref().unwrap_or("initial")
-                        ),
-                        idempotency_key: format!(
-                            "runtime-mind:{}:{}:{}",
-                            projection.context_id, projection.revision, projection.state_hash
-                        ),
+                        transaction_id: format!("runtime-mind-{synchronization_digest}"),
+                        idempotency_key: format!("runtime-mind-{synchronization_digest}"),
                         context_id: projection.context_id.clone(),
                         base_revision: snapshot.revision,
                         authority: runtime_authority(),
@@ -512,17 +512,13 @@ fn decode_projection(snapshot: &ContextSnapshot) -> ContextDbResult<MindProjecti
     )?;
 
     let frames = decode_children::<ContextFrame>(snapshot, FRAMES_NODE_ID, "frame")?;
-    let relations =
-        decode_children::<ContextRelation>(snapshot, RELATIONS_NODE_ID, "relation")?;
+    let relations = decode_children::<ContextRelation>(snapshot, RELATIONS_NODE_ID, "relation")?;
     let retired = decode_children::<RetiredEntry>(snapshot, RETIRED_NODE_ID, "retired-entry")?
         .into_iter()
         .map(|entry| entry.id)
         .collect::<BTreeSet<_>>();
-    let retiring_entries = decode_children::<FrameRetirement>(
-        snapshot,
-        RETIRING_NODE_ID,
-        "retiring-entry",
-    )?;
+    let retiring_entries =
+        decode_children::<FrameRetirement>(snapshot, RETIRING_NODE_ID, "retiring-entry")?;
     let mut retiring = BTreeMap::new();
     for entry in retiring_entries {
         if retiring.insert(entry.frame_id.clone(), entry).is_some() {
@@ -531,14 +527,11 @@ fn decode_projection(snapshot: &ContextSnapshot) -> ContextDbResult<MindProjecti
             ));
         }
     }
-    let protected = decode_children::<ProtectedEntry>(
-        snapshot,
-        PROTECTED_NODE_ID,
-        "protected-entry",
-    )?
-    .into_iter()
-    .map(|entry| entry.id)
-    .collect::<BTreeSet<_>>();
+    let protected =
+        decode_children::<ProtectedEntry>(snapshot, PROTECTED_NODE_ID, "protected-entry")?
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>();
     let checkpoints =
         decode_children::<MindCheckpoint>(snapshot, CHECKPOINTS_NODE_ID, "checkpoint")?;
 
@@ -608,9 +601,7 @@ fn mind_state_hash(state: &MindState) -> ContextDbResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::context::{
-        FrameIdentityProvenance, FrameProvenanceState,
-    };
+    use crate::orchestrator::context::{FrameIdentityProvenance, FrameProvenanceState};
 
     fn sample_state() -> MindState {
         MindState {

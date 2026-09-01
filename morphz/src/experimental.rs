@@ -26,6 +26,8 @@ pub mod cognitive_coordination_network;
 pub mod cognitive_coordination_sdk;
 #[cfg(feature = "experimental-context-db")]
 pub mod context_db;
+#[cfg(feature = "experimental-context-db")]
+pub(crate) mod context_db_runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExperimentalFeature {

@@ -1062,15 +1062,44 @@ impl MorphzRuntimeBuilder {
                     .unwrap_or_else(|| "injected-runtime-store".to_string()),
             ),
             None => match self.config.storage.backend {
-                StorageBackend::Sqlite => (
-                    Arc::new(
+                StorageBackend::Sqlite => {
+                    #[cfg(feature = "experimental-context-db")]
+                    let sqlite_store = if let Ok(permit) = crate::experimental::require_enabled(
+                        &self.config.experimental.enabled,
+                        crate::experimental::CONTEXT_DB,
+                    ) {
+                        SqliteStore::new_with_context_db(
+                            &database_path,
+                            &self.config.storage.sqlite,
+                            permit,
+                        )
+                        .await?
+                    } else {
                         SqliteStore::new_with_config(&database_path, &self.config.storage.sqlite)
-                            .await?,
-                    ),
-                    Some(database_path.clone()),
-                    format!("sqlite:{database_path}"),
-                ),
+                            .await?
+                    };
+                    #[cfg(not(feature = "experimental-context-db"))]
+                    let sqlite_store =
+                        SqliteStore::new_with_config(&database_path, &self.config.storage.sqlite)
+                            .await?;
+                    (
+                        Arc::new(sqlite_store),
+                        Some(database_path.clone()),
+                        format!("sqlite:{database_path}"),
+                    )
+                }
                 StorageBackend::Postgres => {
+                    if self
+                        .config
+                        .experimental
+                        .enabled
+                        .contains(crate::experimental::CONTEXT_DB)
+                    {
+                        return Err(
+                            "the context-db experiment currently requires SQLite; PostgreSQL selection is explicit and never silently falls back"
+                                .into(),
+                        );
+                    }
                     let url_env = self.config.storage.postgres.url_env.trim();
                     if url_env.is_empty() {
                         return Err("storage.postgres.url_env must not be empty".into());
