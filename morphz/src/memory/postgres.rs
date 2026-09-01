@@ -159,6 +159,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260901_01_session_permission_mode",
+                    store.migrate_session_permission_mode(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260826_01_work_assignments",
                     store.migrate_work_assignments(),
                 )
@@ -506,6 +512,20 @@ impl PostgresStore {
         Ok(())
     }
 
+    async fn migrate_session_permission_mode(&self) -> Result<(), StoreError> {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS permission_mode TEXT")
+            .execute(&self.pool)
+            .await?;
+        add_and_validate_postgres_check(
+            &self.pool,
+            "sessions",
+            "sessions_permission_mode_domain",
+            "permission_mode IN ('request_approval', 'auto_review', 'full_access')",
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn migrate_bounded_read_model(&self) -> Result<(), StoreError> {
         for statement in [
             r#"ALTER TABLE thread_activations
@@ -692,6 +712,9 @@ impl PostgresStore {
                     CHECK(status IN ('active', 'archived')),
                 model_alias TEXT,
                 reasoning_effort TEXT,
+                permission_mode TEXT
+                    CONSTRAINT sessions_permission_mode_domain
+                    CHECK(permission_mode IN ('request_approval', 'auto_review', 'full_access')),
                 sandbox_mode TEXT
                     CONSTRAINT sessions_sandbox_mode_domain
                     CHECK(sandbox_mode IN ('workspace-write', 'danger-full-access')),
@@ -720,6 +743,7 @@ impl PostgresStore {
                ON sessions(context_id, last_activity_at DESC, id)"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model_alias TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
+            r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS permission_mode TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sandbox_mode TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_sharing TEXT NOT NULL DEFAULT 'shared'"#,
             r#"CREATE TABLE IF NOT EXISTS work_assignments (

@@ -3738,6 +3738,7 @@ impl MorphzSdk {
                     status: None,
                     model_alias,
                     reasoning_effort,
+                    permission_mode: None,
                     sandbox_mode: None,
                 },
             )
@@ -4352,6 +4353,7 @@ mod tests {
                 status: Some(SessionStatus::Archived),
                 model_alias: None,
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
             },
         )

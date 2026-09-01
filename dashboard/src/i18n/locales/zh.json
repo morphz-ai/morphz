@@ -805,11 +805,13 @@
     "high": "高",
     "max": "最高"
   },
-  "sandbox": {
-    "label": "沙箱",
-    "title": "立即修改当前会话随后开始的工具工作的沙箱策略；已在运行的进程和其他会话不受影响",
-    "workspaceWrite": "工作区读写",
-    "fullAccess": "完全访问"
+  "permission": {
+    "label": "权限预设",
+    "title": "立即修改当前会话随后开始的工具工作的沙箱与审批策略；已在运行的进程和其他会话不受影响",
+    "autoApproval": "自动审批",
+    "requestApproval": "请求人工审批",
+    "fullAccess": "完全访问",
+    "customDefault": "自定义（服务默认）"
   },
   "reasoningSummary": {
     "toggle": "推理摘要",

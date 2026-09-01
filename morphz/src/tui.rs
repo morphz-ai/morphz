@@ -17,7 +17,7 @@ use crate::memory::{
     ObjectiveWaitCondition, SessionRecord, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::ContextView;
-use crate::permission::SandboxMode;
+use crate::permission::{PermissionMode, SandboxMode};
 use crate::runtime::{InferenceModelOption, MorphzRuntime, RuntimeError, SessionHandle};
 use crate::sdk::{MorphzSdk, SendMessageCommand};
 use crate::sexpr::SExpr;
@@ -489,7 +489,7 @@ enum ControlAction {
     SetTheme(TuiTheme),
     SetModel(String),
     SetReasoningEffort(Option<ReasoningEffort>),
-    SetSandboxMode(SandboxMode),
+    SetPermissionMode(PermissionMode),
     CancelEvaluation,
     ClearView,
     Quit,
@@ -711,7 +711,7 @@ struct UiState {
     session_id: String,
     session_title: Option<String>,
     model: String,
-    sandbox_mode: SandboxMode,
+    permission_mode: PermissionMode,
     working_directory: String,
     entries: Vec<TranscriptEntry>,
     composer: Composer,
@@ -782,7 +782,7 @@ impl UiState {
             session_id: session.id().to_string(),
             session_title: None,
             model: runtime.model(),
-            sandbox_mode: runtime.config().permissions.sandbox_mode,
+            permission_mode: runtime.config().permissions.effective_mode(),
             working_directory: display_working_directory(),
             entries: Vec::new(),
             composer: Composer::new(),
@@ -1134,27 +1134,38 @@ impl UiState {
             ),
             None,
         ));
-        for sandbox_mode in [SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess] {
-            let (label_en, label_zh, description_en, description_zh) = match sandbox_mode {
-                SandboxMode::WorkspaceWrite => (
-                    "Sandbox · Workspace Write",
-                    "沙箱 · 工作区读写",
-                    "Immediately apply the native Workspace sandbox to subsequent tool work in this Session.",
-                    "立即让当前会话随后开始的工具工作使用原生工作区沙箱。",
+        for permission_mode in [
+            PermissionMode::AutoReview,
+            PermissionMode::RequestApproval,
+            PermissionMode::FullAccess,
+        ] {
+            let (label_en, label_zh, description_en, description_zh) = match permission_mode {
+                PermissionMode::AutoReview => (
+                    "Permissions · Auto Approval",
+                    "权限 · 自动审批",
+                    "Use the native Workspace sandbox and automatically review requests for capabilities outside it.",
+                    "使用原生工作区沙箱，并自动评审超出边界的能力请求。",
                 ),
-                SandboxMode::DangerFullAccess => (
-                    "Sandbox · Full Access",
-                    "沙箱 · 完全访问",
-                    "Immediately allow subsequent tool work in this Session beyond Workspace and operating-system sandbox boundaries.",
-                    "立即允许当前会话随后开始的工具工作越过工作区和操作系统沙箱边界。",
+                PermissionMode::RequestApproval => (
+                    "Permissions · Request Human Approval",
+                    "权限 · 请求人工审批",
+                    "Use the native Workspace sandbox and ask you before granting capabilities outside it.",
+                    "使用原生工作区沙箱，并在授予超出边界的能力前请求人工审批。",
                 ),
+                PermissionMode::FullAccess => (
+                    "Permissions · Full Access",
+                    "权限 · 完全访问",
+                    "Allow subsequent tool work beyond Workspace and operating-system sandbox boundaries without approval.",
+                    "允许随后开始的工具工作无需审批即可越过工作区和操作系统沙箱边界。",
+                ),
+                PermissionMode::Custom => unreachable!("custom is not a Session permission preset"),
             };
             items.push(ControlItem::new(
-                ControlAction::SetSandboxMode(sandbox_mode),
-                format!("sandbox set {}", sandbox_mode.as_str()),
+                ControlAction::SetPermissionMode(permission_mode),
+                format!("permissions set {}", permission_mode.as_str()),
                 self.tr(label_en, label_zh),
-                if sandbox_mode == self.sandbox_mode {
-                    self.tr("Current Session Sandbox policy.", "当前会话的沙箱策略。")
+                if permission_mode == self.permission_mode {
+                    self.tr("Current Session permission preset.", "当前会话的权限预设。")
                 } else {
                     self.tr(description_en, description_zh)
                 },
@@ -4092,8 +4103,15 @@ impl UiState {
         let composer_block = Block::default()
             .title_bottom(
                 Line::from(format!(
-                    " Sandbox · {} · Alt+S ",
-                    self.sandbox_mode.as_str()
+                    " {} · Alt+S ",
+                    match self.permission_mode {
+                        PermissionMode::AutoReview => self.tr("Auto Approval", "自动审批"),
+                        PermissionMode::RequestApproval => {
+                            self.tr("Request Human Approval", "请求人工审批")
+                        }
+                        PermissionMode::FullAccess => self.tr("Full Access", "完全访问"),
+                        PermissionMode::Custom => self.tr("Custom Permissions", "自定义权限"),
+                    }
                 ))
                 .style(Style::default().fg(self.theme.text_muted))
                 .right_aligned(),
@@ -4292,7 +4310,7 @@ impl UiState {
                 Line::from("  Ctrl/Command+Enter 跟进  ·  Shift+Enter/Ctrl+J 换行"),
                 Line::from(""),
                 Line::from("导航与视图"),
-                Line::from("  ? 帮助  ·  Alt+T 主题  ·  Alt+S 沙箱  ·  Ctrl+G 会话"),
+                Line::from("  ? 帮助  ·  Alt+T 主题  ·  Alt+S 权限  ·  Ctrl+G 会话"),
                 Line::from("  Ctrl+T 任务  ·  Ctrl+K 认知帧  ·  Ctrl+P 控制"),
                 Line::from("  Tab 切换焦点  ·  ↑/↓ 选择  ·  Home/End 首项/末项"),
                 Line::from("  D 任务诊断  ·  Ctrl+O 目标  ·  Ctrl+R 推理摘要"),
@@ -4314,7 +4332,7 @@ impl UiState {
                 Line::from("  Ctrl/Command+Enter follow-up  ·  Shift+Enter/Ctrl+J newline"),
                 Line::from(""),
                 Line::from("Navigation and views"),
-                Line::from("  ? help  ·  Alt+T theme  ·  Alt+S Sandbox  ·  Ctrl+G Sessions"),
+                Line::from("  ? help  ·  Alt+T theme  ·  Alt+S permissions  ·  Ctrl+G Sessions"),
                 Line::from("  Ctrl+T Tasks  ·  Ctrl+K Mind  ·  Ctrl+P Control"),
                 Line::from("  Tab focus  ·  ↑/↓ select  ·  Home/End first/last"),
                 Line::from("  D diagnostics  ·  Ctrl+O Objectives  ·  Ctrl+R reasoning"),
@@ -4868,7 +4886,7 @@ pub async fn run(
     let mut state = UiState::new(&runtime, &session);
     if let Ok(Some(record)) = session.record().await {
         state.model = effective_tui_session_model(&runtime, &record);
-        state.sandbox_mode = effective_tui_session_sandbox_mode(&runtime, &record);
+        state.permission_mode = effective_tui_session_permission_mode(&runtime, &record);
         state.context_id = record.context_id;
         state.session_title = Some(record.title);
     }
@@ -5185,13 +5203,21 @@ fn effective_tui_session_model(runtime: &MorphzRuntime, record: &SessionRecord) 
         .unwrap_or_else(|| runtime.model())
 }
 
-fn effective_tui_session_sandbox_mode(
+fn effective_tui_session_permission_mode(
     runtime: &MorphzRuntime,
     record: &SessionRecord,
-) -> SandboxMode {
-    record
-        .sandbox_mode
-        .unwrap_or(runtime.config().permissions.sandbox_mode)
+) -> PermissionMode {
+    if let Some(mode) = record.permission_mode {
+        return mode;
+    }
+    match record.sandbox_mode {
+        Some(SandboxMode::DangerFullAccess) => PermissionMode::FullAccess,
+        Some(sandbox_mode) => {
+            let (_, approval_policy, reviewer) = runtime.config().permissions.preset();
+            PermissionMode::from_effective_controls(sandbox_mode, approval_policy, reviewer)
+        }
+        None => runtime.config().permissions.effective_mode(),
+    }
 }
 
 async fn persist_tui_session_model(
@@ -5236,16 +5262,16 @@ async fn persist_tui_session_reasoning_effort(
         .ok_or_else(|| format!("Session '{session_id}' does not exist").into())
 }
 
-async fn persist_tui_session_sandbox_mode(
+async fn persist_tui_session_permission_mode(
     runtime: &MorphzRuntime,
     session_id: &str,
-    sandbox_mode: SandboxMode,
+    permission_mode: PermissionMode,
 ) -> Result<SessionRecord, RuntimeError> {
     runtime
         .update_session(
             session_id,
             SessionUpdate {
-                sandbox_mode: Some(Some(sandbox_mode)),
+                permission_mode: Some(Some(permission_mode)),
                 ..SessionUpdate::default()
             },
         )
@@ -5489,24 +5515,25 @@ async fn execute_control_action(
                 }
             }
         }
-        ControlAction::SetSandboxMode(sandbox_mode) => {
-            match persist_tui_session_sandbox_mode(runtime, session.id(), sandbox_mode).await {
+        ControlAction::SetPermissionMode(permission_mode) => {
+            match persist_tui_session_permission_mode(runtime, session.id(), permission_mode).await
+            {
                 Ok(record) => {
-                    state.sandbox_mode = effective_tui_session_sandbox_mode(runtime, &record);
+                    state.permission_mode = effective_tui_session_permission_mode(runtime, &record);
                     state.status = if state.locale.is_chinese() {
-                        format!("当前会话沙箱 · {} · 已立即生效", sandbox_mode.as_str())
+                        format!("当前会话权限 · {} · 已立即生效", permission_mode.as_str())
                     } else {
                         format!(
-                            "Session Sandbox · {} · effective now",
-                            sandbox_mode.as_str()
+                            "Session permissions · {} · effective now",
+                            permission_mode.as_str()
                         )
                     };
                 }
                 Err(error) => {
                     state.status = if state.locale.is_chinese() {
-                        format!("切换沙箱失败：{error}")
+                        format!("切换权限预设失败：{error}")
                     } else {
-                        format!("Could not switch Sandbox: {error}")
+                        format!("Could not switch permission preset: {error}")
                     };
                 }
             }
@@ -5580,7 +5607,7 @@ async fn switch_tui_session(
     state.context_id.clone_from(&record.context_id);
     state.session_id.clone_from(&record.id);
     state.model = effective_tui_session_model(runtime, &record);
-    state.sandbox_mode = effective_tui_session_sandbox_mode(runtime, &record);
+    state.permission_mode = effective_tui_session_permission_mode(runtime, &record);
     state.session_title = Some(record.title);
     state.entries.clear();
     state.live_attempts.clear();
@@ -5710,12 +5737,13 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     if is_theme_cycle_key(key) {
         return UiAction::ExecuteControl(ControlAction::CycleTheme);
     }
-    if is_sandbox_cycle_key(key) {
-        let sandbox_mode = match state.sandbox_mode {
-            SandboxMode::WorkspaceWrite => SandboxMode::DangerFullAccess,
-            SandboxMode::DangerFullAccess => SandboxMode::WorkspaceWrite,
+    if is_permission_cycle_key(key) {
+        let permission_mode = match state.permission_mode {
+            PermissionMode::AutoReview => PermissionMode::RequestApproval,
+            PermissionMode::RequestApproval => PermissionMode::FullAccess,
+            PermissionMode::FullAccess | PermissionMode::Custom => PermissionMode::AutoReview,
         };
-        return UiAction::ExecuteControl(ControlAction::SetSandboxMode(sandbox_mode));
+        return UiAction::ExecuteControl(ControlAction::SetPermissionMode(permission_mode));
     }
     if state.show_help {
         if key.code == KeyCode::Esc || is_shortcuts_key(key) {
@@ -6062,7 +6090,7 @@ fn is_theme_cycle_key(key: KeyEvent) -> bool {
         && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
 }
 
-fn is_sandbox_cycle_key(key: KeyEvent) -> bool {
+fn is_permission_cycle_key(key: KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
@@ -6980,7 +7008,7 @@ mod tests {
             session_id: "s".to_string(),
             session_title: Some("main".to_string()),
             model: "m".to_string(),
-            sandbox_mode: SandboxMode::WorkspaceWrite,
+            permission_mode: PermissionMode::AutoReview,
             working_directory: "~/Codes/Morphz".to_string(),
             entries: Vec::new(),
             composer,
@@ -7096,28 +7124,33 @@ mod tests {
             &runtime,
             &session_a,
             &mut state,
-            ControlAction::SetSandboxMode(SandboxMode::DangerFullAccess),
+            ControlAction::SetPermissionMode(PermissionMode::FullAccess),
         )
         .await;
 
         let persisted = session_a.record().await.unwrap().unwrap();
         assert_eq!(persisted.model_alias.as_deref(), Some("model-b"));
         assert_eq!(persisted.reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(persisted.sandbox_mode, Some(SandboxMode::DangerFullAccess));
+        assert_eq!(persisted.permission_mode, Some(PermissionMode::FullAccess));
+        assert_eq!(persisted.sandbox_mode, None);
         assert_eq!(state.model, "model-b");
-        assert_eq!(state.sandbox_mode, SandboxMode::DangerFullAccess);
+        assert_eq!(state.permission_mode, PermissionMode::FullAccess);
         assert_eq!(runtime.model(), "model-a");
         assert_eq!(session_b.record().await.unwrap().unwrap().model_alias, None);
         assert_eq!(
             session_b.record().await.unwrap().unwrap().sandbox_mode,
             None
         );
+        assert_eq!(
+            session_b.record().await.unwrap().unwrap().permission_mode,
+            None
+        );
 
         let mut reentered = UiState::new(&runtime, &session_a);
         reentered.model = effective_tui_session_model(&runtime, &persisted);
-        reentered.sandbox_mode = effective_tui_session_sandbox_mode(&runtime, &persisted);
+        reentered.permission_mode = effective_tui_session_permission_mode(&runtime, &persisted);
         assert_eq!(reentered.model, "model-b");
-        assert_eq!(reentered.sandbox_mode, SandboxMode::DangerFullAccess);
+        assert_eq!(reentered.permission_mode, PermissionMode::FullAccess);
     }
 
     fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
@@ -7157,7 +7190,7 @@ mod tests {
                 | ControlAction::OpenShell
                 | ControlAction::SetModel(_)
                 | ControlAction::SetReasoningEffort(_)
-                | ControlAction::SetSandboxMode(_)
+                | ControlAction::SetPermissionMode(_)
                 | ControlAction::CancelEvaluation
                 | ControlAction::Quit => {}
             },
@@ -7714,6 +7747,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            permission_mode: None,
             sandbox_mode: None,
             context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,

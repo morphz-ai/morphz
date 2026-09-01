@@ -1,8 +1,7 @@
 use crate::approval::{
     capability_lease_policy_digest, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
-    ApprovalRequest, CapabilityLeaseOffer, DenyAllApprovalProvider, EscalatingApprovalProvider,
-    HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
-    CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    ApprovalRequest, CapabilityLeaseOffer, EscalatingApprovalProvider, HumanApprovalHub,
+    HumanApprovalProvider, PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
 };
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
@@ -1234,9 +1233,10 @@ impl MorphzRuntimeBuilder {
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
             tracing::warn!(event_code = "runtime.permissions.full_access_enabled", "Full access is enabled: file tools and Shell are not restricted by workspace or operating-system sandbox boundaries");
         }
-        let separate_reviewer_client = if self.approval_provider.is_none()
-            && permission_profile.reviewer == ReviewerKind::AutoReview
-        {
+        // Session-level permission presets may switch to automatic approval
+        // even when the Runtime starts in human-approval or full-access mode.
+        // Keep both reviewer routes available for the Runtime's lifetime.
+        let separate_reviewer_client = if self.approval_provider.is_none() {
             match self.reviewer_client {
                 Some(client) => Some(client),
                 None => match permission_profile.auto_review_model.as_deref() {
@@ -1268,9 +1268,7 @@ impl MorphzRuntimeBuilder {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| Arc::clone(&self.client));
-        let built_in_auto_review_provider = if self.approval_provider.is_none()
-            && permission_profile.reviewer == ReviewerKind::AutoReview
-        {
+        let built_in_auto_review_provider = if self.approval_provider.is_none() {
             Some(Arc::new(AiAutoReviewProvider::new(
                 auto_review_client,
                 Arc::clone(&store) as Arc<dyn EventStore>,
@@ -1278,29 +1276,29 @@ impl MorphzRuntimeBuilder {
         } else {
             None
         };
-        let approval_provider = match self.approval_provider {
-            Some(provider) => provider,
+        let (automatic_approval, human_approval) = match self.approval_provider {
+            Some(provider) => (Arc::clone(&provider), provider),
             None => {
                 let human_review: Arc<dyn ApprovalProvider> = Arc::new(HumanApprovalProvider::new(
                     human_approval_hub.clone(),
                     Arc::clone(&store) as Arc<dyn ApprovalStore>,
                 ));
-                match permission_profile.reviewer {
-                    ReviewerKind::AutoReview => Arc::new(EscalatingApprovalProvider::new(
+                let automatic_review: Arc<dyn ApprovalProvider> =
+                    Arc::new(EscalatingApprovalProvider::new(
                         built_in_auto_review_provider
                             .as_ref()
                             .cloned()
                             .expect("built-in auto reviewer must exist"),
-                        human_review,
-                    )) as Arc<dyn ApprovalProvider>,
-                    ReviewerKind::User => human_review,
-                    ReviewerKind::Deny => Arc::new(DenyAllApprovalProvider::new(
-                        "the current permission Profile forbids out-of-bound capability requests",
-                    )),
-                }
+                        Arc::clone(&human_review),
+                    ));
+                (automatic_review, human_review)
             }
         };
-        let permissions = Arc::new(PermissionBroker::new(permission_profile, approval_provider));
+        let permissions = Arc::new(PermissionBroker::new_with_reviewers(
+            permission_profile,
+            automatic_approval,
+            human_approval,
+        ));
         // Evaluation leases are failure detectors, not model/tool wall-clock
         // budgets. Healthy long-running work renews this short lease; a dead
         // worker must not strand an Objective for the model hard timeout.
@@ -2478,29 +2476,51 @@ impl MorphzRuntime {
         Ok(())
     }
 
-    async fn publish_session_sandbox_policy_changed(
+    async fn publish_session_permission_policy_changed(
         &self,
         previous: &SessionRecord,
         current: &SessionRecord,
     ) -> Result<(), RuntimeError> {
+        let effective = self.inner.permissions.profile_for_session(&current.id);
         let changed = Event::new(
             format!(
-                "session_sandbox_policy_changed_{}_{}_{}",
+                "session_permission_policy_changed_{}_{}_{}",
                 current.id,
                 current.updated_at.timestamp_micros(),
                 chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
             ),
-            "Runtime-SessionSandboxPolicy".to_string(),
+            "Runtime-SessionPermissionPolicy".to_string(),
             "runtime_control".to_string(),
-            "runtime/session_sandbox_policy_changed".to_string(),
+            "runtime/session_permission_policy_changed".to_string(),
             [
                 ("context_id".to_string(), json!(&current.context_id)),
                 ("session_id".to_string(), json!(&current.id)),
+                (
+                    "previous_permission_mode".to_string(),
+                    json!(previous.permission_mode),
+                ),
+                (
+                    "permission_mode".to_string(),
+                    json!(current.permission_mode),
+                ),
                 (
                     "previous_sandbox_mode".to_string(),
                     json!(previous.sandbox_mode),
                 ),
                 ("sandbox_mode".to_string(), json!(current.sandbox_mode)),
+                (
+                    "effective_permission_mode".to_string(),
+                    json!(effective.mode),
+                ),
+                (
+                    "effective_sandbox_mode".to_string(),
+                    json!(effective.sandbox_mode),
+                ),
+                (
+                    "effective_approval_policy".to_string(),
+                    json!(effective.approval_policy),
+                ),
+                ("effective_reviewer".to_string(), json!(effective.reviewer)),
                 (
                     "effective_immediately".to_string(),
                     json!("subsequently_started_tool_operations"),
@@ -2605,6 +2625,9 @@ impl MorphzRuntime {
         // routes; archived records remain queryable through the directory and
         // are registered again if the user explicitly reactivates them.
         for session in self.inner.store.list_sessions(false).await? {
+            self.inner
+                .permissions
+                .set_session_permission_mode(&session.id, session.permission_mode);
             self.inner
                 .permissions
                 .set_session_sandbox_mode(&session.id, session.sandbox_mode);
@@ -5626,11 +5649,34 @@ impl MorphzRuntime {
     pub async fn update_session(
         &self,
         id: &str,
-        update: SessionUpdate,
+        mut update: SessionUpdate,
     ) -> Result<Option<SessionRecord>, RuntimeError> {
+        if matches!(
+            update.permission_mode,
+            Some(Some(crate::permission::PermissionMode::Custom))
+        ) {
+            return Err(
+                "Session permission presets do not accept custom mode without a complete custom policy"
+                    .into(),
+            );
+        }
+        // New preset controls and legacy Sandbox-only clients are mutually
+        // exclusive. Whichever policy surface is explicitly changed becomes
+        // authoritative, preventing a stale hidden override from winning.
+        match (
+            update.permission_mode.is_some(),
+            update.sandbox_mode.is_some(),
+        ) {
+            (true, false) => update.sandbox_mode = Some(None),
+            (false, true) => update.permission_mode = Some(None),
+            _ => {}
+        }
         let previous = self.inner.store.get_session(id).await?;
         let updated = self.inner.store.update_session(id, update).await?;
         if let (Some(previous), Some(current)) = (previous.as_ref(), updated.as_ref()) {
+            self.inner
+                .permissions
+                .set_session_permission_mode(&current.id, current.permission_mode);
             self.inner
                 .permissions
                 .set_session_sandbox_mode(&current.id, current.sandbox_mode);
@@ -5640,8 +5686,10 @@ impl MorphzRuntime {
                 self.publish_session_evaluation_policy_changed(previous, current)
                     .await?;
             }
-            if previous.sandbox_mode != current.sandbox_mode {
-                self.publish_session_sandbox_policy_changed(previous, current)
+            if previous.permission_mode != current.permission_mode
+                || previous.sandbox_mode != current.sandbox_mode
+            {
+                self.publish_session_permission_policy_changed(previous, current)
                     .await?;
             }
         }
@@ -8682,6 +8730,7 @@ impl MorphzRuntime {
 
     pub fn runtime_status(&self) -> RuntimeStatus {
         let generated_at = chrono::Utc::now();
+        let permission_profile = self.inner.permissions.startup_profile();
         let uptime_seconds = generated_at
             .signed_duration_since(self.inner.process_started_at)
             .num_seconds()
@@ -8712,9 +8761,9 @@ impl MorphzRuntime {
             tool_count: self.tool_names().len(),
             storage: self.inner.storage_label.clone(),
             storage_backend: self.inner.config.storage.backend,
-            permission_mode: self.inner.config.permissions.mode,
-            sandbox_mode: self.inner.config.permissions.sandbox_mode,
-            reviewer: self.inner.config.permissions.reviewer,
+            permission_mode: permission_profile.effective_mode(),
+            sandbox_mode: permission_profile.sandbox_mode,
+            reviewer: permission_profile.reviewer,
             model_input: self.inner.config.model_input.clone(),
         }
     }
@@ -10209,6 +10258,7 @@ mod tests {
             status: SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
+            permission_mode: None,
             sandbox_mode: None,
             context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,

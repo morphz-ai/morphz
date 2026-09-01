@@ -98,6 +98,65 @@ pub enum PermissionMode {
     Custom,
 }
 
+impl PermissionMode {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "request_approval" | "request-approval" | "human" => Ok(Self::RequestApproval),
+            "auto_review" | "auto-review" | "auto_approval" | "auto-approval" => {
+                Ok(Self::AutoReview)
+            }
+            "full_access" | "full-access" | "full" => Ok(Self::FullAccess),
+            "custom" => Ok(Self::Custom),
+            other => Err(format!("unsupported permission mode '{other}'")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestApproval => "request_approval",
+            Self::AutoReview => "auto_review",
+            Self::FullAccess => "full_access",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn preset(self) -> Option<(SandboxMode, ApprovalPolicy, ReviewerKind)> {
+        match self {
+            Self::RequestApproval => Some((
+                SandboxMode::WorkspaceWrite,
+                ApprovalPolicy::OnRequest,
+                ReviewerKind::User,
+            )),
+            Self::AutoReview => Some((
+                SandboxMode::WorkspaceWrite,
+                ApprovalPolicy::OnRequest,
+                ReviewerKind::AutoReview,
+            )),
+            Self::FullAccess => Some((
+                SandboxMode::DangerFullAccess,
+                ApprovalPolicy::Never,
+                ReviewerKind::Deny,
+            )),
+            Self::Custom => None,
+        }
+    }
+
+    pub fn from_effective_controls(
+        sandbox_mode: SandboxMode,
+        approval_policy: ApprovalPolicy,
+        reviewer: ReviewerKind,
+    ) -> Self {
+        if sandbox_mode == SandboxMode::DangerFullAccess {
+            return Self::FullAccess;
+        }
+        match (approval_policy, reviewer) {
+            (ApprovalPolicy::OnRequest, ReviewerKind::AutoReview) => Self::AutoReview,
+            (ApprovalPolicy::OnRequest, ReviewerKind::User) => Self::RequestApproval,
+            _ => Self::Custom,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxMode {
@@ -195,24 +254,14 @@ impl Default for PermissionConfig {
 
 impl PermissionConfig {
     pub fn preset(&self) -> (SandboxMode, ApprovalPolicy, ReviewerKind) {
-        match self.mode {
-            PermissionMode::RequestApproval => (
-                SandboxMode::WorkspaceWrite,
-                ApprovalPolicy::OnRequest,
-                ReviewerKind::User,
-            ),
-            PermissionMode::AutoReview => (
-                SandboxMode::WorkspaceWrite,
-                ApprovalPolicy::OnRequest,
-                ReviewerKind::AutoReview,
-            ),
-            PermissionMode::FullAccess => (
-                SandboxMode::DangerFullAccess,
-                ApprovalPolicy::Never,
-                ReviewerKind::Deny,
-            ),
-            PermissionMode::Custom => (self.sandbox_mode, self.approval_policy, self.reviewer),
-        }
+        self.mode
+            .preset()
+            .unwrap_or((self.sandbox_mode, self.approval_policy, self.reviewer))
+    }
+
+    pub fn effective_mode(&self) -> PermissionMode {
+        let (sandbox_mode, approval_policy, reviewer) = self.preset();
+        PermissionMode::from_effective_controls(sandbox_mode, approval_policy, reviewer)
     }
 }
 
@@ -285,6 +334,14 @@ impl PermissionProfile {
 
     pub fn full_access(&self) -> bool {
         self.sandbox_mode == SandboxMode::DangerFullAccess
+    }
+
+    pub fn effective_mode(&self) -> PermissionMode {
+        PermissionMode::from_effective_controls(
+            self.sandbox_mode,
+            self.approval_policy,
+            self.reviewer,
+        )
     }
 
     pub fn permission_request_available(&self) -> bool {
@@ -444,23 +501,58 @@ pub struct ApprovalContext {
 
 pub struct PermissionBroker {
     profile: Arc<PermissionProfile>,
-    approval: Arc<dyn ApprovalProvider>,
+    automatic_approval: Arc<dyn ApprovalProvider>,
+    human_approval: Arc<dyn ApprovalProvider>,
     auto_review_model: std::sync::RwLock<Option<String>>,
     /// Durable Session policy projected into the live authorization boundary.
     /// The startup Profile remains the fallback for Sessions without an
     /// override and for work that is not causally attached to a Session.
     session_sandbox_modes: std::sync::RwLock<HashMap<String, SandboxMode>>,
+    session_permission_modes: std::sync::RwLock<HashMap<String, PermissionMode>>,
 }
 
 impl PermissionBroker {
     pub fn new(profile: Arc<PermissionProfile>, approval: Arc<dyn ApprovalProvider>) -> Self {
+        Self::new_with_reviewers(profile, Arc::clone(&approval), approval)
+    }
+
+    pub fn new_with_reviewers(
+        profile: Arc<PermissionProfile>,
+        automatic_approval: Arc<dyn ApprovalProvider>,
+        human_approval: Arc<dyn ApprovalProvider>,
+    ) -> Self {
         let auto_review_model = std::sync::RwLock::new(profile.auto_review_model.clone());
         Self {
             profile,
-            approval,
+            automatic_approval,
+            human_approval,
             auto_review_model,
             session_sandbox_modes: std::sync::RwLock::new(HashMap::new()),
+            session_permission_modes: std::sync::RwLock::new(HashMap::new()),
         }
+    }
+
+    pub fn set_session_permission_mode(&self, session_id: &str, mode: Option<PermissionMode>) {
+        let mut modes = self
+            .session_permission_modes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match mode {
+            Some(mode) => {
+                modes.insert(session_id.to_string(), mode);
+            }
+            None => {
+                modes.remove(session_id);
+            }
+        }
+    }
+
+    pub fn session_permission_mode(&self, session_id: &str) -> Option<PermissionMode> {
+        self.session_permission_modes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session_id)
+            .copied()
     }
 
     pub fn set_session_sandbox_mode(&self, session_id: &str, mode: Option<SandboxMode>) {
@@ -488,17 +580,54 @@ impl PermissionBroker {
 
     pub fn profile(&self) -> Arc<PermissionProfile> {
         let requested = crate::tool::CURRENT_SESSION_ID
-            .try_with(|session_id| self.session_sandbox_mode(session_id))
-            .ok()
-            .flatten();
-        self.profile_with_sandbox_mode(requested)
+            .try_with(|session_id| {
+                (
+                    self.session_permission_mode(session_id),
+                    self.session_sandbox_mode(session_id),
+                )
+            })
+            .unwrap_or((None, None));
+        self.profile_with_overrides(requested.0, requested.1)
+    }
+
+    pub fn startup_profile(&self) -> Arc<PermissionProfile> {
+        Arc::clone(&self.profile)
     }
 
     pub fn profile_for_session(&self, session_id: &str) -> Arc<PermissionProfile> {
-        self.profile_with_sandbox_mode(self.session_sandbox_mode(session_id))
+        self.profile_with_overrides(
+            self.session_permission_mode(session_id),
+            self.session_sandbox_mode(session_id),
+        )
     }
 
-    fn profile_with_sandbox_mode(&self, requested: Option<SandboxMode>) -> Arc<PermissionProfile> {
+    fn profile_with_overrides(
+        &self,
+        permission_mode: Option<PermissionMode>,
+        sandbox_mode: Option<SandboxMode>,
+    ) -> Arc<PermissionProfile> {
+        if let Some(mode) = permission_mode {
+            let Some((sandbox_mode, approval_policy, reviewer)) = mode.preset() else {
+                return Arc::clone(&self.profile);
+            };
+            if mode == self.profile.mode && sandbox_mode == self.profile.sandbox_mode {
+                return Arc::clone(&self.profile);
+            }
+            let mut profile = self.profile.as_ref().clone();
+            profile.mode = mode;
+            profile.sandbox_mode = sandbox_mode;
+            profile.approval_policy = approval_policy;
+            profile.reviewer = reviewer;
+            profile.network = match sandbox_mode {
+                SandboxMode::DangerFullAccess => true,
+                SandboxMode::WorkspaceWrite => {
+                    self.profile.sandbox_mode == SandboxMode::WorkspaceWrite && self.profile.network
+                }
+            };
+            return Arc::new(profile);
+        }
+
+        let requested = sandbox_mode;
         let Some(requested) = requested.filter(|mode| *mode != self.profile.sandbox_mode) else {
             return Arc::clone(&self.profile);
         };
@@ -568,7 +697,15 @@ impl PermissionBroker {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, PermissionError> {
-        self.approval.review(request).await
+        match self.profile().reviewer {
+            ReviewerKind::User => self.human_approval.review(request).await,
+            ReviewerKind::AutoReview => self.automatic_approval.review(request).await,
+            ReviewerKind::Deny => Ok(ApprovalDecision::Deny {
+                rationale: "the current permission Profile forbids capability expansion"
+                    .to_string(),
+                risk_tags: vec!["permission_profile_deny".to_string()],
+            }),
+        }
     }
 
     pub fn approval_requirement_for_path(
@@ -702,7 +839,6 @@ impl PermissionBroker {
             std::process::id()
         );
         let decision = self
-            .approval
             .review(&ApprovalRequest {
                 approval_id,
                 context_id: nonempty(context.context_id, "default-context"),
@@ -824,7 +960,27 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 mod tests {
     use super::*;
     use crate::approval::DenyAllApprovalProvider;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    struct CountingApprovalProvider {
+        calls: Arc<AtomicUsize>,
+        rationale: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl ApprovalProvider for CountingApprovalProvider {
+        async fn review(
+            &self,
+            _request: &ApprovalRequest,
+        ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ApprovalDecision::AllowOnce {
+                rationale: self.rationale.to_string(),
+                risk_tags: vec!["test".to_string()],
+            })
+        }
+    }
 
     fn profile(root: &Path) -> PermissionProfile {
         let config = PermissionConfig {
@@ -930,6 +1086,17 @@ mod tests {
                 ApprovalPolicy::Never,
                 ReviewerKind::Deny,
             )
+        );
+
+        let legacy_cli_full_access = PermissionConfig {
+            mode: PermissionMode::Custom,
+            sandbox_mode: SandboxMode::DangerFullAccess,
+            ..PermissionConfig::default()
+        };
+        assert_eq!(
+            legacy_cli_full_access.effective_mode(),
+            PermissionMode::FullAccess,
+            "the permission selector must describe an effective legacy full-access CLI override honestly",
         );
     }
 
@@ -1048,5 +1215,96 @@ mod tests {
             })
             .await;
         assert_eq!(broker.profile().sandbox_mode, SandboxMode::WorkspaceWrite);
+    }
+
+    #[tokio::test]
+    async fn session_permission_presets_switch_complete_policy_and_reviewer_immediately() {
+        let root = TempDir::new().unwrap();
+        let automatic_calls = Arc::new(AtomicUsize::new(0));
+        let human_calls = Arc::new(AtomicUsize::new(0));
+        let config = PermissionConfig {
+            mode: PermissionMode::FullAccess,
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            ..PermissionConfig::default()
+        };
+        let broker = Arc::new(PermissionBroker::new_with_reviewers(
+            Arc::new(PermissionProfile::from_config(&config).unwrap()),
+            Arc::new(CountingApprovalProvider {
+                calls: Arc::clone(&automatic_calls),
+                rationale: "automatic",
+            }),
+            Arc::new(CountingApprovalProvider {
+                calls: Arc::clone(&human_calls),
+                rationale: "human",
+            }),
+        ));
+
+        crate::tool::CURRENT_SESSION_ID
+            .scope("session-a".to_string(), {
+                let broker = Arc::clone(&broker);
+                async move {
+                    broker
+                        .set_session_permission_mode("session-a", Some(PermissionMode::AutoReview));
+                    let automatic = broker.profile();
+                    assert_eq!(automatic.mode, PermissionMode::AutoReview);
+                    assert_eq!(automatic.sandbox_mode, SandboxMode::WorkspaceWrite);
+                    assert_eq!(automatic.approval_policy, ApprovalPolicy::OnRequest);
+                    assert_eq!(automatic.reviewer, ReviewerKind::AutoReview);
+                    assert!(!automatic.network);
+                    broker
+                        .authorize_delta(
+                            ApprovalAction::ToolOperation {
+                                tool: "exec".to_string(),
+                                operation: "network".to_string(),
+                                target: None,
+                            },
+                            CapabilityDelta {
+                                network: true,
+                                ..CapabilityDelta::default()
+                            },
+                            "automatic approval test".to_string(),
+                            ApprovalContext::default(),
+                        )
+                        .await
+                        .unwrap();
+
+                    broker.set_session_permission_mode(
+                        "session-a",
+                        Some(PermissionMode::RequestApproval),
+                    );
+                    assert_eq!(broker.profile().reviewer, ReviewerKind::User);
+                    broker
+                        .authorize_delta(
+                            ApprovalAction::ToolOperation {
+                                tool: "exec".to_string(),
+                                operation: "network".to_string(),
+                                target: None,
+                            },
+                            CapabilityDelta {
+                                network: true,
+                                ..CapabilityDelta::default()
+                            },
+                            "human approval test".to_string(),
+                            ApprovalContext::default(),
+                        )
+                        .await
+                        .unwrap();
+
+                    broker
+                        .set_session_permission_mode("session-a", Some(PermissionMode::FullAccess));
+                    let full = broker.profile();
+                    assert!(full.full_access());
+                    assert_eq!(full.approval_policy, ApprovalPolicy::Never);
+                }
+            })
+            .await;
+
+        assert_eq!(automatic_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(human_calls.load(Ordering::SeqCst), 1);
+        crate::tool::CURRENT_SESSION_ID
+            .scope("session-b".to_string(), async {
+                assert!(broker.profile().full_access());
+            })
+            .await;
     }
 }

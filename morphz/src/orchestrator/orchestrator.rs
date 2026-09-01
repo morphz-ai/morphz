@@ -7027,6 +7027,7 @@ impl Orchestrator {
                                 status: Some(SessionStatus::Archived),
                                 model_alias: None,
                                 reasoning_effort: None,
+                                permission_mode: None,
                                 sandbox_mode: None,
                             },
                         )
@@ -7254,6 +7255,38 @@ impl Orchestrator {
                 },
             )
             .await?;
+        // A delegated Sub Agent is a new cognitive Session, but it executes
+        // inside the parent's physical permission boundary. Persist and
+        // project the exact parent override before the child's first
+        // Activation so a Session-level switch cannot silently fall back to
+        // the Runtime default during coordination.
+        let child = session_store
+            .update_session(
+                &child_session_id,
+                SessionUpdate {
+                    title: None,
+                    status: None,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    permission_mode: Some(parent.permission_mode),
+                    sandbox_mode: Some(parent.sandbox_mode),
+                },
+            )
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "delegate child Session '{}' disappeared before permission inheritance",
+                    child_session_id
+                )
+            })?;
+        if let Some(services) = &self.durable_approvals {
+            services
+                .broker
+                .set_session_permission_mode(&child.id, child.permission_mode);
+            services
+                .broker
+                .set_session_sandbox_mode(&child.id, child.sandbox_mode);
+        }
         if let Some(projection) = session_projection.as_ref() {
             self.context_engine
                 .seed_context_from_mind_with_session_projection(

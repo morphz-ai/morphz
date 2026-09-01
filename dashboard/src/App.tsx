@@ -944,6 +944,7 @@ interface SessionRecord {
   status: 'active' | 'archived'
   model_alias?: string | null
   reasoning_effort?: ReasoningEffortSetting | null
+  permission_mode?: PermissionModeSetting | null
   sandbox_mode?: SandboxModeSetting | null
   context_sharing?: 'shared' | 'isolated'
   attention_state?: string
@@ -983,9 +984,13 @@ function scopedSessionReadPath(path: string, principalId?: string): string {
 
 type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
 type SandboxModeSetting = 'workspace-write' | 'danger-full-access'
+type PermissionModeSetting = 'request_approval' | 'auto_review' | 'full_access' | 'custom'
 
-function isSandboxModeSetting(value: unknown): value is SandboxModeSetting {
-  return value === 'workspace-write' || value === 'danger-full-access'
+function isPermissionModeSetting(value: unknown): value is PermissionModeSetting {
+  return value === 'request_approval'
+    || value === 'auto_review'
+    || value === 'full_access'
+    || value === 'custom'
 }
 
 interface InferenceModelOption {
@@ -3161,7 +3166,7 @@ export default function App() {
   const [optimisticMessages, setOptimisticMessages] = useState<OptimisticMessage[]>([])
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [changingModel, setChangingModel] = useState(false)
-  const [changingSandbox, setChangingSandbox] = useState(false)
+  const [changingPermission, setChangingPermission] = useState(false)
   const [contextTokenBudget, setContextTokenBudget] = useState<ContextTokenBudget | null>(null)
   const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
   const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
@@ -6393,14 +6398,17 @@ export default function App() {
     }
   }
 
-  const changeSandboxMode = async (value: string) => {
-    if (changingSandbox || !selectedSessionId || !isSandboxModeSetting(value)) return
-    setChangingSandbox(true)
+  const changePermissionMode = async (value: string) => {
+    if (changingPermission
+      || !selectedSessionId
+      || !isPermissionModeSetting(value)
+      || value === 'custom') return
+    setChangingPermission(true)
     try {
       const updated = await DASHBOARD_API.command<SessionRecord>(
         `/api/sessions/${encodeURIComponent(selectedSessionId)}`,
         'PATCH',
-        { sandbox_mode: value },
+        { permission_mode: value },
       )
       setSessions(current => current.map(session => session.id === updated.id ? updated : session))
       setRuntimeOverview(current => current ? {
@@ -6416,7 +6424,7 @@ export default function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
-      setChangingSandbox(false)
+      setChangingPermission(false)
     }
   }
 
@@ -7203,11 +7211,19 @@ export default function App() {
     && reasoningEffortOptions.includes(selectedSession.reasoning_effort)
     ? selectedSession.reasoning_effort
     : 'default'
-  const selectedSandboxMode = isSandboxModeSetting(selectedSession?.sandbox_mode)
-    ? selectedSession.sandbox_mode
-    : isSandboxModeSetting(status?.sandbox_mode)
-      ? status.sandbox_mode
-      : 'workspace-write'
+  const selectedPermissionMode: PermissionModeSetting = isPermissionModeSetting(selectedSession?.permission_mode)
+    ? selectedSession.permission_mode
+    : selectedSession?.sandbox_mode === 'danger-full-access'
+      ? 'full_access'
+      : selectedSession?.sandbox_mode === 'workspace-write'
+        ? status?.reviewer === 'auto_review'
+          ? 'auto_review'
+          : status?.reviewer === 'user'
+            ? 'request_approval'
+            : 'custom'
+      : isPermissionModeSetting(status?.permission_mode)
+        ? status.permission_mode
+        : 'custom'
   const contextBudgetModelLabel = resolveSelectedModelOption(
     modelOptions,
     contextTokenBudget?.model,
@@ -9293,18 +9309,22 @@ export default function App() {
                 </select>
               </label>
               <label
-                className={`composer-reasoning-control composer-sandbox-control ${selectedSandboxMode === 'danger-full-access' ? 'is-danger' : ''}`}
-                title={t('sandbox.title')}
+                className={`composer-reasoning-control composer-permission-control ${selectedPermissionMode === 'full_access' ? 'is-danger' : ''}`}
+                title={t('permission.title')}
               >
                 <LockKeyhole size={11} />
                 <select
-                  aria-label={t('sandbox.label')}
-                  disabled={changingSandbox || !selectedSessionId}
-                  value={selectedSandboxMode}
-                  onChange={event => void changeSandboxMode(event.target.value)}
+                  aria-label={t('permission.label')}
+                  disabled={changingPermission || !selectedSessionId}
+                  value={selectedPermissionMode}
+                  onChange={event => void changePermissionMode(event.target.value)}
                 >
-                  <option value="workspace-write">{t('sandbox.workspaceWrite')}</option>
-                  <option value="danger-full-access">{t('sandbox.fullAccess')}</option>
+                  {selectedPermissionMode === 'custom' && (
+                    <option value="custom" disabled>{t('permission.customDefault')}</option>
+                  )}
+                  <option value="auto_review">{t('permission.autoApproval')}</option>
+                  <option value="request_approval">{t('permission.requestApproval')}</option>
+                  <option value="full_access">{t('permission.fullAccess')}</option>
                 </select>
               </label>
               <div className="context-budget-selector" ref={contextTokenBudgetRef}>

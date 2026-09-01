@@ -1162,9 +1162,15 @@ pub struct SessionRecord {
     /// validated at the Runtime boundary before it reaches persistent state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Optional complete permission preset selected for this Session. `None`
+    /// inherits the Runtime startup Profile. The preset is consulted before
+    /// each subsequently-started tool operation, including work started by an
+    /// already-running Evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<crate::permission::PermissionMode>,
     /// Optional Sandbox override selected for this Session. `None` inherits
-    /// the Runtime startup Profile. Unlike a request snapshot, this policy is
-    /// consulted again before each subsequently-started tool operation.
+    /// the Runtime startup Profile. This legacy field remains readable for
+    /// older clients; new control surfaces persist `permission_mode` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<crate::permission::SandboxMode>,
     /// Whether this Session's conversation history may enter another
@@ -1310,6 +1316,11 @@ pub struct SessionUpdate {
     /// `None` leaves the override unchanged. `Some(None)` restores service
     /// inheritance; `Some(Some(level))` freezes a Session-specific level.
     pub reasoning_effort: Option<Option<String>>,
+    /// `None` leaves the preset unchanged. `Some(None)` restores Runtime
+    /// inheritance; `Some(Some(mode))` selects a complete Session permission
+    /// preset. `Custom` is not valid without a full custom policy and is
+    /// rejected at the Runtime boundary.
+    pub permission_mode: Option<Option<crate::permission::PermissionMode>>,
     /// `None` leaves the policy unchanged. `Some(None)` restores Runtime
     /// inheritance; `Some(Some(mode))` persists a Session-specific Sandbox.
     pub sandbox_mode: Option<Option<crate::permission::SandboxMode>>,

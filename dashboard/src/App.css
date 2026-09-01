@@ -1186,13 +1186,13 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
   text-overflow: ellipsis;
 }
 .composer-reasoning-control select:disabled { cursor: wait; opacity: .55; }
-.composer-sandbox-control select { max-width: 118px; }
-.composer-sandbox-control.is-danger {
+.composer-permission-control select { max-width: 136px; }
+.composer-permission-control.is-danger {
   border-color: color-mix(in srgb, var(--red) 46%, var(--line));
   background: var(--red-soft);
   color: var(--red);
 }
-.composer-sandbox-control.is-danger > svg { color: var(--red); }
+.composer-permission-control.is-danger > svg { color: var(--red); }
 .composer-policy-controls .context-budget-popover { position: fixed; inset: auto; }
 .model-control,
 .reasoning-control { gap: 7px; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); transition: border-color .15s ease, background .15s ease; }

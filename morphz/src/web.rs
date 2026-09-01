@@ -286,6 +286,7 @@ struct UpdateSessionRequest {
     status: Option<SessionStatus>,
     model_alias: Option<String>,
     reasoning_effort: Option<String>,
+    permission_mode: Option<crate::permission::PermissionMode>,
     sandbox_mode: Option<crate::permission::SandboxMode>,
     context_sharing: Option<crate::memory::SessionContextSharing>,
 }
@@ -6640,7 +6641,14 @@ async fn handle_update_session(
         return error_response(StatusCode::BAD_REQUEST, "title must not be empty");
     }
     let context_sharing = request.context_sharing;
+    let permission_mode = request.permission_mode;
     let sandbox_mode = request.sandbox_mode;
+    if permission_mode == Some(crate::permission::PermissionMode::Custom) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "custom permission mode requires a complete Runtime policy and is not a Session preset",
+        );
+    }
     let model_alias = match request.model_alias {
         None => None,
         Some(model) if model.trim().is_empty() => Some(None),
@@ -6750,6 +6758,7 @@ async fn handle_update_session(
         && status.is_none()
         && (model_alias.is_some()
             || reasoning_effort.is_some()
+            || permission_mode.is_some()
             || sandbox_mode.is_some()
             || context_sharing.is_some())
     {
@@ -6766,13 +6775,14 @@ async fn handle_update_session(
                 return sdk_error_response(error);
             }
         }
-        if let Some(sandbox_mode) = sandbox_mode {
+        if permission_mode.is_some() || sandbox_mode.is_some() {
             if let Err(error) = state
                 .runtime
                 .update_session(
                     &session_id,
                     SessionUpdate {
-                        sandbox_mode: Some(Some(sandbox_mode)),
+                        permission_mode: permission_mode.map(Some),
+                        sandbox_mode: sandbox_mode.map(Some),
                         ..Default::default()
                     },
                 )
@@ -6821,6 +6831,7 @@ async fn handle_update_session(
                 status,
                 model_alias,
                 reasoning_effort,
+                permission_mode: permission_mode.map(Some),
                 sandbox_mode: sandbox_mode.map(Some),
             },
         )
@@ -9882,6 +9893,7 @@ mod tests {
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: None,
             }),
@@ -9936,6 +9948,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: Some(crate::memory::SessionContextSharing::Isolated),
             }),
@@ -9962,6 +9975,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: Some(crate::memory::SessionContextSharing::Shared),
             }),
@@ -9982,6 +9996,7 @@ mod tests {
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: None,
             }),
@@ -12247,6 +12262,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some("fixture-model".to_string()),
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: None,
             }),
@@ -12276,6 +12292,7 @@ account = "xai-account"
                 status: None,
                 model_alias: None,
                 reasoning_effort: Some("high".to_string()),
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: None,
             }),
@@ -12294,7 +12311,7 @@ account = "xai-account"
             Some("high")
         );
 
-        let sandbox = handle_update_session(
+        let permissions = handle_update_session(
             State(Arc::clone(&state)),
             Path(session_id.to_string()),
             HeaderMap::new(),
@@ -12304,13 +12321,23 @@ account = "xai-account"
                 status: None,
                 model_alias: None,
                 reasoning_effort: None,
-                sandbox_mode: Some(crate::permission::SandboxMode::DangerFullAccess),
+                permission_mode: Some(crate::permission::PermissionMode::FullAccess),
+                sandbox_mode: None,
                 context_sharing: None,
             }),
         )
         .await
         .into_response();
-        assert_eq!(sandbox.status(), StatusCode::OK);
+        assert_eq!(permissions.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .permission_mode,
+            Some(crate::permission::PermissionMode::FullAccess)
+        );
         assert_eq!(
             runtime
                 .get_session(session_id)
@@ -12318,7 +12345,7 @@ account = "xai-account"
                 .unwrap()
                 .unwrap()
                 .sandbox_mode,
-            Some(crate::permission::SandboxMode::DangerFullAccess)
+            None
         );
 
         let rejected = handle_update_session(
@@ -12331,6 +12358,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some("missing-model".to_string()),
                 reasoning_effort: None,
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: None,
             }),
@@ -12359,6 +12387,7 @@ account = "xai-account"
                 status: None,
                 model_alias: Some(String::new()),
                 reasoning_effort: Some("provider_default".to_string()),
+                permission_mode: None,
                 sandbox_mode: None,
                 context_sharing: None,
             }),

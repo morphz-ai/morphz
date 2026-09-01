@@ -206,6 +206,20 @@ test('reasoning selector follows the selected model native capability list', () 
   assert.doesNotMatch(appSource, /inferredProviderReasoningEffort\(/)
 })
 
+test('composer permission presets persist the complete Session policy immediately', () => {
+  assert.match(appSource, /selectedSession\?\.permission_mode/)
+  assert.match(
+    appSource,
+    /`\/api\/sessions\/\$\{encodeURIComponent\(selectedSessionId\)\}`,[\s\S]*?'PATCH',[\s\S]*?\{ permission_mode: value \}/,
+  )
+  assert.match(appSource, /<option value="auto_review">\{t\('permission\.autoApproval'\)\}<\/option>/)
+  assert.match(appSource, /<option value="request_approval">\{t\('permission\.requestApproval'\)\}<\/option>/)
+  assert.match(appSource, /<option value="full_access">\{t\('permission\.fullAccess'\)\}<\/option>/)
+  assert.match(appSource, /sandbox_mode === 'workspace-write'[\s\S]*?status\?\.reviewer === 'auto_review'[\s\S]*?'request_approval'/)
+  assert.match(zhCatalog, /"autoApproval": "自动审批"/)
+  assert.match(zhCatalog, /"requestApproval": "请求人工审批"/)
+})
+
 test('automatic review model is selected from configured routes and hot-saved independently', () => {
   assert.match(providersSource, /snapshot\.reviewer === 'auto_review'/)
   assert.match(providersSource, /routes\.map\(\(\[routeId, route\]\)/)

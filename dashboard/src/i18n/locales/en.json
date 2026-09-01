@@ -805,11 +805,13 @@
     "high": "High",
     "max": "Max"
   },
-  "sandbox": {
-    "label": "Sandbox",
-    "title": "Immediately changes this Session's Sandbox policy for subsequently started tool work; already-running processes and other Sessions are unchanged",
-    "workspaceWrite": "Workspace Write",
-    "fullAccess": "Full Access"
+  "permission": {
+    "label": "Permission preset",
+    "title": "Immediately changes this Session's Sandbox and approval policy for subsequently started tool work; already-running processes and other Sessions are unchanged",
+    "autoApproval": "Auto Approval",
+    "requestApproval": "Request Human Approval",
+    "fullAccess": "Full Access",
+    "customDefault": "Custom (service default)"
   },
   "reasoningSummary": {
     "toggle": "Reasoning summary",
