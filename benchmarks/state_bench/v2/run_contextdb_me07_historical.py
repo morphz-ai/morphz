@@ -7,10 +7,10 @@ scoring protocol, runs only the new Morphz binary, and compares every outcome
 with the historical Morphz job receipt.
 
 Timeouts are correctness evidence, not a generic failure bucket.  Every
-timeout-like result is joined to the task's durable Runtime database and
-classified before another batch is admitted.  Suspected convergence gaps,
-expired active Activations, and already-durable replies halt the run after the
-current batch so a scheduler defect cannot consume the rest of the budget.
+timeout-like result is joined to the task's durable Runtime database,
+classified, and halts the run after the current batch.  A human must audit the
+durable state before an explicit resume so a scheduler or provider defect
+cannot consume the rest of the budget.
 """
 
 from __future__ import annotations
@@ -42,13 +42,6 @@ from benchmarks.state_bench.v2.run_public_systems_formal import (
 
 
 CANDIDATE_PROTOCOL_ID = "ME-07-ContextDB-against-preserved-Morphz-history-v1"
-SCHEDULER_HALT_CLASSIFICATIONS = {
-    "durable_terminal_present",
-    "expired_active_activation",
-    "suspected_scheduler_convergence_gap",
-}
-
-
 def _parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -93,6 +86,12 @@ def _classify_timeout(state: dict[str, Any]) -> str:
     if state.get("active_objectives"):
         return "active_objective_at_timeout"
     return "suspected_scheduler_convergence_gap"
+
+
+def _timeout_halt_classifications(classifications: set[Any]) -> list[str]:
+    """Require explicit audit before resuming after any timeout-like result."""
+
+    return sorted(str(value) for value in classifications if value is not None)
 
 
 def _runtime_directory(output: Path, cell: dict[str, Any]) -> Path | None:
@@ -707,16 +706,14 @@ def main() -> int:
             job["contextdb_candidate_diagnostics"].get("timeout_classification")
             for _, job in results
         }
-        dangerous = sorted(
-            str(value)
-            for value in classifications & SCHEDULER_HALT_CLASSIFICATIONS
-        )
-        if dangerous:
+        timeout_classifications = _timeout_halt_classifications(classifications)
+        if timeout_classifications:
             _atomic_json(
                 output / "scheduler_halt.json",
                 {
                     "protocol_id": CANDIDATE_PROTOCOL_ID,
-                    "classifications": dangerous,
+                    "halt_reason": "timeout_requires_manual_audit",
+                    "classifications": timeout_classifications,
                     "progress": progress,
                 },
             )

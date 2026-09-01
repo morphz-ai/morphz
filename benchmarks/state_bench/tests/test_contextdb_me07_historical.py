@@ -17,6 +17,7 @@ from benchmarks.state_bench.v2.run_contextdb_me07_historical import (
     _classify_timeout,
     _is_timeout_like,
     _runtime_state,
+    _timeout_halt_classifications,
 )
 
 
@@ -112,6 +113,22 @@ def test_timeout_classification_distinguishes_live_expired_and_idle_scheduler() 
         == "expired_active_activation"
     )
     assert _classify_timeout(_state()) == "suspected_scheduler_convergence_gap"
+
+
+def test_runner_halts_for_every_timeout_classification() -> None:
+    classifications = {
+        None,
+        "runtime_state_unavailable",
+        "durable_terminal_present",
+        "pending_scheduler_dependency",
+        "active_activation_at_timeout",
+        "expired_active_activation",
+        "active_objective_at_timeout",
+        "suspected_scheduler_convergence_gap",
+    }
+    assert _timeout_halt_classifications(classifications) == sorted(
+        value for value in classifications if value is not None
+    )
 
 
 def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> None:
