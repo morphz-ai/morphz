@@ -4,11 +4,35 @@ import json
 import sqlite3
 from pathlib import Path
 
+from benchmarks.state_bench.v2.morphz_state_bench_adapter_no_model_gate import (
+    _contextdb_advanced,
+)
 from benchmarks.state_bench.v2.run_contextdb_me07_historical import (
     _classify_timeout,
     _is_timeout_like,
     _runtime_state,
 )
+
+
+def test_no_model_gate_requires_contextdb_not_legacy_projection_progress() -> None:
+    before = {
+        "contextdb": [["context-1", 2, "old-root"]],
+        "legacy": [["context-1", 100, "legacy-root"]],
+    }
+    assert _contextdb_advanced(
+        before,
+        {
+            "contextdb": [["context-1", 3, "new-root"]],
+            "legacy": before["legacy"],
+        },
+    )
+    assert not _contextdb_advanced(
+        before,
+        {
+            "contextdb": before["contextdb"],
+            "legacy": [["context-1", 101, "changed-legacy"]],
+        },
+    )
 
 
 def _state(**values):

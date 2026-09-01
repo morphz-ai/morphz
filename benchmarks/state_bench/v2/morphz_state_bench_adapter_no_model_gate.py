@@ -46,6 +46,52 @@ def _execution_jobs(database: Path) -> list[dict[str, object]]:
     ]
 
 
+def _context_store_state(database: Path) -> dict[str, list[list[object]]]:
+    with sqlite3.connect(database) as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        contextdb = (
+            connection.execute(
+                "SELECT context_id, revision, root_hash "
+                "FROM experimental_contextdb_contexts ORDER BY context_id"
+            ).fetchall()
+            if "experimental_contextdb_contexts" in tables
+            else []
+        )
+        legacy = (
+            connection.execute(
+                "SELECT context_id, revision, state_hash "
+                "FROM mind_projections ORDER BY context_id"
+            ).fetchall()
+            if "mind_projections" in tables
+            else []
+        )
+    return {
+        "contextdb": [list(row) for row in contextdb],
+        "legacy": [list(row) for row in legacy],
+    }
+
+
+def _contextdb_advanced(
+    before: dict[str, list[list[object]]],
+    after: dict[str, list[list[object]]],
+) -> bool:
+    old = before["contextdb"]
+    new = after["contextdb"]
+    if not old:
+        return len(new) == 1 and int(new[0][1]) > 0
+    return (
+        len(old) == len(new) == 1
+        and new[0][0] == old[0][0]
+        and int(new[0][1]) > int(old[0][1])
+        and new[0][2] != old[0][2]
+    )
+
+
 def run(
     binary: Path,
     output: Path,
@@ -59,6 +105,7 @@ def run(
         learning.touch()
     else:
         shutil.copy2(learning_database.resolve(strict=True), learning)
+    context_store_before = _context_store_state(learning)
     task_root = output / "tasks"
     calls: list[dict[str, object]] = []
 
@@ -108,6 +155,7 @@ def run(
         agent_output = Path(trajectory.metadata["me07_agent_system"]["runtime_output"])
 
     jobs = _execution_jobs(agent_output / "morphz.sqlite")
+    context_store_after = _context_store_state(agent_output / "morphz.sqlite")
     initial_context_tx_commits = int(agent._ready["initial_context_tx_commits"])
     final_context_tx_commits = int(agent._last_turn["context_tx_commits"])
     checks = {
@@ -123,6 +171,11 @@ def run(
         ),
         "context_tx_committed_once": final_context_tx_commits
         == initial_context_tx_commits + 1,
+        "contextdb_authority_advanced": _contextdb_advanced(
+            context_store_before, context_store_after
+        ),
+        "legacy_projection_unchanged": context_store_after["legacy"]
+        == context_store_before["legacy"],
         "runtime_closed": agent._process.poll() == 0,  # gate-only lifecycle assertion
         "token_file_removed": not (agent_output / "bridge.token").exists(),
         "non_reportable_marked": trajectory.metadata["me07_agent_system"]["ready"].get(
@@ -139,6 +192,10 @@ def run(
         "context_tx_commits": {
             "initial": initial_context_tx_commits,
             "final": final_context_tx_commits,
+        },
+        "context_store": {
+            "before": context_store_before,
+            "after": context_store_after,
         },
         "domain": domain,
         "learning_database_source": (
