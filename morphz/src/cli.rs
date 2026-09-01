@@ -2318,6 +2318,14 @@ fn experiment_command(locale: Locale) -> Command {
                     ))),
                 "Example:\n  morphz experiment check cognitive-coordination --enable-experimental cognitive-coordination",
             ),
+            output_examples(
+                locale,
+                Command::new("migrate-context-db").about(locale.text(
+                    "Explicitly import legacy SQLite Mind Projections into ContextDB",
+                    "将旧 SQLite 认知投影显式导入 ContextDB",
+                )),
+                "Example:\n  morphz experiment migrate-context-db --enable-experimental context-db --format=json",
+            ),
         ])
         .after_help(locale.text(
             "Experiments are disabled by default and carry no stability promise.",
@@ -2597,6 +2605,29 @@ mod tests {
                 .unwrap()
                 .occurrences(),
             [Some("cognitive-coordination".to_string())]
+        );
+
+        let migration = parse(&[
+            "experiment",
+            "migrate-context-db",
+            "--enable-experimental",
+            "context-db",
+            "--format=json",
+        ]);
+        assert_eq!(
+            migration.command_path(),
+            ["experiment", "migrate-context-db"]
+        );
+        assert_eq!(
+            migration
+                .option("enable-experimental")
+                .unwrap()
+                .occurrences(),
+            [Some("context-db".to_string())]
+        );
+        assert_eq!(
+            migration.option("format").unwrap().last_value(),
+            Some("json")
         );
     }
 

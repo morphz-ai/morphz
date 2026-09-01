@@ -203,10 +203,6 @@ async fn main() -> Result<(), AppError> {
     if dispatch_config_command(&invocation, &resolved)? {
         return Ok(());
     }
-    if dispatch_experiment_command(&invocation, &resolved.config)? {
-        return Ok(());
-    }
-    morphz::experimental::require_all_enabled_compiled(&resolved.config.experimental.enabled)?;
     let protected_config_paths = resolved
         .loaded_paths()
         .map(Path::to_path_buf)
@@ -218,6 +214,10 @@ async fn main() -> Result<(), AppError> {
     if let Some(path) = explicit_sqlite_path.as_ref() {
         app_config.storage.sqlite.path.clone_from(path);
     }
+    if dispatch_experiment_command(&invocation, &app_config).await? {
+        return Ok(());
+    }
+    morphz::experimental::require_all_enabled_compiled(&app_config.experimental.enabled)?;
     validate_coding_eval_storage_isolation(
         std::env::var("MORPHZ_CODING_EVAL_MODE")
             .ok()
@@ -817,16 +817,65 @@ fn apply_cli_config(
     Ok(())
 }
 
-fn dispatch_experiment_command(
+async fn dispatch_experiment_command(
     invocation: &Invocation,
     app_config: &config::AppConfig,
 ) -> Result<bool, AppError> {
     let command = invocation.command_path().join(" ");
     if !matches!(
         command.as_str(),
-        "experiment" | "experiment list" | "experiment check"
+        "experiment" | "experiment list" | "experiment check" | "experiment migrate-context-db"
     ) {
         return Ok(false);
+    }
+
+    if command == "experiment migrate-context-db" {
+        let permit = morphz::experimental::require_enabled(
+            &app_config.experimental.enabled,
+            morphz::experimental::CONTEXT_DB,
+        )?;
+        if app_config.storage.backend != config::StorageBackend::Sqlite {
+            return Err(
+                "ContextDB legacy migration currently requires storage.backend=sqlite".into(),
+            );
+        }
+        if app_config.storage.sqlite.path.trim() == ":memory:" {
+            return Err("ContextDB legacy migration requires a persistent SQLite path".into());
+        }
+        #[cfg(feature = "experimental-context-db")]
+        {
+            let report =
+                morphz::memory::sqlite::SqliteStore::migrate_legacy_mind_projections_to_context_db(
+                    &app_config.storage.sqlite.path,
+                    &app_config.storage.sqlite,
+                    permit,
+                )
+                .await?;
+            if json_output(invocation) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "discovered": report.discovered,
+                        "imported": report.imported,
+                        "already_authoritative": report.already_authoritative,
+                    }))?
+                );
+            } else {
+                println!(
+                    "ContextDB migration complete: discovered={}, imported={}, already_authoritative={}",
+                    report.discovered, report.imported, report.already_authoritative
+                );
+            }
+            return Ok(true);
+        }
+        #[cfg(not(feature = "experimental-context-db"))]
+        {
+            let _ = permit;
+            return Err(
+                "ContextDB migration is unavailable because this binary was not compiled with experimental-context-db"
+                    .into(),
+            );
+        }
     }
 
     let statuses = morphz::experimental::statuses(&app_config.experimental.enabled)?;
@@ -5036,6 +5085,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[cfg(feature = "experimental-context-db")]
+    use super::dispatch_experiment_command;
+
     #[test]
     fn coding_eval_sqlite_requires_an_explicit_isolated_database() {
         assert!(validate_coding_eval_storage_isolation(
@@ -5491,6 +5543,34 @@ mod tests {
         assert_eq!(participant.agent_id, "default-agent");
         assert_eq!(participant.context_id, "context-default");
         assert!(participant.session_id.is_empty());
+    }
+
+    #[cfg(feature = "experimental-context-db")]
+    #[tokio::test]
+    async fn explicit_context_db_migration_command_runs_without_runtime_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("legacy-migration.db");
+        let invocation = morphz_command_line_parser()
+            .parse([
+                "experiment",
+                "migrate-context-db",
+                "--enable-experimental=context-db",
+                "--format=json",
+            ])
+            .unwrap();
+        let mut config = AppConfig::default();
+        apply_cli_config(&invocation, &mut config).unwrap();
+        config.storage.sqlite.path = database_path.to_string_lossy().into_owned();
+
+        assert!(dispatch_experiment_command(&invocation, &config)
+            .await
+            .unwrap());
+        assert!(
+            dispatch_experiment_command(&invocation, &config)
+                .await
+                .unwrap(),
+            "an explicit migration rerun must be idempotent"
+        );
     }
 
     #[tokio::test]

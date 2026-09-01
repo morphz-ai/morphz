@@ -26,6 +26,11 @@ name = "context_db_sqlite_benchmark"
 path = "examples/context_db_sqlite_benchmark.rs"
 required-features = ["experimental-context-db"]
 
+[[example]]
+name = "context_db_runtime_benchmark"
+path = "examples/context_db_runtime_benchmark.rs"
+required-features = ["experimental-context-db"]
+
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }

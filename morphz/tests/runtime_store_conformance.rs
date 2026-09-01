@@ -95,6 +95,7 @@ fn sqlite_two_process_context_cas_is_fenced() {
                     &event,
                     &[],
                     &SessionProjectionMutation::default(),
+                    None,
                     0,
                     NewMindProjection {
                         context_id: "sqlite-process-context".to_string(),
@@ -4921,6 +4922,7 @@ where
                         event_id: event.id.clone(),
                     }],
                     &SessionProjectionMutation::default(),
+                    None,
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -4951,6 +4953,7 @@ where
                         event_id: event.id.clone(),
                     }],
                     &SessionProjectionMutation::default(),
+                    None,
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -5087,6 +5090,7 @@ where
                 retired_event_ids: vec![observation.id.clone()],
                 restored_event_ids: Vec::new(),
             },
+            None,
             current.revision,
             NewMindProjection {
                 context_id: context_id.to_string(),
@@ -5148,6 +5152,7 @@ where
                 retired_event_ids: Vec::new(),
                 restored_event_ids: vec![observation.id.clone()],
             },
+            None,
             current.revision,
             NewMindProjection {
                 context_id: context_id.to_string(),
@@ -5225,6 +5230,7 @@ where
                     &event,
                     &[],
                     &mutation,
+                    None,
                     current.revision,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -8742,6 +8748,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             &event_a,
             &[],
             &projection_mutation_a,
+            None,
             0,
             NewMindProjection {
                 context_id: context_id.clone(),
@@ -8756,6 +8763,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             &event_b,
             &[],
             &projection_mutation_b,
+            None,
             0,
             NewMindProjection {
                 context_id: context_id.clone(),

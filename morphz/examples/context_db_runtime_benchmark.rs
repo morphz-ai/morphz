@@ -11,6 +11,7 @@
 //! - `MORPHZ_CONTEXTDB_RUNTIME_BENCH_READS` (default: 200)
 
 use morphz::config::SqliteStorageConfig;
+use morphz::context_store::{ContextCollection, ContextMutationPlan, ContextStateMutation};
 use morphz::event::Event;
 use morphz::experimental::{require_enabled, CONTEXT_DB};
 use morphz::memory::sqlite::SqliteStore;
@@ -120,6 +121,7 @@ async fn run_workload(
     let mut commit_samples = Vec::with_capacity(iterations);
     for iteration in 0..iterations {
         let expected_revision = state.version;
+        let expected_state_hash = state_hash(&state);
         state.version += 1;
         let frame_index = iteration % state.frames.len();
         let frame = &mut state.frames[frame_index];
@@ -129,6 +131,22 @@ async fn run_workload(
         );
         frame.revision += 1;
         frame.updated_version = state.version;
+        let frame_id = frame.id.clone();
+        let frame_body = serde_json::to_value(frame).expect("serialize changed benchmark Frame");
+        let next_state_hash = state_hash(&state);
+        let mutation_plan = ContextMutationPlan {
+            context_id: context_id.clone(),
+            expected_revision,
+            next_revision: state.version,
+            expected_state_hash,
+            next_state_hash: next_state_hash.clone(),
+            mutations: vec![ContextStateMutation::Upsert {
+                collection: ContextCollection::Frame,
+                logical_id: frame_id,
+                body: frame_body,
+                order: Some(u64::try_from(frame_index).expect("Frame index fits u64")),
+            }],
+        };
         let event = Event::new(
             format!("benchmark-{label}-event-{iteration}"),
             "Benchmark-Agent".to_string(),
@@ -145,12 +163,13 @@ async fn run_workload(
                 &event,
                 &[],
                 &SessionProjectionMutation::default(),
+                Some(&mutation_plan),
                 expected_revision,
                 NewMindProjection {
                     context_id: context_id.clone(),
                     revision: state.version,
                     state: serde_json::to_value(&state).expect("serialize benchmark Mind"),
-                    state_hash: state_hash(&state),
+                    state_hash: next_state_hash,
                     head_event_id: Some(event.id.clone()),
                     recall_documents: Vec::new(),
                 },
