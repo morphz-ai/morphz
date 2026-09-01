@@ -667,6 +667,50 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         }
     ));
 
+    // A ContextDB-backed Runtime must not maintain the legacy current-Mind
+    // tables as a hidden second authority. Prove both the absence of dual
+    // writes and that deliberately conflicting legacy rows cannot influence
+    // either the direct projection read or the one-statement directory read.
+    let audit_pool = sqlx::PgPool::connect(&scoped_url).await?;
+    let legacy_counts = sqlx::query_as::<_, (i64, i64)>(
+        r#"SELECT
+             (SELECT COUNT(*) FROM context_heads
+              WHERE context_id = ANY($1)),
+             (SELECT COUNT(*) FROM mind_projections
+              WHERE context_id = ANY($1))"#,
+    )
+    .bind(vec![context_id, seed_context_id])
+    .fetch_one(&audit_pool)
+    .await?;
+    assert_eq!(legacy_counts, (0, 0));
+    let legacy_decoy_hash = "legacy-decoy-hash";
+    let legacy_decoy_time = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"INSERT INTO context_heads
+           (context_id, revision, projection_hash, head_event_id, updated_at)
+           VALUES ($1, 999, $2, 'legacy-decoy-event', $3)"#,
+    )
+    .bind(context_id)
+    .bind(legacy_decoy_hash)
+    .bind(&legacy_decoy_time)
+    .execute(&audit_pool)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO mind_projections
+           (context_id, revision, state_json, state_hash, updated_at)
+           VALUES ($1, 999, $2, $3, $4)"#,
+    )
+    .bind(context_id)
+    .bind(json!({"legacy_decoy": true}))
+    .bind(legacy_decoy_hash)
+    .bind(&legacy_decoy_time)
+    .execute(&audit_pool)
+    .await?;
+    assert_eq!(
+        store.get_mind_projection(context_id).await?.unwrap().state,
+        serde_json::to_value(&replaced)?
+    );
+
     let directory = store
         .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
             context_id: context_id.to_string(),
@@ -682,6 +726,7 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         directory.mind.unwrap().state,
         serde_json::to_value(&replaced)?
     );
+    audit_pool.close().await;
 
     drop(store);
     let restarted = PostgresStore::new_with_context_db(
