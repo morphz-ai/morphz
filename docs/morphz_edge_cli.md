@@ -42,6 +42,11 @@ morphz-edge pair \
 morphz-edge run --workspace /path/to/workspace
 ```
 
+面向官方 Cloud 普通用户的产品入口不是上述两条底层命令，而是
+[Edge Bootstrap v1](./morphz_edge_bootstrap_v1.md) 定义的一条短期安装命令。安装器负责下载、
+校验、调用配对协议、注册用户级后台服务并启动；`pair`/`run` 继续作为自托管、调试和高级
+运维接口保留。
+
 `morphz-edge` 使用出站连接，不要求用户开放本地监听端口。默认设备凭证沿用 Morphz Edge 的既有路径；可用 `--credential-file` 显式指定。执行状态默认隔离在 `~/.morphz/edge/`，也可通过 `MORPHZ_EDGE_STATE_DIR` 覆盖。
 
 ## 能力边界
