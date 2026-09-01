@@ -274,6 +274,7 @@ Runtime 不依赖 SQLite 表名、PostgreSQL JSONB 形态或未来的复制实�
 | 大 Session Registry 被全量拉入内存 | `working_set_max_one_and_large_registry_do_not_expand_projection`、双后端 statement budget | SQL 内完成窗口、数量与可选谓词筛选 |
 | `max_sessions=1` 错误改变共享认知能力 | 当前默认 50、ME-09 冻结配置 | 默认值、生成配置和远端 artifact 三处断言为 50 |
 | Principal 被误当成默认 Context 隔离边界 | `working_set_excludes_isolated_session_unless_it_is_current` 及 directory predicate tests | Principal filter 只在调用方显式传入时生效 |
+| 无 Context 身份的 Provider 运维调用伪造 `operator` Context，因 Agent 账户隔离而失败或诱发越权绕行 | `local_provider_setup_discovery_enablement_switch_probe_capacity_and_restart`、`durable_agent_binding_filters_accounts_by_context_owner` | 普通 Evaluation 只走持久 Context→Agent 授权；无身份运维调用显式走控制面；已绑定健康探测固定原授权账户 |
 | 并发 Evaluation 看到不属于其因果前沿的 Observation | `activation_frontier_is_context_wide_but_preserves_causal_and_broadcast_routes` | ContextDB View Manifest 保留 activation frontier |
 | active Context 损坏后静默读取旧 Projection | ContextDB corrupt/fail-closed tests | 最终无旧表可回退，损坏必须明确失败 |
 | 迁移重复执行覆盖新状态 | `context_db_constructor_imports_an_existing_legacy_mind_exactly_once` | 独立迁移器在 SQLite/PostgreSQL 都幂等 |

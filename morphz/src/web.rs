@@ -12305,6 +12305,10 @@ account = "xai-account"
             .await
             .unwrap();
         assert_eq!(completion.content, "E2E_OK");
+        // The unscoped Client API and process health probe are explicit
+        // operator operations. Neither may invent a fake `operator` Context,
+        // while ordinary Runtime Evaluations remain Agent-account fenced.
+        routed_client.probe_health().await.unwrap();
 
         let capacity = handle_update_inference(
             State(Arc::clone(&state)),

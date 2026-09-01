@@ -1235,8 +1235,8 @@ pub trait Client: Send + Sync {
 
     /// Probe the logical Provider resource represented by an immutable
     /// binding. Single-resource clients can use their ordinary probe; routed
-    /// clients must not let a later model selection redirect the probe, while
-    /// they may still apply that route's configured account failover policy.
+    /// clients must not let a later model selection redirect the probe or
+    /// select an account outside the binding's Agent authorization.
     async fn probe_health_bound(
         &self,
         _binding: &ModelAttemptBinding,

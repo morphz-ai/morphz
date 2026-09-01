@@ -2128,15 +2128,15 @@ impl Client for RoutedClient {
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, ProviderError> {
-        let binding = self
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: "operator".to_string(),
-                session_id: "operator".to_string(),
-                attempt_id: "direct-completion".to_string(),
-                objective_id: None,
-                required_capabilities: Vec::new(),
-            })
-            .await?;
+        // This legacy Client entry point carries no Context identity, so it
+        // cannot participate in Agent-scoped Provider authorization. Runtime
+        // Evaluations always use bind_model_attempt followed by the bound
+        // completion entry point. Keep this unscoped path explicitly in the
+        // operator/control-plane domain instead of fabricating a non-durable
+        // `operator` Context that either fails closed or accidentally weakens
+        // the Agent boundary.
+        let alias = self.alias()?;
+        let binding = self.diagnostic_binding(&alias, None).await?;
         let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
         let result = self
             .protocol_client(&binding)
@@ -2192,35 +2192,22 @@ impl Client for RoutedClient {
     }
 
     async fn probe_health(&self) -> Result<(), ProviderError> {
-        let binding = self
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: "operator".to_string(),
-                session_id: "operator".to_string(),
-                attempt_id: "health-probe".to_string(),
-                objective_id: None,
-                required_capabilities: Vec::new(),
-            })
-            .await?;
+        // A process-level health probe has no Agent Context. Resolve it as an
+        // explicit control-plane operation; Agent Evaluations remain fenced by
+        // bind_model_attempt and their durable Context ownership.
+        let alias = self.alias()?;
+        let binding = self.diagnostic_binding(&alias, None).await?;
         let _lease = AccountLease::acquire(&binding.auth_account_id, Arc::clone(&self.state))?;
         self.protocol_client(&binding).await?.probe_health().await
     }
 
     async fn probe_health_bound(&self, binding: &ModelAttemptBinding) -> Result<(), ProviderError> {
-        // Keep the logical route frozen while allowing that route's normal
-        // account-selection policy to choose a now-healthy account. This
-        // prevents a UI model switch from redirecting the probe without
-        // pinning recovery forever to the exact account that just failed.
+        // Keep both the logical route and the already authorized account
+        // frozen. ModelAttemptBinding does not carry the owning Agent ID, so a
+        // fresh route-wide selection here could cross that Agent's Provider
+        // allowlist. A different account requires a new Agent-scoped Attempt.
         let probe_binding = self
-            .bind_model_attempt_for_alias(
-                binding.requested_alias.clone(),
-                &ModelRequestContext {
-                    context_id: "operator".to_string(),
-                    session_id: "operator".to_string(),
-                    attempt_id: "health-probe-bound".to_string(),
-                    objective_id: None,
-                    required_capabilities: Vec::new(),
-                },
-            )
+            .diagnostic_binding(&binding.requested_alias, Some(&binding.auth_account_id))
             .await?;
         let _lease =
             AccountLease::acquire(&probe_binding.auth_account_id, Arc::clone(&self.state))?;
@@ -2845,6 +2832,95 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, ModelAttemptBindingError::Runtime(_)));
         assert!(error.to_string().contains("is not durable"));
+    }
+
+    #[tokio::test]
+    async fn bound_health_probe_never_crosses_the_agents_authorized_account() {
+        let provider_app = axum::Router::new().route(
+            "/responses",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "content": [{ "type": "output_text", "text": "MORPHZ_OK" }]
+                    }]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, provider_app).await.unwrap();
+        });
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-health-a".into(),
+                title: "Agent Health A".into(),
+                root_context_id: "context-health-a".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-health-a".into(),
+                agent_id: "agent-health-a".into(),
+                title: "Health A".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_agent_provider_bindings("agent-health-a", &["account-a".to_string()])
+            .await
+            .unwrap();
+
+        let mut config = routed_config();
+        config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .base_url = format!("http://{address}");
+        let client = RoutedClient::new(&config, "coding".to_string()).unwrap();
+        client.attach_provider_account_state_store(store.clone());
+        client.attach_agent_provider_binding_store(store.clone());
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-health-a".into(),
+                session_id: "session-health-a".into(),
+                attempt_id: "attempt-health-a".into(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(binding.auth_account_id, "account-a");
+
+        // Once the attempt exists, a shared health transition may make the
+        // route prefer account-b. The recovery probe must still use the exact
+        // account that this Agent was authorized to bind.
+        store
+            .put_provider_account_state(
+                "account-a",
+                None,
+                ProviderAccountStatus::Disabled,
+                None,
+                Some("test_disabled_after_binding"),
+                false,
+            )
+            .await
+            .unwrap();
+        client.probe_health_bound(&binding).await.unwrap();
+
+        let state = client.state.lock().unwrap();
+        assert!(state.accounts.contains_key("account-a"));
+        assert!(!state.accounts.contains_key("account-b"));
     }
 
     fn cross_model_fallback_config(fallback: bool) -> AppConfig {

@@ -436,14 +436,27 @@ async fn concurrent_plan_infers_share_one_suspended_parent_admission_slot() {
     assert_eq!(reply.payload["text"], "both-plans-finished");
     assert_eq!(client.calls.load(Ordering::SeqCst), 4);
 
-    let plans = store
-        .list_plan_executions(PlanExecutionFilter {
-            context_id: Some(runtime.identity().context_id.clone()),
-            include_terminal: true,
-            ..PlanExecutionFilter::default()
-        })
-        .await
-        .unwrap();
+    // The public reply and each Plan terminal are separate durable rows. The
+    // reply can become observable a scheduling instant before a concurrent
+    // Plan runner's terminal row is visible to this independent reader. Wait
+    // only for nonterminal convergence; a failed/cancelled Plan still breaks
+    // immediately and remains a real regression.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let plans = loop {
+        let plans = store
+            .list_plan_executions(PlanExecutionFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                include_terminal: true,
+                ..PlanExecutionFilter::default()
+            })
+            .await
+            .unwrap();
+        let all_terminal = plans.len() == 2 && plans.iter().all(|plan| plan.status.is_terminal());
+        if all_terminal || tokio::time::Instant::now() >= deadline {
+            break plans;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
     assert_eq!(plans.len(), 2);
     assert!(plans
         .iter()
