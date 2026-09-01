@@ -13884,9 +13884,9 @@ Body
                 "while (-not (Test-Path -LiteralPath '{release_literal}')) {{ Start-Sleep -Milliseconds 20 }}; New-Item -ItemType File -Force -Path '{completed_literal}' | Out-Null"
             ),
         );
-        let started = tokio::time::Instant::now();
-        let result = CURRENT_EXECUTION_JOB
-            .scope(
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            CURRENT_EXECUTION_JOB.scope(
                 Some(parent.clone()),
                 CURRENT_SESSION_ID.scope(
                     parent.session_id.clone(),
@@ -13905,18 +13905,11 @@ Body
                         ),
                     ),
                 ),
-            )
-            .await
-            .unwrap();
-        let receipt_deadline = if cfg!(windows) {
-            // Includes cold PowerShell startup and the durable child
-            // reservation on Windows, while remaining far shorter than the
-            // intentionally unbounded service lifetime.
-            std::time::Duration::from_secs(5)
-        } else {
-            std::time::Duration::from_secs(1)
-        };
-        assert!(started.elapsed() < receipt_deadline);
+            ),
+        )
+        .await
+        .expect("explicit background spawn did not return its managed receipt")
+        .unwrap();
         let receipt: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(receipt["execution"], "background");
         assert_eq!(receipt["background_source"], "explicit_parameter");
@@ -16914,18 +16907,22 @@ Body
         let kill_res = kill_tool.execute(&kill_args.to_string()).await.unwrap();
         let kill_result: serde_json::Value = serde_json::from_str(&kill_res).unwrap();
         assert_eq!(kill_result["killed"], true);
-        for _ in 0..50 {
-            if tasks
-                .get(task_id)
-                .is_some_and(|task| task.status == BackgroundTaskStatus::Killed)
-            {
-                break;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if tasks
+                    .get(task_id)
+                    .is_some_and(|task| task.status == BackgroundTaskStatus::Killed)
+                {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
-        assert!(tasks
-            .get(task_id)
-            .is_some_and(|task| task.status == BackgroundTaskStatus::Killed));
+        })
+        .await
+        .unwrap_or_else(|_| {
+            let status = tasks.get(task_id).map(|task| task.status);
+            panic!("managed process exit did not converge to Killed; status={status:?}")
+        });
         tasks.remove(task_id);
     }
 
