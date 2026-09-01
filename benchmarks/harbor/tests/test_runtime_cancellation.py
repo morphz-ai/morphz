@@ -102,6 +102,67 @@ class RuntimeCancellationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             asyncio.run(scenario(Path(temporary_directory)))
 
+    def test_watcher_returns_after_durable_terminal_reply_without_fixed_grace(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler unavailable")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            tmp_path = Path(temporary_directory)
+            helper = tmp_path / "morphz-harbor-wait"
+            source = Path(__file__).parents[1] / "harbor_wait.c"
+            compile_result = subprocess.run(
+                [
+                    compiler,
+                    "-O2",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    str(source),
+                    "-lsqlite3",
+                    "-o",
+                    str(helper),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if compile_result.returncode != 0:
+                self.skipTest(
+                    f"could not compile harbor_wait.c: {compile_result.stderr}"
+                )
+
+            database = tmp_path / "morphz.db"
+            with sqlite3.connect(database) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE objectives (status TEXT NOT NULL);
+                    CREATE TABLE events (topic TEXT NOT NULL);
+                    CREATE TABLE thread_activations (status TEXT NOT NULL);
+                    INSERT INTO events(topic) VALUES ('chat/reply');
+                    """
+                )
+
+            runtime = subprocess.Popen(["sleep", "60"])
+            try:
+                started = time.monotonic()
+                result = subprocess.run(
+                    [str(helper), str(database), str(runtime.pid), "5"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(
+                    elapsed,
+                    2.5,
+                    "a durable terminal reply was held behind a fixed idle grace",
+                )
+            finally:
+                if runtime.poll() is None:
+                    runtime.kill()
+                    runtime.wait()
+
     @unittest.skipUnless(sys.platform == "linux", "quiesce uses Linux /proc")
     def test_quiesce_preserves_service_and_kills_transient_child(self) -> None:
         compiler = shutil.which("cc")

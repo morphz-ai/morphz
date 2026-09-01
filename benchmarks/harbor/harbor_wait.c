@@ -329,7 +329,11 @@ int main(int argc, char **argv) {
     const char *database_path = argv[1];
     pid_t pid = (pid_t)positive_long(argv[2], "pid");
     long timeout = positive_long(argv[3], "timeout");
-    long idle_grace = argc == 5 ? positive_long(argv[4], "idle grace") : 20;
+    /* A durable reply with no active Activation or Objective is the terminal
+     * authority.  A fixed default grace can outlive Harbor's enclosing Agent
+     * deadline and turn a completed trial into AgentTimeoutError.  Keep an
+     * explicit grace available only for diagnostics. */
+    long idle_grace = argc == 5 ? positive_long(argv[4], "idle grace") : 0;
     double started = monotonic_seconds();
     double last_change = started;
     RuntimeState previous = {-1, -1, -1, -1};
