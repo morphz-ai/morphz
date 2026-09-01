@@ -2399,8 +2399,7 @@ mod tests {
         let writer_store = harness.store.clone();
         let writer = tokio::spawn(async move {
             let mut context_revision = base.revision;
-            let mut node_revision = 1;
-            for iteration in 0..40 {
+            for (node_revision, iteration) in (1_u64..).zip(0..40) {
                 let receipt = writer_store
                     .apply_transaction(replace_frame(
                         "snapshot",
@@ -2413,7 +2412,6 @@ mod tests {
                     .await
                     .unwrap();
                 context_revision = receipt.after_revision;
-                node_revision += 1;
             }
         });
 
