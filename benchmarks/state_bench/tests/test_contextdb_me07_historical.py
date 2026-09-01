@@ -109,7 +109,8 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
             );
             CREATE TABLE scheduler_dependencies (
                 owner_kind TEXT, owner_id TEXT, dependency_kind TEXT,
-                dependency_id TEXT, status TEXT, required INTEGER
+                dependency_id TEXT, status TEXT, required INTEGER,
+                metadata_json TEXT
             );
             CREATE TABLE experimental_contextdb_contexts (context_id TEXT);
             INSERT INTO sessions VALUES ('current-session', 'STATE-Bench task-1', '2026-01-01T00:00:00Z');
@@ -122,7 +123,12 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
             );
             INSERT INTO scheduler_dependencies VALUES (
                 'activation', 'activation-1', 'model_attempt', 'attempt-1',
-                'pending', 1
+                'pending', 1, '{}'
+            );
+            INSERT INTO scheduler_dependencies VALUES (
+                'thread', 'thread-1', 'resource', 'model-route:gpt-5.6-sol',
+                'pending', 1,
+                '{"session_id":"current-session","source":"provider_wait","runtime_failure_kind":"transient_network","runtime_failure_stage":"llm_completion"}'
             );
             INSERT INTO experimental_contextdb_contexts VALUES ('context-1');
             """
@@ -143,6 +149,18 @@ def test_runtime_state_is_scoped_to_the_current_task_session(tmp_path: Path) -> 
             "owner_id": "activation-1",
             "kind": "model_attempt",
             "id": "attempt-1",
-        }
+            "source": None,
+            "runtime_failure_kind": None,
+            "runtime_failure_stage": None,
+        },
+        {
+            "owner_kind": "thread",
+            "owner_id": "thread-1",
+            "kind": "resource",
+            "id": "model-route:gpt-5.6-sol",
+            "source": "provider_wait",
+            "runtime_failure_kind": "transient_network",
+            "runtime_failure_stage": "llm_completion",
+        },
     ]
     assert state["contextdb_authority_rows"] == 1

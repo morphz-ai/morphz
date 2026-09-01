@@ -228,18 +228,31 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
             item["id"] for item in active_objectives
         }
         pending_dependencies: list[dict[str, Any]] = []
-        if owner_ids and "scheduler_dependencies" in tables:
-            for owner_kind, owner_id, kind, dependency_id in connection.execute(
-                "SELECT owner_kind, owner_id, dependency_kind, dependency_id "
+        if "scheduler_dependencies" in tables:
+            for owner_kind, owner_id, kind, dependency_id, metadata_json in connection.execute(
+                "SELECT owner_kind, owner_id, dependency_kind, dependency_id, "
+                "metadata_json "
                 "FROM scheduler_dependencies WHERE status = 'pending' AND required = 1"
             ):
-                if str(owner_id) in owner_ids:
+                try:
+                    metadata = json.loads(metadata_json) if metadata_json else {}
+                except (TypeError, json.JSONDecodeError):
+                    metadata = {}
+                belongs_to_session = metadata.get("session_id") == session_id
+                if str(owner_id) in owner_ids or belongs_to_session:
                     pending_dependencies.append(
                         {
                             "owner_kind": str(owner_kind),
                             "owner_id": str(owner_id),
                             "kind": str(kind),
                             "id": str(dependency_id),
+                            "source": metadata.get("source"),
+                            "runtime_failure_kind": metadata.get(
+                                "runtime_failure_kind"
+                            ),
+                            "runtime_failure_stage": metadata.get(
+                                "runtime_failure_stage"
+                            ),
                         }
                     )
 
