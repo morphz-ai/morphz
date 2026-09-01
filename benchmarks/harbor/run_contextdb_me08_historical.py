@@ -297,8 +297,10 @@ def build_toolchain_lock(
         "build_profile": "release",
         "build_features": ["experimental-context-db"],
         "build_command": (
-            "cargo build --locked --release -p morphz --bin morphz "
-            "--bin morphz-harbor-wait --features experimental-context-db"
+            "docker buildx build --file benchmarks/harbor/runtime.Dockerfile "
+            "--target export --output type=local,dest=./build-output "
+            f"--build-arg MORPHZ_BUILD_GIT_COMMIT={commit} "
+            "--build-arg MORPHZ_CARGO_FEATURES=experimental-context-db ."
         ),
         "target": "x86_64-unknown-linux-gnu",
         "container_platform": "linux/amd64",
