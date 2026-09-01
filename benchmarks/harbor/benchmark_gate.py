@@ -100,6 +100,7 @@ def _provider_error_counts(job_dir: Path) -> dict[str, int]:
     candidates = [job_dir / "job.log"]
     candidates.extend(job_dir.glob("*/trial.log"))
     candidates.extend(job_dir.glob("*/agent/morphz.stderr.log"))
+    candidates.extend(job_dir.glob("*/agent/morphz.stdout.log"))
     for path in candidates:
         if not path.is_file():
             continue

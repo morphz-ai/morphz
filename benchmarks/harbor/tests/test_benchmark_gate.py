@@ -108,8 +108,9 @@ class BenchmarkGateTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            (job / "job.log").write_text(
-                "A transient HTTP 503 was recovered.\n", encoding="utf-8"
+            (job / "job.log").write_text("clean launcher log\n", encoding="utf-8")
+            (agent / "morphz.stdout.log").write_text(
+                "Provider returned HTTP 503: auth_unavailable\n", encoding="utf-8"
             )
 
             audit = audit_gate(
@@ -123,6 +124,8 @@ class BenchmarkGateTest(unittest.TestCase):
             self.assertTrue(audit["checks"]["isolation"])
             self.assertFalse(audit["checks"]["provider_clean"])
             self.assertNotIn("provider_clean", audit["required_checks"])
+            self.assertEqual(audit["provider_errors"]["http_503"], 1)
+            self.assertEqual(audit["provider_errors"]["auth_unavailable"], 1)
             self.assertEqual(audit["credential_hit_paths"], [])
 
 
