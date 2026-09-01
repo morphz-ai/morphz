@@ -8,11 +8,13 @@ import {
   resolveDashboardToken,
   type DashboardTokenStorage,
 } from '../src/api/auth.ts'
+import { resolveAppearanceMode } from '../src/app/themePreferences.ts'
 
 const authGateSource = readFileSync(
   new URL('../src/DashboardAuthGate.tsx', import.meta.url),
   'utf8',
 )
+const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 
 class MemoryStorage implements DashboardTokenStorage {
   private readonly values = new Map<string, string>()
@@ -66,6 +68,18 @@ test('launch token survives Router path replacement and a recreated mobile page 
 test('first authenticated launch opens guided Provider setup when no model is configured', () => {
   assert.match(authGateSource, /setProviderSetupRequired\(!status\.provider && !status\.model\?\.trim\(\)\)/)
   assert.match(authGateSource, /<Navigate to="\/providers\/setup" replace \/>/)
+})
+
+test('authentication shell inherits the saved Dashboard theme before login', () => {
+  assert.equal(resolveAppearanceMode('system', true), 'dark')
+  assert.equal(resolveAppearanceMode('system', false), 'light')
+  assert.equal(resolveAppearanceMode('dark', false), 'dark')
+  assert.match(authGateSource, /className="page-shell dashboard-auth-shell"/)
+  assert.match(authGateSource, /data-accent=\{accentTheme\}/)
+  assert.match(authGateSource, /data-color-mode=\{resolvedAppearanceMode\}/)
+  assert.match(appCss, /\.dashboard-auth-header\s*\{[^}]*border-bottom:\s*1px solid var\(--line\)/s)
+  assert.match(appCss, /\.dashboard-auth-card\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--surface\)/s)
+  assert.doesNotMatch(appCss, /\.dashboard-auth-shell\s*\{[^}]*var\(--page\)/s)
 })
 
 test('a new launch URL rotates the persistent browser credential', () => {

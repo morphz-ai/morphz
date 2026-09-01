@@ -5,6 +5,7 @@
   },
   "authentication": {
     "title": "Connect to Morphz Runtime",
+    "operatorPlane": "Operator control plane",
     "connecting": "Verifying the connection…",
     "description": "This Runtime requires a Dashboard operator credential. Enter the token; after validation it will be stored in this browser.",
     "tokenLabel": "Dashboard Token",

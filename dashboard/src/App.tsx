@@ -90,6 +90,15 @@ import { findTurnSettlement } from './turnSettlement'
 import { resolveSelectedModelOption } from './app/modelSelection'
 import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
 import {
+  accentThemes,
+  initialAccentTheme,
+  initialAppearanceMode,
+  initialSystemPrefersDark,
+  resolveAppearanceMode,
+  type AccentTheme,
+  type AppearanceMode,
+} from './app/themePreferences'
+import {
   insertSessionMention,
   rankSessionReferenceCandidates,
   sessionMentionAt,
@@ -388,8 +397,6 @@ function MessageThreadReference({
   )
 }
 
-type AccentTheme = 'iris' | 'cyan' | 'coral' | 'mono'
-type AppearanceMode = 'system' | 'dark' | 'light'
 type ContextInspectTab = 'encoding' | 'attribution' | 'messages' | 'tools' | 'mind' | 'inbox' | 'metadata'
 
 interface AppDialogBase {
@@ -436,37 +443,6 @@ interface AttentionAcknowledgementsPage {
   acknowledgements?: AttentionAcknowledgement[]
   latest_sequence?: number
   has_more?: boolean
-}
-
-const accentThemes: Array<{ id: AccentTheme; labelKey: string; descKey: string }> = [
-  { id: 'cyan', labelKey: 'theme.cyan.label', descKey: 'theme.cyan.description' },
-  { id: 'iris', labelKey: 'theme.iris.label', descKey: 'theme.iris.description' },
-  { id: 'coral', labelKey: 'theme.coral.label', descKey: 'theme.coral.description' },
-  { id: 'mono', labelKey: 'theme.mono.label', descKey: 'theme.mono.description' },
-]
-
-function initialAccentTheme(): AccentTheme {
-  try {
-    const saved = window.localStorage.getItem('morphz.dashboard.accent')
-    if (accentThemes.some(theme => theme.id === saved)) return saved as AccentTheme
-  } catch {
-    // Storage can be unavailable in privacy-restricted browser contexts.
-  }
-  return 'cyan'
-}
-
-function initialAppearanceMode(): AppearanceMode {
-  try {
-    const saved = window.localStorage.getItem('morphz.dashboard.appearance')
-    if (saved === 'system' || saved === 'dark' || saved === 'light') return saved
-  } catch {
-    // Storage can be unavailable in privacy-restricted browser contexts.
-  }
-  return 'system'
-}
-
-function initialSystemPrefersDark(): boolean {
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true
 }
 
 function initialShowReasoningSummary(): boolean {
@@ -4173,9 +4149,7 @@ export default function App() {
     return () => media.removeEventListener('change', update)
   }, [])
 
-  const resolvedAppearanceMode = appearanceMode === 'system'
-    ? (systemPrefersDark ? 'dark' : 'light')
-    : appearanceMode
+  const resolvedAppearanceMode = resolveAppearanceMode(appearanceMode, systemPrefersDark)
 
   useEffect(() => {
     document.documentElement.dataset.colorMode = resolvedAppearanceMode

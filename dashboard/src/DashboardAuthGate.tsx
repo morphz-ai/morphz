@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { KeyRound, LoaderCircle, RefreshCw } from 'lucide-react'
+import { KeyRound, LoaderCircle, RefreshCw, ShieldCheck } from 'lucide-react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import { DashboardApiError } from './api/client'
 import { CORE_HTTP_URL } from './api/deployment'
 import { DASHBOARD_API, updateDashboardToken } from './api/runtime'
+import {
+  initialAccentTheme,
+  initialAppearanceMode,
+  initialSystemPrefersDark,
+  resolveAppearanceMode,
+} from './app/themePreferences'
 
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
@@ -19,7 +25,11 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
   const [credentialError, setCredentialError] = useState('')
   const [tokenDraft, setTokenDraft] = useState('')
   const [attempt, setAttempt] = useState(0)
+  const [accentTheme] = useState(initialAccentTheme)
+  const [appearanceMode] = useState(initialAppearanceMode)
+  const [systemPrefersDark, setSystemPrefersDark] = useState(initialSystemPrefersDark)
   const tokenInputRef = useRef<HTMLInputElement>(null)
+  const resolvedAppearanceMode = resolveAppearanceMode(appearanceMode, systemPrefersDark)
 
   const requireAuthentication = useCallback((error: DashboardApiError) => {
     setReady(false)
@@ -61,6 +71,19 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     if (authenticationRequired) tokenInputRef.current?.focus()
   }, [authenticationRequired])
 
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!media) return
+    const update = (event: MediaQueryListEvent) => setSystemPrefersDark(event.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.dataset.colorMode = resolvedAppearanceMode
+    document.documentElement.style.colorScheme = resolvedAppearanceMode
+  }, [resolvedAppearanceMode])
+
   const submitToken = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const token = tokenDraft.trim()
@@ -86,46 +109,64 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
   if (ready) return children
 
   return (
-    <main className="dashboard-auth-shell">
-      <section className="dashboard-auth-card" aria-live="polite">
-        <span className="dashboard-auth-mark"><KeyRound size={22} /></span>
-        <small>MORPHZ</small>
-        <h1>{t('authentication.title')}</h1>
-        {checking ? (
-          <div className="dashboard-auth-progress" role="status">
-            <LoaderCircle size={16} />
-            <span>{t('authentication.connecting')}</span>
-          </div>
-        ) : authenticationRequired ? (
-          <form onSubmit={submitToken}>
-            <p>{t('authentication.description')}</p>
-            <label>
-              <span>{t('authentication.tokenLabel')}</span>
-              <input
-                ref={tokenInputRef}
-                autoComplete="current-password"
-                name="morphz-dashboard-token"
-                placeholder={t('authentication.tokenPlaceholder')}
-                type="password"
-                value={tokenDraft}
-                onChange={event => setTokenDraft(event.target.value)}
-              />
-            </label>
-            {credentialError && <p className="dashboard-auth-error" role="alert">{t('authentication.invalidToken')}</p>}
-            <button className="primary" disabled={!tokenDraft.trim()} type="submit">
-              {t('authentication.connect')}
-            </button>
-            <small className="dashboard-auth-endpoint">{CORE_HTTP_URL}</small>
-          </form>
-        ) : (
-          <div className="dashboard-auth-failure" role="alert">
-            <p>{t('authentication.connectionFailed')}</p>
-            {connectionError && <code>{connectionError}</code>}
-            <button type="button" onClick={retryConnection}>
-              <RefreshCw size={14} /> {t('authentication.retry')}
-            </button>
-          </div>
-        )}
+    <main
+      className="page-shell dashboard-auth-shell"
+      data-accent={accentTheme}
+      data-color-mode={resolvedAppearanceMode}
+    >
+      <section className="dashboard-auth-frame">
+        <header className="dashboard-auth-header">
+          <span className="dashboard-auth-brand">
+            <i className="brand-mark">◆</i>
+            <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
+          </span>
+          <span className="dashboard-auth-plane"><ShieldCheck size={13} />{t('authentication.operatorPlane')}</span>
+        </header>
+        <div className="dashboard-auth-stage">
+          <section className="dashboard-auth-card" aria-live="polite">
+            <header>
+              <span className="dashboard-auth-mark"><KeyRound size={19} /></span>
+              <span><small>MORPHZ · OPERATOR</small><h1>{t('authentication.title')}</h1></span>
+            </header>
+            {checking ? (
+              <div className="dashboard-auth-progress" role="status">
+                <LoaderCircle size={16} />
+                <span>{t('authentication.connecting')}</span>
+              </div>
+            ) : authenticationRequired ? (
+              <form onSubmit={submitToken}>
+                <p>{t('authentication.description')}</p>
+                <label>
+                  <span>{t('authentication.tokenLabel')}</span>
+                  <input
+                    ref={tokenInputRef}
+                    autoComplete="current-password"
+                    name="morphz-dashboard-token"
+                    placeholder={t('authentication.tokenPlaceholder')}
+                    type="password"
+                    value={tokenDraft}
+                    onChange={event => setTokenDraft(event.target.value)}
+                  />
+                </label>
+                {credentialError && <p className="dashboard-auth-error" role="alert">{t('authentication.invalidToken')}</p>}
+                <footer>
+                  <small className="dashboard-auth-endpoint">{CORE_HTTP_URL}</small>
+                  <button className="primary" disabled={!tokenDraft.trim()} type="submit">
+                    {t('authentication.connect')}
+                  </button>
+                </footer>
+              </form>
+            ) : (
+              <div className="dashboard-auth-failure" role="alert">
+                <p>{t('authentication.connectionFailed')}</p>
+                {connectionError && <code>{connectionError}</code>}
+                <button type="button" onClick={retryConnection}>
+                  <RefreshCw size={14} /> {t('authentication.retry')}
+                </button>
+              </div>
+            )}
+          </section>
+        </div>
       </section>
     </main>
   )

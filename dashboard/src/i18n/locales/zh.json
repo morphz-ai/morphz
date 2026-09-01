@@ -5,6 +5,7 @@
   },
   "authentication": {
     "title": "连接 Morphz 运行时",
+    "operatorPlane": "Operator 控制面",
     "connecting": "正在验证连接…",
     "description": "此运行时需要控制台管理凭证。请输入 Token，验证成功后会保存在当前浏览器中。",
     "tokenLabel": "控制台 Token",
