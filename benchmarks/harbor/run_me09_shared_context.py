@@ -128,57 +128,83 @@ def _harness_binding_count(database_path: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def _context_db_authority_count(database_path: Path, context_id: str) -> int:
+    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'experimental_contextdb_contexts'"
+        ).fetchone()
+        if table is None:
+            return 0
+        row = connection.execute(
+            "SELECT COUNT(*) FROM experimental_contextdb_contexts "
+            "WHERE context_id = ?",
+            (context_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return int(row[0]) if row is not None else 0
+
+
 def _write_runtime_config(
     path: Path,
     *,
     protocol: str,
     base_url: str,
     max_sessions: int,
+    context_store: str = "legacy",
 ) -> None:
-    path.write_text(
-        "\n".join(
+    if context_store not in {"legacy", "contextdb"}:
+        raise ValueError(f"unsupported Context store arm: {context_store}")
+    lines = [
+        "[llm]",
+        'provider = "me09"',
+        'model = "gpt-5.6-sol"',
+        'reasoning_effort = "max"',
+        "",
+        "[providers.me09]",
+        f"protocol = {json.dumps(protocol)}",
+        f"base_url = {json.dumps(base_url)}",
+        'credential = "me09"',
+        "",
+        "[credentials.me09]",
+        'source = "env"',
+        'name = "MORPHZ_PROVIDER_API_KEY"',
+        "",
+        "[orchestrator]",
+        "model_provider_max_in_flight = 8",
+        "context_soft_token_limit = 196608",
+        "context_hard_token_limit = 262144",
+        "context_maintenance_reserve_tokens = 32768",
+        "",
+        "[orchestrator.session_working_set]",
+        'active_window = "24h"',
+        f"max_sessions = {max_sessions}",
+        "",
+        "[orchestrator.activation_admission]",
+        "max_in_flight = 16",
+        "",
+        "[permissions]",
+        'mode = "full_access"',
+        'shell_environment_policy = "remove_sensitive"',
+        "",
+        "[storage]",
+        'backend = "sqlite"',
+        "",
+        "[edge_execution]",
+        "max_in_flight_per_node = 8",
+        "",
+    ]
+    if context_store == "contextdb":
+        lines.extend(
             [
-                "[llm]",
-                'provider = "me09"',
-                'model = "gpt-5.6-sol"',
-                'reasoning_effort = "max"',
-                "",
-                "[providers.me09]",
-                f"protocol = {json.dumps(protocol)}",
-                f"base_url = {json.dumps(base_url)}",
-                'credential = "me09"',
-                "",
-                "[credentials.me09]",
-                'source = "env"',
-                'name = "MORPHZ_PROVIDER_API_KEY"',
-                "",
-                "[orchestrator]",
-                "model_provider_max_in_flight = 8",
-                "context_soft_token_limit = 196608",
-                "context_hard_token_limit = 262144",
-                "context_maintenance_reserve_tokens = 32768",
-                "",
-                "[orchestrator.session_working_set]",
-                'active_window = "24h"',
-                f"max_sessions = {max_sessions}",
-                "",
-                "[orchestrator.activation_admission]",
-                "max_in_flight = 16",
-                "",
-                "[permissions]",
-                'mode = "full_access"',
-                'shell_environment_policy = "remove_sensitive"',
-                "",
-                "[storage]",
-                'backend = "sqlite"',
-                "",
-                "[edge_execution]",
-                "max_in_flight_per_node = 8",
+                "[experimental]",
+                'enabled = ["context-db"]',
                 "",
             ]
-        ),
-        encoding="utf-8",
-    )
+        )
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _wait_health(base_url: str, process: subprocess.Popen[bytes]) -> None:
@@ -362,6 +388,12 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="maximum number of full-projection Sessions in the shared Context",
     )
+    parser.add_argument(
+        "--context-store",
+        choices=("legacy", "contextdb"),
+        default="legacy",
+        help="cognitive Context authority used by this benchmark arm",
+    )
     return parser.parse_args()
 
 
@@ -408,6 +440,7 @@ def main() -> int:
     print("shared_context=me09-shared-context")
     print("harness_mode=none")
     print("max_sessions=" + str(args.max_sessions))
+    print("context_store=" + args.context_store)
     if args.mode == "preflight":
         return 0
 
@@ -423,6 +456,7 @@ def main() -> int:
         protocol=protocol,
         base_url=base_url,
         max_sessions=args.max_sessions,
+        context_store=args.context_store,
     )
     database_path = runtime_root / "morphz.db"
     artifact_dir = runtime_root / "artifacts"
@@ -526,6 +560,15 @@ def main() -> int:
             "ME-09 native run persisted unexpected Harness bindings: "
             f"{harness_binding_count}"
         )
+    context_db_authority_count = _context_db_authority_count(
+        database_path, "me09-shared-context"
+    )
+    if args.context_store == "contextdb" and context_db_authority_count != 1:
+        raise RuntimeError(
+            "ContextDB benchmark arm did not persist exactly one authoritative "
+            "shared Context row: "
+            f"{context_db_authority_count}"
+        )
 
     expected_tasks = 89 if args.mode == "full" else 8
     task_results = [task for lane in lane_results for task in lane["tasks"]]
@@ -543,6 +586,8 @@ def main() -> int:
         "permission_mode": "full_access",
         "harness_mode": "none",
         "harness_binding_count": harness_binding_count,
+        "context_store": args.context_store,
+        "context_db_authority_count": context_db_authority_count,
         "shared_context_id": "me09-shared-context",
         "max_sessions": args.max_sessions,
         "lane_count": 8,
