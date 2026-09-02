@@ -65,6 +65,14 @@ def test_timeout_detection_reads_wrapped_runtime_errors() -> None:
     assert not _is_timeout_like(
         {"runner_result": {"error": "HTTP 502 from model provider"}}
     )
+    assert _is_timeout_like(
+        {
+            "runner_result": {
+                "error": "Morphz adapter ended; runtime_stderr=DialogueTurn "
+                "did not produce a reply within 1800s"
+            }
+        }
+    )
 
 
 def test_public_runtime_adapter_has_an_external_receipt_timeout() -> None:
@@ -88,6 +96,38 @@ def test_public_runtime_adapter_has_an_external_receipt_timeout() -> None:
             agent._read_receipt("turn receipt", timeout_seconds=0.05)
     finally:
         os.close(write_fd)
+        stream.close()
+
+
+def test_public_runtime_adapter_preserves_child_timeout_on_eof(
+    tmp_path: Path,
+) -> None:
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    stream = os.fdopen(read_fd, "r", encoding="utf-8")
+
+    class ExitedProcess:
+        stdout = stream
+
+        @staticmethod
+        def poll() -> int:
+            return 1
+
+    stderr_path = tmp_path / "runtime.stderr.log"
+    stderr_path.write_text(
+        "Error: DialogueTurn did not produce a reply within 1800s\n",
+        encoding="utf-8",
+    )
+    agent = object.__new__(MorphzPublicRuntimeAgent)
+    agent._process = ExitedProcess()
+    agent._stderr_path = stderr_path
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match=r"runtime_stderr=.*did not produce a reply within 1800s",
+        ):
+            agent._read_receipt("turn receipt", timeout_seconds=0.05)
+    finally:
         stream.close()
 
 

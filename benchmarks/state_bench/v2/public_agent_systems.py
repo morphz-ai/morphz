@@ -349,6 +349,7 @@ class MorphzPublicRuntimeAgent(BaseAgent):
         token_file.chmod(0o600)
         self._bridge = _ToolBridge(token, tool_handlers)
         stderr_path = self.output / "runtime.stderr.log"
+        self._stderr_path = stderr_path
         self._stderr_stream = stderr_path.open("w", encoding="utf-8")
 
         agent_id = f"me07-{_safe_component(runtime_context.domain)}-agent"
@@ -415,13 +416,34 @@ class MorphzPublicRuntimeAgent(BaseAgent):
         line = self._process.stdout.readline()
         if not line:
             return_code = self._process.poll()
+            stderr_tail = self._runtime_stderr_tail()
+            stderr_suffix = f"; runtime_stderr={stderr_tail}" if stderr_tail else ""
             raise RuntimeError(
                 f"Morphz adapter ended before {label}; exit={return_code}"
+                f"{stderr_suffix}"
             )
         value = json.loads(line)
         if not isinstance(value, dict):
             raise TypeError(f"Morphz adapter returned non-object {label}")
         return value
+
+    def _runtime_stderr_tail(self, *, max_chars: int = 4096) -> str:
+        """Return bounded child diagnostics after an unexpected adapter exit.
+
+        The Rust adapter owns the authoritative turn deadline.  When that
+        deadline expires it exits non-zero and writes the precise reason to
+        its stderr file.  Preserve that reason in the formal runner error so
+        timeout classification does not collapse into a generic EOF.
+        """
+
+        path = getattr(self, "_stderr_path", None)
+        if not isinstance(path, Path):
+            return ""
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        return text[-max_chars:].replace("\n", " ")
 
     @staticmethod
     def _validate_ready(ready: dict[str, Any], *, deterministic_gate: bool) -> None:

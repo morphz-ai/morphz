@@ -62,7 +62,15 @@ def _is_timeout_like(job: dict[str, Any]) -> bool:
         result.get("traceback"),
     )
     text = "\n".join(str(value) for value in values if value).lower()
-    return any(marker in text for marker in ("timeout", "timed out", "deadline"))
+    return any(
+        marker in text
+        for marker in (
+            "timeout",
+            "timed out",
+            "deadline",
+            "did not produce a reply within",
+        )
+    )
 
 
 def _classify_timeout(state: dict[str, Any]) -> str:
