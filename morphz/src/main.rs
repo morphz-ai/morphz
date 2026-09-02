@@ -203,11 +203,6 @@ async fn main() -> Result<(), AppError> {
     if dispatch_config_command(&invocation, &resolved)? {
         return Ok(());
     }
-    if dispatch_experiment_command(&invocation, &resolved.config)? {
-        return Ok(());
-    }
-    ensure_selected_persistent_workspace(&resolved.config)?;
-    morphz::experimental::require_all_enabled_compiled(&resolved.config.experimental.enabled)?;
     let protected_config_paths = resolved
         .loaded_paths()
         .map(Path::to_path_buf)
@@ -219,6 +214,14 @@ async fn main() -> Result<(), AppError> {
     if let Some(path) = explicit_sqlite_path.as_ref() {
         app_config.storage.sqlite.path.clone_from(path);
     }
+    if dispatch_storage_command(&invocation, &app_config).await? {
+        return Ok(());
+    }
+    if dispatch_experiment_command(&invocation, &app_config)? {
+        return Ok(());
+    }
+    ensure_selected_persistent_workspace(&app_config)?;
+    morphz::experimental::require_all_enabled_compiled(&app_config.experimental.enabled)?;
     validate_coding_eval_storage_isolation(
         std::env::var("MORPHZ_CODING_EVAL_MODE")
             .ok()
@@ -687,6 +690,7 @@ fn display_config_value(key: &str, value: &toml::Value) -> String {
 fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
     for (variable, key) in [
         ("MORPHZ_STORAGE_BACKEND", "storage.backend"),
+        ("MORPHZ_COGNITIVE_STORE", "storage.cognitive_store"),
         (
             "MORPHZ_POSTGRES_MAX_CONNECTIONS",
             "storage.postgres.max_connections",
@@ -944,6 +948,76 @@ fn dispatch_experiment_command(
                 status.name, status.compiled, status.enabled, status.available, status.summary
             );
         }
+    }
+    Ok(true)
+}
+
+async fn dispatch_storage_command(
+    invocation: &Invocation,
+    app_config: &config::AppConfig,
+) -> Result<bool, AppError> {
+    if invocation.command_path() != ["storage", "migrate-cognitive-store"] {
+        return Ok(false);
+    }
+    let selected = config::CognitiveStoreBackend::parse(
+        option_value(invocation, "to")
+            .ok_or("morphz storage migrate-cognitive-store requires --to")?,
+    )?;
+    #[cfg(feature = "context-db")]
+    let (previous, synchronized) = match app_config.storage.backend {
+        config::StorageBackend::Sqlite => {
+            let report = morphz::memory::sqlite::SqliteStore::migrate_cognitive_store(
+                &app_config.storage.sqlite.path,
+                &app_config.storage.sqlite,
+                selected,
+            )
+            .await?;
+            (report.previous, report.synchronized)
+        }
+        config::StorageBackend::Postgres => {
+            let url_env = app_config.storage.postgres.url_env.trim();
+            if url_env.is_empty() {
+                return Err("storage.postgres.url_env must not be empty".into());
+            }
+            let database_url = std::env::var(url_env).map_err(|_| {
+                format!(
+                    "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
+                )
+            })?;
+            let report = morphz::memory::postgres::PostgresStore::migrate_cognitive_store(
+                &database_url,
+                app_config.storage.postgres.max_connections,
+                selected,
+            )
+            .await?;
+            (report.previous, report.synchronized)
+        }
+    };
+    #[cfg(not(feature = "context-db"))]
+    let (previous, synchronized): (Option<config::CognitiveStoreBackend>, usize) = {
+        return Err(
+            "cognitive Store migration is unavailable because this binary has no ContextDB support"
+                .into(),
+        );
+    };
+    if json_output(invocation) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "previous": previous.map(config::CognitiveStoreBackend::as_str),
+                "selected": selected.as_str(),
+                "synchronized": synchronized,
+            }))?
+        );
+    } else {
+        println!(
+            "Cognitive Store migration complete: previous={}, selected={}, synchronized={}",
+            previous
+                .map(config::CognitiveStoreBackend::as_str)
+                .unwrap_or("unmarked"),
+            selected.as_str(),
+            synchronized
+        );
     }
     Ok(true)
 }
@@ -3002,6 +3076,7 @@ async fn search_context_recall(
             end_time,
             limit,
             cursor: option_value(invocation, "cursor").map(ToOwned::to_owned),
+            view_manifest: None,
         })
         .await?;
     println!("{}", serde_json::to_string_pretty(&page)?);
@@ -3044,6 +3119,7 @@ async fn recall_context_frame(
             include_events: switch_enabled(invocation, "include-events")?,
             max_nodes,
             cursor: option_value(invocation, "cursor").map(ToOwned::to_owned),
+            view_manifest: None,
         })
         .await?;
     println!("{}", serde_json::to_string_pretty(&page)?);
@@ -5144,6 +5220,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[cfg(feature = "context-db")]
+    use super::dispatch_storage_command;
+
     fn default_resolved_config() -> ResolvedConfig {
         ResolvedConfig {
             config: AppConfig::default(),
@@ -5261,7 +5340,6 @@ mod tests {
             "cli:--add-dir"
         );
     }
-
     #[test]
     fn coding_eval_sqlite_requires_an_explicit_isolated_database() {
         assert!(validate_coding_eval_storage_isolation(
@@ -5717,6 +5795,34 @@ mod tests {
         assert_eq!(participant.agent_id, "default-agent");
         assert_eq!(participant.context_id, "context-default");
         assert!(participant.session_id.is_empty());
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn explicit_cognitive_store_migration_runs_without_runtime_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("legacy-migration.db");
+        let invocation = morphz_command_line_parser()
+            .parse([
+                "storage",
+                "migrate-cognitive-store",
+                "--to=context_db",
+                "--format=json",
+            ])
+            .unwrap();
+        let mut config = AppConfig::default();
+        apply_cli_config(&invocation, &mut config).unwrap();
+        config.storage.sqlite.path = database_path.to_string_lossy().into_owned();
+
+        assert!(dispatch_storage_command(&invocation, &config)
+            .await
+            .unwrap());
+        assert!(
+            dispatch_storage_command(&invocation, &config)
+                .await
+                .unwrap(),
+            "an explicit migration rerun must be idempotent"
+        );
     }
 
     #[tokio::test]

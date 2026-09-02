@@ -6,6 +6,7 @@ pub use lexical::{
     recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
 };
 
+use crate::context_store::{ContextStateHead, ContextStateRecord};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -72,6 +73,34 @@ pub struct RecallDocumentSearchRequest {
     pub end_time: Option<DateTime<Utc>>,
     /// Stable exclusive Event sequence boundary for backward pagination.
     pub before_sequence: Option<u64>,
+    /// Inclusive physical Event-sequence boundary of the Context View which
+    /// selected Recall. Event sequence is append identity, not causal order.
+    /// This is independent from the pagination cursor: backends must reject
+    /// documents beyond this sequence before ranking/LIMIT and must also
+    /// enforce `event_visibility_snapshot` when the backend provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_sequence: Option<u64>,
+    /// Inclusive Mind revision of the physical Context View. Frame Recall
+    /// documents use `updated_sequence` as a Mind-version clock, not an Event
+    /// sequence, so this fence must remain separate from `through_sequence`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_mind_version: Option<u64>,
+    /// Backend-issued visibility snapshot for Events whose transaction may
+    /// have reserved a sequence before the physical View but committed only
+    /// afterwards. PostgreSQL uses `pg_snapshot`; SQLite leaves this empty
+    /// because its single-writer commit order matches rowid order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_visibility_snapshot: Option<String>,
+    /// Event documents already present in the exact model-visible Context
+    /// View. Backends must apply these exclusions before LIMIT so a resident
+    /// prefix cannot starve genuinely non-resident Recall candidates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_event_ids: Vec<String>,
+    /// Active Frame documents already present in the exact model-visible
+    /// Mind. Retired Frames are intentionally absent from this set and remain
+    /// Recall candidates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_frame_ids: Vec<String>,
     pub limit: usize,
 }
 
@@ -704,10 +733,11 @@ pub enum WorkAssignmentMutationResult {
     NotFound,
 }
 
-/// Rebuildable online materialization of one Cognitive Context's current Mind.
+/// Durable online representation of one Cognitive Context's current Mind.
 ///
-/// The persistence layer deliberately treats `state` as opaque canonical JSON:
-/// Frame body semantics belong to the Agent/Context engine, while the Store
+/// Legacy stores materialize it as opaque canonical JSON; a ContextDB-backed
+/// store reconstructs the same compatibility record from authoritative AST
+/// Nodes. Frame semantics belong to the Agent/Context engine, while the Store
 /// owns revision fencing, hashes and atomic durability.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindProjectionRecord {
@@ -717,6 +747,22 @@ pub struct MindProjectionRecord {
     pub state_hash: String,
     pub head_event_id: Option<String>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Explicit migration boundary from the retired opaque JSON projection to
+/// the native ContextStore read model. Only legacy import/fallback paths may
+/// call this helper; Runtime hot paths consume `ContextStateRecord` directly.
+pub(crate) fn decode_legacy_context_state(
+    projection: MindProjectionRecord,
+) -> Result<ContextStateRecord, serde_json::Error> {
+    Ok(ContextStateRecord {
+        context_id: projection.context_id,
+        revision: projection.revision,
+        state: serde_json::from_value(projection.state)?,
+        state_hash: projection.state_hash,
+        head_event_id: projection.head_event_id,
+        updated_at: projection.updated_at,
+    })
 }
 
 /// Small, bounded operator read model for a Mind Projection.  Global Runtime
@@ -741,6 +787,61 @@ pub struct NewMindProjection {
     pub recall_documents: Vec<RecallDocument>,
 }
 
+pub(crate) fn cognitive_projections_equivalent(
+    left: &MindProjectionRecord,
+    right: &MindProjectionRecord,
+) -> bool {
+    left.context_id == right.context_id
+        && left.revision == right.revision
+        && left.state == right.state
+        && left.state_hash == right.state_hash
+        && left.head_event_id == right.head_event_id
+}
+
+/// Establishes authority for databases created before the explicit Store mode
+/// marker existed. The highest complete revision wins; equal revisions must
+/// describe exactly the same canonical state or startup fails closed.
+pub(crate) fn select_initial_cognitive_projection(
+    context_id: &str,
+    legacy: Option<MindProjectionRecord>,
+    context_db: Option<MindProjectionRecord>,
+) -> Result<MindProjectionRecord, String> {
+    match (legacy, context_db) {
+        (Some(legacy), Some(context_db)) => {
+            if legacy.revision == context_db.revision {
+                if !cognitive_projections_equivalent(&legacy, &context_db) {
+                    return Err(format!(
+                        "cannot establish cognitive Store authority for Context '{context_id}': legacy and ContextDB diverge at revision {}",
+                        legacy.revision
+                    ));
+                }
+                Ok(context_db)
+            } else if legacy.revision > context_db.revision {
+                Ok(legacy)
+            } else {
+                Ok(context_db)
+            }
+        }
+        (Some(legacy), None) => Ok(legacy),
+        (None, Some(context_db)) => Ok(context_db),
+        (None, None) => Err(format!(
+            "cannot establish cognitive Store authority for Context '{context_id}': neither representation has a complete state"
+        )),
+    }
+}
+
+pub(crate) fn cognitive_store_migration_required(
+    source: crate::config::CognitiveStoreBackend,
+    target: crate::config::CognitiveStoreBackend,
+) -> String {
+    format!(
+        "cognitive Store selection '{}' is not synchronized with active Store '{}'; run `morphz storage migrate-cognitive-store --to {}` before starting the Runtime",
+        target.as_str(),
+        source.as_str(),
+        target.as_str()
+    )
+}
+
 /// Observation membership changes caused by one Context transaction.
 /// IDs which name Frames are harmless: Store implementations only mutate a
 /// Session Projection when the target resolves to an Observation Event.
@@ -755,9 +856,20 @@ pub struct SessionProjectionMutation {
 /// observed from one database snapshot; independent reads can otherwise omit
 /// both a retired source Event and the Frame derived from it.
 #[derive(Debug, Clone)]
-pub struct ContextEncodingProjectionSnapshot {
-    pub mind: Option<MindProjectionRecord>,
+pub struct ContextEncodingStateSnapshot {
+    /// Authoritative Context state head observed in the same database
+    /// snapshot as the Event projection. The full payload may be omitted when
+    /// it matches the caller's revision-fenced resident state.
+    pub context_state_head: Option<ContextStateHead>,
+    pub context_state: Option<ContextStateRecord>,
     pub events: Vec<crate::event::Event>,
+    /// Greatest immutable Event sequence committed in this Context on the
+    /// same database snapshot as `mind` and `events`.
+    pub event_sequence_upper_bound: u64,
+    /// Opaque backend snapshot paired with the Event frontier. A later Recall
+    /// query must preserve it so out-of-order transaction commits cannot leak
+    /// into an earlier physical model request.
+    pub event_visibility_snapshot: Option<String>,
 }
 
 /// Storage-level selection contract for the Session portion of one Context
@@ -780,6 +892,12 @@ pub struct ContextRuntimeDirectoryRequest {
     pub active_after: DateTime<Utc>,
     pub max_full_sessions: usize,
     pub max_metadata_sessions: usize,
+    /// Revision of a validated resident Mind held by the caller. Stores still
+    /// return the authoritative head from the same directory snapshot, but
+    /// may omit the large payload when this revision matches. A mismatch must
+    /// return the complete state from that same snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_context_state_revision: Option<u64>,
     /// Empty by default: the Agent can project Sessions from every Principal
     /// mounted to this Context. Product-specific views may opt into one or
     /// more storage-level predicates without changing the shared default.
@@ -828,10 +946,14 @@ pub struct ContextRuntimeDirectorySnapshot {
     pub revision: String,
     pub context: CognitiveContextRecord,
     pub cognitive_clock: ContextCognitiveClock,
-    /// Current validated Mind head used by derived lifecycle checks before
-    /// the bounded observation projection is loaded. `None` is supported only
-    /// for lazy migration of a legacy Event-only Context.
-    pub mind: Option<MindProjectionRecord>,
+    /// Authoritative Context state head observed with every directory
+    /// component. The full payload may be omitted when it matches the
+    /// request's revision fence; `None` is supported only while importing an
+    /// Event-only Context into ContextStore.
+    pub context_state_head: Option<ContextStateHead>,
+    /// Current validated Context state used by derived lifecycle checks. A
+    /// revision-fenced hot read can omit it while retaining the head.
+    pub context_state: Option<ContextStateRecord>,
     pub session_exclusions: ContextRuntimeSessionExclusions,
     pub sessions: Vec<SessionRecord>,
     pub objectives: Vec<ObjectiveRecord>,
@@ -846,7 +968,8 @@ impl ContextRuntimeDirectorySnapshot {
     pub fn from_components(
         context: CognitiveContextRecord,
         cognitive_clock: ContextCognitiveClock,
-        mind: Option<MindProjectionRecord>,
+        context_state_head: Option<ContextStateHead>,
+        context_state: Option<ContextStateRecord>,
         session_exclusions: ContextRuntimeSessionExclusions,
         sessions: Vec<SessionRecord>,
         objectives: Vec<ObjectiveRecord>,
@@ -857,10 +980,35 @@ impl ContextRuntimeDirectorySnapshot {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         use sha2::{Digest, Sha256};
 
+        match (&context_state_head, &context_state) {
+            (None, None) | (Some(_), None) => {}
+            (Some(head), Some(record))
+                if head.context_id == record.context_id
+                    && head.revision == record.revision
+                    && head.state_hash == record.state_hash
+                    && head.head_event_id == record.head_event_id => {}
+            (Some(head), Some(record)) => {
+                return Err(format!(
+                    "Context directory state head {}@{} does not match payload {}@{}",
+                    head.context_id, head.revision, record.context_id, record.revision
+                )
+                .into());
+            }
+            (None, Some(record)) => {
+                return Err(format!(
+                    "Context directory state payload {}@{} is missing its authoritative head",
+                    record.context_id, record.revision
+                )
+                .into());
+            }
+        }
+
         let canonical = serde_json::to_vec(&(
             &context,
             &cognitive_clock,
-            &mind,
+            // Hash the authoritative head rather than the optional transfer
+            // payload. Cache hit/miss must not change the directory revision.
+            &context_state_head,
             &session_exclusions,
             &sessions,
             &objectives,
@@ -874,7 +1022,8 @@ impl ContextRuntimeDirectorySnapshot {
             revision,
             context,
             cognitive_clock,
-            mind,
+            context_state_head,
+            context_state,
             session_exclusions,
             sessions,
             objectives,
@@ -1069,6 +1218,81 @@ pub struct MindSnapshotRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// Native, bounded operator read model for an authoritative Context state.
+///
+/// Runtime and operator surfaces use this type instead of exposing the
+/// retired Projection vocabulary merely to display a Context revision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextStateSummary {
+    pub context_id: String,
+    pub revision: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Runtime-facing authority for Morphz's structured Context state.
+///
+/// This deliberately excludes every opaque JSON Projection operation. A
+/// Runtime wired as `dyn ContextStore` cannot accidentally read, initialize,
+/// or commit the retired representation. SQLite and PostgreSQL implement this
+/// authority directly; legacy Projection APIs exist only at explicit migration
+/// and frozen A/B test boundaries.
+#[async_trait::async_trait]
+pub trait ContextStore: Send + Sync {
+    async fn get_context_state(
+        &self,
+        context_id: &str,
+    ) -> Result<
+        Option<crate::context_store::ContextStateRecord>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
+
+    async fn list_context_state_summaries(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<ContextStateSummary>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_latest_context_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindSnapshotRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn initialize_context_state(
+        &self,
+        context_id: &str,
+        state: &crate::context_state::MindState,
+        commitment: &crate::context_store::ContextStateCommitment,
+        head_event_id: Option<&str>,
+        recall_documents: &[RecallDocument],
+    ) -> Result<crate::context_store::ContextStateRecord, Box<dyn std::error::Error + Send + Sync>>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_context_mutation_transaction(
+        &self,
+        event: &crate::event::Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: &crate::context_store::ContextMutationPlan,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<crate::context_store::ContextStateCommit, Box<dyn std::error::Error + Send + Sync>>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_context_seed_transaction(
+        &self,
+        event: &crate::event::Event,
+        target_context_id: &str,
+        source_context_id: &str,
+        source_version: u64,
+        source_state_hash: &str,
+        projection_kind: &str,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<crate::context_store::ContextStateCommit, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MindProjectionCommit {
@@ -1078,10 +1302,12 @@ pub enum MindProjectionCommit {
 
 /// Durable online Mind projection with database-enforced revision fencing.
 ///
-/// The append-only Event Store remains the source of truth. This store owns the
-/// rebuildable current-state projection and the Context head used for CAS. A
-/// successful Context mutation must persist its Event, Mind Projection,
-/// Session Projection mutation and affected Session attention rows in one
+/// Storage contract for the authoritative current Mind and its atomic Runtime
+/// commit boundary. Legacy implementations can recover Mind from immutable
+/// Agent Trajectory facts; ContextDB implementations make the current AST
+/// authoritative and retain those facts for trajectory, provenance, Recall
+/// and diagnosis. A successful Context mutation must persist all enabled
+/// representations, Session Projection changes and attention rows in one
 /// database transaction.
 #[async_trait::async_trait]
 pub trait MindProjectionStore: Send + Sync {
@@ -1102,7 +1328,9 @@ pub trait MindProjectionStore: Send + Sync {
     ) -> Result<Option<MindSnapshotRecord>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Lazily installs a projection reconstructed by replaying persisted Events. Concurrent
-    /// initializers converge on the already committed row.
+    /// initializers converge on the already committed row. This JSON boundary
+    /// remains only for explicit legacy migration and compatibility tests;
+    /// Runtime code must use `initialize_context_state`.
     async fn initialize_mind_projection(
         &self,
         projection: NewMindProjection,
@@ -1116,21 +1344,8 @@ pub trait MindProjectionStore: Send + Sync {
         event: &crate::event::Event,
         attention_updates: &[SessionAttentionUpdate],
         session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
         expected_revision: u64,
-        next_projection: NewMindProjection,
-    ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>>;
-
-    /// Atomically installs a projected seed Mind, records seed provenance on
-    /// the target Context and appends its immutable seed Event. Seeding keeps
-    /// revision zero but is fenced by the empty Context head.
-    #[allow(clippy::too_many_arguments)]
-    async fn commit_mind_seed_projection(
-        &self,
-        event: &crate::event::Event,
-        source_context_id: &str,
-        source_version: u64,
-        snapshot_hash: &str,
-        projection_kind: &str,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>>;
 }
@@ -5319,6 +5534,10 @@ pub struct QueryFilter {
     /// Exact Event IDs, usually returned by the asynchronous Recall lexical
     /// projection. Empty means no ID constraint.
     pub event_ids: Vec<String>,
+    /// Exact Event IDs to exclude before ordering and LIMIT. This is the
+    /// immutable Event-store counterpart of Recall residency filtering; doing
+    /// it after LIMIT can starve a page with already-resident content.
+    pub excluded_event_ids: Vec<String>,
     pub sequence: Option<u64>,
     pub context_id: Option<String>,
     pub session_id: Option<String>,
@@ -5334,6 +5553,15 @@ pub struct QueryFilter {
     /// with `latest_k`, this provides stable backward pagination over the
     /// immutable Event Sequence without offset scans.
     pub before_sequence: Option<u64>,
+    /// Only return Events at or before this inclusive physical View frontier.
+    /// Event sequence is append identity, not causal order. Unlike
+    /// `before_sequence`, this is a model-request visibility boundary rather
+    /// than a backward-pagination cursor.
+    pub through_sequence: Option<u64>,
+    /// Opaque Event visibility snapshot captured with the physical Context
+    /// View. Backends which issue one must enforce it in addition to the
+    /// numeric sequence frontier.
+    pub event_visibility_snapshot: Option<String>,
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
     pub actors: Vec<String>,
@@ -5477,10 +5705,10 @@ pub trait EventStore: Send + Sync {
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
-/// The Event Store and Mind Projection remain authoritative; implementations
+/// Agent Trajectory and the current Context Store remain authoritative;
 /// source mutation only enqueues a lightweight Outbox intent. Expensive text
 /// extraction and lexical index writes run independently and may be rebuilt
-/// from Events + Mind after failure.
+/// from Trajectory facts plus current Context state after failure.
 #[async_trait::async_trait]
 pub trait RecallProjectionStore: Send + Sync {
     async fn recall_index_capability(
@@ -5548,12 +5776,13 @@ pub trait SessionProjectionStore: Send + Sync {
         include_context_wide: bool,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
 
-    async fn read_context_encoding_projection_snapshot(
+    async fn read_context_encoding_state_snapshot(
         &self,
         context_id: &str,
         session_ids: &[String],
         include_context_wide: bool,
-    ) -> Result<ContextEncodingProjectionSnapshot, Box<dyn std::error::Error + Send + Sync>>;
+        known_context_state_revision: Option<u64>,
+    ) -> Result<ContextEncodingStateSnapshot, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Persistent physical clock queue shared by every scheduler policy. Claiming
@@ -8097,7 +8326,7 @@ pub trait RuntimeStore:
     + ExecutionApprovalStore
     + SessionStore
     + ObjectiveStore
-    + MindProjectionStore
+    + ContextStore
     + SessionProjectionStore
     + RecallProjectionStore
     + CognitiveClockStore

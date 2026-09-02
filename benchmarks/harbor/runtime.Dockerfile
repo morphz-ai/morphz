@@ -2,20 +2,17 @@
 
 FROM rust:1.97.1-bullseye@sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0 AS builder
 WORKDIR /src
-ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
-ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+ARG RUSTUP_TOOLCHAIN=1.97.1-x86_64-unknown-linux-gnu
 ARG MORPHZ_BUILD_GIT_COMMIT
 ARG MORPHZ_CARGO_FEATURES=""
 # Morphz intentionally puts the newer hotbundle SQLite archive before SQLx's
 # bundled archive. Rust's x86_64 self-contained LLD rejects those duplicate
 # symbols unless the same first-definition-wins policy is made explicit.
-ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER} \
-    RUSTUP_UPDATE_ROOT=${RUSTUP_UPDATE_ROOT} \
+ENV RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN} \
     OPENSSL_STATIC=1 \
     OPENSSL_INCLUDE_DIR=/usr/include \
     CARGO_TARGET_DIR=/src/target-static \
     RUSTFLAGS="-C link-arg=-Wl,--allow-multiple-definition"
-COPY benchmarks/harbor/cargo-config.china.toml /usr/local/cargo/config.toml
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

@@ -63,6 +63,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "trajectory-profile",
     "enable-experimental",
     "coordination-mesh",
+    "to",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -96,6 +97,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "harness",
     "objective",
     "trajectory",
+    "storage",
     "experiment",
     "job",
     "config",
@@ -281,6 +283,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             harness_command(locale),
             objective_command(locale),
             trajectory_command(locale),
+            storage_command(locale),
             experiment_command(locale),
             job_command(locale),
             config_command(locale),
@@ -2293,6 +2296,35 @@ fn config_command(locale: Locale) -> Command {
         ))
 }
 
+fn storage_command(locale: Locale) -> Command {
+    Command::new("storage")
+        .about(locale.text(
+            "Inspect and migrate Runtime storage authority",
+            "检查并迁移运行时存储权威",
+        ))
+        .subcommands([output_examples(
+            locale,
+            Command::new("migrate-cognitive-store")
+                .about(locale.text(
+                    "Explicitly synchronize cognitive state into the selected Store",
+                    "将认知状态显式同步到选定存储引擎",
+                ))
+                .arg(
+                    Arg::new("to")
+                        .long("to")
+                        .required(true)
+                        .value_name("STORE")
+                        .value_parser(["context_db", "legacy"])
+                        .help(locale.text("Target cognitive Store authority", "目标认知存储权威")),
+                ),
+            "Example:\n  morphz storage migrate-cognitive-store --to context_db --format=json",
+        )])
+        .after_help(locale.text(
+            "Runtime startup never migrates cognitive state implicitly.",
+            "运行时启动不会隐式迁移认知状态。",
+        ))
+}
+
 fn experiment_command(locale: Locale) -> Command {
     Command::new("experiment")
         .about(locale.text(
@@ -2601,6 +2633,30 @@ mod tests {
                 .occurrences(),
             [Some("cognitive-coordination".to_string())]
         );
+    }
+
+    #[test]
+    fn cognitive_store_migration_is_a_stable_explicit_command() {
+        let invocation = parse(&[
+            "storage",
+            "migrate-cognitive-store",
+            "--to",
+            "legacy",
+            "--format=json",
+        ]);
+        assert_eq!(
+            invocation.command_path(),
+            ["storage", "migrate-cognitive-store"]
+        );
+        assert_eq!(
+            invocation.option("to").unwrap().last_value(),
+            Some("legacy")
+        );
+        assert_eq!(
+            invocation.option("format").unwrap().last_value(),
+            Some("json")
+        );
+        assert!(invocation.option("enable-experimental").is_none());
     }
 
     #[test]

@@ -1,47 +1,51 @@
 use crate::approval_authority::{
     approval_decision_event, stable_approval_identity, stable_grant_id,
 };
-use crate::config::SqliteStorageConfig;
+use crate::config::{CognitiveStoreBackend, SqliteStorageConfig};
+use crate::context_store::{ContextStateCommit, ContextStateHead, ContextStateRecord};
 use crate::event::{Event, TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT};
 use crate::memory::{
-    causal_payload_string, evaluate_thread_completion_contract, evaluate_thread_group_contract,
-    is_transient_storage_contention, message_request_fingerprint, stable_thread_id,
-    stable_thread_signal_id, thread_cancellation_event, thread_group_barrier_event,
-    thread_terminal_barrier_event, validate_thread_supersede_event, ActionGroupFilter,
-    ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord,
-    ActionGroupStatus, ActionGroupStore, ActivationContextCounts, ActivationOutcomeCommit,
-    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
-    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    causal_payload_string, cognitive_projections_equivalent, cognitive_store_migration_required,
+    decode_legacy_context_state, evaluate_thread_completion_contract,
+    evaluate_thread_group_contract, is_transient_storage_contention, message_request_fingerprint,
+    select_initial_cognitive_projection, stable_thread_id, stable_thread_signal_id,
+    thread_cancellation_event, thread_group_barrier_event, thread_terminal_barrier_event,
+    validate_thread_supersede_event, ActionGroupFilter, ActionGroupMemberCommit,
+    ActionGroupMemberRecord, ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus,
+    ActionGroupStore, ActivationContextCounts, ActivationOutcomeCommit, ActivationStore,
+    AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter, ApprovalMutation,
+    ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseRestriction,
     CapabilityLeaseScope, CapabilityLeaseStatus, CapabilityLeaseStore, CognitiveClockStore,
     CognitiveContextRecord, ContextActivationCausalitySnapshot, ContextCapabilityBindingMutation,
     ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
-    ContextEncodingProjectionSnapshot, ContextExecutionResourcesSnapshot,
+    ContextEncodingStateSnapshot, ContextExecutionResourcesSnapshot,
     ContextRuntimeDirectoryRequest, ContextRuntimeDirectorySnapshot,
     ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore,
-    ContextSessionCount, ContextTokenBudgetMutation, ContextUpdate, DelegationFilter,
-    DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
-    DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
-    EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobContextCounts, ExecutionJobFilter,
-    ExecutionJobMonitorRecord, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord,
-    ExecutionNodeStatus, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
-    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
-    ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
-    ExecutionTargetStatus, ExecutionTargetStore, InterruptedDialogueTurn, MessageClaim,
-    MessageDispatchMode, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
-    MindProjectionStore, MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent,
-    NewApprovalRequest, NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext,
-    NewDelegation, NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewMindProjection, NewNodePairingCode, NewObjective,
-    NewPrincipal, NewRuntimeTimer, NewSchedule, NewScheduledObjective, NewSession, NewThread,
-    NewThreadActivation, NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment,
-    NodePairingCodeError, NodePairingCodeErrorKind, ObjectiveCompletionIntent, ObjectiveMutation,
+    ContextSessionCount, ContextStateSummary, ContextStore, ContextTokenBudgetMutation,
+    ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DelegationStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobContextCounts,
+    ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
+    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
+    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore,
+    InterruptedDialogueTurn, MessageClaim, MessageDispatchMode, MindProjectionCommit,
+    MindProjectionHead, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
+    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
+    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
+    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
+    NewSchedule, NewScheduledObjective, NewSession, NewThread, NewThreadActivation,
+    NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment, NodePairingCodeError,
+    NodePairingCodeErrorKind, ObjectiveCompletionIntent, ObjectiveMutation,
     ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
     PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
@@ -78,8 +82,8 @@ use chrono::{DateTime, Utc};
 use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, SqlitePool};
-use std::collections::{HashMap, HashSet};
+use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, Sqlite, SqlitePool};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
@@ -89,6 +93,24 @@ mod plan_execution;
 pub struct SqliteStore {
     pool: SqlitePool,
     edge_command_notify: Arc<Notify>,
+    #[cfg(feature = "context-db")]
+    context_db: Option<crate::context_db_runtime::ContextDbRuntimeAdapter>,
+}
+
+#[cfg(feature = "context-db")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextDbLegacyMigrationReport {
+    pub discovered: usize,
+    pub imported: usize,
+    pub already_authoritative: usize,
+}
+
+#[cfg(feature = "context-db")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CognitiveStoreTransitionReport {
+    pub previous: Option<CognitiveStoreBackend>,
+    pub selected: CognitiveStoreBackend,
+    pub synchronized: usize,
 }
 
 fn sqlite_has_wal_reset_fix(version: &str) -> bool {
@@ -1918,8 +1940,588 @@ impl SqliteStore {
         Ok(Self {
             pool,
             edge_command_notify: Arc::new(Notify::new()),
+            #[cfg(feature = "context-db")]
+            context_db: None,
         })
     }
+
+    /// Builds the complete SQLite Runtime Store with ContextDB as the
+    /// authoritative current-Mind backend. Existing Runtime Control and Agent
+    /// Trajectory tables remain in the same database and transaction domain.
+    #[cfg(feature = "context-db")]
+    pub async fn new_with_context_db(
+        db_path: &str,
+        config: &SqliteStorageConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut store = Self::new_with_config(db_path, config).await?;
+        let context_db =
+            crate::context_db_runtime::ContextDbRuntimeAdapter::attach(store.pool.clone()).await?;
+        store
+            .validate_cognitive_store_selection(&context_db, CognitiveStoreBackend::ContextDb)
+            .await?;
+        store.context_db = Some(context_db);
+        Ok(store)
+    }
+
+    /// Builds the Runtime Store with the legacy projection selected as the
+    /// current authority. Startup validates the explicit Store marker and
+    /// never copies cognitive state. Operators must run the migration command
+    /// before changing this selection.
+    #[cfg(feature = "context-db")]
+    pub async fn new_with_legacy(
+        db_path: &str,
+        config: &SqliteStorageConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = Self::new_with_config(db_path, config).await?;
+        let context_db =
+            crate::context_db_runtime::ContextDbRuntimeAdapter::attach(store.pool.clone()).await?;
+        store
+            .validate_cognitive_store_selection(&context_db, CognitiveStoreBackend::Legacy)
+            .await?;
+        Ok(store)
+    }
+
+    /// Explicitly synchronizes the last active cognitive Store into `selected`
+    /// and records the new authority. Runtime startup never calls this method.
+    #[cfg(feature = "context-db")]
+    pub async fn migrate_cognitive_store(
+        db_path: &str,
+        config: &SqliteStorageConfig,
+        selected: CognitiveStoreBackend,
+    ) -> Result<CognitiveStoreTransitionReport, Box<dyn std::error::Error + Send + Sync>> {
+        if db_path.trim() == ":memory:" {
+            return Err("cognitive Store migration requires a persistent SQLite path".into());
+        }
+        let store = Self::new_with_config(db_path, config).await?;
+        let context_db =
+            crate::context_db_runtime::ContextDbRuntimeAdapter::attach(store.pool.clone()).await?;
+        store
+            .transition_cognitive_store(&context_db, selected)
+            .await
+    }
+
+    #[cfg(feature = "context-db")]
+    async fn validate_cognitive_store_selection(
+        &self,
+        context_db: &crate::context_db_runtime::ContextDbRuntimeAdapter,
+        selected: CognitiveStoreBackend,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut transaction = begin_immediate_sqlite_transaction(&self.pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS cognitive_store_control (
+                   singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                   active_store TEXT NOT NULL CHECK(active_store IN ('context_db', 'legacy')),
+                   updated_at TEXT NOT NULL
+               )"#,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        let previous = sqlx::query_scalar::<_, String>(
+            "SELECT active_store FROM cognitive_store_control WHERE singleton = 1",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?
+        .map(|value| CognitiveStoreBackend::parse(&value))
+        .transpose()?;
+        if let Some(previous) = previous {
+            if previous != selected {
+                return Err(cognitive_store_migration_required(previous, selected).into());
+            }
+            transaction.commit().await?;
+            return Ok(());
+        }
+
+        let legacy_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let context_db_ids = sqlx::query_scalar::<_, String>(
+            "SELECT context_id FROM experimental_contextdb_contexts ORDER BY context_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let (selected_ids, other_ids) = match selected {
+            CognitiveStoreBackend::ContextDb => (&context_db_ids, &legacy_ids),
+            CognitiveStoreBackend::Legacy => (&legacy_ids, &context_db_ids),
+        };
+        let can_adopt_without_migration = if other_ids.is_empty() {
+            true
+        } else if selected_ids == other_ids {
+            let mut equivalent = true;
+            for context_id in selected_ids {
+                let selected_projection = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    context_id,
+                )
+                .await?;
+                let other_projection = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    match selected {
+                        CognitiveStoreBackend::ContextDb => CognitiveStoreBackend::Legacy,
+                        CognitiveStoreBackend::Legacy => CognitiveStoreBackend::ContextDb,
+                    },
+                    context_id,
+                )
+                .await?;
+                if !matches!(
+                    (selected_projection.as_ref(), other_projection.as_ref()),
+                    (Some(left), Some(right)) if cognitive_projections_equivalent(left, right)
+                ) {
+                    equivalent = false;
+                    break;
+                }
+            }
+            equivalent
+        } else {
+            false
+        };
+        if !can_adopt_without_migration {
+            let source = match selected {
+                CognitiveStoreBackend::ContextDb => CognitiveStoreBackend::Legacy,
+                CognitiveStoreBackend::Legacy => CognitiveStoreBackend::ContextDb,
+            };
+            return Err(cognitive_store_migration_required(source, selected).into());
+        }
+        sqlx::query(
+            r#"INSERT INTO cognitive_store_control(singleton, active_store, updated_at)
+               VALUES (1, ?, ?)"#,
+        )
+        .bind(selected.as_str())
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "context-db")]
+    async fn transition_cognitive_store(
+        &self,
+        context_db: &crate::context_db_runtime::ContextDbRuntimeAdapter,
+        selected: CognitiveStoreBackend,
+    ) -> Result<CognitiveStoreTransitionReport, Box<dyn std::error::Error + Send + Sync>> {
+        let mut transaction = begin_immediate_sqlite_transaction(&self.pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS cognitive_store_control (
+                   singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                   active_store TEXT NOT NULL CHECK(active_store IN ('context_db', 'legacy')),
+                   updated_at TEXT NOT NULL
+               )"#,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        let previous = sqlx::query_scalar::<_, String>(
+            "SELECT active_store FROM cognitive_store_control WHERE singleton = 1",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?
+        .map(|value| CognitiveStoreBackend::parse(&value))
+        .transpose()?;
+
+        if previous == Some(selected) {
+            transaction.commit().await?;
+            return Ok(CognitiveStoreTransitionReport {
+                previous,
+                selected,
+                synchronized: 0,
+            });
+        }
+
+        let legacy_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let context_db_ids = sqlx::query_scalar::<_, String>(
+            "SELECT context_id FROM experimental_contextdb_contexts ORDER BY context_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        let mut synchronized = 0;
+        if let Some(previous) = previous {
+            let (source_ids, target_ids) = match previous {
+                CognitiveStoreBackend::ContextDb => (&context_db_ids, &legacy_ids),
+                CognitiveStoreBackend::Legacy => (&legacy_ids, &context_db_ids),
+            };
+            let target_only = target_ids
+                .difference(source_ids)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !target_only.is_empty() {
+                return Err(format!(
+                    "cannot switch cognitive Store from '{}' to '{}': inactive Store contains Context(s) absent from the active authority: {}",
+                    previous.as_str(),
+                    selected.as_str(),
+                    target_only.join(", ")
+                )
+                .into());
+            }
+            for context_id in source_ids {
+                let source = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    previous,
+                    context_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "active cognitive Store '{}' has no complete state for Context '{context_id}'",
+                        previous.as_str()
+                    )
+                })?;
+                let target = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    context_id,
+                )
+                .await?;
+                if let Some(target) = &target {
+                    if target.revision > source.revision {
+                        return Err(format!(
+                            "cannot switch Context '{context_id}' from '{}' revision {} to '{}' because the inactive target is unexpectedly ahead at revision {}",
+                            previous.as_str(),
+                            source.revision,
+                            selected.as_str(),
+                            target.revision
+                        )
+                        .into());
+                    }
+                    if target.revision == source.revision
+                        && !cognitive_projections_equivalent(&source, target)
+                    {
+                        return Err(format!(
+                            "cannot switch Context '{context_id}': '{}' and '{}' diverge at revision {}",
+                            previous.as_str(),
+                            selected.as_str(),
+                            source.revision
+                        )
+                        .into());
+                    }
+                    if cognitive_projections_equivalent(&source, target) {
+                        continue;
+                    }
+                }
+                write_sqlite_cognitive_projection(&mut transaction, context_db, selected, &source)
+                    .await?;
+                let verified = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    context_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "cognitive Store migration wrote no complete target state for Context '{context_id}'"
+                    )
+                })?;
+                if !cognitive_projections_equivalent(&source, &verified) {
+                    return Err(format!(
+                        "cognitive Store migration verification failed for Context '{context_id}'"
+                    )
+                    .into());
+                }
+                synchronized += 1;
+            }
+        } else {
+            let context_ids = legacy_ids
+                .union(&context_db_ids)
+                .cloned()
+                .collect::<Vec<_>>();
+            for context_id in context_ids {
+                let legacy = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    CognitiveStoreBackend::Legacy,
+                    &context_id,
+                )
+                .await?;
+                let native = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    CognitiveStoreBackend::ContextDb,
+                    &context_id,
+                )
+                .await?;
+                let source = select_initial_cognitive_projection(&context_id, legacy, native)?;
+                let selected_projection = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    &context_id,
+                )
+                .await?;
+                if selected_projection
+                    .as_ref()
+                    .is_some_and(|target| cognitive_projections_equivalent(&source, target))
+                {
+                    continue;
+                }
+                write_sqlite_cognitive_projection(&mut transaction, context_db, selected, &source)
+                    .await?;
+                let verified = load_sqlite_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    &context_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "cognitive Store migration wrote no complete target state for Context '{context_id}'"
+                    )
+                })?;
+                if !cognitive_projections_equivalent(&source, &verified) {
+                    return Err(format!(
+                        "cognitive Store migration verification failed for Context '{context_id}'"
+                    )
+                    .into());
+                }
+                synchronized += 1;
+            }
+        }
+
+        sqlx::query(
+            r#"INSERT INTO cognitive_store_control(singleton, active_store, updated_at)
+               VALUES (1, ?, ?)
+               ON CONFLICT(singleton) DO UPDATE SET
+                 active_store = excluded.active_store,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(selected.as_str())
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(CognitiveStoreTransitionReport {
+            previous,
+            selected,
+            synchronized,
+        })
+    }
+
+    /// Explicitly imports legacy opaque Mind Projections into ContextDB.
+    ///
+    /// This operation is intentionally separate from Runtime startup. It is
+    /// idempotent, never overwrites an existing authoritative ContextDB tree,
+    /// and verifies the exact compatibility record produced by every new
+    /// import before committing it.
+    #[cfg(feature = "context-db")]
+    pub async fn migrate_legacy_mind_projections_to_context_db(
+        db_path: &str,
+        config: &SqliteStorageConfig,
+    ) -> Result<ContextDbLegacyMigrationReport, Box<dyn std::error::Error + Send + Sync>> {
+        let store = Self::new_with_config(db_path, config).await?;
+        let context_db =
+            crate::context_db_runtime::ContextDbRuntimeAdapter::attach(store.pool.clone()).await?;
+        let legacy_context_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&store.pool)
+        .await?;
+        let mut report = ContextDbLegacyMigrationReport {
+            discovered: legacy_context_ids.len(),
+            imported: 0,
+            already_authoritative: 0,
+        };
+        for context_id in legacy_context_ids {
+            let mut transaction = begin_immediate_sqlite_transaction(&store.pool).await?;
+            if context_db
+                .load_projection_in_transaction(&mut transaction, &context_id)
+                .await?
+                .is_some()
+            {
+                report.already_authoritative += 1;
+                transaction.commit().await?;
+                continue;
+            }
+            let legacy = get_mind_projection_consistent_from_executor(
+                &mut *transaction,
+                &context_id,
+            )
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Context '{context_id}' has an incomplete legacy Mind Projection; refusing ContextDB migration"
+                )
+            })?;
+            let canonical =
+                crate::context_db_runtime::canonicalize_legacy_projection(&NewMindProjection {
+                    context_id: legacy.context_id.clone(),
+                    revision: legacy.revision,
+                    state: legacy.state.clone(),
+                    state_hash: legacy.state_hash.clone(),
+                    head_event_id: legacy.head_event_id.clone(),
+                    recall_documents: Vec::new(),
+                })?;
+            let imported = context_db
+                .install_projection_in_transaction(&mut transaction, &canonical, legacy.updated_at)
+                .await?;
+            if imported.context_id != canonical.context_id
+                || imported.revision != canonical.revision
+                || imported.state != canonical.state
+                || imported.state_hash != canonical.state_hash
+                || imported.head_event_id != canonical.head_event_id
+                || imported.updated_at != legacy.updated_at
+            {
+                return Err(format!(
+                    "Context '{context_id}' ContextDB migration did not reproduce the canonicalized legacy Mind Projection"
+                )
+                .into());
+            }
+            transaction.commit().await?;
+            report.imported += 1;
+        }
+        Ok(report)
+    }
+}
+
+#[cfg(feature = "context-db")]
+async fn load_sqlite_cognitive_projection(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    context_db: &crate::context_db_runtime::ContextDbRuntimeAdapter,
+    backend: CognitiveStoreBackend,
+    context_id: &str,
+) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    match backend {
+        CognitiveStoreBackend::ContextDb => Ok(context_db
+            .load_projection_in_transaction(transaction, context_id)
+            .await?),
+        CognitiveStoreBackend::Legacy => {
+            let Some(record) =
+                get_mind_projection_consistent_from_executor(&mut **transaction, context_id)
+                    .await?
+            else {
+                return Ok(None);
+            };
+            let canonical =
+                crate::context_db_runtime::canonicalize_legacy_projection(&NewMindProjection {
+                    context_id: record.context_id.clone(),
+                    revision: record.revision,
+                    state: record.state.clone(),
+                    state_hash: record.state_hash.clone(),
+                    head_event_id: record.head_event_id.clone(),
+                    recall_documents: Vec::new(),
+                })?;
+            Ok(Some(MindProjectionRecord {
+                context_id: canonical.context_id,
+                revision: canonical.revision,
+                state: canonical.state,
+                state_hash: canonical.state_hash,
+                head_event_id: canonical.head_event_id,
+                updated_at: record.updated_at,
+            }))
+        }
+    }
+}
+
+#[cfg(feature = "context-db")]
+async fn write_sqlite_cognitive_projection(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    context_db: &crate::context_db_runtime::ContextDbRuntimeAdapter,
+    backend: CognitiveStoreBackend,
+    projection: &MindProjectionRecord,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match backend {
+        CognitiveStoreBackend::ContextDb => {
+            let projection_input = NewMindProjection {
+                context_id: projection.context_id.clone(),
+                revision: projection.revision,
+                state: projection.state.clone(),
+                state_hash: projection.state_hash.clone(),
+                head_event_id: projection.head_event_id.clone(),
+                recall_documents: Vec::new(),
+            };
+            if context_db
+                .load_projection_in_transaction(transaction, &projection.context_id)
+                .await?
+                .is_some()
+            {
+                context_db
+                    .sync_projection_in_transaction(
+                        transaction,
+                        &projection_input,
+                        projection.updated_at,
+                    )
+                    .await?;
+            } else {
+                context_db
+                    .install_projection_in_transaction(
+                        transaction,
+                        &projection_input,
+                        projection.updated_at,
+                    )
+                    .await?;
+            }
+        }
+        CognitiveStoreBackend::Legacy => {
+            let revision = i64::try_from(projection.revision)
+                .map_err(|_| "Mind Projection revision exceeds SQLite INTEGER")?;
+            let state_json = serde_json::to_string(&projection.state)?;
+            let updated_at = projection
+                .updated_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query(
+                r#"INSERT INTO context_heads
+                   (context_id, revision, projection_hash, head_event_id, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(context_id) DO UPDATE SET
+                     revision = excluded.revision,
+                     projection_hash = excluded.projection_hash,
+                     head_event_id = excluded.head_event_id,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(&projection.context_id)
+            .bind(revision)
+            .bind(&projection.state_hash)
+            .bind(&projection.head_event_id)
+            .bind(&updated_at)
+            .execute(&mut **transaction)
+            .await?;
+            sqlx::query(
+                r#"INSERT INTO mind_projections
+                   (context_id, revision, state_json, state_hash, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(context_id) DO UPDATE SET
+                     revision = excluded.revision,
+                     state_json = excluded.state_json,
+                     state_hash = excluded.state_hash,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(&projection.context_id)
+            .bind(revision)
+            .bind(state_json)
+            .bind(&projection.state_hash)
+            .bind(updated_at)
+            .execute(&mut **transaction)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 fn runtime_sqlite_pool_options(max_connections: u32) -> SqlitePoolOptions {
@@ -4057,17 +4659,24 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
         let active_after = request.active_after.to_rfc3339();
         let max_full_sessions = i64::try_from(request.max_full_sessions)?;
         let max_metadata_sessions = i64::try_from(request.max_metadata_sessions)?;
+        let known_context_state_revision = request
+            .known_context_state_revision
+            .map(i64::try_from)
+            .transpose()?;
         let principal_ids = request
             .session_filter
             .principal_ids
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        // Keep the bounded Runtime directory and the authoritative ContextDB
+        // Mind on one SQLite read snapshot. Legacy mode also benefits from the
+        // explicit boundary without changing its query shape.
+        let mut transaction = self.pool.begin().await?;
         // Every scalar subquery belongs to this one SQLite statement snapshot.
         // `json(...)` marks nested JSON values so arrays contain objects rather
         // than escaped JSON strings.
-        let row = sqlx::query(
-            r#"WITH
+        let directory_sql_prefix = r#"WITH
                scoped_sessions AS MATERIALIZED (
                  SELECT s.*,
                         sm.attention_state AS mount_attention_state,
@@ -4324,15 +4933,19 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                      'last_signal_batch_id', NULL, 'revision', 0
                    )
                  ) AS cognitive_clock_json,
+"#;
+        let legacy_mind_columns = r#"
                  COALESCE(
-                   (SELECT json_object(
+                   (SELECT CASE WHEN projection.revision = ?7
+                    THEN 'null'
+                    ELSE json_object(
                       'context_id', projection.context_id,
                       'revision', projection.revision,
                       'state', json(projection.state_json),
                       'state_hash', projection.state_hash,
                       'head_event_id', head.head_event_id,
                       'updated_at', projection.updated_at
-                    )
+                    ) END
                     FROM mind_projections projection
                     JOIN context_heads head ON head.context_id = projection.context_id
                     WHERE projection.context_id = c.id
@@ -4340,14 +4953,79 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                       AND projection.state_hash = head.projection_hash),
                    'null'
                  ) AS mind_json,
+                 (SELECT context_id FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_context_id,
                  (SELECT revision FROM context_heads WHERE context_id = c.id)
                    AS mind_head_revision,
+                 (SELECT projection.updated_at
+                    FROM mind_projections projection
+                    JOIN context_heads head ON head.context_id = projection.context_id
+                   WHERE projection.context_id = c.id
+                     AND projection.revision = head.revision
+                     AND projection.state_hash = head.projection_hash)
+                   AS mind_head_updated_at,
                  (SELECT projection_hash FROM context_heads WHERE context_id = c.id)
                    AS mind_head_hash,
+                 (SELECT head_event_id FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_event_id,
                  (SELECT revision FROM mind_projections WHERE context_id = c.id)
                    AS mind_projection_revision,
                  (SELECT state_hash FROM mind_projections WHERE context_id = c.id)
                    AS mind_projection_hash,
+"#;
+        let context_db_mind_columns = r#"
+                 COALESCE(
+                   (SELECT CASE WHEN runtime_head.revision = ?7
+                    THEN 'null'
+                    ELSE json_object(
+                      'context_id', context_db.context_id,
+                      'revision', context_db.revision,
+                      'root_node_id', context_db.root_node_id,
+                      'root_hash', context_db.root_hash,
+                      'nodes', json(COALESCE(
+                        (SELECT json_group_array(json(node_value))
+                         FROM (
+                           SELECT json_object(
+                             'node_id', node.node_id,
+                             'parent_id', node.parent_id,
+                             'order_key', node.order_key,
+                             'owner_domain', node.owner_domain,
+                             'node_revision', node.node_revision,
+                             'body_sexpr', node.body_sexpr,
+                             'content_hash', node.content_hash,
+                             'subtree_hash', node.subtree_hash
+                           ) AS node_value
+                           FROM experimental_contextdb_nodes node
+                           WHERE node.context_id = context_db.context_id
+                           ORDER BY node.parent_id, node.order_key, node.node_id
+                         )),
+                        '[]'
+                      ))
+                    ) END
+                    FROM experimental_contextdb_contexts context_db
+                    JOIN experimental_contextdb_runtime_heads runtime_head
+                      ON runtime_head.context_id = context_db.context_id
+                    WHERE context_db.context_id = c.id
+                      AND context_db.schema_version = 1),
+                   'null'
+                 ) AS context_db_mind_json,
+                 (SELECT context_id FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_context_id,
+                 (SELECT revision FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_revision,
+                 (SELECT updated_at FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_updated_at,
+                 (SELECT state_hash FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_hash,
+                 (SELECT head_event_id FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_event_id,
+"#;
+        let directory_sql_suffix = r#"
                  COALESCE((SELECT json_group_array(json(value)) FROM session_rows), '[]')
                    AS sessions_json,
                  (SELECT json_object(
@@ -4369,48 +5047,111 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  COALESCE((SELECT json_group_array(json(value)) FROM principal_binding_rows), '[]')
                    AS principal_bindings_json
                FROM cognitive_contexts c
-               WHERE c.id = ?1"#,
-        )
-        .bind(context_id)
-        .bind(active_session_id)
-        .bind(active_after)
-        .bind(max_full_sessions)
-        .bind(max_metadata_sessions)
-        .bind(principal_ids)
-        .fetch_optional(&self.pool)
-        .await?;
+               WHERE c.id = ?1"#;
+        #[cfg(feature = "context-db")]
+        let use_context_db = self.context_db.is_some();
+        #[cfg(not(feature = "context-db"))]
+        let use_context_db = false;
+        static LEGACY_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        static CONTEXT_DB_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let (directory_sql_cache, mind_columns) = if use_context_db {
+            (&CONTEXT_DB_DIRECTORY_SQL, context_db_mind_columns)
+        } else {
+            (&LEGACY_DIRECTORY_SQL, legacy_mind_columns)
+        };
+        let directory_sql = directory_sql_cache
+            .get_or_init(|| [directory_sql_prefix, mind_columns, directory_sql_suffix].concat());
+        let row = sqlx::query(directory_sql.as_str())
+            .bind(context_id)
+            .bind(active_session_id)
+            .bind(active_after)
+            .bind(max_full_sessions)
+            .bind(max_metadata_sessions)
+            .bind(principal_ids)
+            .bind(known_context_state_revision)
+            .fetch_optional(&mut *transaction)
+            .await?;
 
         let Some(row) = row else {
+            transaction.commit().await?;
             return Ok(None);
         };
+        #[cfg(feature = "context-db")]
+        let read_legacy_mind = !use_context_db;
+        #[cfg(not(feature = "context-db"))]
+        let read_legacy_mind = true;
         let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
-        let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
-        let mind = match (head_revision, projection_revision) {
-            (None, None) => None,
-            (Some(head_revision), Some(projection_revision)) => {
-                let head_hash = row
+        let context_state_head = match head_revision {
+            Some(revision) => Some(ContextStateHead {
+                context_id: row
+                    .get::<Option<String>, _>("mind_head_context_id")
+                    .ok_or("Context state head 缺少 context_id")?,
+                revision: u64::try_from(revision)?,
+                state_hash: row
                     .get::<Option<String>, _>("mind_head_hash")
-                    .ok_or("Context Head 缺少 projection_hash")?;
-                let projection_hash = row
-                    .get::<Option<String>, _>("mind_projection_hash")
-                    .ok_or("Mind Projection 缺少 state_hash")?;
-                if head_revision != projection_revision || head_hash != projection_hash {
-                    return Err(format!(
-                        "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
-                    )
-                    .into());
-                }
-                Some(
-                    sqlite_snapshot_component::<Option<MindProjectionRecord>>(&row, "mind_json")?
-                        .ok_or("一致的 Mind Projection 没有返回投影内容")?,
-                )
-            }
-            _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+                    .ok_or("Context state head 缺少 state_hash")?,
+                head_event_id: row.get("mind_head_event_id"),
+                updated_at: parse_time(
+                    &row.get::<Option<String>, _>("mind_head_updated_at")
+                        .ok_or("Context state head 缺少 updated_at")?,
+                ),
+            }),
+            None => None,
         };
-        ContextRuntimeDirectorySnapshot::from_components(
+        let legacy_mind = if read_legacy_mind {
+            let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
+            match (head_revision, projection_revision) {
+                (None, None) => None,
+                (Some(head_revision), Some(projection_revision)) => {
+                    let head_hash = row
+                        .get::<Option<String>, _>("mind_head_hash")
+                        .ok_or("Context Head 缺少 projection_hash")?;
+                    let projection_hash = row
+                        .get::<Option<String>, _>("mind_projection_hash")
+                        .ok_or("Mind Projection 缺少 state_hash")?;
+                    if head_revision != projection_revision || head_hash != projection_hash {
+                        return Err(format!(
+                            "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
+                        )
+                        .into());
+                    }
+                    let projection = sqlite_snapshot_component::<Option<MindProjectionRecord>>(
+                        &row,
+                        "mind_json",
+                    )?;
+                    if projection.is_none() && Some(head_revision) != known_context_state_revision {
+                        return Err("一致的 Mind Projection 没有返回投影内容".into());
+                    }
+                    projection.map(decode_legacy_context_state).transpose()?
+                }
+                _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+            }
+        } else {
+            None
+        };
+        #[cfg(feature = "context-db")]
+        let context_state = if let Some(context_db) = &self.context_db {
+            context_db
+                .decode_context_state_snapshot_json(&row.get::<String, _>("context_db_mind_json"))?
+        } else {
+            legacy_mind
+        };
+        #[cfg(not(feature = "context-db"))]
+        let context_state = legacy_mind;
+        if context_state.is_none()
+            && context_state_head
+                .as_ref()
+                .is_some_and(|head| Some(head.revision) != request.known_context_state_revision)
+        {
+            return Err(
+                "ContextStore directory snapshot omitted a non-matching state payload".into(),
+            );
+        }
+        let snapshot = ContextRuntimeDirectorySnapshot::from_components(
             sqlite_snapshot_component(&row, "context_json")?,
             sqlite_snapshot_component(&row, "cognitive_clock_json")?,
-            mind,
+            context_state_head,
+            context_state,
             sqlite_snapshot_component::<ContextRuntimeSessionExclusions>(
                 &row,
                 "session_exclusions_json",
@@ -4421,8 +5162,9 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
             sqlite_snapshot_component(&row, "capability_bindings_json")?,
             sqlite_snapshot_component(&row, "active_activations_json")?,
             sqlite_snapshot_component(&row, "principal_bindings_json")?,
-        )
-        .map(Some)
+        )?;
+        transaction.commit().await?;
+        Ok(Some(snapshot))
     }
 
     async fn read_context_runtime_scheduler_snapshot(
@@ -7754,6 +8496,16 @@ async fn get_mind_projection_consistent(
     pool: &SqlitePool,
     context_id: &str,
 ) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    get_mind_projection_consistent_from_executor(pool, context_id).await
+}
+
+async fn get_mind_projection_consistent_from_executor<'e, E>(
+    executor: E,
+    context_id: &str,
+) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let row = sqlx::query(
         r#"SELECT h.context_id AS head_context_id,
                   h.revision AS head_revision,
@@ -7767,7 +8519,7 @@ async fn get_mind_projection_consistent(
     )
     .bind(context_id)
     .bind(context_id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
     let head_context_id = row.get::<Option<String>, _>("head_context_id");
     let projection_context_id = row.get::<Option<String>, _>("projection_context_id");
@@ -8232,20 +8984,55 @@ async fn append_execution_job_signal_in_transaction(
 }
 
 #[async_trait::async_trait]
-impl MindProjectionStore for SqliteStore {
-    async fn get_mind_projection(
+impl ContextStore for SqliteStore {
+    async fn get_context_state(
         &self,
         context_id: &str,
-    ) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        get_mind_projection_consistent(&self.pool, context_id).await
+    ) -> Result<Option<ContextStateRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let state = context_db
+                .load_context_state_in_transaction(&mut transaction, context_id)
+                .await?;
+            transaction.commit().await?;
+            return Ok(state);
+        }
+        let Some(projection) = get_mind_projection_consistent(&self.pool, context_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ContextStateRecord {
+            context_id: projection.context_id,
+            revision: projection.revision,
+            state: serde_json::from_value(projection.state)?,
+            state_hash: projection.state_hash,
+            head_event_id: projection.head_event_id,
+            updated_at: projection.updated_at,
+        }))
     }
 
-    async fn list_mind_projection_heads(
+    async fn list_context_state_summaries(
         &self,
         context_ids: &[String],
-    ) -> Result<Vec<MindProjectionHead>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<ContextStateSummary>, Box<dyn std::error::Error + Send + Sync>> {
         if context_ids.is_empty() {
             return Ok(Vec::new());
+        }
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let heads = context_db
+                .load_projection_heads_in_transaction(&mut transaction, context_ids)
+                .await?;
+            transaction.commit().await?;
+            return Ok(heads
+                .into_iter()
+                .map(|head| ContextStateSummary {
+                    context_id: head.context_id,
+                    revision: head.revision,
+                    updated_at: head.updated_at,
+                })
+                .collect());
         }
         let context_ids_json = serde_json::to_string(context_ids)?;
         let rows = sqlx::query(
@@ -8262,17 +9049,17 @@ impl MindProjectionStore for SqliteStore {
         .await?;
         rows.iter()
             .map(|row| {
-                Ok(MindProjectionHead {
+                Ok(ContextStateSummary {
                     context_id: row.try_get("context_id")?,
                     revision: u64::try_from(row.try_get::<i64, _>("revision")?)
-                        .map_err(|_| "Mind Projection revision 不能为负数")?,
+                        .map_err(|_| "Context state revision 不能为负数")?,
                     updated_at: parse_time(&row.try_get::<String, _>("updated_at")?),
                 })
             })
             .collect()
     }
 
-    async fn get_latest_mind_snapshot(
+    async fn get_latest_context_snapshot(
         &self,
         context_id: &str,
     ) -> Result<Option<MindSnapshotRecord>, Box<dyn std::error::Error + Send + Sync>> {
@@ -8292,14 +9079,221 @@ impl MindProjectionStore for SqliteStore {
         .transpose()
     }
 
+    async fn initialize_context_state(
+        &self,
+        context_id: &str,
+        state: &crate::context_state::MindState,
+        commitment: &crate::context_store::ContextStateCommitment,
+        head_event_id: Option<&str>,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+        self.initialize_context_state_impl(
+            context_id,
+            state,
+            commitment,
+            head_event_id,
+            recall_documents,
+        )
+        .await
+    }
+
+    async fn commit_context_mutation_transaction(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: &crate::context_store::ContextMutationPlan,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, Box<dyn std::error::Error + Send + Sync>> {
+        self.commit_context_mutation_transaction_impl(
+            event,
+            attention_updates,
+            session_projection,
+            mutation_plan,
+            next_state,
+            next_commitment,
+            recall_documents,
+        )
+        .await
+    }
+
+    async fn commit_context_seed_transaction(
+        &self,
+        event: &Event,
+        target_context_id: &str,
+        source_context_id: &str,
+        source_version: u64,
+        source_state_hash: &str,
+        projection_kind: &str,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, Box<dyn std::error::Error + Send + Sync>> {
+        self.commit_context_seed_transaction_impl(
+            event,
+            target_context_id,
+            source_context_id,
+            source_version,
+            source_state_hash,
+            projection_kind,
+            next_state,
+            next_commitment,
+            recall_documents,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MindProjectionStore for SqliteStore {
+    async fn get_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let projection = context_db
+                .load_projection_in_transaction(&mut transaction, context_id)
+                .await?;
+            transaction.commit().await?;
+            return Ok(projection);
+        }
+        get_mind_projection_consistent(&self.pool, context_id).await
+    }
+
+    async fn list_mind_projection_heads(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<MindProjectionHead>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(
+            ContextStore::list_context_state_summaries(self, context_ids)
+                .await?
+                .into_iter()
+                .map(|summary| MindProjectionHead {
+                    context_id: summary.context_id,
+                    revision: summary.revision,
+                    updated_at: summary.updated_at,
+                })
+                .collect(),
+        )
+    }
+
+    async fn get_latest_mind_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindSnapshotRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        ContextStore::get_latest_context_snapshot(self, context_id).await
+    }
+
     async fn initialize_mind_projection(
+        &self,
+        projection: NewMindProjection,
+    ) -> Result<MindProjectionRecord, Box<dyn std::error::Error + Send + Sync>> {
+        self.initialize_mind_projection_impl(projection).await
+    }
+
+    async fn commit_mind_projection_transaction(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
+        expected_revision: u64,
+        next_projection: NewMindProjection,
+    ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>> {
+        self.commit_mind_projection_transaction_impl(
+            event,
+            attention_updates,
+            session_projection,
+            mutation_plan,
+            expected_revision,
+            next_projection,
+        )
+        .await
+    }
+}
+
+impl SqliteStore {
+    async fn initialize_context_state_impl(
+        &self,
+        context_id: &str,
+        state: &crate::context_state::MindState,
+        commitment: &crate::context_store::ContextStateCommitment,
+        head_event_id: Option<&str>,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if commitment.revision() != state.version
+            || commitment.state_hash() != crate::context_store::context_state_hash(state)?
+        {
+            return Err("Context initialization commitment differs from its typed state".into());
+        }
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut tx = self.pool.begin().await?;
+            let context =
+                sqlx::query("UPDATE cognitive_contexts SET updated_at = updated_at WHERE id = ?")
+                    .bind(context_id)
+                    .execute(&mut *tx)
+                    .await?;
+            if context.rows_affected() != 1 {
+                return Err(format!("Context '{context_id}' 不存在").into());
+            }
+            let already_initialized = context_db
+                .load_context_state_in_transaction(&mut tx, context_id)
+                .await?
+                .is_some();
+            let installed = context_db
+                .install_context_state_in_transaction(
+                    &mut tx,
+                    context_id,
+                    state,
+                    commitment,
+                    head_event_id,
+                    Utc::now(),
+                )
+                .await?;
+            if !already_initialized {
+                for document in recall_documents {
+                    enqueue_recall_document_in_transaction(&mut tx, document).await?;
+                }
+            }
+            tx.commit().await?;
+            return Ok(installed);
+        }
+        let installed = self
+            .initialize_mind_projection(NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: state.version,
+                state: serde_json::to_value(state)?,
+                state_hash: commitment.state_hash().to_string(),
+                head_event_id: head_event_id.map(str::to_string),
+                recall_documents: recall_documents.to_vec(),
+            })
+            .await?;
+        Ok(ContextStateRecord {
+            context_id: installed.context_id,
+            revision: installed.revision,
+            state: serde_json::from_value(installed.state)?,
+            state_hash: installed.state_hash,
+            head_event_id: installed.head_event_id,
+            updated_at: installed.updated_at,
+        })
+    }
+}
+
+impl SqliteStore {
+    async fn initialize_mind_projection_impl(
         &self,
         projection: NewMindProjection,
     ) -> Result<MindProjectionRecord, Box<dyn std::error::Error + Send + Sync>> {
         let revision = i64::try_from(projection.revision)
             .map_err(|_| "Mind Projection revision 超出 SQLite INTEGER 范围")?;
         let state_json = serde_json::to_string(&projection.state)?;
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let now_instant = Utc::now();
+        let now = now_instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
 
         // Acquire SQLite's single-writer slot before checking for a lazily
@@ -8311,6 +9305,24 @@ impl MindProjectionStore for SqliteStore {
                 .await?;
         if context.rows_affected() != 1 {
             return Err(format!("Context '{}' 不存在", projection.context_id).into());
+        }
+
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let already_initialized = context_db
+                .load_projection_in_transaction(&mut tx, &projection.context_id)
+                .await?
+                .is_some();
+            let installed = context_db
+                .install_projection_in_transaction(&mut tx, &projection, now_instant)
+                .await?;
+            if !already_initialized {
+                for document in &projection.recall_documents {
+                    enqueue_recall_document_in_transaction(&mut tx, document).await?;
+                }
+            }
+            tx.commit().await?;
+            return Ok(installed);
         }
 
         let head_count =
@@ -8371,15 +9383,154 @@ impl MindProjectionStore for SqliteStore {
         tx.commit().await?;
         Ok(installed)
     }
+}
 
-    async fn commit_mind_projection_transaction(
+impl SqliteStore {
+    // Mirrors the ContextStore transactional contract one-for-one so no
+    // mutation, session projection, or Recall input can be dropped in an
+    // adapter-specific wrapper.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_context_mutation_transaction_impl(
         &self,
         event: &Event,
         attention_updates: &[SessionAttentionUpdate],
         session_projection: &SessionProjectionMutation,
+        mutation_plan: &crate::context_store::ContextMutationPlan,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, Box<dyn std::error::Error + Send + Sync>> {
+        mutation_plan.validate_shape()?;
+        if mutation_plan.next_revision != mutation_plan.expected_revision.saturating_add(1)
+            || next_state.version != mutation_plan.next_revision
+            || event.payload.get("context_id").and_then(JsonValue::as_str)
+                != Some(mutation_plan.context_id.as_str())
+        {
+            return Err("native Context Mutation revision or Event route differs".into());
+        }
+
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let now_instant = Utc::now();
+            let now = now_instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let mut tx = self.pool.begin().await?;
+            let committed_head = match context_db
+                .apply_mutation_plan_in_transaction(
+                    &mut tx,
+                    mutation_plan,
+                    next_state,
+                    next_commitment,
+                    &event.id,
+                    now_instant,
+                )
+                .await
+            {
+                Ok(head) => head,
+                Err(crate::context_db::ContextDbError::Conflict { actual, .. }) => {
+                    tx.rollback().await?;
+                    return Ok(ContextStateCommit::Conflict {
+                        current_revision: Some(actual),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            for update in attention_updates {
+                update_attention_in_transaction(&mut tx, update).await?;
+            }
+            append_event_in_transaction(&mut tx, event).await?;
+            mutate_session_projection_in_transaction(
+                &mut tx,
+                &mutation_plan.context_id,
+                session_projection,
+            )
+            .await?;
+            for document in recall_documents {
+                enqueue_recall_document_in_transaction(&mut tx, document).await?;
+            }
+            if context_transaction_requires_snapshot(event, mutation_plan.next_revision) {
+                let state_json = serde_json::to_string(next_state)?;
+                insert_mind_snapshot_in_transaction(
+                    &mut tx,
+                    &mutation_plan.context_id,
+                    mutation_plan.next_revision,
+                    &state_json,
+                    &mutation_plan.next_state_hash,
+                    &event.id,
+                    &now,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(ContextStateCommit::Committed {
+                head: committed_head,
+            });
+        }
+
+        // Temporary compatibility for binaries which have not selected the
+        // ContextDB backend yet.  The final cutover removes this branch with
+        // the legacy `mind_projections` table; importantly, it is unreachable
+        // on the authoritative ContextDB hot path above.
+        if next_commitment.revision() != next_state.version
+            || next_commitment.state_hash() != mutation_plan.next_state_hash
+        {
+            return Err(
+                "legacy fallback state differs from its native Context Mutation fence".into(),
+            );
+        }
+        let committed = self
+            .commit_mind_projection_transaction(
+                event,
+                attention_updates,
+                session_projection,
+                Some(mutation_plan),
+                mutation_plan.expected_revision,
+                NewMindProjection {
+                    context_id: mutation_plan.context_id.clone(),
+                    revision: mutation_plan.next_revision,
+                    state: serde_json::to_value(next_state)?,
+                    state_hash: mutation_plan.next_state_hash.clone(),
+                    head_event_id: Some(event.id.clone()),
+                    recall_documents: recall_documents.to_vec(),
+                },
+            )
+            .await?;
+        Ok(match committed {
+            MindProjectionCommit::Committed { projection } => ContextStateCommit::Committed {
+                head: crate::context_store::ContextStateHead {
+                    context_id: projection.context_id,
+                    revision: projection.revision,
+                    state_hash: projection.state_hash,
+                    head_event_id: projection.head_event_id,
+                    updated_at: projection.updated_at,
+                },
+            },
+            MindProjectionCommit::Conflict { current_revision } => {
+                ContextStateCommit::Conflict { current_revision }
+            }
+        })
+    }
+}
+
+impl SqliteStore {
+    async fn commit_mind_projection_transaction_impl(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(plan) = mutation_plan {
+            plan.validate_shape()?;
+            if plan.context_id != next_projection.context_id
+                || plan.expected_revision != expected_revision
+                || plan.next_revision != next_projection.revision
+                || plan.next_state_hash != next_projection.state_hash
+            {
+                return Err("Context Mutation plan and SQLite projection fence differ".into());
+            }
+        }
         if next_projection.head_event_id.as_deref() != Some(event.id.as_str()) {
             return Err(
                 "Mind Projection head_event_id 必须指向本次 Context transaction Event".into(),
@@ -8398,8 +9549,76 @@ impl MindProjectionStore for SqliteStore {
         let next = i64::try_from(next_projection.revision)
             .map_err(|_| "Mind Projection revision 超出 SQLite INTEGER 范围")?;
         let state_json = serde_json::to_string(&next_projection.state)?;
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let now_instant = Utc::now();
+        let now = now_instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let plan = mutation_plan.ok_or(
+                "authoritative ContextDB commits require a domain-emitted Context Mutation plan",
+            )?;
+            let next_state = serde_json::from_value::<crate::context_state::MindState>(
+                next_projection.state.clone(),
+            )?;
+            let next_commitment = crate::context_store::context_state_commitment(&next_state)?;
+            let committed_head = match context_db
+                .apply_mutation_plan_in_transaction(
+                    &mut tx,
+                    plan,
+                    &next_state,
+                    &next_commitment,
+                    &event.id,
+                    now_instant,
+                )
+                .await
+            {
+                Ok(head) => head,
+                Err(crate::context_db::ContextDbError::Conflict { actual, .. }) => {
+                    tx.rollback().await?;
+                    return Ok(MindProjectionCommit::Conflict {
+                        current_revision: Some(actual),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            for update in attention_updates {
+                update_attention_in_transaction(&mut tx, update).await?;
+            }
+            append_event_in_transaction(&mut tx, event).await?;
+            mutate_session_projection_in_transaction(
+                &mut tx,
+                &next_projection.context_id,
+                session_projection,
+            )
+            .await?;
+            for document in &next_projection.recall_documents {
+                enqueue_recall_document_in_transaction(&mut tx, document).await?;
+            }
+            if context_transaction_requires_snapshot(event, next_projection.revision) {
+                insert_mind_snapshot_in_transaction(
+                    &mut tx,
+                    &next_projection.context_id,
+                    next_projection.revision,
+                    &state_json,
+                    &next_projection.state_hash,
+                    &event.id,
+                    &now,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(MindProjectionCommit::Committed {
+                projection: MindProjectionRecord {
+                    context_id: committed_head.context_id,
+                    revision: committed_head.revision,
+                    state: next_projection.state,
+                    state_hash: committed_head.state_hash,
+                    head_event_id: committed_head.head_event_id,
+                    updated_at: committed_head.updated_at,
+                },
+            });
+        }
 
         let head = sqlx::query(
             r#"UPDATE context_heads
@@ -8489,41 +9708,128 @@ impl MindProjectionStore for SqliteStore {
             projection: committed,
         })
     }
+}
 
-    async fn commit_mind_seed_projection(
+impl SqliteStore {
+    // Mirrors the ContextStore seed contract one-for-one at the SQL boundary.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_context_seed_transaction_impl(
         &self,
         event: &Event,
+        target_context_id: &str,
         source_context_id: &str,
         source_version: u64,
-        snapshot_hash: &str,
+        source_state_hash: &str,
         projection_kind: &str,
-        next_projection: NewMindProjection,
-    ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>> {
-        if next_projection.revision != 0 {
-            return Err("Seed Mind Projection revision 必须为 0".into());
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, Box<dyn std::error::Error + Send + Sync>> {
+        if next_state.version != 0 || next_commitment.revision() != 0 {
+            return Err("Seed Context revision 必须为 0".into());
         }
-        if next_projection.head_event_id.as_deref() != Some(event.id.as_str()) {
-            return Err("Seed Mind Projection head_event_id 必须指向本次 seed Event".into());
+        if next_commitment.state_hash() != crate::context_store::context_state_hash(next_state)? {
+            return Err("Seed Context commitment 与原生状态不一致".into());
         }
-        if event.payload.get("context_id").and_then(JsonValue::as_str)
-            != Some(next_projection.context_id.as_str())
-        {
-            return Err("Seed Event 与 Mind Projection 的 context_id 不一致".into());
+        if event.payload.get("context_id").and_then(JsonValue::as_str) != Some(target_context_id) {
+            return Err("Seed Event 与目标 Context 的 context_id 不一致".into());
         }
         let source_version = i64::try_from(source_version)
             .map_err(|_| "Seed source version 超出 SQLite INTEGER 范围")?;
-        let state_json = serde_json::to_string(&next_projection.state)?;
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        #[cfg(feature = "context-db")]
+        let state_value = serde_json::to_value(next_state)?;
+        let state_json = serde_json::to_string(next_state)?;
+        let now_instant = Utc::now();
+        let now = now_instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let context =
+                sqlx::query("UPDATE cognitive_contexts SET updated_at = updated_at WHERE id = ?")
+                    .bind(target_context_id)
+                    .execute(&mut *tx)
+                    .await?;
+            if context.rows_affected() != 1 {
+                return Err(format!("Context '{target_context_id}' 不存在").into());
+            }
+            let current = context_db
+                .load_projection_in_transaction(&mut tx, target_context_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "Context '{}' 缺少待写入的初始 ContextDB Mind",
+                        target_context_id
+                    )
+                })?;
+            if current.revision != 0 || current.head_event_id.is_some() {
+                tx.rollback().await?;
+                return Ok(ContextStateCommit::Conflict {
+                    current_revision: Some(current.revision),
+                });
+            }
+            let next_projection = NewMindProjection {
+                context_id: target_context_id.to_string(),
+                revision: 0,
+                state: state_value.clone(),
+                state_hash: next_commitment.state_hash().to_string(),
+                head_event_id: Some(event.id.clone()),
+                recall_documents: Vec::new(),
+            };
+            let committed = context_db
+                .sync_projection_in_transaction(&mut tx, &next_projection, now_instant)
+                .await?;
+            let context = sqlx::query(
+                r#"UPDATE cognitive_contexts
+                   SET seed_context_id = ?, seed_context_version = ?, seed_snapshot_hash = ?,
+                       seed_projection = ?, updated_at = ?
+                   WHERE id = ? AND seed_context_id IS NULL"#,
+            )
+            .bind(source_context_id)
+            .bind(source_version)
+            .bind(source_state_hash)
+            .bind(projection_kind)
+            .bind(&now)
+            .bind(target_context_id)
+            .execute(&mut *tx)
+            .await?;
+            if context.rows_affected() != 1 {
+                return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
+            }
+            append_event_in_transaction(&mut tx, event).await?;
+            for document in recall_documents {
+                enqueue_recall_document_in_transaction(&mut tx, document).await?;
+            }
+            insert_mind_snapshot_in_transaction(
+                &mut tx,
+                target_context_id,
+                0,
+                &state_json,
+                next_commitment.state_hash(),
+                &event.id,
+                &now,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(ContextStateCommit::Committed {
+                head: crate::context_store::ContextStateHead {
+                    context_id: committed.context_id,
+                    revision: committed.revision,
+                    state_hash: committed.state_hash,
+                    head_event_id: committed.head_event_id,
+                    updated_at: committed.updated_at,
+                },
+            });
+        }
 
         let head = sqlx::query(
             r#"UPDATE context_heads
                SET projection_hash = ?, updated_at = ?
                WHERE context_id = ? AND revision = 0 AND head_event_id IS NULL"#,
         )
-        .bind(&next_projection.state_hash)
+        .bind(next_commitment.state_hash())
         .bind(&now)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
         if head.rows_affected() != 1 {
@@ -8531,13 +9837,13 @@ impl MindProjectionStore for SqliteStore {
             let current_revision = sqlx::query_scalar::<_, i64>(
                 "SELECT revision FROM context_heads WHERE context_id = ?",
             )
-            .bind(&next_projection.context_id)
+            .bind(target_context_id)
             .fetch_optional(&self.pool)
             .await?
             .map(u64::try_from)
             .transpose()
             .map_err(|_| "Context head revision 不能为负数")?;
-            return Ok(MindProjectionCommit::Conflict { current_revision });
+            return Ok(ContextStateCommit::Conflict { current_revision });
         }
         let materialized = sqlx::query(
             r#"UPDATE mind_projections
@@ -8545,9 +9851,9 @@ impl MindProjectionStore for SqliteStore {
                WHERE context_id = ? AND revision = 0"#,
         )
         .bind(&state_json)
-        .bind(&next_projection.state_hash)
+        .bind(next_commitment.state_hash())
         .bind(&now)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
         if materialized.rows_affected() != 1 {
@@ -8561,25 +9867,25 @@ impl MindProjectionStore for SqliteStore {
         )
         .bind(source_context_id)
         .bind(source_version)
-        .bind(snapshot_hash)
+        .bind(source_state_hash)
         .bind(projection_kind)
         .bind(&now)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
         if context.rows_affected() != 1 {
             return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
         }
         append_event_in_transaction(&mut tx, event).await?;
-        for document in &next_projection.recall_documents {
+        for document in recall_documents {
             enqueue_recall_document_in_transaction(&mut tx, document).await?;
         }
         insert_mind_snapshot_in_transaction(
             &mut tx,
-            &next_projection.context_id,
+            target_context_id,
             0,
             &state_json,
-            &next_projection.state_hash,
+            next_commitment.state_hash(),
             &event.id,
             &now,
         )
@@ -8588,15 +9894,21 @@ impl MindProjectionStore for SqliteStore {
             "UPDATE context_heads SET head_event_id = ? WHERE context_id = ? AND revision = 0",
         )
         .bind(&event.id)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
-        let committed = get_mind_projection_from_executor(&mut *tx, &next_projection.context_id)
+        let committed = get_mind_projection_from_executor(&mut *tx, target_context_id)
             .await?
             .ok_or("Seed 提交后 Mind Projection 不完整")?;
         tx.commit().await?;
-        Ok(MindProjectionCommit::Committed {
-            projection: committed,
+        Ok(ContextStateCommit::Committed {
+            head: crate::context_store::ContextStateHead {
+                context_id: committed.context_id,
+                revision: committed.revision,
+                state_hash: committed.state_hash,
+                head_event_id: committed.head_event_id,
+                updated_at: committed.updated_at,
+            },
         })
     }
 }
@@ -23940,6 +25252,11 @@ impl EventStore for SqliteStore {
         &self,
         filter: QueryFilter,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
+        if filter.event_visibility_snapshot.is_some() {
+            return Err(
+                "a PostgreSQL Event visibility snapshot cannot be evaluated by SQLite".into(),
+            );
+        }
         let forward_by_sequence = filter.after_sequence.is_some();
         let mut builder = QueryBuilder::new(
             "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
@@ -23953,6 +25270,14 @@ impl EventStore for SqliteStore {
             builder.push(" AND id IN (");
             let mut separated = builder.separated(", ");
             for event_id in &filter.event_ids {
+                separated.push_bind(event_id);
+            }
+            builder.push(")");
+        }
+        if !filter.excluded_event_ids.is_empty() {
+            builder.push(" AND id NOT IN (");
+            let mut separated = builder.separated(", ");
+            for event_id in &filter.excluded_event_ids {
                 separated.push_bind(event_id);
             }
             builder.push(")");
@@ -23994,6 +25319,11 @@ impl EventStore for SqliteStore {
         if let Some(before_sequence) = filter.before_sequence {
             builder.push(" AND rowid < ");
             builder.push_bind(i64::try_from(before_sequence).unwrap_or(i64::MAX));
+        }
+
+        if let Some(through_sequence) = filter.through_sequence {
+            builder.push(" AND rowid <= ");
+            builder.push_bind(i64::try_from(through_sequence).unwrap_or(i64::MAX));
         }
 
         if let Some(st) = filter.start_time {
@@ -24682,6 +26012,62 @@ impl CognitiveClockStore for SqliteStore {
     }
 }
 
+fn push_sqlite_recall_residency_exclusions<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    request: &'a RecallDocumentSearchRequest,
+) {
+    if !request.excluded_event_ids.is_empty() {
+        query.push(" AND NOT (d.document_kind = 'event' AND d.document_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &request.excluded_event_ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push("))");
+    }
+    if !request.excluded_frame_ids.is_empty() {
+        query.push(" AND NOT (d.document_kind = 'frame' AND d.document_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in &request.excluded_frame_ids {
+                separated.push_bind(id);
+            }
+        }
+        query.push("))");
+    }
+}
+
+fn push_sqlite_recall_visibility_boundary(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    request: &RecallDocumentSearchRequest,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if request.event_visibility_snapshot.is_some() {
+        return Err("a PostgreSQL Event visibility snapshot cannot be evaluated by SQLite".into());
+    }
+    match (request.through_sequence, request.through_mind_version) {
+        (Some(event_sequence), Some(mind_version)) => {
+            query.push(" AND ((d.document_kind = 'event' AND d.updated_sequence <= ");
+            query.push_bind(i64::try_from(event_sequence)?);
+            query.push(") OR (d.document_kind = 'frame' AND d.updated_sequence <= ");
+            query.push_bind(i64::try_from(mind_version)?);
+            query.push("))");
+        }
+        (Some(event_sequence), None) => {
+            query.push(" AND (d.document_kind <> 'event' OR d.updated_sequence <= ");
+            query.push_bind(i64::try_from(event_sequence)?);
+            query.push(")");
+        }
+        (None, Some(mind_version)) => {
+            query.push(" AND (d.document_kind <> 'frame' OR d.updated_sequence <= ");
+            query.push_bind(i64::try_from(mind_version)?);
+            query.push(")");
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl RecallProjectionStore for SqliteStore {
     async fn recall_index_capability(
@@ -24702,6 +26088,11 @@ impl RecallProjectionStore for SqliteStore {
             start_time: None,
             end_time: None,
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit,
         })
         .await
@@ -24778,6 +26169,8 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_sqlite_recall_visibility_boundary(&mut query, &request)?;
+            push_sqlite_recall_residency_exclusions(&mut query, &request);
             if chronological {
                 query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC");
             } else {
@@ -24811,6 +26204,8 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_sqlite_recall_visibility_boundary(&mut query, &request)?;
+            push_sqlite_recall_residency_exclusions(&mut query, &request);
             query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
             query.push_bind(i64::try_from(limit)?);
             query.build().fetch_all(&self.pool).await?
@@ -24844,6 +26239,8 @@ impl RecallProjectionStore for SqliteStore {
                 query.push(" AND d.updated_sequence < ");
                 query.push_bind(i64::try_from(before_sequence)?);
             }
+            push_sqlite_recall_visibility_boundary(&mut query, &request)?;
+            push_sqlite_recall_residency_exclusions(&mut query, &request);
             query.push(" ORDER BY d.updated_sequence DESC, d.document_id ASC LIMIT ");
             query.push_bind(i64::try_from(limit)?);
             query.build().fetch_all(&self.pool).await?
@@ -25114,12 +26511,91 @@ impl SessionProjectionStore for SqliteStore {
             .collect()
     }
 
-    async fn read_context_encoding_projection_snapshot(
+    async fn read_context_encoding_state_snapshot(
         &self,
         context_id: &str,
         session_ids: &[String],
         include_context_wide: bool,
-    ) -> Result<ContextEncodingProjectionSnapshot, Box<dyn std::error::Error + Send + Sync>> {
+        known_context_state_revision: Option<u64>,
+    ) -> Result<ContextEncodingStateSnapshot, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "context-db")]
+        if let Some(context_db) = &self.context_db {
+            let mut transaction = self.pool.begin().await?;
+            let mut heads = context_db
+                .load_context_state_heads_in_transaction(
+                    &mut transaction,
+                    &[context_id.to_string()],
+                )
+                .await?;
+            let context_state_head = heads.pop();
+            let context_state = if context_state_head
+                .as_ref()
+                .is_some_and(|head| Some(head.revision) == known_context_state_revision)
+            {
+                None
+            } else {
+                context_db
+                    .load_context_state_in_transaction(&mut transaction, context_id)
+                    .await?
+            };
+            let mut events_query = QueryBuilder::new(
+                r#"SELECT e.rowid AS event_sequence, e.id, e.timestamp,
+                          e.actor, e.type, e.topic, e.payload
+                   FROM session_projections projection
+                   JOIN events e ON e.id = projection.event_id
+                   WHERE projection.context_id = "#,
+            );
+            events_query.push_bind(context_id);
+            events_query.push(" AND (");
+            if include_context_wide {
+                events_query.push("projection.session_id IS NULL");
+                if !session_ids.is_empty() {
+                    events_query.push(" OR ");
+                }
+            }
+            if !session_ids.is_empty() {
+                events_query.push("projection.session_id IN (");
+                let mut separated = events_query.separated(", ");
+                for session_id in session_ids {
+                    separated.push_bind(session_id);
+                }
+                events_query.push(")");
+            } else if !include_context_wide {
+                events_query.push("0");
+            }
+            events_query.push(") ORDER BY projection.event_sequence ASC");
+            let rows = events_query.build().fetch_all(&mut *transaction).await?;
+            let events = rows
+                .into_iter()
+                .map(|row| {
+                    Ok(Event {
+                        id: row.get("id"),
+                        sequence: Some(u64::try_from(row.get::<i64, _>("event_sequence"))?),
+                        timestamp: parse_time(&row.get::<String, _>("timestamp")),
+                        actor: row.get("actor"),
+                        event_type: row.get("type"),
+                        topic: row.get("topic"),
+                        payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+            let event_sequence_upper_bound = u64::try_from(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM events WHERE context_id = ?",
+                )
+                .bind(context_id)
+                .fetch_one(&mut *transaction)
+                .await?,
+            )?;
+            transaction.commit().await?;
+            return Ok(ContextEncodingStateSnapshot {
+                context_state_head,
+                context_state,
+                events,
+                event_sequence_upper_bound,
+                event_visibility_snapshot: None,
+            });
+        }
         let mut builder = QueryBuilder::new(
             r#"SELECT snapshot.row_kind, snapshot.event_sequence,
                       snapshot.event_id, snapshot.event_timestamp,
@@ -25136,7 +26612,15 @@ impl SessionProjectionStore for SqliteStore {
                         NULL AS event_payload,
                         projection.context_id AS mind_context_id,
                         projection.revision AS mind_revision,
-                        projection.state_json AS mind_state_json,
+                        CASE WHEN projection.revision = "#,
+        );
+        builder.push_bind(
+            known_context_state_revision
+                .map(i64::try_from)
+                .transpose()?,
+        );
+        builder.push(
+            r#" THEN NULL ELSE projection.state_json END AS mind_state_json,
                         projection.state_hash AS mind_state_hash,
                         head.head_event_id AS mind_head_event_id,
                         projection.updated_at AS mind_updated_at
@@ -25179,34 +26663,61 @@ impl SessionProjectionStore for SqliteStore {
         } else if !include_context_wide {
             builder.push("0");
         }
-        builder.push(") ) snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
+        builder.push(
+            r#")
+                 UNION ALL
+                 SELECT 2 AS sort_key, 'frontier' AS row_kind,
+                        COALESCE(MAX(e.rowid), 0) AS event_sequence,
+                        NULL AS event_id, NULL AS event_timestamp,
+                        NULL AS event_actor, NULL AS event_type,
+                        NULL AS event_topic, NULL AS event_payload,
+                        NULL AS mind_context_id, NULL AS mind_revision,
+                        NULL AS mind_state_json, NULL AS mind_state_hash,
+                        NULL AS mind_head_event_id, NULL AS mind_updated_at
+                 FROM events e WHERE e.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(") snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
         let rows = builder.build().fetch_all(&self.pool).await?;
-        let mut mind = None;
-        let mut events = Vec::with_capacity(rows.len().saturating_sub(1));
+        let mut context_state_head = None;
+        let mut context_state = None;
+        let mut events = Vec::with_capacity(rows.len().saturating_sub(2));
+        let mut event_sequence_upper_bound = 0;
         for row in rows {
             match row.get::<String, _>("row_kind").as_str() {
                 "mind" => {
-                    mind = Some(MindProjectionRecord {
-                        context_id: row
-                            .get::<Option<String>, _>("mind_context_id")
-                            .ok_or("Mind Projection snapshot 缺少 context_id")?,
-                        revision: u64::try_from(
-                            row.get::<Option<i64>, _>("mind_revision")
-                                .ok_or("Mind Projection snapshot 缺少 revision")?,
-                        )?,
-                        state: serde_json::from_str(
-                            &row.get::<Option<String>, _>("mind_state_json")
-                                .ok_or("Mind Projection snapshot 缺少 state_json")?,
-                        )?,
-                        state_hash: row
-                            .get::<Option<String>, _>("mind_state_hash")
-                            .ok_or("Mind Projection snapshot 缺少 state_hash")?,
-                        head_event_id: row.get("mind_head_event_id"),
-                        updated_at: parse_time(
-                            &row.get::<Option<String>, _>("mind_updated_at")
-                                .ok_or("Mind Projection snapshot 缺少 updated_at")?,
-                        ),
+                    let context_id = row
+                        .get::<Option<String>, _>("mind_context_id")
+                        .ok_or("Mind Projection snapshot 缺少 context_id")?;
+                    let revision = u64::try_from(
+                        row.get::<Option<i64>, _>("mind_revision")
+                            .ok_or("Mind Projection snapshot 缺少 revision")?,
+                    )?;
+                    let updated_at = parse_time(
+                        &row.get::<Option<String>, _>("mind_updated_at")
+                            .ok_or("Mind Projection snapshot 缺少 updated_at")?,
+                    );
+                    let state_hash = row
+                        .get::<Option<String>, _>("mind_state_hash")
+                        .ok_or("Context state snapshot 缺少 state_hash")?;
+                    let head_event_id: Option<String> = row.get("mind_head_event_id");
+                    context_state_head = Some(ContextStateHead {
+                        context_id: context_id.clone(),
+                        revision,
+                        state_hash: state_hash.clone(),
+                        head_event_id: head_event_id.clone(),
+                        updated_at,
                     });
+                    if let Some(state) = row.get::<Option<String>, _>("mind_state_json") {
+                        context_state = Some(ContextStateRecord {
+                            context_id,
+                            revision,
+                            state: serde_json::from_str(&state)?,
+                            state_hash,
+                            head_event_id,
+                            updated_at,
+                        });
+                    }
                 }
                 "event" => events.push(Event {
                     id: row
@@ -25234,12 +26745,24 @@ impl SessionProjectionStore for SqliteStore {
                             .ok_or("Context Encoding snapshot Event 缺少 payload")?,
                     )?,
                 }),
+                "frontier" => {
+                    event_sequence_upper_bound = u64::try_from(
+                        row.get::<Option<i64>, _>("event_sequence")
+                            .ok_or("Context Encoding snapshot 缺少 Event frontier")?,
+                    )?;
+                }
                 other => {
                     return Err(format!("未知 Context Encoding snapshot row kind '{other}'").into())
                 }
             }
         }
-        Ok(ContextEncodingProjectionSnapshot { mind, events })
+        Ok(ContextEncodingStateSnapshot {
+            context_state_head,
+            context_state,
+            events,
+            event_sequence_upper_bound,
+            event_visibility_snapshot: None,
+        })
     }
 }
 
@@ -25269,6 +26792,8 @@ impl SqliteStore {
 mod tests {
     use super::*;
     use crate::approval_authority::stable_approval_identity;
+    #[cfg(feature = "context-db")]
+    use crate::memory::ContextRuntimeSessionFilter;
     use crate::memory::{
         PlanExecutionFilter, PlanExecutionStatus, PlanExecutionStore, PlanExecutionWaitKind,
         QueryFilter,
@@ -25276,6 +26801,8 @@ mod tests {
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
     use sqlx::{Connection, Executor, SqliteConnection};
     use std::collections::HashMap;
+    #[cfg(feature = "context-db")]
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::NamedTempFile;
@@ -27111,6 +28638,11 @@ mod tests {
                 start_time: Some(start_time),
                 end_time: Some(end_time),
                 before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: Vec::new(),
                 limit: 1,
             })
             .await
@@ -27121,6 +28653,27 @@ mod tests {
             "2026-08-04T11:00:00+00:00"
         );
 
+        let non_resident_first = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: None,
+                start_time: Some(start_time),
+                end_time: Some(end_time),
+                before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: vec!["recall-time-event-2".to_string()],
+                excluded_frame_ids: Vec::new(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            non_resident_first[0].document_id, "recall-time-event-1",
+            "resident exclusion must happen inside SQL before LIMIT"
+        );
+
         let second = store
             .query_recall_documents(RecallDocumentSearchRequest {
                 context_id: "recall-time-context".to_string(),
@@ -27128,6 +28681,11 @@ mod tests {
                 start_time: Some(start_time),
                 end_time: Some(end_time),
                 before_sequence: Some(first[0].updated_sequence),
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: Vec::new(),
                 limit: 1,
             })
             .await
@@ -27145,12 +28703,59 @@ mod tests {
                         .with_timezone(&Utc),
                 ),
                 before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: Vec::new(),
                 limit: 10,
             })
             .await
             .unwrap();
         assert_eq!(combined.len(), 1, "end_time 必须是排他的");
         assert_eq!(combined[0].document_id, "recall-time-event-1");
+
+        let frame_documents = [
+            ("active-frame", false, 2_u64),
+            ("retired-frame", true, 1_u64),
+        ]
+        .into_iter()
+        .map(|(id, retired, sequence)| RecallDocument {
+            context_id: "recall-time-context".to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: id.to_string(),
+            revision: 1,
+            searchable_text: crate::memory::segment_recall_text(&format!("{id} 共享认知证据")),
+            legacy_searchable_chunks: Vec::new(),
+            preview: format!("{id} 共享认知证据"),
+            retired,
+            updated_sequence: sequence,
+            state_hash: format!("hash-{id}"),
+        })
+        .collect::<Vec<_>>();
+        store
+            .replace_recall_documents("recall-time-context", &frame_documents)
+            .await
+            .unwrap();
+        let non_resident_frames = store
+            .query_recall_documents(RecallDocumentSearchRequest {
+                context_id: "recall-time-context".to_string(),
+                normalized_query: Some(crate::memory::normalize_recall_text("共享认知")),
+                start_time: None,
+                end_time: None,
+                before_sequence: None,
+                through_sequence: None,
+                through_mind_version: None,
+                event_visibility_snapshot: None,
+                excluded_event_ids: Vec::new(),
+                excluded_frame_ids: vec!["active-frame".to_string()],
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(non_resident_frames.len(), 1);
+        assert_eq!(non_resident_frames[0].document_id, "retired-frame");
+        assert!(non_resident_frames[0].retired);
     }
 
     #[tokio::test]
@@ -37257,6 +38862,7 @@ mod tests {
                 &event,
                 &[],
                 &SessionProjectionMutation::default(),
+                None,
                 0,
                 NewMindProjection {
                     context_id: "projection-context".to_string(),
@@ -37291,6 +38897,7 @@ mod tests {
                 &stale_event,
                 &[],
                 &SessionProjectionMutation::default(),
+                None,
                 0,
                 NewMindProjection {
                     context_id: "projection-context".to_string(),
@@ -37324,6 +38931,1388 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, event.id);
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn context_db_default_switch_imports_and_canonicalizes_a_v34_legacy_mind_once() {
+        use crate::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
+        use serde::Serialize;
+        use sha2::{Digest, Sha256};
+
+        fn state_hash(state: &MindState) -> String {
+            crate::orchestrator::context::mind_state_hash(state).unwrap()
+        }
+
+        #[derive(Serialize)]
+        struct MindStateHashV34<'a> {
+            version: u64,
+            frames: &'a [ContextFrame],
+            relations: &'a [crate::orchestrator::context::ContextRelation],
+            retired: &'a BTreeSet<String>,
+            retiring: &'a BTreeMap<String, crate::orchestrator::context::FrameRetirement>,
+            protected: &'a BTreeSet<String>,
+            checkpoints: Vec<serde_json::Value>,
+        }
+
+        fn v34_state_hash(state: &MindState) -> String {
+            let legacy = MindStateHashV34 {
+                version: state.version,
+                frames: &state.frames,
+                relations: &state.relations,
+                retired: &state.retired,
+                retiring: &state.retiring,
+                protected: &state.protected,
+                checkpoints: Vec::new(),
+            };
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&legacy).unwrap()))
+        }
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let legacy = SqliteStore::new(path).await.unwrap();
+        legacy
+            .create_test_context(NewCognitiveContext {
+                id: "context-db-migration-context".to_string(),
+                agent_id: "context-db-migration-agent".to_string(),
+                title: "ContextDB migration context".to_string(),
+            })
+            .await
+            .unwrap();
+        let legacy_state = MindState {
+            version: 4,
+            frames: vec![ContextFrame {
+                id: "legacy-frame".to_string(),
+                body: "(fact preserved-across-authority-migration)".to_string(),
+                sources: vec!["legacy-source".to_string()],
+                provenance: FrameIdentityProvenance::default(),
+                revision: 3,
+                created_version: 1,
+                updated_version: 4,
+            }],
+            ..Default::default()
+        };
+        let legacy_state_hash = v34_state_hash(&legacy_state);
+        assert_ne!(legacy_state_hash, state_hash(&legacy_state));
+        let mut legacy_state_json = serde_json::to_value(&legacy_state).unwrap();
+        legacy_state_json
+            .as_object_mut()
+            .unwrap()
+            .remove("mutation_clocks");
+        legacy
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "context-db-migration-context".to_string(),
+                revision: legacy_state.version,
+                state: legacy_state_json,
+                state_hash: legacy_state_hash.clone(),
+                head_event_id: None,
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+        legacy.pool.close().await;
+        drop(legacy);
+
+        let rejected = SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default())
+            .await
+            .err()
+            .expect("startup must not migrate cognitive Store data implicitly");
+        assert!(rejected
+            .to_string()
+            .contains("storage migrate-cognitive-store --to context_db"));
+        let transition = SqliteStore::migrate_cognitive_store(
+            path,
+            &SqliteStorageConfig::default(),
+            CognitiveStoreBackend::ContextDb,
+        )
+        .await
+        .unwrap();
+        assert_eq!(transition.previous, None);
+        assert_eq!(transition.selected, CognitiveStoreBackend::ContextDb);
+        assert_eq!(transition.synchronized, 1);
+        let authoritative = SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default())
+            .await
+            .unwrap();
+        let imported = authoritative
+            .get_mind_projection("context-db-migration-context")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(imported.revision, legacy_state.version);
+        assert_eq!(imported.state_hash, state_hash(&legacy_state));
+        assert_ne!(imported.state_hash, legacy_state_hash);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT active_store FROM cognitive_store_control WHERE singleton = 1"
+            )
+            .fetch_one(&authoritative.pool)
+            .await
+            .unwrap(),
+            "context_db"
+        );
+        authoritative.pool.close().await;
+        drop(authoritative);
+
+        let report = SqliteStore::migrate_legacy_mind_projections_to_context_db(
+            path,
+            &SqliteStorageConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            report,
+            ContextDbLegacyMigrationReport {
+                discovered: 1,
+                imported: 0,
+                already_authoritative: 1,
+            }
+        );
+        let repeated_report = SqliteStore::migrate_legacy_mind_projections_to_context_db(
+            path,
+            &SqliteStorageConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repeated_report,
+            ContextDbLegacyMigrationReport {
+                discovered: 1,
+                imported: 0,
+                already_authoritative: 1,
+            }
+        );
+        let migrated = SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default())
+            .await
+            .unwrap();
+        let authoritative = migrated
+            .get_mind_projection("context-db-migration-context")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(authoritative.revision, legacy_state.version);
+        assert_eq!(
+            authoritative.state,
+            serde_json::to_value(&legacy_state).unwrap()
+        );
+        assert_eq!(authoritative.state_hash, state_hash(&legacy_state));
+        assert_ne!(authoritative.state_hash, legacy_state_hash);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",
+            )
+            .bind("context-db-migration-context")
+            .fetch_one(&migrated.pool)
+            .await
+            .unwrap(),
+            1
+        );
+
+        // Reopening must observe the existing authoritative tree rather than
+        // re-importing or advancing it from compatibility rows.
+        let context_db_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM experimental_contextdb_contexts WHERE context_id = ?",
+        )
+        .bind("context-db-migration-context")
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        migrated.pool.close().await;
+        drop(migrated);
+        let reopened = SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT revision FROM experimental_contextdb_contexts WHERE context_id = ?",
+            )
+            .bind("context-db-migration-context")
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            context_db_revision
+        );
+        assert_eq!(
+            reopened
+                .get_mind_projection("context-db-migration-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(legacy_state).unwrap()
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn cognitive_store_switch_round_trips_without_hidden_dual_write() {
+        use crate::context_store::{
+            context_state_commitment, context_state_hash, ContextMutationPlan, ContextStateMutation,
+        };
+        use crate::orchestrator::context::MindState;
+
+        fn replacement_plan(
+            context_id: &str,
+            current: &MindState,
+            next: &MindState,
+        ) -> ContextMutationPlan {
+            ContextMutationPlan {
+                context_id: context_id.to_string(),
+                expected_revision: current.version,
+                next_revision: next.version,
+                expected_state_hash: context_state_hash(current).unwrap(),
+                next_state_hash: context_state_hash(next).unwrap(),
+                mutations: vec![ContextStateMutation::ReplaceMind {
+                    state: next.clone(),
+                }],
+            }
+        }
+
+        fn transaction_event(id: &str, context_id: &str) -> Event {
+            Event::new(
+                id.to_string(),
+                "Agent-Context".to_string(),
+                "context_transaction".to_string(),
+                "chat/context_tx_committed".to_string(),
+                serde_json::json!({"context_id": context_id})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        }
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let config = SqliteStorageConfig::default();
+        let context_id = "cognitive-store-switch-context";
+
+        let legacy = SqliteStore::new_with_legacy(path, &config).await.unwrap();
+        legacy
+            .create_test_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "cognitive-store-switch-agent".to_string(),
+                title: "Cognitive Store switch".to_string(),
+            })
+            .await
+            .unwrap();
+        let initial = MindState::default();
+        legacy
+            .initialize_context_state(
+                context_id,
+                &initial,
+                &context_state_commitment(&initial).unwrap(),
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        legacy.pool.close().await;
+        drop(legacy);
+
+        assert!(SqliteStore::new_with_context_db(path, &config)
+            .await
+            .err()
+            .expect("ContextDB startup must require explicit migration")
+            .to_string()
+            .contains("storage migrate-cognitive-store --to context_db"));
+        SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::ContextDb)
+            .await
+            .unwrap();
+        let context_db = SqliteStore::new_with_context_db(path, &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            context_db
+                .get_context_state(context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            initial
+        );
+        let mut context_db_state = initial.clone();
+        context_db_state.version = 1;
+        context_db_state
+            .protected
+            .insert("written-only-to-context-db".to_string());
+        let context_db_event = transaction_event("cognitive-store-context-db-event", context_id);
+        assert!(matches!(
+            context_db
+                .commit_context_mutation_transaction(
+                    &context_db_event,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    &replacement_plan(context_id, &initial, &context_db_state),
+                    &context_db_state,
+                    &context_state_commitment(&context_db_state).unwrap(),
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ContextStateCommit::Committed { .. }
+        ));
+        let inactive_legacy = get_mind_projection_consistent(&context_db.pool, context_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            inactive_legacy.revision, 0,
+            "normal ContextDB commits must not dual-write legacy"
+        );
+        context_db.pool.close().await;
+        drop(context_db);
+
+        assert!(SqliteStore::new_with_legacy(path, &config)
+            .await
+            .err()
+            .expect("legacy startup must require explicit migration")
+            .to_string()
+            .contains("storage migrate-cognitive-store --to legacy"));
+        SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::Legacy)
+            .await
+            .unwrap();
+        let legacy = SqliteStore::new_with_legacy(path, &config).await.unwrap();
+        assert_eq!(
+            legacy
+                .get_context_state(context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            context_db_state
+        );
+        let mut legacy_state = context_db_state.clone();
+        legacy_state.version = 2;
+        legacy_state
+            .protected
+            .insert("written-only-to-legacy".to_string());
+        let legacy_event = transaction_event("cognitive-store-legacy-event", context_id);
+        assert!(matches!(
+            legacy
+                .commit_context_mutation_transaction(
+                    &legacy_event,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    &replacement_plan(context_id, &context_db_state, &legacy_state),
+                    &legacy_state,
+                    &context_state_commitment(&legacy_state).unwrap(),
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ContextStateCommit::Committed { .. }
+        ));
+        let adapter =
+            crate::context_db_runtime::ContextDbRuntimeAdapter::attach(legacy.pool.clone())
+                .await
+                .unwrap();
+        let mut transaction = legacy.pool.begin().await.unwrap();
+        let inactive_context_db = adapter
+            .load_projection_in_transaction(&mut transaction, context_id)
+            .await
+            .unwrap()
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(
+            inactive_context_db.revision, 1,
+            "normal legacy commits must not dual-write ContextDB"
+        );
+        legacy.pool.close().await;
+        drop(legacy);
+
+        assert!(SqliteStore::new_with_context_db(path, &config)
+            .await
+            .err()
+            .expect("ContextDB startup must require explicit migration")
+            .to_string()
+            .contains("storage migrate-cognitive-store --to context_db"));
+        SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::ContextDb)
+            .await
+            .unwrap();
+        let context_db = SqliteStore::new_with_context_db(path, &config)
+            .await
+            .unwrap();
+        let final_state = context_db
+            .get_context_state(context_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_state.revision, 2);
+        assert_eq!(final_state.state, legacy_state);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT active_store FROM cognitive_store_control WHERE singleton = 1"
+            )
+            .fetch_one(&context_db.pool)
+            .await
+            .unwrap(),
+            "context_db"
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn cognitive_store_migration_rejects_equal_revision_divergence() {
+        use crate::context_store::{context_state_commitment, context_state_hash};
+        use crate::orchestrator::context::MindState;
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let config = SqliteStorageConfig::default();
+        let context_id = "cognitive-store-divergence-context";
+
+        let legacy = SqliteStore::new_with_legacy(path, &config).await.unwrap();
+        legacy
+            .create_test_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "cognitive-store-divergence-agent".to_string(),
+                title: "Cognitive Store divergence".to_string(),
+            })
+            .await
+            .unwrap();
+        let initial = MindState::default();
+        legacy
+            .initialize_context_state(
+                context_id,
+                &initial,
+                &context_state_commitment(&initial).unwrap(),
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        legacy.pool.close().await;
+        drop(legacy);
+
+        SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::ContextDb)
+            .await
+            .unwrap();
+        let context_db = SqliteStore::new_with_context_db(path, &config)
+            .await
+            .unwrap();
+
+        let mut divergent = initial;
+        divergent
+            .protected
+            .insert("inactive-store-divergence".to_string());
+        let divergent_json = serde_json::to_string(&divergent).unwrap();
+        let divergent_hash = context_state_hash(&divergent).unwrap();
+        sqlx::query(
+            "UPDATE mind_projections SET state_json = ?, state_hash = ? WHERE context_id = ?",
+        )
+        .bind(divergent_json)
+        .bind(&divergent_hash)
+        .bind(context_id)
+        .execute(&context_db.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE context_heads SET projection_hash = ? WHERE context_id = ?")
+            .bind(divergent_hash)
+            .bind(context_id)
+            .execute(&context_db.pool)
+            .await
+            .unwrap();
+        context_db.pool.close().await;
+        drop(context_db);
+
+        let error =
+            SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::Legacy)
+                .await
+                .expect_err("equal-revision divergence must fail closed");
+        assert!(error.to_string().contains("diverge at revision 0"));
+
+        let reopened = SqliteStore::new_with_context_db(path, &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT active_store FROM cognitive_store_control WHERE singleton = 1"
+            )
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            "context_db",
+            "a rejected migration must preserve the previous authority marker"
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn context_db_is_authoritative_while_trajectory_and_control_commit_atomically() {
+        use crate::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
+        fn state_hash(state: &MindState) -> String {
+            crate::orchestrator::context::mind_state_hash(state).unwrap()
+        }
+
+        fn mutation_plan(
+            current: &MindState,
+            next: &MindState,
+            mutations: Vec<crate::context_store::ContextStateMutation>,
+        ) -> crate::context_store::ContextMutationPlan {
+            crate::context_store::ContextMutationPlan {
+                context_id: "context-db-runtime-context".to_string(),
+                expected_revision: current.version,
+                next_revision: next.version,
+                expected_state_hash: state_hash(current),
+                next_state_hash: state_hash(next),
+                mutations,
+            }
+        }
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new_with_context_db(
+            tmp_file.path().to_str().unwrap(),
+            &SqliteStorageConfig::default(),
+        )
+        .await
+        .unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "context-db-runtime-context".to_string(),
+                agent_id: "context-db-runtime-agent".to_string(),
+                title: "ContextDB Runtime Context".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let initial_state = MindState::default();
+        let initialized = store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "context-db-runtime-context".to_string(),
+                revision: initial_state.version,
+                state: serde_json::to_value(&initial_state).unwrap(),
+                state_hash: state_hash(&initial_state),
+                head_event_id: None,
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            initialized.state,
+            serde_json::to_value(&initial_state).unwrap()
+        );
+
+        // A syntactically valid plan may still be semantically incomplete.
+        // The ContextDB Merkle commitment must reject it inside the same
+        // transaction rather than advancing metadata to a state whose AST was
+        // never persisted.
+        let mut omitted_state = initial_state.clone();
+        omitted_state.version = 1;
+        omitted_state
+            .protected
+            .insert("omitted-protected-frame".to_string());
+        let omitted_event = Event::new(
+            "context-db-runtime-event-omitted".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let omitted_plan = mutation_plan(&initial_state, &omitted_state, Vec::new());
+        let omitted = store
+            .commit_context_mutation_transaction(
+                &omitted_event,
+                &[],
+                &SessionProjectionMutation::default(),
+                &omitted_plan,
+                &omitted_state,
+                &crate::context_store::context_state_commitment(&omitted_state).unwrap(),
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            omitted
+                .to_string()
+                .contains("Context Mutation commits native state"),
+            "unexpected incomplete-plan rejection: {omitted}"
+        );
+        assert_eq!(
+            store
+                .get_mind_projection("context-db-runtime-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(&initial_state).unwrap()
+        );
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(omitted_event.id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        let observation = Event::new(
+            "context-db-runtime-observation".to_string(),
+            "User-Test".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "context-db-runtime-context",
+                "session_id": "context-db-runtime-session",
+                "text": "ContextDB must retain Session Projection semantics"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(observation.clone()).await.unwrap();
+        let selected_sessions = vec!["context-db-runtime-session".to_string()];
+        assert_eq!(
+            store
+                .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let next_state = MindState {
+            version: 1,
+            frames: vec![ContextFrame {
+                id: "durable-frame".to_string(),
+                body: "(fact (source runtime-integration-test))".to_string(),
+                sources: vec!["context-db-runtime-event-1".to_string()],
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 1,
+                updated_version: 1,
+            }],
+            retired: BTreeSet::from([observation.id.clone()]),
+            ..Default::default()
+        };
+        let event = Event::new(
+            "context-db-runtime-event-1".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let missing_plan = store
+            .commit_mind_projection_transaction(
+                &event,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: vec![observation.id.clone()],
+                    restored_event_ids: Vec::new(),
+                },
+                None,
+                0,
+                NewMindProjection {
+                    context_id: "context-db-runtime-context".to_string(),
+                    revision: next_state.version,
+                    state: serde_json::to_value(&next_state).unwrap(),
+                    state_hash: state_hash(&next_state),
+                    head_event_id: Some(event.id.clone()),
+                    recall_documents: Vec::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(missing_plan
+            .to_string()
+            .contains("require a domain-emitted Context Mutation plan"));
+        assert_eq!(
+            store
+                .get_mind_projection("context-db-runtime-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(&initial_state).unwrap(),
+            "a planless compatibility write must fail closed without mutating ContextDB"
+        );
+        let first_plan = mutation_plan(
+            &initial_state,
+            &next_state,
+            vec![
+                crate::context_store::ContextStateMutation::Upsert {
+                    value: crate::context_store::ContextNodeValue::Frame(
+                        next_state.frames[0].clone(),
+                    ),
+                    order: Some(0),
+                },
+                crate::context_store::ContextStateMutation::Upsert {
+                    value: crate::context_store::ContextNodeValue::Retired(observation.id.clone()),
+                    order: None,
+                },
+            ],
+        );
+        let committed = store
+            .commit_context_mutation_transaction(
+                &event,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: vec![observation.id.clone()],
+                    restored_event_ids: Vec::new(),
+                },
+                &first_plan,
+                &next_state,
+                &crate::context_store::context_state_commitment(&next_state).unwrap(),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            committed,
+            ContextStateCommit::Committed {
+                head: crate::context_store::ContextStateHead { revision: 1, .. }
+            }
+        ));
+        assert!(store
+            .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // ContextDB is mutated before the Agent Trajectory fact is appended
+        // in the same SQLite transaction. Force that later append to fail and
+        // prove every preceding AST/control mutation rolls back with it.
+        let mut rejected_state = next_state.clone();
+        rejected_state.version = 2;
+        rejected_state.frames[0].body = "(fact rejected)".to_string();
+        rejected_state.frames[0].revision = 2;
+        rejected_state.frames[0].updated_version = 2;
+        let rejected_event = Event::new(
+            "context-db-runtime-event-rejected".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store
+            .append(Event::new(
+                rejected_event.id.clone(),
+                "conflicting-test-actor".to_string(),
+                "test-conflict".to_string(),
+                "test/conflict".to_string(),
+                serde_json::Map::new(),
+            ))
+            .await
+            .unwrap();
+        let rejected_plan = mutation_plan(
+            &next_state,
+            &rejected_state,
+            vec![
+                crate::context_store::ContextStateMutation::Upsert {
+                    value: crate::context_store::ContextNodeValue::Frame(
+                        rejected_state.frames[0].clone(),
+                    ),
+                    order: Some(0),
+                },
+                crate::context_store::ContextStateMutation::Remove {
+                    collection: crate::context_store::ContextCollection::Retired,
+                    logical_id: observation.id.clone(),
+                },
+            ],
+        );
+        let rejected = store
+            .commit_context_mutation_transaction(
+                &rejected_event,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: Vec::new(),
+                    restored_event_ids: vec![observation.id.clone()],
+                },
+                &rejected_plan,
+                &rejected_state,
+                &crate::context_store::context_state_commitment(&rejected_state).unwrap(),
+                &[],
+            )
+            .await;
+        assert!(rejected.is_err());
+        assert_eq!(
+            store
+                .get_mind_projection("context-db-runtime-context")
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            serde_json::to_value(&next_state).unwrap()
+        );
+        assert!(
+            store
+                .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a later Agent Trajectory failure must roll back Session Projection restoration"
+        );
+
+        let mut final_state = next_state.clone();
+        final_state.version = 2;
+        final_state.frames[0].body = "(fact accepted)".to_string();
+        final_state.frames[0].revision = 2;
+        final_state.frames[0].updated_version = 2;
+        final_state.retired.clear();
+        let final_state_hash = state_hash(&final_state);
+        let second_event = Event::new(
+            "context-db-runtime-event-2".to_string(),
+            "Agent-Context".to_string(),
+            "context_transaction".to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "context-db-runtime-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let second_plan = mutation_plan(
+            &next_state,
+            &final_state,
+            vec![
+                crate::context_store::ContextStateMutation::Upsert {
+                    value: crate::context_store::ContextNodeValue::Frame(
+                        final_state.frames[0].clone(),
+                    ),
+                    order: Some(0),
+                },
+                crate::context_store::ContextStateMutation::Remove {
+                    collection: crate::context_store::ContextCollection::Retired,
+                    logical_id: observation.id.clone(),
+                },
+            ],
+        );
+        store
+            .commit_context_mutation_transaction(
+                &second_event,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: Vec::new(),
+                    restored_event_ids: vec![observation.id.clone()],
+                },
+                &second_plan,
+                &final_state,
+                &crate::context_store::context_state_commitment(&final_state).unwrap(),
+                &[RecallDocument {
+                    context_id: "context-db-runtime-context".to_string(),
+                    document_kind: RecallDocumentKind::Frame,
+                    document_id: "durable-frame".to_string(),
+                    revision: 2,
+                    searchable_text: "accepted ContextDB Frame for Recall".to_string(),
+                    legacy_searchable_chunks: Vec::new(),
+                    preview: "accepted ContextDB Frame".to_string(),
+                    retired: false,
+                    updated_sequence: 2,
+                    state_hash: final_state_hash,
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .query_session_projections("context-db-runtime-context", &selected_sessions, true,)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|event| event.id == observation.id)
+                .count(),
+            1,
+            "restoring one Observation must restore its Session Projection exactly once"
+        );
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("context-db-runtime-recall-worker", 32)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM recall_documents
+                   WHERE context_id = ? AND document_kind = 'frame'
+                     AND document_id = ?"#,
+            )
+            .bind("context-db-runtime-context")
+            .bind("durable-frame")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1,
+            "ContextDB commits must preserve the existing Recall projection path"
+        );
+        assert!(store
+            .search_recall_documents("context-db-runtime-context", "accepted", 8)
+            .await
+            .unwrap()
+            .iter()
+            .any(|hit| hit.document_id == "durable-frame"));
+
+        let repeated_initialization = store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "context-db-runtime-context".to_string(),
+                revision: initial_state.version,
+                state: serde_json::to_value(&initial_state).unwrap(),
+                state_hash: state_hash(&initial_state),
+                head_event_id: None,
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repeated_initialization.state,
+            serde_json::to_value(&final_state).unwrap(),
+            "initialization must never replace an existing authoritative ContextDB Mind"
+        );
+        let structural_rows = sqlx::query(
+            r#"SELECT node_id, node_revision
+               FROM experimental_contextdb_nodes
+               WHERE context_id = ?
+                 AND (node_id = 'morphz/frames' OR parent_id = 'morphz/frames')
+               ORDER BY node_id"#,
+        )
+        .bind("context-db-runtime-context")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(structural_rows.len(), 2);
+        assert_eq!(
+            structural_rows
+                .iter()
+                .find(|row| row.get::<String, _>("node_id") == "morphz/frames")
+                .unwrap()
+                .get::<i64, _>("node_revision"),
+            1,
+            "an unchanged parent Node must not be rewritten"
+        );
+        assert_eq!(
+            structural_rows
+                .iter()
+                .find(|row| row.get::<String, _>("node_id") != "morphz/frames")
+                .unwrap()
+                .get::<i64, _>("node_revision"),
+            2,
+            "only the changed Frame leaf should advance"
+        );
+
+        let legacy_head_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM context_heads WHERE context_id = ?")
+                .bind("context-db-runtime-context")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        let legacy_projection_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM mind_projections WHERE context_id = ?",
+        )
+        .bind("context-db-runtime-context")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!((legacy_head_count, legacy_projection_count), (0, 0));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM mind_snapshots WHERE context_id = ?",
+            )
+            .bind("context-db-runtime-context")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0,
+            "ordinary native Context mutations must not materialize full-state JSON snapshots",
+        );
+
+        // Install a deliberately corrupt legacy decoy only after proving the
+        // authoritative path did not dual-write it. ContextDB reads and
+        // restart must ignore the decoy rather than treating it as fallback.
+        sqlx::query(
+            r#"INSERT INTO context_heads
+               (context_id, revision, projection_hash, head_event_id, updated_at)
+               VALUES (?, 999, 'decoy-hash', ?, ?)"#,
+        )
+        .bind("context-db-runtime-context")
+        .bind(&second_event.id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO mind_projections
+               (context_id, revision, state_json, state_hash, updated_at)
+               VALUES (?, 999, '{"corrupt":true}', 'decoy-hash', ?)"#,
+        )
+        .bind("context-db-runtime-context")
+        .bind(Utc::now().to_rfc3339())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let authoritative = store
+            .get_mind_projection("context-db-runtime-context")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            authoritative.state,
+            serde_json::to_value(&final_state).unwrap()
+        );
+        assert_eq!(
+            authoritative.head_event_id.as_deref(),
+            Some(second_event.id.as_str())
+        );
+        let directory_request = ContextRuntimeDirectoryRequest {
+            context_id: "context-db-runtime-context".to_string(),
+            active_session_id: "no-session-required-for-this-read".to_string(),
+            active_after: Utc::now() - chrono::Duration::hours(24),
+            max_full_sessions: 50,
+            max_metadata_sessions: 50,
+            known_context_state_revision: None,
+            session_filter: ContextRuntimeSessionFilter::default(),
+        };
+        let directory = store
+            .read_context_runtime_directory_snapshot(&directory_request)
+            .await
+            .unwrap()
+            .unwrap();
+        let directory_revision = directory.revision.clone();
+        let directory_head = directory
+            .context_state_head
+            .clone()
+            .expect("ContextDB directory must expose its Runtime Mind head");
+        assert_eq!(directory.context_state.unwrap().state, final_state);
+        let mut resident_directory_request = directory_request;
+        resident_directory_request.known_context_state_revision = Some(directory_head.revision);
+        let resident_directory = store
+            .read_context_runtime_directory_snapshot(&resident_directory_request)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resident_directory.context_state_head, Some(directory_head));
+        assert!(resident_directory.context_state.is_none());
+        assert_eq!(resident_directory.revision, directory_revision);
+        let resident_encoding = store
+            .read_context_encoding_state_snapshot(
+                "context-db-runtime-context",
+                &[],
+                true,
+                Some(final_state.version),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resident_encoding
+                .context_state_head
+                .as_ref()
+                .map(|head| head.revision),
+            Some(final_state.version)
+        );
+        assert!(
+            resident_encoding.context_state.is_none(),
+            "a matching resident revision must not reconstruct ContextDB Nodes"
+        );
+        let heads = store
+            .list_mind_projection_heads(&["context-db-runtime-context".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].revision, final_state.version);
+
+        let trajectory = store
+            .query(QueryFilter {
+                context_id: Some("context-db-runtime-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(trajectory.len(), 3);
+        assert_eq!(trajectory[0].id, observation.id);
+        assert_eq!(trajectory[1].id, event.id);
+        assert_eq!(trajectory[2].id, second_event.id);
+
+        // The optimized Runtime loader skips the public full-tree rendering,
+        // but it must still reject a physically altered stable Node identity.
+        let frame_node_id = sqlx::query_scalar::<_, String>(
+            r#"SELECT node_id FROM experimental_contextdb_nodes
+               WHERE context_id = ? AND parent_id = 'morphz/frames'"#,
+        )
+        .bind("context-db-runtime-context")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let corrupted_frame_node_id = format!("{frame_node_id}-corrupt");
+        sqlx::query(
+            r#"UPDATE experimental_contextdb_nodes SET node_id = ?
+               WHERE context_id = ? AND node_id = ?"#,
+        )
+        .bind(&corrupted_frame_node_id)
+        .bind("context-db-runtime-context")
+        .bind(&frame_node_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let corruption = store
+            .get_mind_projection("context-db-runtime-context")
+            .await
+            .unwrap_err();
+        assert!(
+            corruption.to_string().contains("Node identity")
+                || corruption.to_string().contains("subtree hash is invalid"),
+            "stable Node identity corruption must fail closed at identity or Merkle validation: {corruption}"
+        );
+        sqlx::query(
+            r#"UPDATE experimental_contextdb_nodes SET node_id = ?
+               WHERE context_id = ? AND node_id = ?"#,
+        )
+        .bind(&frame_node_id)
+        .bind("context-db-runtime-context")
+        .bind(&corrupted_frame_node_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        store.pool.close().await;
+        drop(store);
+        let restarted = SqliteStore::new_with_context_db(
+            tmp_file.path().to_str().unwrap(),
+            &SqliteStorageConfig::default(),
+        )
+        .await
+        .unwrap();
+        let after_restart = restarted
+            .get_mind_projection("context-db-runtime-context")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after_restart.state,
+            serde_json::to_value(final_state).unwrap()
+        );
+        assert_eq!(
+            restarted
+                .query(QueryFilter {
+                    context_id: Some("context-db-runtime-context".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn context_db_periodic_snapshot_boundary_is_atomic_sparse_and_restartable() {
+        use crate::context_store::{
+            context_state_commitment, ContextMutationPlan, ContextNodeValue, ContextStateMutation,
+        };
+        use crate::orchestrator::context::{ContextMutationClocks, MindState};
+
+        fn hash(state: &MindState) -> String {
+            crate::context_store::context_state_hash(state).unwrap()
+        }
+
+        fn plan(context_id: &str, current: &MindState, next: &MindState) -> ContextMutationPlan {
+            ContextMutationPlan {
+                context_id: context_id.to_string(),
+                expected_revision: current.version,
+                next_revision: next.version,
+                expected_state_hash: hash(current),
+                next_state_hash: hash(next),
+                mutations: vec![ContextStateMutation::Upsert {
+                    value: ContextNodeValue::MutationClocks(next.mutation_clocks.clone()),
+                    order: None,
+                }],
+            }
+        }
+
+        fn event(id: &str, context_id: &str) -> Event {
+            Event::new(
+                id.to_string(),
+                "ContextDB-Snapshot-Test".to_string(),
+                crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+                "chat/context_tx_committed".to_string(),
+                serde_json::json!({"context_id": context_id})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        }
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let context_id = "context-db-snapshot-boundary";
+        let store = SqliteStore::new_with_context_db(
+            tmp_file.path().to_str().unwrap(),
+            &SqliteStorageConfig::default(),
+        )
+        .await
+        .unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "context-db-snapshot-agent".to_string(),
+                title: "ContextDB Snapshot Boundary".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Revision 63 represents an explicit imported state. The periodic
+        // snapshot policy applies to the following native 63 -> 64 mutation,
+        // not to initialization itself.
+        let at_63 = MindState {
+            version: 63,
+            mutation_clocks: ContextMutationClocks {
+                global_barrier_version: 63,
+                ..ContextMutationClocks::default()
+            },
+            ..MindState::default()
+        };
+        store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: at_63.version,
+                state: serde_json::to_value(&at_63).unwrap(),
+                state_hash: hash(&at_63),
+                head_event_id: Some("import-at-63".to_string()),
+                recall_documents: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let at_64 = MindState {
+            version: 64,
+            mutation_clocks: ContextMutationClocks {
+                global_barrier_version: 64,
+                ..at_63.mutation_clocks.clone()
+            },
+            ..at_63.clone()
+        };
+        let rejected_event = event("context-db-snapshot-rejected-64", context_id);
+        store
+            .append(Event::new(
+                rejected_event.id.clone(),
+                "Conflicting-Actor".to_string(),
+                "test-conflict".to_string(),
+                "test/conflict".to_string(),
+                serde_json::Map::new(),
+            ))
+            .await
+            .unwrap();
+        let rejected = store
+            .commit_context_mutation_transaction(
+                &rejected_event,
+                &[],
+                &SessionProjectionMutation::default(),
+                &plan(context_id, &at_63, &at_64),
+                &at_64,
+                &context_state_commitment(&at_64).unwrap(),
+                &[],
+            )
+            .await;
+        assert!(rejected.is_err());
+        assert_eq!(
+            store
+                .get_context_state(context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            at_63,
+            "a failure after the native AST mutation must roll the revision-64 boundary back",
+        );
+        assert!(store
+            .get_latest_mind_snapshot(context_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        let event_64 = event("context-db-snapshot-event-64", context_id);
+        assert!(matches!(
+            store
+                .commit_context_mutation_transaction(
+                    &event_64,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    &plan(context_id, &at_63, &at_64),
+                    &at_64,
+                    &context_state_commitment(&at_64).unwrap(),
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ContextStateCommit::Committed { .. }
+        ));
+        let snapshot_64 = store
+            .get_latest_mind_snapshot(context_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot_64.revision, 64);
+        assert_eq!(snapshot_64.state, serde_json::to_value(&at_64).unwrap());
+        assert_eq!(snapshot_64.state_hash, hash(&at_64));
+        assert_eq!(snapshot_64.head_event_id, event_64.id);
+
+        let at_65 = MindState {
+            version: 65,
+            mutation_clocks: ContextMutationClocks {
+                global_barrier_version: 65,
+                ..at_64.mutation_clocks.clone()
+            },
+            ..at_64.clone()
+        };
+        let event_65 = event("context-db-snapshot-event-65", context_id);
+        assert!(matches!(
+            store
+                .commit_context_mutation_transaction(
+                    &event_65,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    &plan(context_id, &at_64, &at_65),
+                    &at_65,
+                    &context_state_commitment(&at_65).unwrap(),
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ContextStateCommit::Committed { .. }
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM mind_snapshots WHERE context_id = ?",
+            )
+            .bind(context_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1,
+            "the ordinary revision after a periodic boundary must not rewrite a full snapshot",
+        );
+
+        store.pool.close().await;
+        drop(store);
+        let restarted = SqliteStore::new_with_context_db(
+            tmp_file.path().to_str().unwrap(),
+            &SqliteStorageConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            restarted
+                .get_context_state(context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            at_65,
+        );
+        assert_eq!(
+            restarted
+                .get_latest_mind_snapshot(context_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            snapshot_64,
+        );
     }
 
     #[tokio::test]
@@ -37420,6 +40409,7 @@ mod tests {
                     retired_event_ids: vec![observation.id.clone(), other_observation.id.clone()],
                     restored_event_ids: vec![],
                 },
+                None,
                 0,
                 NewMindProjection {
                     context_id: "session-projection-context".to_string(),
@@ -37480,6 +40470,7 @@ mod tests {
                     retired_event_ids: vec![],
                     restored_event_ids: vec![observation.id.clone()],
                 },
+                None,
                 1,
                 NewMindProjection {
                     context_id: "session-projection-context".to_string(),
@@ -37565,6 +40556,7 @@ mod tests {
                         retired_event_ids: vec![retired.id.clone()],
                         restored_event_ids: Vec::new(),
                     },
+                    None,
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -37682,6 +40674,7 @@ mod tests {
                     retired_event_ids: vec![retired.id.clone()],
                     restored_event_ids: Vec::new(),
                 },
+                None,
                 0,
                 NewMindProjection {
                     context_id: context_id.to_string(),
@@ -37919,6 +40912,7 @@ mod tests {
                 &event_a,
                 &[],
                 &mutation_a,
+                None,
                 0,
                 NewMindProjection {
                     context_id: "sqlite-shared-context".to_string(),
@@ -37933,6 +40927,7 @@ mod tests {
                 &event_b,
                 &[],
                 &mutation_b,
+                None,
                 0,
                 NewMindProjection {
                     context_id: "sqlite-shared-context".to_string(),

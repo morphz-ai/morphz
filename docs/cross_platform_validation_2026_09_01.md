@@ -36,7 +36,7 @@ The remote validation directories are test copies rather than Git worktrees. The
 | Dashboard backend contract | Pass | Pass | Pass | Embedded Dashboard/API tests are part of every complete library suite |
 | Dashboard frontend | Pass | Platform-independent bundle | Platform-independent bundle | 185 tests, ESLint, TypeScript/Vite production build, committed embedded assets verified |
 | Website | Pass | Platform-independent bundle | Platform-independent bundle | 13 tests, ESLint, production build |
-| Optional ContextDB reference backend | Pass | Compile-gated | Compile-gated | 14 tests with `experimental-context-db` enabled |
+| Optional ContextDB reference backend | Pass | Compile-gated | Compile-gated | 14 tests with `context-db` enabled |
 
 ## Reproduction commands
 

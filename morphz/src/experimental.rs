@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 pub const COGNITIVE_COORDINATION: &str = "cognitive-coordination";
-pub const CONTEXT_DB: &str = "context-db";
+const RETIRED_STABLE_FEATURE_ALIASES: &[&str] = &["context-db"];
 pub const COGNITIVE_COORDINATION_TOOL_NAME: &str = "coordinate";
 pub const COGNITIVE_COORDINATION_PARTICIPANT_ACTOR: &str = "Cognitive-Coordination-Experiment";
 
@@ -24,9 +24,6 @@ pub mod cognitive_coordination_identity;
 pub mod cognitive_coordination_network;
 #[cfg(feature = "experimental-cognitive-coordination")]
 pub mod cognitive_coordination_sdk;
-#[cfg(feature = "experimental-context-db")]
-pub mod context_db;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExperimentalFeature {
     pub name: &'static str,
@@ -35,20 +32,12 @@ pub struct ExperimentalFeature {
     pub compiled: bool,
 }
 
-pub const FEATURES: &[ExperimentalFeature] = &[
-    ExperimentalFeature {
-        name: COGNITIVE_COORDINATION,
-        cargo_feature: "experimental-cognitive-coordination",
-        summary: "coordinated multi-subject cognitive evaluation",
-        compiled: cfg!(feature = "experimental-cognitive-coordination"),
-    },
-    ExperimentalFeature {
-        name: CONTEXT_DB,
-        cargo_feature: "experimental-context-db",
-        summary: "authoritative Context AST database reference backend",
-        compiled: cfg!(feature = "experimental-context-db"),
-    },
-];
+pub const FEATURES: &[ExperimentalFeature] = &[ExperimentalFeature {
+    name: COGNITIVE_COORDINATION,
+    cargo_feature: "experimental-cognitive-coordination",
+    summary: "coordinated multi-subject cognitive evaluation",
+    compiled: cfg!(feature = "experimental-cognitive-coordination"),
+}];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ExperimentalFeatureStatus {
@@ -132,6 +121,9 @@ pub fn feature(name: &str) -> Result<&'static ExperimentalFeature, FeatureGateEr
 
 pub fn validate_enabled(enabled: &BTreeSet<String>) -> Result<(), FeatureGateError> {
     for name in enabled {
+        if RETIRED_STABLE_FEATURE_ALIASES.contains(&name.as_str()) {
+            continue;
+        }
         feature(name)?;
     }
     Ok(())
@@ -139,6 +131,9 @@ pub fn validate_enabled(enabled: &BTreeSet<String>) -> Result<(), FeatureGateErr
 
 pub fn require_all_enabled_compiled(enabled: &BTreeSet<String>) -> Result<(), FeatureGateError> {
     for name in enabled {
+        if RETIRED_STABLE_FEATURE_ALIASES.contains(&name.as_str()) {
+            continue;
+        }
         require_enabled(enabled, name)?;
     }
     Ok(())
@@ -192,6 +187,17 @@ mod tests {
             validate_enabled(&enabled),
             Err(FeatureGateError::Unknown { name }) if name == "typo"
         ));
+    }
+
+    #[test]
+    fn retired_context_db_experiment_alias_is_accepted_but_not_listed() {
+        let enabled = BTreeSet::from(["context-db".to_string()]);
+        validate_enabled(&enabled).unwrap();
+        require_all_enabled_compiled(&enabled).unwrap();
+        assert!(statuses(&enabled)
+            .unwrap()
+            .iter()
+            .all(|status| status.name != "context-db"));
     }
 
     #[test]

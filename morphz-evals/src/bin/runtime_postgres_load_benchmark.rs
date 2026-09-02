@@ -4,16 +4,17 @@ use morphz::event::Event;
 use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
-    MessageDispatchMode, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, RuntimeStore,
-    SessionDirectoryStore, SessionMountKind,
+    MessageDispatchMode, MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection,
+    NewPrincipal, NewSession, RuntimeStore, SessionDirectoryStore, SessionMountKind,
 };
+use morphz::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{
     MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle, SessionMessageOptions,
 };
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,6 +24,29 @@ use tokio::task::JoinSet;
 type BenchError = Box<dyn std::error::Error + Send + Sync>;
 
 const DATABASE_URL_ENV: &str = "MORPHZ_BENCH_POSTGRES_URL";
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ContextStoreKind {
+    Legacy,
+    ContextDb,
+}
+
+impl ContextStoreKind {
+    fn from_env() -> Result<Self, BenchError> {
+        match std::env::var("MORPHZ_BENCH_CONTEXT_STORE")
+            .unwrap_or_else(|_| "legacy".to_string())
+            .as_str()
+        {
+            "legacy" => Ok(Self::Legacy),
+            "contextdb" | "context_db" | "context-db" => Ok(Self::ContextDb),
+            value => Err(format!(
+                "unsupported MORPHZ_BENCH_CONTEXT_STORE '{value}'; expected legacy or contextdb"
+            )
+            .into()),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +118,7 @@ fn nearest_rank(sorted: &[u128], percentile: usize) -> u128 {
 
 #[derive(Debug, Serialize)]
 struct BenchmarkConfig {
+    context_store: ContextStoreKind,
     topology: Topology,
     concurrency: usize,
     messages: usize,
@@ -101,6 +126,8 @@ struct BenchmarkConfig {
     timeout_secs: u64,
     database_probe_samples: usize,
     model_delay_ms: u64,
+    seed_mind_frames: usize,
+    seed_frame_body_bytes: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,15 +140,36 @@ struct BenchmarkReport {
     database_select_one: LatencySummary,
     ingress: LatencySummary,
     end_to_end: LatencySummary,
+    turn_stages: BTreeMap<String, LatencySummary>,
     elapsed_ms: f64,
-    throughput_messages_per_second: f64,
+    throughput_completed_turns_per_second: f64,
     accepted_messages: usize,
-    replies: usize,
+    completed_turns: usize,
     model_calls: usize,
+    context_transactions_attempted: u64,
+    context_commits: u64,
+    context_commits_per_completed_turn: f64,
     peak_model_concurrency: usize,
     postgres_pool_connections: u32,
     postgres_pool_idle_connections: usize,
+    seed_mind_json_bytes: usize,
     success: bool,
+}
+
+fn turn_stage_summaries(runtime: &MorphzRuntime, limit: usize) -> BTreeMap<String, LatencySummary> {
+    let mut durations = BTreeMap::<String, Vec<Duration>>::new();
+    for turn in runtime.observability().recent_turns(limit.max(1)) {
+        for stage in turn.stages {
+            durations
+                .entry(stage.stage)
+                .or_default()
+                .push(Duration::from_micros(stage.duration_micros));
+        }
+    }
+    durations
+        .into_iter()
+        .map(|(stage, samples)| (stage, LatencySummary::from_durations(&samples)))
+        .collect()
 }
 
 struct ZeroWorkClient {
@@ -175,6 +223,27 @@ fn env_u64(name: &str, default: u64) -> Result<u64, BenchError> {
 fn scoped_url(database_url: &str, schema: &str) -> String {
     let separator = if database_url.contains('?') { '&' } else { '?' };
     format!("{database_url}{separator}options=-csearch_path%3D{schema}")
+}
+
+fn benchmark_mind(frame_count: usize, body_bytes: usize) -> MindState {
+    MindState {
+        frames: (0..frame_count)
+            .map(|index| ContextFrame {
+                id: format!("runtime-load-frame-{index:06}"),
+                body: format!("(fact payload-{})", "x".repeat(body_bytes)),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 0,
+                updated_version: 0,
+            })
+            .collect(),
+        ..MindState::default()
+    }
+}
+
+fn mind_hash(state: &MindState) -> Result<String, BenchError> {
+    morphz::context_store::context_state_hash(state).map_err(Into::into)
 }
 
 fn causal_string<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
@@ -366,9 +435,11 @@ fn print_help() {
         "Runtime + PostgreSQL load benchmark\n\n\
 Required:\n  {DATABASE_URL_ENV}=postgresql://...\n\n\
 Optional:\n  MORPHZ_BENCH_TOPOLOGY=shared_context|isolated_contexts\n  \
+MORPHZ_BENCH_CONTEXT_STORE=legacy|contextdb\n  \
 MORPHZ_BENCH_CONCURRENCY=16\n  MORPHZ_BENCH_MESSAGES=64\n  \
 MORPHZ_BENCH_POSTGRES_POOL_SIZE=16\n  MORPHZ_BENCH_TIMEOUT_SECS=30\n  \
-MORPHZ_BENCH_DATABASE_SAMPLES=64\n  MORPHZ_BENCH_MODEL_DELAY_MS=0\n  \
+  MORPHZ_BENCH_DATABASE_SAMPLES=64\n  MORPHZ_BENCH_MODEL_DELAY_MS=0\n  \
+MORPHZ_BENCH_SEED_MIND_FRAMES=0\n  MORPHZ_BENCH_SEED_FRAME_BODY_BYTES=4096\n  \
 MORPHZ_BENCH_KEEP_SCHEMA=1"
     );
 }
@@ -381,6 +452,7 @@ async fn main() -> Result<(), BenchError> {
     }
     let database_url = std::env::var(DATABASE_URL_ENV)
         .map_err(|_| format!("set {DATABASE_URL_ENV} to an explicitly selected test database"))?;
+    let context_store = ContextStoreKind::from_env()?;
     let topology = Topology::from_env()?;
     let concurrency = env_usize("MORPHZ_BENCH_CONCURRENCY", 16)?;
     let messages = env_usize("MORPHZ_BENCH_MESSAGES", concurrency.saturating_mul(4))?;
@@ -391,8 +463,15 @@ async fn main() -> Result<(), BenchError> {
     let timeout_secs = env_u64("MORPHZ_BENCH_TIMEOUT_SECS", 30)?;
     let database_samples = env_usize("MORPHZ_BENCH_DATABASE_SAMPLES", messages.max(32))?;
     let model_delay_ms = env_u64("MORPHZ_BENCH_MODEL_DELAY_MS", 0)?;
+    let seed_mind_frames = std::env::var("MORPHZ_BENCH_SEED_MIND_FRAMES")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(0);
+    let seed_frame_body_bytes = env_usize("MORPHZ_BENCH_SEED_FRAME_BODY_BYTES", 4096)?;
     let keep_schema = std::env::var("MORPHZ_BENCH_KEEP_SCHEMA").as_deref() == Ok("1");
     let config_snapshot = BenchmarkConfig {
+        context_store,
         topology,
         concurrency,
         messages,
@@ -400,6 +479,8 @@ async fn main() -> Result<(), BenchError> {
         timeout_secs,
         database_probe_samples: database_samples,
         model_delay_ms,
+        seed_mind_frames,
+        seed_frame_body_bytes,
     };
 
     let suffix = format!(
@@ -416,7 +497,28 @@ async fn main() -> Result<(), BenchError> {
         .execute(&administration_pool)
         .await?;
     let scoped_database_url = scoped_url(&database_url, &schema);
-    let store = Arc::new(PostgresStore::new(&scoped_database_url, pool_size).await?);
+    let store = match context_store {
+        ContextStoreKind::Legacy => {
+            Arc::new(PostgresStore::new(&scoped_database_url, pool_size).await?)
+        }
+        ContextStoreKind::ContextDb => {
+            #[cfg(feature = "context-db")]
+            {
+                Arc::new(
+                    PostgresStore::new_with_context_db(
+                        &scoped_database_url,
+                        pool_size,
+                        Arc::new(morphz::observability::Observability::default()),
+                    )
+                    .await?,
+                )
+            }
+            #[cfg(not(feature = "context-db"))]
+            {
+                return Err("contextdb benchmark arm requires --features context-db".into());
+            }
+        }
+    };
     let server_version: String = sqlx::query_scalar("SHOW server_version")
         .fetch_one(store.pool())
         .await?;
@@ -451,6 +553,18 @@ async fn main() -> Result<(), BenchError> {
                 mount_kind: SessionMountKind::NewBlankContext,
             },
         )
+        .await?;
+    let seed_mind = benchmark_mind(seed_mind_frames, seed_frame_body_bytes);
+    let seed_mind_json = serde_json::to_vec(&seed_mind)?;
+    store
+        .initialize_mind_projection(NewMindProjection {
+            context_id: context_id.clone(),
+            revision: seed_mind.version,
+            state: serde_json::to_value(&seed_mind)?,
+            state_hash: mind_hash(&seed_mind)?,
+            head_event_id: None,
+            recall_documents: Vec::new(),
+        })
         .await?;
     let principal_id = "principal-runtime-load-benchmark";
     store
@@ -506,6 +620,8 @@ async fn main() -> Result<(), BenchError> {
     let calls = model.calls.load(Ordering::SeqCst);
     let replies = end_to_end.len();
     let success = ingress.len() == messages && replies == messages && calls == messages;
+    let turn_stages = turn_stage_summaries(&runtime, messages.saturating_mul(2));
+    let context_capacity = runtime.context_capacity_metrics();
     let pool_connections = store.pool().size();
     let pool_idle = store.pool().num_idle();
 
@@ -518,18 +634,32 @@ async fn main() -> Result<(), BenchError> {
         database_select_one: LatencySummary::from_durations(&database_durations),
         ingress: LatencySummary::from_durations(&ingress),
         end_to_end: LatencySummary::from_durations(&end_to_end),
+        turn_stages,
         elapsed_ms: elapsed.as_secs_f64() * 1_000.0,
-        throughput_messages_per_second: messages as f64 / elapsed.as_secs_f64(),
+        throughput_completed_turns_per_second: replies as f64 / elapsed.as_secs_f64(),
         accepted_messages: ingress.len(),
-        replies,
+        completed_turns: replies,
         model_calls: calls,
+        context_transactions_attempted: context_capacity.context_transactions_total,
+        context_commits: context_capacity.context_commits_total,
+        context_commits_per_completed_turn: if replies == 0 {
+            0.0
+        } else {
+            context_capacity.context_commits_total as f64 / replies as f64
+        },
         peak_model_concurrency: model.peak_active.load(Ordering::SeqCst),
         postgres_pool_connections: pool_connections,
         postgres_pool_idle_connections: pool_idle,
+        seed_mind_json_bytes: seed_mind_json.len(),
         success,
     };
 
     if !keep_schema {
+        // Runtime background projectors retain Store clones until the process
+        // exits. Close the shared SQLx pool first so every in-flight backend
+        // returns and no worker can reacquire a relation lock while the
+        // administration connection removes this benchmark-only schema.
+        store.pool().close().await;
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&administration_pool)
             .await?;

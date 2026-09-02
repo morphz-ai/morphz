@@ -1,5 +1,7 @@
 use morphz::approval_authority::stable_approval_identity;
 use morphz::config::AppConfig;
+use morphz::context_state::MindState;
+use morphz::context_store::context_state_hash;
 use morphz::event::Event;
 use morphz::execution::ExecutionJobManager;
 use morphz::llm::{Client, Message, Response, ToolDefinition};
@@ -96,6 +98,7 @@ fn sqlite_two_process_context_cas_is_fenced() {
                     &event,
                     &[],
                     &SessionProjectionMutation::default(),
+                    None,
                     0,
                     NewMindProjection {
                         context_id: "sqlite-process-context".to_string(),
@@ -623,6 +626,7 @@ where
                 reasoning_effort: Some(Some("high".to_string())),
                 permission_mode: Some(Some(PermissionMode::RequestApproval)),
                 sandbox_mode: Some(Some(SandboxMode::DangerFullAccess)),
+                default_target_id: None,
             },
         )
         .await
@@ -662,6 +666,7 @@ where
                 reasoning_effort: Some(None),
                 permission_mode: Some(None),
                 sandbox_mode: Some(None),
+                default_target_id: None,
             },
         )
         .await
@@ -714,16 +719,26 @@ where
         target_id: None,
         supervision: morphz::memory::ThreadSupervision::legacy(),
     };
+    let start = Arc::new(Barrier::new(3));
     let first = {
         let store = Arc::clone(&store);
         let thread = thread.clone();
-        tokio::spawn(async move { store.ensure_thread(thread).await })
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            store.ensure_thread(thread).await
+        })
     };
     let second = {
         let store = Arc::clone(&store);
         let thread = thread.clone();
-        tokio::spawn(async move { store.ensure_thread(thread).await })
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            store.ensure_thread(thread).await
+        })
     };
+    start.wait().await;
     let first = first.await.unwrap().unwrap();
     let second = second.await.unwrap().unwrap();
     assert_eq!(first, second);
@@ -3916,6 +3931,7 @@ where
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
             },
         )
         .await
@@ -4087,6 +4103,7 @@ where
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
             },
         )
         .await
@@ -4436,6 +4453,7 @@ where
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
             },
         )
         .await
@@ -4922,6 +4940,7 @@ where
                         event_id: event.id.clone(),
                     }],
                     &SessionProjectionMutation::default(),
+                    None,
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -4952,6 +4971,7 @@ where
                         event_id: event.id.clone(),
                     }],
                     &SessionProjectionMutation::default(),
+                    None,
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -5079,6 +5099,13 @@ where
         .await
         .unwrap()
         .unwrap();
+    let mut retired_state = MindState {
+        version: current.revision + 1,
+        ..MindState::default()
+    };
+    retired_state
+        .protected
+        .insert("projection:retired".to_string());
     let retire_event = context_event("conformance-projection-retire", context_id);
     let retired = store
         .commit_mind_projection_transaction(
@@ -5088,12 +5115,13 @@ where
                 retired_event_ids: vec![observation.id.clone()],
                 restored_event_ids: Vec::new(),
             },
+            None,
             current.revision,
             NewMindProjection {
                 context_id: context_id.to_string(),
                 revision: current.revision + 1,
-                state: json!({"version": current.revision + 1, "projection": "retired"}),
-                state_hash: "conformance-projection-retired-hash".to_string(),
+                state: serde_json::to_value(&retired_state).unwrap(),
+                state_hash: context_state_hash(&retired_state).unwrap(),
                 head_event_id: Some(retire_event.id.clone()),
                 recall_documents: Vec::new(),
             },
@@ -5108,16 +5136,36 @@ where
         .iter()
         .all(|event| event.id != observation.id));
     let retired_snapshot = store
-        .read_context_encoding_projection_snapshot(context_id, &selected, true)
+        .read_context_encoding_state_snapshot(context_id, &selected, true, None)
         .await
         .unwrap();
+    assert!(retired_snapshot
+        .context_state
+        .as_ref()
+        .is_some_and(|record| record.state.protected.contains("projection:retired")));
+    let retired_revision = retired_snapshot
+        .context_state_head
+        .as_ref()
+        .expect("snapshot must expose its authoritative Mind head")
+        .revision;
     assert_eq!(
-        retired_snapshot
-            .mind
+        retired_snapshot.context_state.as_ref().unwrap().revision,
+        retired_revision
+    );
+    let resident_snapshot = store
+        .read_context_encoding_state_snapshot(context_id, &selected, true, Some(retired_revision))
+        .await
+        .unwrap();
+    assert!(
+        resident_snapshot.context_state.is_none(),
+        "matching resident revision must omit the duplicate Mind payload"
+    );
+    assert_eq!(
+        resident_snapshot
+            .context_state_head
             .as_ref()
-            .and_then(|mind| mind.state.get("projection"))
-            .and_then(serde_json::Value::as_str),
-        Some("retired")
+            .map(|head| head.revision),
+        Some(retired_revision)
     );
     assert!(
         retired_snapshot
@@ -5140,6 +5188,13 @@ where
         .await
         .unwrap()
         .unwrap();
+    let mut restored_state = MindState {
+        version: current.revision + 1,
+        ..MindState::default()
+    };
+    restored_state
+        .protected
+        .insert("projection:restored".to_string());
     let restore_event = context_event("conformance-projection-restore", context_id);
     let restored = store
         .commit_mind_projection_transaction(
@@ -5149,12 +5204,13 @@ where
                 retired_event_ids: Vec::new(),
                 restored_event_ids: vec![observation.id.clone()],
             },
+            None,
             current.revision,
             NewMindProjection {
                 context_id: context_id.to_string(),
                 revision: current.revision + 1,
-                state: json!({"version": current.revision + 1, "projection": "restored"}),
-                state_hash: "conformance-projection-restored-hash".to_string(),
+                state: serde_json::to_value(&restored_state).unwrap(),
+                state_hash: context_state_hash(&restored_state).unwrap(),
                 head_event_id: Some(restore_event.id.clone()),
                 recall_documents: Vec::new(),
             },
@@ -5173,17 +5229,17 @@ where
         1
     );
     let restored_snapshot = store
-        .read_context_encoding_projection_snapshot(context_id, &selected, true)
+        .read_context_encoding_state_snapshot(context_id, &selected, true, Some(retired_revision))
         .await
         .unwrap();
-    assert_eq!(
-        restored_snapshot
-            .mind
-            .as_ref()
-            .and_then(|mind| mind.state.get("projection"))
-            .and_then(serde_json::Value::as_str),
-        Some("restored")
+    assert!(
+        restored_snapshot.context_state.is_some(),
+        "a changed authoritative revision must return the new Mind payload"
     );
+    assert!(restored_snapshot
+        .context_state
+        .as_ref()
+        .is_some_and(|record| record.state.protected.contains("projection:restored")));
     assert_eq!(
         restored_snapshot
             .events
@@ -5221,20 +5277,30 @@ where
                     restored_event_ids: Vec::new(),
                 }
             };
+            let mut next_state = MindState {
+                version: current.revision + 1,
+                ..MindState::default()
+            };
+            next_state
+                .protected
+                .insert("snapshot_observation_state_known".to_string());
+            if active {
+                next_state
+                    .protected
+                    .insert("snapshot_observation_active".to_string());
+            }
             let committed = writer_store
                 .commit_mind_projection_transaction(
                     &event,
                     &[],
                     &mutation,
+                    None,
                     current.revision,
                     NewMindProjection {
                         context_id: context_id.to_string(),
                         revision: current.revision + 1,
-                        state: json!({
-                            "version": current.revision + 1,
-                            "snapshot_observation_active": active,
-                        }),
-                        state_hash: format!("conformance-snapshot-toggle-{index}"),
+                        state: serde_json::to_value(&next_state).unwrap(),
+                        state_hash: context_state_hash(&next_state).unwrap(),
                         head_event_id: Some(event.id.clone()),
                         recall_documents: Vec::new(),
                     },
@@ -5248,14 +5314,24 @@ where
     });
     for _ in 0..512 {
         let snapshot = store
-            .read_context_encoding_projection_snapshot(context_id, &selected, true)
+            .read_context_encoding_state_snapshot(context_id, &selected, true, None)
             .await
             .unwrap();
         if let Some(active) = snapshot
-            .mind
+            .context_state
             .as_ref()
-            .and_then(|mind| mind.state.get("snapshot_observation_active"))
-            .and_then(serde_json::Value::as_bool)
+            .filter(|record| {
+                record
+                    .state
+                    .protected
+                    .contains("snapshot_observation_state_known")
+            })
+            .map(|record| {
+                record
+                    .state
+                    .protected
+                    .contains("snapshot_observation_active")
+            })
         {
             let observed = snapshot
                 .events
@@ -5500,6 +5576,23 @@ where
             .with_timezone(&chrono::Utc);
         store.append(event).await.unwrap();
     }
+    let non_resident_events = store
+        .query(QueryFilter {
+            context_id: Some(context_id.to_string()),
+            excluded_event_ids: vec!["recall-time-conformance-1".to_string()],
+            latest_k: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        non_resident_events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["recall-time-conformance-0"],
+        "Event-store residency exclusions must execute before ORDER/LIMIT"
+    );
     let projected = store
         .project_recall_outbox_batch("recall-conformance-worker", 8)
         .await
@@ -5518,11 +5611,40 @@ where
             start_time: Some(start_time),
             end_time: Some(end_time),
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit: 1,
         })
         .await
         .unwrap();
     assert_eq!(timeline[0].document_id, "recall-time-conformance-1");
+    let non_resident_timeline = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: None,
+            start_time: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-08-04T09:30:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            ),
+            end_time: Some(end_time),
+            before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: vec!["recall-time-conformance-1".to_string()],
+            excluded_frame_ids: Vec::new(),
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        non_resident_timeline[0].document_id, "recall-time-conformance-0",
+        "resident exclusions must be applied by the backend before LIMIT"
+    );
     let combined = store
         .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
             context_id: context_id.to_string(),
@@ -5534,12 +5656,64 @@ where
                     .with_timezone(&chrono::Utc),
             ),
             before_sequence: None,
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
             limit: 8,
         })
         .await
         .unwrap();
     assert_eq!(combined.len(), 1);
     assert_eq!(combined[0].document_id, "recall-time-conformance-0");
+
+    let causal_snapshot = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some("时间窗口".to_string()),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            through_sequence: Some(non_resident_timeline[0].updated_sequence),
+            through_mind_version: Some(10),
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
+            limit: 8,
+        })
+        .await
+        .unwrap();
+    assert_eq!(causal_snapshot.len(), 1);
+    assert_eq!(
+        causal_snapshot[0].document_id, "recall-time-conformance-0",
+        "Recall must apply the physical Context View frontier inside SQL before ranking and LIMIT"
+    );
+    let pre_frame_view = store
+        .query_recall_documents(morphz::memory::RecallDocumentSearchRequest {
+            context_id: context_id.to_string(),
+            normalized_query: Some(morphz::memory::normalize_recall_text(
+                "memory/sandbox-permission",
+            )),
+            start_time: None,
+            end_time: None,
+            before_sequence: None,
+            // Event and Mind clocks are intentionally different domains. A
+            // large Event frontier must not admit a Frame updated at a later
+            // Mind revision than the physical model View.
+            through_sequence: Some(u64::try_from(i64::MAX).unwrap()),
+            through_mind_version: Some(19),
+            event_visibility_snapshot: None,
+            excluded_event_ids: Vec::new(),
+            excluded_frame_ids: Vec::new(),
+            limit: 8,
+        })
+        .await
+        .unwrap();
+    assert!(
+        pre_frame_view.is_empty(),
+        "Frame Recall must use the Mind revision fence rather than comparing a Frame version with an Event sequence"
+    );
 
     // Model the exact rebuild race: maintenance captured `documents`, then a
     // new authoritative Event committed before the replacement transaction.
@@ -8266,6 +8440,7 @@ where
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
             },
         )
         .await
@@ -8792,6 +8967,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             &event_a,
             &[],
             &projection_mutation_a,
+            None,
             0,
             NewMindProjection {
                 context_id: context_id.clone(),
@@ -8806,6 +8982,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             &event_b,
             &[],
             &projection_mutation_b,
+            None,
             0,
             NewMindProjection {
                 context_id: context_id.clone(),
@@ -9608,7 +9785,7 @@ where
 
 async fn assert_context_runtime_directory_snapshot_conformance<S>(store: Arc<S>)
 where
-    S: morphz::memory::RuntimeStore + 'static,
+    S: morphz::memory::RuntimeStore + MindProjectionStore + 'static,
 {
     let context_id = "conformance-context";
     let context = store
@@ -9622,6 +9799,7 @@ where
         active_after: chrono::Utc::now() - chrono::Duration::hours(24),
         max_full_sessions: 50,
         max_metadata_sessions: 50,
+        known_context_state_revision: None,
         session_filter: ContextRuntimeSessionFilter::default(),
     };
     let actual = store
@@ -9634,9 +9812,21 @@ where
         actual.cognitive_clock,
         store.get_context_cognitive_clock(context_id).await.unwrap()
     );
+    let legacy_state = store.get_mind_projection(context_id).await.unwrap();
     assert_eq!(
-        actual.mind,
-        store.get_mind_projection(context_id).await.unwrap()
+        actual.context_state.as_ref().map(|record| record.revision),
+        legacy_state.as_ref().map(|record| record.revision)
+    );
+    assert_eq!(
+        actual
+            .context_state
+            .as_ref()
+            .map(|record| serde_json::to_value(&record.state).unwrap()),
+        legacy_state.as_ref().map(|record| record.state.clone())
+    );
+    assert_eq!(
+        actual.context_state_head.as_ref().map(|head| head.revision),
+        actual.context_state.as_ref().map(|mind| mind.revision)
     );
     assert!(actual.sessions.len() <= 100);
     assert!(actual
@@ -9652,6 +9842,33 @@ where
         .principal_bindings
         .iter()
         .all(|binding| selected_ids.contains(binding.session_id.as_str())));
+    if let Some(revision) = actual.context_state.as_ref().map(|mind| mind.revision) {
+        let mut fenced_request = request.clone();
+        fenced_request.known_context_state_revision = Some(revision);
+        let fenced = store
+            .read_context_runtime_directory_snapshot(&fenced_request)
+            .await
+            .unwrap()
+            .expect("revision-fenced directory snapshot must exist");
+        assert_eq!(fenced.context_state_head, actual.context_state_head);
+        assert!(
+            fenced.context_state.is_none(),
+            "a matching resident revision must omit the large Mind payload"
+        );
+        assert_eq!(
+            fenced.revision, actual.revision,
+            "payload transfer is not part of the directory content revision"
+        );
+
+        let mut stale_request = request.clone();
+        stale_request.known_context_state_revision = Some(revision.saturating_add(1));
+        let stale = store
+            .read_context_runtime_directory_snapshot(&stale_request)
+            .await
+            .unwrap()
+            .expect("stale-fenced directory snapshot must exist");
+        assert_eq!(stale.context_state, actual.context_state);
+    }
     assert_eq!(
         store
             .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {

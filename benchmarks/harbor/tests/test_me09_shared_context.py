@@ -10,6 +10,7 @@ from unittest import mock
 
 from benchmarks.harbor.run_me09_shared_context import (
     DEFAULT_MANIFEST,
+    _context_db_authority_count,
     _harness_binding_count,
     _sha256,
     _harbor_command,
@@ -108,6 +109,45 @@ class Me09SharedContextTest(unittest.TestCase):
             self.assertIn(
                 '[orchestrator.session_working_set]\nactive_window = "24h"\nmax_sessions = 50',
                 config,
+            )
+            self.assertNotIn("[experimental]", config)
+
+    def test_runtime_config_explicitly_selects_context_db_arm(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            config_path = Path(raw_dir) / "morphz.toml"
+            _write_runtime_config(
+                config_path,
+                protocol="openai-responses",
+                base_url="http://127.0.0.1:8317/v1",
+                max_sessions=50,
+                context_store="contextdb",
+            )
+            config = config_path.read_text(encoding="utf-8")
+            self.assertIn(
+                '[storage]\nbackend = "sqlite"\ncognitive_store = "context_db"',
+                config,
+            )
+            self.assertNotIn("[experimental]", config)
+
+    def test_context_db_arm_gate_reads_the_authoritative_context_row(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            db_path = Path(raw_dir) / "shared.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                "CREATE TABLE experimental_contextdb_contexts "
+                "(context_id TEXT PRIMARY KEY)"
+            )
+            connection.execute(
+                "INSERT INTO experimental_contextdb_contexts(context_id) VALUES (?)",
+                ("me09-shared-context",),
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(
+                _context_db_authority_count(db_path, "me09-shared-context"), 1
+            )
+            self.assertEqual(
+                _context_db_authority_count(db_path, "another-context"), 0
             )
 
     def test_agent_rejects_task_outside_selected_lane(self) -> None:

@@ -4,11 +4,11 @@ use morphz::memory::{
     ActivationStore, CognitiveClockStore, ContextCapabilityBindingStore,
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
     DeliveryIngressStore, EventStore, ExecutionJobStore, ExecutionTargetAuthorizationStore,
-    ExecutionTargetStore, MessageClaim, MessageDispatchMode, MindProjectionStore, NewAgent,
-    NewCognitiveContext, NewPrincipal, NewSession, NewThreadActivation, ObjectiveStore,
-    RecallProjectionStore, SessionAttentionState, SessionAttentionUpdate, SessionContextSharing,
-    SessionDirectoryStore, SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore,
-    SessionUpdate, ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, NewAgent, NewCognitiveContext,
+    NewPrincipal, NewSession, NewThreadActivation, ObjectiveStore, RecallProjectionStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore,
+    SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore, SessionUpdate,
+    ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
 };
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
@@ -145,6 +145,7 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
                 active_after: chrono::Utc::now() - chrono::Duration::hours(24),
                 max_full_sessions: 50,
                 max_metadata_sessions: 50,
+                known_context_state_revision: None,
                 session_filter: ContextRuntimeSessionFilter::default(),
             })
             .await
@@ -255,6 +256,7 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
                 active_after: chrono::Utc::now() - chrono::Duration::hours(24),
                 max_full_sessions: 7,
                 max_metadata_sessions: 3,
+                known_context_state_revision: None,
                 session_filter: ContextRuntimeSessionFilter::default(),
             })
             .await
@@ -290,6 +292,7 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
                 active_after: chrono::Utc::now() - chrono::Duration::hours(24),
                 max_full_sessions: 7,
                 max_metadata_sessions: 3,
+                known_context_state_revision: None,
                 session_filter: ContextRuntimeSessionFilter {
                     principal_ids: Some(vec![principal_id.clone()]),
                 },
@@ -473,7 +476,7 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         .with_capability_binding_store(Arc::clone(&store) as Arc<dyn ContextCapabilityBindingStore>)
         .with_work_assignment_store(Arc::clone(&store) as Arc<dyn WorkAssignmentStore>)
         .with_runtime_snapshot_store(Arc::clone(&store) as Arc<dyn ContextRuntimeSnapshotStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn morphz::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
         .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
         .with_cognitive_clock_store(Arc::clone(&store) as Arc<dyn CognitiveClockStore>)

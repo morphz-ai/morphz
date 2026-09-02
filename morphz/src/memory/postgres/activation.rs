@@ -149,13 +149,24 @@ pub(super) async fn migrate_thread_signal_notifications(pool: &PgPool) -> Result
 /// ambiguity returns `handled = false` and the caller executes the full Rust
 /// path.
 pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), StoreError> {
-    sqlx::query(
-        "DROP FUNCTION IF EXISTS morphz_try_claim_fresh_dialogue_activation_v1(TEXT, TEXT, BIGINT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, BIGINT, TEXT)",
-    )
+    // `DROP FUNCTION` resolves an unqualified name through the whole
+    // `search_path`. A newly-created tenant/test schema therefore used to
+    // drop the same-named function from `public`, recreate it in the tenant
+    // schema, and remove it again when that schema was discarded. Qualify
+    // both fast paths to the store's current schema so one Runtime can never
+    // mutate another Runtime's executable storage contract.
+    let schema = sqlx::query_scalar::<_, String>("SELECT quote_ident(current_schema())")
+        .fetch_one(pool)
+        .await?;
+    let fresh_dialogue_function = format!("{schema}.morphz_try_claim_fresh_dialogue_activation_v1");
+    let update_activation_function = format!("{schema}.morphz_update_thread_activation_v1");
+    sqlx::query(&format!(
+        "DROP FUNCTION IF EXISTS {fresh_dialogue_function}(TEXT, TEXT, BIGINT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, BIGINT, TEXT)"
+    ))
     .execute(pool)
     .await?;
-    sqlx::query(
-        r#"CREATE OR REPLACE FUNCTION morphz_try_claim_fresh_dialogue_activation_v1(
+    sqlx::query(&format!(
+        r#"CREATE OR REPLACE FUNCTION {fresh_dialogue_function}(
              p_signal_id TEXT,
              p_thread_id TEXT,
              p_thread_generation BIGINT,
@@ -343,18 +354,18 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                  FROM thread_activations claimed
                 WHERE claimed.id = p_activation_id;
            END;
-           $function$"#,
-    )
+           $function$"#
+    ))
     .execute(pool)
     .await?;
 
-    sqlx::query(
-        "DROP FUNCTION IF EXISTS morphz_update_thread_activation_v1(TEXT, BIGINT, TEXT, TEXT, TEXT, BIGINT, TEXT)",
-    )
+    sqlx::query(&format!(
+        "DROP FUNCTION IF EXISTS {update_activation_function}(TEXT, BIGINT, TEXT, TEXT, TEXT, BIGINT, TEXT)"
+    ))
     .execute(pool)
     .await?;
-    sqlx::query(
-        r#"CREATE OR REPLACE FUNCTION morphz_update_thread_activation_v1(
+    sqlx::query(&format!(
+        r#"CREATE OR REPLACE FUNCTION {update_activation_function}(
              p_id TEXT,
              p_expected_revision BIGINT,
              p_status TEXT,
@@ -379,7 +390,7 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
            BEGIN
              SELECT activation.revision, activation.status,
                     activation.session_id, activation.root_turn_id,
-                    thread.kind, COALESCE(root_event.payload, '{}'::jsonb)
+                    thread.kind, COALESCE(root_event.payload, '{{}}'::jsonb)
                INTO current_revision, current_status, current_session_id,
                     current_root_turn_id, current_kind, root_payload
                FROM thread_activations activation
@@ -405,7 +416,7 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                -- cross-worker serialization in one client round trip.
                SELECT activation.revision, activation.status,
                       activation.root_turn_id, thread.kind,
-                      COALESCE(root_event.payload, '{}'::jsonb)
+                      COALESCE(root_event.payload, '{{}}'::jsonb)
                  INTO current_revision, current_status, current_root_turn_id,
                       current_kind, root_payload
                  FROM thread_activations activation
@@ -543,8 +554,8 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                FROM thread_activations current WHERE current.id = p_id;
              RETURN QUERY SELECT 'updated'::TEXT, snapshot;
            END;
-           $function$"#,
-    )
+           $function$"#
+    ))
     .execute(pool)
     .await?;
     Ok(())

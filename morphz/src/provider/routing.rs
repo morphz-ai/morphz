@@ -2858,6 +2858,95 @@ mod tests {
         assert!(error.to_string().contains("is not durable"));
     }
 
+    #[tokio::test]
+    async fn bound_health_probe_never_crosses_the_agents_authorized_account() {
+        let provider_app = axum::Router::new().route(
+            "/responses",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "content": [{ "type": "output_text", "text": "MORPHZ_OK" }]
+                    }]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, provider_app).await.unwrap();
+        });
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-health-a".into(),
+                title: "Agent Health A".into(),
+                root_context_id: "context-health-a".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-health-a".into(),
+                agent_id: "agent-health-a".into(),
+                title: "Health A".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_agent_provider_bindings("agent-health-a", &["account-a".to_string()])
+            .await
+            .unwrap();
+
+        let mut config = routed_config();
+        config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .base_url = format!("http://{address}");
+        let client = RoutedClient::new(&config, "coding".to_string()).unwrap();
+        client.attach_provider_account_state_store(store.clone());
+        client.attach_agent_provider_binding_store(store.clone());
+        let binding = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-health-a".into(),
+                session_id: "session-health-a".into(),
+                attempt_id: "attempt-health-a".into(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(binding.auth_account_id, "account-a");
+
+        // Once the attempt exists, a shared health transition may make the
+        // route prefer account-b. The recovery probe must still use the exact
+        // account that this Agent was authorized to bind.
+        store
+            .put_provider_account_state(
+                "account-a",
+                None,
+                ProviderAccountStatus::Disabled,
+                None,
+                Some("test_disabled_after_binding"),
+                false,
+            )
+            .await
+            .unwrap();
+        client.probe_health_bound(&binding).await.unwrap();
+
+        let state = client.state.lock().unwrap();
+        assert!(state.accounts.contains_key("account-a"));
+        assert!(!state.accounts.contains_key("account-b"));
+    }
+
     fn cross_model_fallback_config(fallback: bool) -> AppConfig {
         let mut config = routed_config();
         config

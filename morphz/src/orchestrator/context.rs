@@ -1,4 +1,12 @@
 use crate::config::OrchestratorConfig;
+pub use crate::context_state::{
+    ContextFrame, ContextMutationClocks, ContextRelation, FrameIdentityProvenance,
+    FrameProvenanceState, FrameRetirement, MindCheckpoint, MindState,
+};
+use crate::context_store::{
+    relation_logical_id, ContextCollection, ContextMutationPlan, ContextNodeValue,
+    ContextStateCommit, ContextStateMutation, ContextStateRecord,
+};
 use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_RUNTIME_WAKE,
     TYPE_SESSION_SIGNAL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -7,18 +15,18 @@ use crate::llm::{model_visible_message_text, ModelAttemptBinding};
 use crate::memory::{
     CognitiveClockStore, ContextCapabilityBindingRecord, ContextCapabilityBindingStore,
     ContextCognitiveClock, ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter,
-    ContextRuntimeSnapshotStore, DeliveryStatus, EventAppend, EventStore, ExecutionJobFilter,
-    ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
+    ContextRuntimeSnapshotStore, ContextStore, DeliveryStatus, EventAppend, EventStore,
+    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStore, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
-    ExecutionTargetRecord, ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord,
-    MindProjectionStore, MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallProjectionStore, RecallSearchHit, ScheduleRecord, ScheduleStatus, SessionAttentionState,
-    SessionAttentionUpdate, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionStatus, SessionStore, ThreadActivationRecord, ThreadGroupMemberRecord,
-    ThreadGroupRecord, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, WorkAssignmentRecord, WorkAssignmentStore, WorkerCoordinationMode,
+    ExecutionTargetRecord, ExecutionTargetStore, MindSnapshotRecord, ObjectiveRecord,
+    ObjectiveStore, QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest,
+    RecallIndexAudit, RecallProjectionStore, RecallSearchHit, ScheduleRecord, ScheduleStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionStore, ThreadActivationRecord,
+    ThreadGroupMemberRecord, ThreadGroupRecord, ThreadOutcomeRecord, ThreadPhase, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, WorkAssignmentRecord, WorkAssignmentStore,
+    WorkerCoordinationMode,
 };
 use crate::objective::OBJECTIVE_CONTINUATION_INSTRUCTION;
 use crate::orchestrator::context_contract::{
@@ -33,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Instant;
@@ -275,131 +284,6 @@ impl ContextReferences {
             )
         })
     }
-}
-
-/// A cognitive unit created by the LLM itself.
-///
-/// The runtime does not interpret the business semantics of `body`; it maintains only stable IDs,
-/// provenance, versions, and lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextFrame {
-    pub id: String,
-    pub body: String,
-    pub sources: Vec<String>,
-    /// Runtime-derived identity lineage. This is evidence provenance, not an
-    /// ownership or access-control decision made on behalf of the Agent.
-    #[serde(default)]
-    pub provenance: FrameIdentityProvenance,
-    pub revision: u64,
-    pub created_version: u64,
-    pub updated_version: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum FrameProvenanceState {
-    /// Legacy data or evidence whose Runtime origin is unavailable.
-    #[default]
-    Unknown,
-    /// The Frame was formed directly, without declared source evidence.
-    Unattributed,
-    /// At least one declared source has Runtime-verifiable origin metadata.
-    Attributed,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FrameIdentityProvenance {
-    pub formed_principal_id: Option<String>,
-    pub formed_session_id: Option<String>,
-    pub source_principal_ids: Vec<String>,
-    pub source_session_ids: Vec<String>,
-    pub state: FrameProvenanceState,
-}
-
-/// A semantic relation declared by the agent. The runtime interprets only the old/new meaning of
-/// `supersedes`; other relation names remain open and receive no implicit business inference.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextRelation {
-    pub subject: String,
-    pub relation: String,
-    pub object: String,
-    pub created_version: u64,
-}
-
-/// A model-requested retirement that is still inside its cognitive organizing
-/// window. Generation and Frame revision fence later automatic finalization.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FrameRetirement {
-    pub frame_id: String,
-    pub requested_frame_revision: u64,
-    pub requested_mind_version: u64,
-    pub requested_at_tick: u64,
-    pub eligible_at_tick: u64,
-    pub generation: u64,
-    pub reason: String,
-}
-
-/// A Mind restore point explicitly created by the agent. Snapshots exclude other checkpoints to
-/// prevent recursive copying; the runtime exposes only metadata in Context.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MindCheckpoint {
-    pub id: String,
-    pub frames: Vec<ContextFrame>,
-    pub relations: Vec<ContextRelation>,
-    pub retired: BTreeSet<String>,
-    #[serde(default)]
-    pub retiring: BTreeMap<String, FrameRetirement>,
-    pub protected: BTreeSet<String>,
-    pub created_version: u64,
-}
-
-/// Per-object mutation boundaries used to rebase stale Context transactions.
-///
-/// The global Mind version remains the physical commit sequence. These clocks
-/// record semantic mutation boundaries which are not already represented by
-/// `ContextFrame::{created_version, updated_version}`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextMutationClocks {
-    /// Version from which object-local mutations are known to be tracked.
-    /// Legacy materialized projections leave this empty; their first exact
-    /// commit establishes the boundary.
-    #[serde(default)]
-    pub tracking_started_version: Option<u64>,
-    /// Last change to an ID's active/retiring/retired/protected lifecycle.
-    #[serde(default)]
-    pub lifecycle_versions: BTreeMap<String, u64>,
-    /// Last add/remove of one exact semantic relation edge.
-    #[serde(default)]
-    pub relation_versions: BTreeMap<String, u64>,
-    /// Last mutation of Frame presentation order.
-    #[serde(default)]
-    pub frame_order_version: u64,
-    /// Last create/drop of a checkpoint identity.
-    #[serde(default)]
-    pub checkpoint_versions: BTreeMap<String, u64>,
-    /// Last operation, such as rollback, that replaced broad Mind state.
-    #[serde(default)]
-    pub global_barrier_version: u64,
-}
-
-/// Persistent Mind state owned by the agent.
-///
-/// `retired` may contain both frame IDs and observation IDs from persisted Events. Retirement affects
-/// only the current Context viewport and never deletes underlying facts.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MindState {
-    pub version: u64,
-    pub frames: Vec<ContextFrame>,
-    #[serde(default)]
-    pub relations: Vec<ContextRelation>,
-    pub retired: BTreeSet<String>,
-    #[serde(default)]
-    pub retiring: BTreeMap<String, FrameRetirement>,
-    pub protected: BTreeSet<String>,
-    #[serde(default)]
-    pub checkpoints: Vec<MindCheckpoint>,
-    #[serde(default)]
-    pub mutation_clocks: ContextMutationClocks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -982,6 +866,15 @@ pub struct SessionWorkingSetView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextView {
     pub context_id: String,
+    /// Greatest immutable Event sequence admitted by the physical visibility
+    /// snapshot used to compile the model-facing View. Sequence is append
+    /// identity, not causal order.
+    #[serde(default)]
+    pub event_sequence_upper_bound: u64,
+    /// Opaque Store visibility token captured with the Event frontier. This
+    /// closes the PostgreSQL sequence-reservation/commit-order gap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_visibility_snapshot: Option<String>,
     /// Exact budget policy used to compile this projection.
     pub token_budget_policy: ContextTokenBudget,
     pub active_session_id: String,
@@ -1078,6 +971,10 @@ pub struct FrameRecallRequest {
     pub include_events: bool,
     pub max_nodes: usize,
     pub cursor: Option<String>,
+    /// Runtime-injected physical View boundary. Operator callers may leave
+    /// this empty for an explicit current-state inspection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_manifest: Option<ContextViewManifest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1088,6 +985,113 @@ pub struct RecallSearchRequest {
     pub end_time: Option<DateTime<Utc>>,
     pub limit: usize,
     pub cursor: Option<String>,
+    /// Runtime-injected identity of the exact Context View used for the model
+    /// request that selected Recall. Control-plane callers may leave this
+    /// empty to request an explicit Context-wide history search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_manifest: Option<ContextViewManifest>,
+}
+
+/// The model-facing residency boundary for one physical request.
+///
+/// Visibility and residency are deliberately separate. The current default
+/// visibility policy is the whole Cognitive Context (including Sessions from
+/// different Principals); `resident_*` only prevents content already encoded
+/// in this exact request from being injected a second time. Future explicit
+/// visibility predicates must change `visibility_fingerprint` and preserve
+/// the same cursor check rather than silently turning Principal identity into
+/// a default isolation boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextViewManifest {
+    pub context_id: String,
+    pub mind_version: u64,
+    /// Inclusive physical Event-sequence frontier of the model request.
+    /// Recall may read resident identities explicitly, but ordinary lookup
+    /// may never cross this sequence or the backend visibility snapshot into
+    /// facts committed after the request was constructed.
+    pub event_sequence_upper_bound: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_visibility_snapshot: Option<String>,
+    pub visibility_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resident_event_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resident_frame_ids: Vec<String>,
+}
+
+impl ContextViewManifest {
+    pub fn context_wide(
+        context_id: impl Into<String>,
+        mind_version: u64,
+        event_sequence_upper_bound: u64,
+        resident_event_ids: impl IntoIterator<Item = String>,
+        resident_frame_ids: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let context_id = context_id.into();
+        let mut resident_event_ids = resident_event_ids.into_iter().collect::<Vec<_>>();
+        resident_event_ids.sort();
+        resident_event_ids.dedup();
+        let mut resident_frame_ids = resident_frame_ids.into_iter().collect::<Vec<_>>();
+        resident_frame_ids.sort();
+        resident_frame_ids.dedup();
+        Self {
+            visibility_fingerprint: recall_context_visibility_fingerprint(&context_id),
+            context_id,
+            mind_version,
+            event_sequence_upper_bound,
+            event_visibility_snapshot: None,
+            resident_event_ids,
+            resident_frame_ids,
+        }
+    }
+
+    pub fn from_view(
+        view: &ContextView,
+        additionally_resident_event_ids: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let mut resident_event_ids = view
+            .observations
+            .iter()
+            // A preview is intentionally only partially resident and must
+            // remain Recallable. `recalled-chunk` is a complete tool result
+            // Event even when the original source Event has more pages.
+            .filter(|observation| observation.representation != "preview")
+            .map(|observation| observation.id.clone())
+            .chain(additionally_resident_event_ids)
+            .collect::<Vec<_>>();
+        resident_event_ids.sort();
+        resident_event_ids.dedup();
+
+        let mut resident_frame_ids = view
+            .state
+            .frames
+            .iter()
+            .filter(|frame| !view.state.retired.contains(&frame.id))
+            .map(|frame| frame.id.clone())
+            .collect::<Vec<_>>();
+        resident_frame_ids.sort();
+        resident_frame_ids.dedup();
+
+        let mut manifest = Self::context_wide(
+            view.context_id.clone(),
+            view.state.version,
+            view.event_sequence_upper_bound,
+            resident_event_ids,
+            resident_frame_ids,
+        );
+        manifest.event_visibility_snapshot = view.event_visibility_snapshot.clone();
+        manifest
+    }
+
+    pub(crate) fn validate_for_context(&self, context_id: &str) -> Result<(), DynError> {
+        if self.context_id != context_id {
+            return Err("Recall Context View manifest belongs to another Context".into());
+        }
+        if self.visibility_fingerprint != recall_context_visibility_fingerprint(context_id) {
+            return Err("Recall Context View manifest has an unsupported visibility policy".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1178,7 +1182,23 @@ struct RecallSearchCursor {
     normalized_query: String,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+    visibility_fingerprint: String,
+    /// Original inclusive request frontier. A later physical request may page
+    /// this older snapshot, but it must never use a cursor from its future.
+    #[serde(default)]
+    through_sequence: Option<u64>,
+    #[serde(default)]
+    through_mind_version: Option<u64>,
+    #[serde(default)]
+    event_visibility_snapshot: Option<String>,
     before_sequence: u64,
+}
+
+fn recall_context_visibility_fingerprint(context_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"morphz/recall-visibility/context-wide/v1\0");
+    digest.update(context_id.as_bytes());
+    format!("v1:{:x}", digest.finalize())
 }
 
 fn select_session_working_set(
@@ -1331,7 +1351,7 @@ fn select_session_working_set(
 pub struct ContextEngine {
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
-    mind_projection_store: Option<Arc<dyn MindProjectionStore>>,
+    context_store: Option<Arc<dyn ContextStore>>,
     session_projection_store: Option<Arc<dyn SessionProjectionStore>>,
     recall_projection_store: Option<Arc<dyn RecallProjectionStore>>,
     cognitive_clock_store: Option<Arc<dyn CognitiveClockStore>>,
@@ -1349,8 +1369,74 @@ pub struct ContextEngine {
     model_context_capacities: Arc<RwLock<HashMap<String, ModelContextCapacity>>>,
     evaluation_model_policy: Arc<RwLock<EvaluationModelPolicy>>,
     context_locks: DashMap<String, Weak<Mutex<()>>>,
+    context_state_cache: Arc<RwLock<ContextStateCache>>,
     capacity_metrics: ContextCapacityMetrics,
     observability: Arc<crate::observability::Observability>,
+}
+
+/// Small in-process working set for already validated authoritative Context
+/// states. The durable Store remains the source of truth. Exclusive workers
+/// may read it directly; shared workers may use an entry only as a candidate
+/// behind a database revision fence.
+struct ContextStateCache {
+    capacity: usize,
+    entries: HashMap<String, Arc<MindState>>,
+    least_to_most_recent: VecDeque<String>,
+}
+
+impl ContextStateCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+            least_to_most_recent: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, context_id: &str) -> Option<Arc<MindState>> {
+        let state = Arc::clone(self.entries.get(context_id)?);
+        self.least_to_most_recent
+            .retain(|candidate| candidate != context_id);
+        self.least_to_most_recent.push_back(context_id.to_string());
+        Some(state)
+    }
+
+    fn insert(&mut self, context_id: String, state: MindState) {
+        if self.capacity == 0 {
+            return;
+        }
+        if self
+            .entries
+            .get(&context_id)
+            .is_some_and(|current| current.version > state.version)
+        {
+            // A cold Store read may have overlapped a successful local
+            // commit. Never let that older read replace the state installed
+            // by the committing writer.
+            return;
+        }
+        self.entries.insert(context_id.clone(), Arc::new(state));
+        self.least_to_most_recent
+            .retain(|candidate| candidate != &context_id);
+        self.least_to_most_recent.push_back(context_id);
+        while self.entries.len() > self.capacity {
+            let Some(evicted) = self.least_to_most_recent.pop_front() else {
+                break;
+            };
+            self.entries.remove(&evicted);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.least_to_most_recent.clear();
+    }
+
+    fn remove(&mut self, context_id: &str) {
+        self.entries.remove(context_id);
+        self.least_to_most_recent
+            .retain(|candidate| candidate != context_id);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1411,6 +1497,7 @@ impl Drop for ContextLockGuard<'_> {
 
 impl ContextEngine {
     pub fn new(store: Arc<dyn EventStore>, config: OrchestratorConfig) -> Self {
+        let context_state_cache_capacity = config.context_state_cache_capacity;
         let fallback_capacity = ModelContextCapacity {
             provider: None,
             model: String::new(),
@@ -1422,7 +1509,7 @@ impl ContextEngine {
         Self {
             store,
             session_store: None,
-            mind_projection_store: None,
+            context_store: None,
             session_projection_store: None,
             recall_projection_store: None,
             cognitive_clock_store: None,
@@ -1440,6 +1527,9 @@ impl ContextEngine {
             model_context_capacities: Arc::new(RwLock::new(HashMap::new())),
             evaluation_model_policy: Arc::new(RwLock::new(EvaluationModelPolicy::default())),
             context_locks: DashMap::new(),
+            context_state_cache: Arc::new(RwLock::new(ContextStateCache::new(
+                context_state_cache_capacity,
+            ))),
             capacity_metrics: ContextCapacityMetrics::default(),
             observability: Arc::new(crate::observability::Observability::default()),
         }
@@ -1656,11 +1746,8 @@ impl ContextEngine {
         Ok((config, budget))
     }
 
-    pub fn with_mind_projection_store(
-        mut self,
-        mind_projection_store: Arc<dyn MindProjectionStore>,
-    ) -> Self {
-        self.mind_projection_store = Some(mind_projection_store);
+    pub fn with_context_store(mut self, context_store: Arc<dyn ContextStore>) -> Self {
+        self.context_store = Some(context_store);
         self
     }
 
@@ -1741,12 +1828,79 @@ impl ContextEngine {
     }
 
     pub fn with_worker_coordination_mode(mut self, mode: WorkerCoordinationMode) -> Self {
+        if self.worker_coordination_mode != mode {
+            self.context_state_cache
+                .write()
+                .expect("Context state cache lock poisoned")
+                .clear();
+        }
         self.worker_coordination_mode = mode;
         self
     }
 
     pub fn worker_coordination_mode(&self) -> WorkerCoordinationMode {
         self.worker_coordination_mode
+    }
+
+    fn cached_context_state(&self, context_id: &str) -> Option<MindState> {
+        if self.worker_coordination_mode != WorkerCoordinationMode::ExclusiveProcess {
+            return None;
+        }
+        self.resident_context_state(context_id)
+    }
+
+    /// Returns a resident state without asserting that it is current. Callers
+    /// in shared-worker modes must present its revision to an authoritative
+    /// Store snapshot and use it only when the returned head matches.
+    fn resident_context_state(&self, context_id: &str) -> Option<MindState> {
+        self.context_state_cache
+            .write()
+            .expect("Context state cache lock poisoned")
+            .get(context_id)
+            .map(|state| (*state).clone())
+    }
+
+    fn cache_context_state(&self, context_id: &str, state: MindState) {
+        self.context_state_cache
+            .write()
+            .expect("Context state cache lock poisoned")
+            .insert(context_id.to_string(), state);
+    }
+
+    fn invalidate_cached_context_state(&self, context_id: &str) {
+        self.context_state_cache
+            .write()
+            .expect("Context state cache lock poisoned")
+            .remove(context_id);
+    }
+
+    fn resolve_directory_context_state(
+        &self,
+        context_id: &str,
+        snapshot: &crate::memory::ContextRuntimeDirectorySnapshot,
+        resident: Option<&MindState>,
+    ) -> Result<Option<MindState>, DynError> {
+        if let Some(record) = snapshot.context_state.clone() {
+            let state = Self::validate_context_state_record(context_id, record)?;
+            self.cache_context_state(context_id, state.clone());
+            return Ok(Some(state));
+        }
+        let Some(head) = &snapshot.context_state_head else {
+            return Ok(None);
+        };
+        let resident = resident.ok_or_else(|| {
+            format!(
+                "Context directory omitted Mind payload for Context '{context_id}' without a resident revision"
+            )
+        })?;
+        if head.context_id != context_id || head.revision != resident.version {
+            return Err(format!(
+                "Context directory Mind fence mismatch for Context '{context_id}': resident revision {}, snapshot head {}@{}",
+                resident.version, head.context_id, head.revision
+            )
+            .into());
+        }
+        Ok(Some(resident.clone()))
     }
 
     pub fn capacity_metrics(&self) -> ContextCapacityMetricsSnapshot {
@@ -1778,40 +1932,43 @@ impl ContextEngine {
             .clamp(4_000, 20_000)
     }
 
-    fn validate_mind_projection(
+    fn validate_context_state_record(
         context_id: &str,
-        projection: MindProjectionRecord,
+        record: ContextStateRecord,
     ) -> Result<MindState, DynError> {
-        let state: MindState =
-            serde_json::from_value(projection.state.clone()).map_err(|error| {
-                format!("failed to parse Mind Projection state for Context '{context_id}': {error}")
-            })?;
-        if state.version != projection.revision {
+        if record.context_id != context_id {
             return Err(format!(
-                "Mind Projection revision for Context '{context_id}' is inconsistent: state={}, head={}",
-                state.version, projection.revision
+                "Context state identity is inconsistent: requested='{context_id}', stored='{}'",
+                record.context_id
             )
             .into());
         }
-        let actual_hash = mind_state_hash(&state)?;
-        if !mind_state_hash_matches(&state, &projection.state_hash)? {
+        if record.state.version != record.revision {
             return Err(format!(
-                "Mind Projection hash for Context '{context_id}' is inconsistent: stored={}, actual={actual_hash}",
-                projection.state_hash
+                "Context state revision for Context '{context_id}' is inconsistent: state={}, head={}",
+                record.state.version, record.revision
             )
             .into());
         }
-        Ok(state)
+        let actual_hash = mind_state_hash(&record.state)?;
+        if !mind_state_hash_matches(&record.state, &record.state_hash)? {
+            return Err(format!(
+                "Context state hash for Context '{context_id}' is inconsistent: stored={}, actual={actual_hash}",
+                record.state_hash
+            )
+            .into());
+        }
+        Ok(record.state)
     }
 
     async fn recover_mind_from_latest_snapshot(
         &self,
         context_id: &str,
     ) -> Result<Option<SnapshotMindRecovery>, DynError> {
-        let Some(store) = &self.mind_projection_store else {
+        let Some(store) = &self.context_store else {
             return Ok(None);
         };
-        let Some(snapshot) = store.get_latest_mind_snapshot(context_id).await? else {
+        let Some(snapshot) = store.get_latest_context_snapshot(context_id).await? else {
             return Ok(None);
         };
         if snapshot.context_id != context_id {
@@ -1951,30 +2108,36 @@ impl ContextEngine {
         context_id: &str,
         known_events: Option<&[Event]>,
     ) -> Result<MindState, DynError> {
-        let Some(store) = &self.mind_projection_store else {
+        let Some(store) = &self.context_store else {
             let events = match known_events {
                 Some(events) => events.to_vec(),
                 None => self.context_events(context_id).await?,
             };
             return Ok(load_mind_from_events(&events)?);
         };
-        if let Some(projection) = store.get_mind_projection(context_id).await? {
-            return Self::validate_mind_projection(context_id, projection);
+        if let Some(state) = self.cached_context_state(context_id) {
+            return Ok(state);
+        }
+        if let Some(state) = store.get_context_state(context_id).await? {
+            let state = Self::validate_context_state_record(context_id, state)?;
+            self.cache_context_state(context_id, state.clone());
+            return Ok(state);
         }
 
         if let Some(recovery) = self.recover_mind_from_latest_snapshot(context_id).await? {
-            let state_hash = mind_state_hash(&recovery.state)?;
+            let commitment = crate::context_store::context_state_commitment(&recovery.state)?;
             let installed = store
-                .initialize_mind_projection(NewMindProjection {
-                    context_id: context_id.to_string(),
-                    revision: recovery.state.version,
-                    state: serde_json::to_value(&recovery.state)?,
-                    state_hash,
-                    head_event_id: Some(recovery.head_event_id),
-                    recall_documents: all_frame_recall_documents(context_id, &recovery.state),
-                })
+                .initialize_context_state(
+                    context_id,
+                    &recovery.state,
+                    &commitment,
+                    Some(&recovery.head_event_id),
+                    &all_frame_recall_documents(context_id, &recovery.state),
+                )
                 .await?;
-            return Self::validate_mind_projection(context_id, installed);
+            let state = Self::validate_context_state_record(context_id, installed)?;
+            self.cache_context_state(context_id, state.clone());
+            return Ok(state);
         }
 
         let owned_events;
@@ -1986,7 +2149,7 @@ impl ContextEngine {
             }
         };
         let replayed = load_mind_from_events(events)?;
-        let state_hash = mind_state_hash(&replayed)?;
+        let commitment = crate::context_store::context_state_commitment(&replayed)?;
         let head_event_id = events
             .iter()
             .rev()
@@ -2000,16 +2163,17 @@ impl ContextEngine {
             })
             .map(|event| event.id.clone());
         let installed = store
-            .initialize_mind_projection(NewMindProjection {
-                context_id: context_id.to_string(),
-                revision: replayed.version,
-                state: serde_json::to_value(&replayed)?,
-                state_hash,
-                head_event_id,
-                recall_documents: all_frame_recall_documents(context_id, &replayed),
-            })
+            .initialize_context_state(
+                context_id,
+                &replayed,
+                &commitment,
+                head_event_id.as_deref(),
+                &all_frame_recall_documents(context_id, &replayed),
+            )
             .await?;
-        Self::validate_mind_projection(context_id, installed)
+        let state = Self::validate_context_state_record(context_id, installed)?;
+        self.cache_context_state(context_id, state.clone());
+        Ok(state)
     }
 
     pub async fn apply_context_transaction(
@@ -2323,7 +2487,7 @@ impl ContextEngine {
             formed_session_id: Some(acting_session_id),
             observation_origins: Some(&observation_origins),
         };
-        let (next, mut changes) = apply_parsed_transaction_with_policy_and_provenance(
+        let applied = apply_parsed_transaction_with_policy_and_provenance_planned(
             &current,
             &parsed,
             &observation_ids,
@@ -2331,6 +2495,8 @@ impl ContextEngine {
             &formation,
             true,
         )?;
+        let next = applied.next;
+        let mut changes = applied.changes;
         attach_context_change_token_effects(
             &mut changes,
             &current,
@@ -2363,7 +2529,17 @@ impl ContextEngine {
             .prepare_session_attention_updates(context_id, acting_session_id, &parsed, &tx_id)
             .await?;
         let before_hash = mind_state_hash(&current)?;
-        let after_hash = mind_state_hash(&next)?;
+        let next_commitment = crate::context_store::context_state_commitment(&next)?;
+        let after_hash = next_commitment.state_hash().to_string();
+        let mutation_plan = ContextMutationPlan {
+            context_id: context_id.to_string(),
+            expected_revision: current.version,
+            next_revision: next.version,
+            expected_state_hash: before_hash.clone(),
+            next_state_hash: after_hash.clone(),
+            mutations: applied.mutations,
+        };
+        mutation_plan.validate_shape()?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(acting_session_id)),
@@ -2434,7 +2610,7 @@ impl ContextEngine {
         // Legacy stores have no durable Projection and therefore retain the
         // historical full-state receipt. Projection-backed production writes
         // use hashes plus periodic/explicit snapshots instead.
-        if self.mind_projection_store.is_none() {
+        if self.context_store.is_none() {
             payload.insert("state_after".to_string(), json!(&next));
         }
 
@@ -2445,28 +2621,32 @@ impl ContextEngine {
             "chat/context_tx_committed".to_string(),
             payload,
         );
-        if let Some(projection_store) = &self.mind_projection_store {
+        if let Some(projection_store) = &self.context_store {
+            let recall_documents = changed_frame_recall_documents(context_id, &current, &next);
             match projection_store
-                .commit_mind_projection_transaction(
+                .commit_context_mutation_transaction(
                     &event,
                     &attention_updates,
                     &session_projection,
-                    current.version,
-                    NewMindProjection {
-                        context_id: context_id.to_string(),
-                        revision: next.version,
-                        state: serde_json::to_value(&next)?,
-                        state_hash: after_hash,
-                        head_event_id: Some(tx_id.clone()),
-                        recall_documents: changed_frame_recall_documents(
-                            context_id, &current, &next,
-                        ),
-                    },
+                    &mutation_plan,
+                    &next,
+                    &next_commitment,
+                    &recall_documents,
                 )
                 .await?
             {
-                MindProjectionCommit::Committed { .. } => {}
-                MindProjectionCommit::Conflict { current_revision } => {
+                ContextStateCommit::Committed { .. } => {
+                    // The durable transaction is authoritative. Publish the
+                    // exact committed state to the process-local working set
+                    // before this writer returns to any subsequent caller.
+                    self.cache_context_state(context_id, next.clone());
+                }
+                ContextStateCommit::Conflict { current_revision } => {
+                    // A CAS conflict proves that another writer advanced the
+                    // durable head. This can occur in tests or after a Store
+                    // coordination-mode transition; never retry from the
+                    // process-local copy that just lost the fence.
+                    self.invalidate_cached_context_state(context_id);
                     return Err(format!(
                         "Context transaction CAS conflict: requested base-version {}, current Projection revision {:?}; retry from the latest Context Encoding",
                         current.version, current_revision
@@ -2806,6 +2986,7 @@ impl ContextEngine {
         }
         let snapshot_hash = mind_state_hash(&source_state)?;
         let projected_hash = mind_state_hash(&projected)?;
+        let projected_commitment = crate::context_store::context_state_commitment(&projected)?;
         let seed_id = format!(
             "context_seed_{}_{}",
             target_context_id,
@@ -2836,38 +3017,31 @@ impl ContextEngine {
             .into_iter()
             .collect(),
         );
-        if let Some(projection_store) = &self.mind_projection_store {
+        if let Some(projection_store) = &self.context_store {
             let empty = MindState::default();
+            let empty_commitment = crate::context_store::context_state_commitment(&empty)?;
             projection_store
-                .initialize_mind_projection(NewMindProjection {
-                    context_id: target_context_id.to_string(),
-                    revision: 0,
-                    state: serde_json::to_value(&empty)?,
-                    state_hash: mind_state_hash(&empty)?,
-                    head_event_id: None,
-                    recall_documents: Vec::new(),
-                })
+                .initialize_context_state(target_context_id, &empty, &empty_commitment, None, &[])
                 .await?;
             match projection_store
-                .commit_mind_seed_projection(
+                .commit_context_seed_transaction(
                     &event,
+                    target_context_id,
                     source_context_id,
                     source_state.version,
                     &snapshot_hash,
                     "mind_snapshot",
-                    NewMindProjection {
-                        context_id: target_context_id.to_string(),
-                        revision: 0,
-                        state: serde_json::to_value(&projected)?,
-                        state_hash: projected_hash.clone(),
-                        head_event_id: Some(seed_id),
-                        recall_documents: all_frame_recall_documents(target_context_id, &projected),
-                    },
+                    &projected,
+                    &projected_commitment,
+                    &all_frame_recall_documents(target_context_id, &projected),
                 )
                 .await?
             {
-                MindProjectionCommit::Committed { .. } => {}
-                MindProjectionCommit::Conflict { current_revision } => {
+                ContextStateCommit::Committed { .. } => {
+                    self.cache_context_state(target_context_id, projected.clone());
+                }
+                ContextStateCommit::Conflict { current_revision } => {
+                    self.invalidate_cached_context_state(target_context_id);
                     return Err(format!(
                         "Mind Seed CAS conflict for target Context '{}', current revision {:?}",
                         target_context_id, current_revision
@@ -2878,7 +3052,7 @@ impl ContextEngine {
         } else {
             self.store.append(event).await?;
         }
-        if self.mind_projection_store.is_none() {
+        if self.context_store.is_none() {
             if let Some(session_store) = &self.session_store {
                 session_store
                     .set_context_seed(
@@ -3255,6 +3429,27 @@ impl ContextEngine {
         let active_window_seconds =
             i64::try_from(self.config.session_working_set.active_window.as_secs())
                 .unwrap_or(i64::MAX);
+        let mut resident_mind_state = self.resident_context_state(context_id);
+        // Coalesce only the first full-state load for a Context. Without this
+        // short critical section, a burst arriving immediately after process
+        // startup can make every Activation observe an empty resident cache
+        // and independently fetch/rebuild the complete ContextDB AST. Once
+        // one reader publishes the validated state, followers still take
+        // their own session-specific directory snapshots, but those snapshots
+        // carry a revision fence and omit the large Mind payload.
+        //
+        // Reuse the Context mutation mutex so a local writer cannot race this
+        // initial publication. The guard is deliberately released before
+        // retirement finalization and the rest of Context construction; normal
+        // parallel model evaluation remains concurrent.
+        let cold_state_guard = if resident_mind_state.is_none() {
+            Some(self.lock_context(context_id).await)
+        } else {
+            None
+        };
+        if cold_state_guard.is_some() {
+            resident_mind_state = self.resident_context_state(context_id);
+        }
         let directory_request = ContextRuntimeDirectoryRequest {
             context_id: context_id.to_string(),
             active_session_id: active_session_id.to_string(),
@@ -3264,6 +3459,7 @@ impl ContextEngine {
             // as compact control metadata, but that exception must itself be
             // bounded rather than reintroducing an unbounded Session registry.
             max_metadata_sessions: self.config.session_working_set.max_sessions,
+            known_context_state_revision: resident_mind_state.as_ref().map(|state| state.version),
             // Principal/tenant visibility is an explicit Store predicate. The
             // current product policy shares all Sessions mounted to the
             // Context; a future caller can supply Runtime-verified Principals
@@ -3289,20 +3485,29 @@ impl ContextEngine {
             }
             None => None,
         };
-        let initial_retirement_state = directory_snapshot
+        let mut directory_mind_state = directory_snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.mind.clone())
-            .map(|projection| {
-                Ok::<_, DynError>((
-                    directory_snapshot
-                        .as_ref()
-                        .expect("directory snapshot exists with its Mind")
-                        .cognitive_clock
-                        .clone(),
-                    Self::validate_mind_projection(context_id, projection)?,
-                ))
+            .map(|snapshot| {
+                self.resolve_directory_context_state(
+                    context_id,
+                    snapshot,
+                    resident_mind_state.as_ref(),
+                )
             })
-            .transpose()?;
+            .transpose()?
+            .flatten();
+        resident_mind_state = directory_mind_state.clone();
+        drop(cold_state_guard);
+        let initial_retirement_state = directory_mind_state.as_ref().map(|state| {
+            (
+                directory_snapshot
+                    .as_ref()
+                    .expect("directory snapshot exists with its Mind")
+                    .cognitive_clock
+                    .clone(),
+                state.clone(),
+            )
+        });
         let finalized_retirements = self
             .finalize_due_frame_retirements(context_id, active_session_id, initial_retirement_state)
             .await?;
@@ -3320,6 +3525,24 @@ impl ContextEngine {
                 );
                 directory_snapshot =
                     Some(result?.ok_or_else(|| format!("Context '{context_id}' does not exist"))?);
+                // A retirement commit may have advanced the local cache. The
+                // request still carries the older revision, so a changed Store
+                // head returns its full payload; an unchanged head can safely
+                // reuse either resident copy.
+                resident_mind_state = self
+                    .resident_context_state(context_id)
+                    .or(resident_mind_state);
+                directory_mind_state = directory_snapshot
+                    .as_ref()
+                    .map(|snapshot| {
+                        self.resolve_directory_context_state(
+                            context_id,
+                            snapshot,
+                            resident_mind_state.as_ref(),
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
             }
         }
         let (budget_config, token_budget_policy) = if let Some(snapshot) = &directory_snapshot {
@@ -3454,58 +3677,120 @@ impl ContextEngine {
             phase_started.elapsed(),
         );
         phase_started = Instant::now();
-        let (state, events) = match legacy_events {
-            Some(events) => {
-                let state = self.load_current_mind(context_id, Some(&events)).await?;
-                (state, events)
-            }
-            None => {
-                if let (Some(projection_store), Some(_)) =
-                    (&self.session_projection_store, &self.mind_projection_store)
-                {
-                    let mut snapshot = projection_store
-                        .read_context_encoding_projection_snapshot(
-                            context_id,
-                            &full_session_ids,
-                            true,
-                        )
-                        .await?;
-                    if snapshot.mind.is_none() {
-                        // Lazily migrate legacy persisted Events, then take a fresh
-                        // atomic snapshot. The steady-state path performs only
-                        // the single snapshot read above.
-                        self.load_current_mind(context_id, None).await?;
-                        snapshot = projection_store
-                            .read_context_encoding_projection_snapshot(
+        let (state, events, event_sequence_upper_bound, event_visibility_snapshot) =
+            match legacy_events {
+                Some(events) => {
+                    let state = self.load_current_mind(context_id, Some(&events)).await?;
+                    let event_sequence_upper_bound = events
+                        .iter()
+                        .filter_map(|event| event.sequence)
+                        .max()
+                        .unwrap_or(0);
+                    (state, events, event_sequence_upper_bound, None)
+                }
+                None => {
+                    if let (Some(projection_store), Some(_)) =
+                        (&self.session_projection_store, &self.context_store)
+                    {
+                        let mut snapshot = projection_store
+                            .read_context_encoding_state_snapshot(
                                 context_id,
                                 &full_session_ids,
                                 true,
+                                directory_mind_state.as_ref().map(|state| state.version),
                             )
                             .await?;
+                        if snapshot.context_state.is_none() && snapshot.context_state_head.is_none()
+                        {
+                            // Lazily migrate legacy persisted Events, then take a fresh
+                            // atomic snapshot. The steady-state path performs only
+                            // the single snapshot read above.
+                            directory_mind_state =
+                                Some(self.load_current_mind(context_id, None).await?);
+                            snapshot = projection_store
+                                .read_context_encoding_state_snapshot(
+                                    context_id,
+                                    &full_session_ids,
+                                    true,
+                                    directory_mind_state.as_ref().map(|state| state.version),
+                                )
+                                .await?;
+                        }
+                        let event_sequence_upper_bound = snapshot.event_sequence_upper_bound;
+                        let event_visibility_snapshot = snapshot.event_visibility_snapshot.clone();
+                        let state = match snapshot.context_state {
+                            Some(record) => {
+                                let state =
+                                    Self::validate_context_state_record(context_id, record)?;
+                                self.cache_context_state(context_id, state.clone());
+                                state
+                            }
+                            None => {
+                                let head = snapshot.context_state_head.ok_or_else(|| {
+                                    format!(
+                                        "consistent encoding snapshot for Context '{context_id}' is missing a Mind head"
+                                    )
+                                })?;
+                                let resident =
+                                    directory_mind_state.as_ref().ok_or_else(|| {
+                                        format!(
+                                            "Context Encoding omitted Mind payload for Context '{context_id}' without a resident revision"
+                                        )
+                                    })?;
+                                if head.context_id != context_id
+                                    || head.revision != resident.version
+                                {
+                                    return Err(format!(
+                                        "Context Encoding Mind fence mismatch for Context '{context_id}': resident revision {}, snapshot head {}@{}",
+                                        resident.version, head.context_id, head.revision
+                                    )
+                                    .into());
+                                }
+                                resident.clone()
+                            }
+                        };
+                        (
+                            state,
+                            snapshot.events,
+                            event_sequence_upper_bound,
+                            event_visibility_snapshot,
+                        )
+                    } else {
+                        // Lightweight/legacy configurations must provide both
+                        // materialized projections before they can use the atomic
+                        // snapshot path. Otherwise Mind still comes from Event replay
+                        // replay while active observations come from the optional
+                        // Session Projection compatibility path.
+                        let state = self.load_current_mind(context_id, None).await?;
+                        let events = self
+                            .context_encoding_events(context_id, &full_session_ids)
+                            .await?;
+                        // Lightweight compatibility stores do not expose the
+                        // atomic Projection snapshot contract. Fence Recall at a
+                        // later Context-wide Event read and never below an Event
+                        // which was already included in this View.
+                        let latest = self
+                            .store
+                            .query(QueryFilter {
+                                context_id: Some(context_id.to_string()),
+                                latest_k: Some(1),
+                                ..Default::default()
+                            })
+                            .await?
+                            .into_iter()
+                            .filter_map(|event| event.sequence)
+                            .max()
+                            .unwrap_or(0);
+                        let event_sequence_upper_bound = events
+                            .iter()
+                            .filter_map(|event| event.sequence)
+                            .max()
+                            .unwrap_or(0)
+                            .max(latest);
+                        (state, events, event_sequence_upper_bound, None)
                     }
-                    let state = Self::validate_mind_projection(
-                        context_id,
-                        snapshot.mind.ok_or_else(|| {
-                            format!(
-                                "consistent encoding snapshot for Context '{context_id}' is missing a Mind Projection"
-                            )
-                        })?,
-                    )?;
-                    (state, snapshot.events)
-                } else {
-                    // Lightweight/legacy configurations must provide both
-                    // materialized projections before they can use the atomic
-                    // snapshot path. Otherwise Mind still comes from Event replay
-                    // replay while active observations come from the optional
-                    // Session Projection compatibility path.
-                    let state = self.load_current_mind(context_id, None).await?;
-                    let events = self
-                        .context_encoding_events(context_id, &full_session_ids)
-                        .await?;
-                    (state, events)
                 }
-            }
-        };
+            };
         self.record_context_build_phase(
             activation_record,
             context_id,
@@ -4219,6 +4504,26 @@ impl ContextEngine {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        // The Projection snapshot supplies the normal frontier. A Context
+        // build also joins bounded scheduler/causality snapshots which may
+        // contain a later already-committed Signal. Never publish a manifest
+        // whose boundary is below an Event identity physically encoded in the
+        // same request.
+        let event_sequence_upper_bound = events
+            .iter()
+            .filter_map(|event| event.sequence)
+            .chain(
+                active_activations
+                    .iter()
+                    .map(|activation| activation.trigger_sequence),
+            )
+            .chain(thread_signals.iter().map(|signal| signal.sequence))
+            .chain(
+                activation
+                    .iter()
+                    .flat_map(|focus| focus.signal_batch.iter().map(|signal| signal.sequence)),
+            )
+            .fold(event_sequence_upper_bound, u64::max);
         let sexpr = if include_encoding {
             {
                 render_context(ContextRenderInput {
@@ -4268,6 +4573,8 @@ impl ContextEngine {
 
         Ok(ContextView {
             context_id: context_id.to_string(),
+            event_sequence_upper_bound,
+            event_visibility_snapshot,
             token_budget_policy,
             active_session_id: active_session_id.to_string(),
             active_principal_id,
@@ -4696,6 +5003,17 @@ impl ContextEngine {
         context_id: &str,
         event_id: &str,
     ) -> Result<Option<Event>, DynError> {
+        self.find_event_through_sequence(context_id, event_id, None, None)
+            .await
+    }
+
+    pub(crate) async fn find_event_through_sequence(
+        &self,
+        context_id: &str,
+        event_id: &str,
+        through_sequence: Option<u64>,
+        event_visibility_snapshot: Option<String>,
+    ) -> Result<Option<Event>, DynError> {
         let by_reference = event_id.strip_prefix(EVENT_REFERENCE_PREFIX);
         let filter = match by_reference {
             Some(sequence) => QueryFilter {
@@ -4703,12 +5021,16 @@ impl ContextEngine {
                 sequence: Some(sequence.parse::<u64>().map_err(|_| {
                     format!("Context short reference '{event_id}' is not a valid Event sequence")
                 })?),
+                through_sequence,
+                event_visibility_snapshot,
                 top_k: Some(1),
                 ..Default::default()
             },
             None => QueryFilter {
                 event_id: Some(event_id.to_string()),
                 context_id: Some(context_id.to_string()),
+                through_sequence,
+                event_visibility_snapshot,
                 top_k: Some(1),
                 ..Default::default()
             },
@@ -4754,6 +5076,15 @@ impl ContextEngine {
         request.depth = request.depth.min(4);
         request.max_nodes = request.max_nodes.clamp(1, 128);
         let state = self.load_current_mind(&request.context_id, None).await?;
+        if let Some(manifest) = request.view_manifest.as_ref() {
+            manifest.validate_for_context(&request.context_id)?;
+            if state.version != manifest.mind_version {
+                return Err(
+                    "Mind changed after the physical Context View was built; retry Frame Recall from a fresh Evaluation"
+                        .into(),
+                );
+            }
+        }
         let offset = if let Some(cursor) = &request.cursor {
             let cursor = self.decode_frame_recall_cursor(cursor)?;
             if cursor.context_id != request.context_id
@@ -4909,14 +5240,23 @@ impl ContextEngine {
                     }
                 }
                 NodeKey::Event(id) => {
-                    let event =
-                        self.find_event(&request.context_id, id)
-                            .await?
-                            .ok_or_else(|| {
-                                format!(
-                                    "frame source event '{id}' does not exist or is unauthorized"
-                                )
-                            })?;
+                    let event = self
+                        .find_event_through_sequence(
+                            &request.context_id,
+                            id,
+                            request
+                                .view_manifest
+                                .as_ref()
+                                .map(|manifest| manifest.event_sequence_upper_bound),
+                            request
+                                .view_manifest
+                                .as_ref()
+                                .and_then(|manifest| manifest.event_visibility_snapshot.clone()),
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            format!("frame source event '{id}' does not exist or is unauthorized")
+                        })?;
                     let body = event_text(&event);
                     FrameRecallNode::Event {
                         id: id.clone(),
@@ -5050,7 +5390,7 @@ impl ContextEngine {
         const MAX_STABLE_VIEW_RETRIES: usize = 8;
 
         let projection_store = self
-            .mind_projection_store
+            .context_store
             .as_ref()
             .ok_or("ContextEngine has no MindProjectionStore and cannot audit the Projection")?;
         for attempt in 0..=MAX_STABLE_VIEW_RETRIES {
@@ -5064,12 +5404,12 @@ impl ContextEngine {
             let full_replay_micros = full_replay_started.elapsed().as_micros() as u64;
             let replayed_state_hash = mind_state_hash(&replayed_state)?;
             let projection_validation_started = std::time::Instant::now();
-            let projection = projection_store.get_mind_projection(context_id).await?;
+            let projection = projection_store.get_context_state(context_id).await?;
             let (projection_revision, projection_hash, valid_projection) = match projection {
                 Some(projection) => {
                     let revision = projection.revision;
                     let stored_hash = projection.state_hash.clone();
-                    let valid = Self::validate_mind_projection(context_id, projection)
+                    let valid = Self::validate_context_state_record(context_id, projection)
                         .map(|state| state == replayed_state)
                         .unwrap_or(false);
                     (Some(revision), Some(stored_hash), valid)
@@ -5565,6 +5905,44 @@ impl ContextRecallService for ContextEngine {
             return Err("Recall start_time must be earlier than end_time".into());
         }
         let normalized_query = crate::memory::normalize_recall_text(&query);
+        let expected_visibility_fingerprint =
+            recall_context_visibility_fingerprint(&request.context_id);
+        let (
+            excluded_event_ids,
+            excluded_frame_ids,
+            visibility_fingerprint,
+            mut through_sequence,
+            mut through_mind_version,
+            mut event_visibility_snapshot,
+        ) = request
+            .view_manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest.validate_for_context(&request.context_id)?;
+                Ok::<_, DynError>((
+                    manifest.resident_event_ids.clone(),
+                    manifest.resident_frame_ids.clone(),
+                    manifest.visibility_fingerprint.clone(),
+                    Some(manifest.event_sequence_upper_bound),
+                    Some(manifest.mind_version),
+                    manifest.event_visibility_snapshot.clone(),
+                ))
+            })
+            .transpose()?
+            .unwrap_or_else(|| {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    expected_visibility_fingerprint.clone(),
+                    None,
+                    None,
+                    None,
+                )
+            });
+        let excluded_event_id_set = excluded_event_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
         let mut before_sequence = None;
         if let Some(cursor) = request.cursor.as_deref() {
             let cursor = self.decode_recall_search_cursor(cursor)?;
@@ -5572,11 +5950,43 @@ impl ContextRecallService for ContextEngine {
                 || cursor.normalized_query != normalized_query
                 || cursor.start_time != request.start_time
                 || cursor.end_time != request.end_time
+                || cursor.visibility_fingerprint != visibility_fingerprint
             {
                 return Err(
                     "Recall search cursor does not match the current query parameters".into(),
                 );
             }
+            if let Some(manifest_sequence) = through_sequence {
+                let cursor_sequence = cursor.through_sequence.ok_or(
+                    "Recall search cursor predates physical View fencing; restart the search",
+                )?;
+                if cursor_sequence > manifest_sequence {
+                    return Err(
+                        "Recall search cursor belongs to a later Context View; restart the search"
+                            .into(),
+                    );
+                }
+            }
+            if let Some(manifest_version) = through_mind_version {
+                let cursor_version = cursor
+                    .through_mind_version
+                    .ok_or("Recall search cursor predates Mind View fencing; restart the search")?;
+                if cursor_version > manifest_version {
+                    return Err(
+                        "Recall search cursor belongs to a later Mind View; restart the search"
+                            .into(),
+                    );
+                }
+            }
+            if event_visibility_snapshot.is_some() && cursor.event_visibility_snapshot.is_none() {
+                return Err(
+                    "Recall search cursor predates transactional View fencing; restart the search"
+                        .into(),
+                );
+            }
+            through_sequence = cursor.through_sequence;
+            through_mind_version = cursor.through_mind_version;
+            event_visibility_snapshot = cursor.event_visibility_snapshot;
             before_sequence = Some(cursor.before_sequence);
         }
         let limit = request.limit.clamp(1, 100);
@@ -5592,6 +6002,9 @@ impl ContextRecallService for ContextEngine {
                     start_time: request.start_time,
                     end_time: request.end_time,
                     before_sequence,
+                    through_sequence,
+                    event_visibility_snapshot: event_visibility_snapshot.clone(),
+                    excluded_event_ids: excluded_event_ids.clone(),
                     topics: vec![
                         "chat/user_message".to_string(),
                         "chat/reply".to_string(),
@@ -5610,6 +6023,8 @@ impl ContextRecallService for ContextEngine {
             events
                 .into_iter()
                 .rev()
+                .filter(|event| !excluded_event_id_set.contains(event.id.as_str()))
+                .take(limit)
                 .map(|event| {
                     let preview = event_text(&event).chars().take(500).collect();
                     RecallSearchHit {
@@ -5632,6 +6047,11 @@ impl ContextRecallService for ContextEngine {
                     start_time: request.start_time,
                     end_time: request.end_time,
                     before_sequence,
+                    through_sequence,
+                    through_mind_version,
+                    event_visibility_snapshot: event_visibility_snapshot.clone(),
+                    excluded_event_ids: excluded_event_ids.clone(),
+                    excluded_frame_ids: excluded_frame_ids.clone(),
                     limit,
                 })
                 .await?
@@ -5643,8 +6063,11 @@ impl ContextRecallService for ContextEngine {
                     start_time: request.start_time,
                     end_time: request.end_time,
                     before_sequence,
+                    through_sequence,
+                    event_visibility_snapshot: event_visibility_snapshot.clone(),
+                    excluded_event_ids: excluded_event_ids.clone(),
                     excluded_topics: vec!["chat/context_inspect".to_string()],
-                    latest_k: Some(limit.saturating_mul(8).clamp(limit, 800)),
+                    latest_k: Some(limit.saturating_mul(8).clamp(limit, 8_192)),
                     ..Default::default()
                 })
                 .await?;
@@ -5652,7 +6075,8 @@ impl ContextRecallService for ContextEngine {
                 .into_iter()
                 .rev()
                 .filter(|event| {
-                    crate::memory::event_has_recall_value(event)
+                    !excluded_event_id_set.contains(event.id.as_str())
+                        && crate::memory::event_has_recall_value(event)
                         && (normalized_query.is_empty()
                             || crate::memory::normalize_recall_text(&event_text(event))
                                 .contains(&normalized_query))
@@ -5686,6 +6110,10 @@ impl ContextRecallService for ContextEngine {
                         normalized_query: normalized_query.clone(),
                         start_time: request.start_time,
                         end_time: request.end_time,
+                        visibility_fingerprint: visibility_fingerprint.clone(),
+                        through_sequence,
+                        through_mind_version,
+                        event_visibility_snapshot,
                         before_sequence,
                     })
                 })
@@ -6665,7 +7093,7 @@ fn ensure_lifecycle_write_is_current(
 }
 
 fn relation_mutation_key(subject: &str, relation: &str, object: &str) -> String {
-    format!("{subject}\u{1f}{relation}\u{1f}{object}")
+    relation_logical_id(subject, relation, object)
 }
 
 fn record_lifecycle_mutation(state: &mut MindState, id: &str, version: u64, track_mutations: bool) {
@@ -6906,6 +7334,408 @@ fn apply_parsed_transaction_with_policy(
     )
 }
 
+#[derive(Debug)]
+struct AppliedContextTransition {
+    next: MindState,
+    changes: Vec<ContextChange>,
+    mutations: Vec<ContextStateMutation>,
+}
+
+#[derive(Debug)]
+struct ContextMutationAccumulator<'a> {
+    baseline: &'a MindState,
+    writes: BTreeMap<(ContextCollection, String), ContextStateMutation>,
+    orders: BTreeMap<ContextCollection, Vec<String>>,
+    broad_replace: bool,
+}
+
+impl<'a> ContextMutationAccumulator<'a> {
+    fn new(baseline: &'a MindState) -> Self {
+        Self {
+            baseline,
+            writes: BTreeMap::new(),
+            orders: BTreeMap::new(),
+            broad_replace: false,
+        }
+    }
+
+    fn upsert(&mut self, value: ContextNodeValue, order: Option<u64>) {
+        let collection = value.collection();
+        let logical_id = value.logical_id();
+        self.writes.insert(
+            (collection, logical_id.clone()),
+            ContextStateMutation::Upsert { value, order },
+        );
+    }
+
+    fn upsert_ordered(&mut self, value: ContextNodeValue, order: usize) -> Result<(), String> {
+        let collection = value.collection();
+        self.upsert(
+            value,
+            Some(
+                u64::try_from(order)
+                    .map_err(|_| format!("{} order exceeds u64", collection.as_str()))?,
+            ),
+        );
+        Ok(())
+    }
+
+    fn remove(&mut self, collection: ContextCollection, logical_id: impl Into<String>) {
+        let logical_id = logical_id.into();
+        let key = (collection, logical_id.clone());
+        if baseline_contains_context_record(self.baseline, collection, &logical_id) {
+            self.writes.insert(
+                key,
+                ContextStateMutation::Remove {
+                    collection,
+                    logical_id,
+                },
+            );
+        } else {
+            // A record created and then removed inside one transaction has no
+            // durable net effect and must not become a remove of a row which
+            // never existed at the transaction fence.
+            self.writes.remove(&key);
+        }
+    }
+
+    fn set_order(&mut self, collection: ContextCollection, logical_ids: Vec<String>) {
+        if baseline_context_order(self.baseline, collection).as_deref()
+            == Some(logical_ids.as_slice())
+        {
+            self.orders.remove(&collection);
+        } else {
+            self.orders.insert(collection, logical_ids);
+        }
+    }
+
+    fn mark_broad_replace(&mut self) {
+        self.broad_replace = true;
+    }
+
+    fn finish(self, next: &MindState) -> Result<Vec<ContextStateMutation>, String> {
+        if self.broad_replace {
+            return Ok(vec![ContextStateMutation::ReplaceMind {
+                state: next.clone(),
+            }]);
+        }
+        let mut mutations = self.writes.into_values().collect::<Vec<_>>();
+        mutations.extend(self.orders.into_iter().map(|(collection, logical_ids)| {
+            ContextStateMutation::SetOrder {
+                collection,
+                logical_ids,
+            }
+        }));
+        Ok(mutations)
+    }
+}
+
+fn baseline_contains_context_record(
+    state: &MindState,
+    collection: ContextCollection,
+    logical_id: &str,
+) -> bool {
+    match collection {
+        ContextCollection::Frame => state.frames.iter().any(|frame| frame.id == logical_id),
+        ContextCollection::Relation => state
+            .relations
+            .iter()
+            .any(|relation| context_relation_identity(relation) == logical_id),
+        ContextCollection::Retired => state.retired.contains(logical_id),
+        ContextCollection::Retiring => state.retiring.contains_key(logical_id),
+        ContextCollection::Protected => state.protected.contains(logical_id),
+        ContextCollection::Checkpoint => state
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.id == logical_id),
+        ContextCollection::MutationClocks => logical_id == "mutation-clocks",
+    }
+}
+
+fn baseline_context_order(state: &MindState, collection: ContextCollection) -> Option<Vec<String>> {
+    match collection {
+        ContextCollection::Frame => {
+            Some(state.frames.iter().map(|frame| frame.id.clone()).collect())
+        }
+        ContextCollection::Relation => Some(
+            state
+                .relations
+                .iter()
+                .map(context_relation_identity)
+                .collect(),
+        ),
+        ContextCollection::Checkpoint => Some(
+            state
+                .checkpoints
+                .iter()
+                .map(|checkpoint| checkpoint.id.clone())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Transitional semantic oracle for the native Context Mutation protocol.
+///
+/// This compiler exists once in the Context domain and is shared by every
+/// Store. Backends never receive two full snapshots and never infer their own
+/// diff. The transaction applicator will emit these records directly; this
+/// compiler then remains as an independent conformance oracle.
+fn apply_parsed_transaction_with_policy_and_provenance_planned(
+    current: &MindState,
+    tx: &ParsedTransaction,
+    observation_ids: &HashSet<String>,
+    retirement_policy: FrameRetirementPolicy,
+    formation: &FrameFormationContext<'_>,
+    track_mutations: bool,
+) -> Result<AppliedContextTransition, String> {
+    apply_parsed_transaction_with_policy_and_provenance_native(
+        current,
+        tx,
+        observation_ids,
+        retirement_policy,
+        formation,
+        track_mutations,
+    )
+}
+
+#[cfg(test)]
+fn compile_context_state_mutations(
+    current: &MindState,
+    next: &MindState,
+    changes: &[ContextChange],
+) -> Result<Vec<ContextStateMutation>, String> {
+    if changes.iter().any(|change| change.operation == "rollback") {
+        return Ok(vec![ContextStateMutation::ReplaceMind {
+            state: next.clone(),
+        }]);
+    }
+
+    let operations = changes
+        .iter()
+        .map(|change| change.operation.as_str())
+        .collect::<HashSet<_>>();
+    let mut mutations = Vec::new();
+
+    let changed_frame_ids = changes
+        .iter()
+        .filter(|change| matches!(change.operation.as_str(), "create" | "derive" | "revise"))
+        .map(|change| change.target.as_str())
+        .collect::<BTreeSet<_>>();
+    for frame_id in changed_frame_ids {
+        let (order, frame) = next
+            .frames
+            .iter()
+            .enumerate()
+            .find(|(_, frame)| frame.id == frame_id)
+            .ok_or_else(|| {
+                format!(
+                    "Context Mutation compiler cannot find changed Frame '{frame_id}' in the next Mind"
+                )
+            })?;
+        mutations.push(ContextStateMutation::Upsert {
+            value: ContextNodeValue::Frame(frame.clone()),
+            order: Some(u64::try_from(order).map_err(|_| "Frame order exceeds u64")?),
+        });
+    }
+    if operations.contains("place") {
+        mutations.push(ContextStateMutation::SetOrder {
+            collection: ContextCollection::Frame,
+            logical_ids: next.frames.iter().map(|frame| frame.id.clone()).collect(),
+        });
+    }
+
+    if operations.contains("relate") || operations.contains("unrelate") {
+        let current_relations = current
+            .relations
+            .iter()
+            .map(|relation| (context_relation_identity(relation), relation))
+            .collect::<BTreeMap<_, _>>();
+        let next_relations = next
+            .relations
+            .iter()
+            .map(|relation| (context_relation_identity(relation), relation))
+            .collect::<BTreeMap<_, _>>();
+        for logical_id in current_relations.keys() {
+            if !next_relations.contains_key(logical_id) {
+                mutations.push(ContextStateMutation::Remove {
+                    collection: ContextCollection::Relation,
+                    logical_id: logical_id.clone(),
+                });
+            }
+        }
+        for (logical_id, relation) in &next_relations {
+            if current_relations.get(logical_id).copied() != Some(*relation) {
+                let order = next
+                    .relations
+                    .iter()
+                    .position(|candidate| candidate == *relation)
+                    .ok_or("new relation disappeared while compiling Context Mutation")?;
+                mutations.push(ContextStateMutation::Upsert {
+                    value: ContextNodeValue::Relation((*relation).clone()),
+                    order: Some(u64::try_from(order).map_err(|_| "Relation order exceeds u64")?),
+                });
+            }
+        }
+        mutations.push(ContextStateMutation::SetOrder {
+            collection: ContextCollection::Relation,
+            logical_ids: next
+                .relations
+                .iter()
+                .map(context_relation_identity)
+                .collect(),
+        });
+    }
+
+    let lifecycle_changed = changes.iter().any(|change| {
+        matches!(
+            change.operation.as_str(),
+            "revise"
+                | "retire"
+                | "restore"
+                | "retire-frame-requested"
+                | "retire-frame-existing"
+                | "retire-frame-finalized"
+                | "finalize-retirement-stale"
+                | "protect"
+                | "unprotect"
+        )
+    });
+    if lifecycle_changed {
+        compile_set_mutations(
+            &mut mutations,
+            ContextCollection::Retired,
+            &current.retired,
+            &next.retired,
+        );
+        compile_map_mutations(
+            &mut mutations,
+            ContextCollection::Retiring,
+            &current.retiring,
+            &next.retiring,
+        )?;
+        compile_set_mutations(
+            &mut mutations,
+            ContextCollection::Protected,
+            &current.protected,
+            &next.protected,
+        );
+    }
+
+    if operations.contains("checkpoint") || operations.contains("drop-checkpoint") {
+        let current_checkpoints = current
+            .checkpoints
+            .iter()
+            .map(|checkpoint| (checkpoint.id.as_str(), checkpoint))
+            .collect::<BTreeMap<_, _>>();
+        let next_checkpoints = next
+            .checkpoints
+            .iter()
+            .map(|checkpoint| (checkpoint.id.as_str(), checkpoint))
+            .collect::<BTreeMap<_, _>>();
+        for logical_id in current_checkpoints.keys() {
+            if !next_checkpoints.contains_key(logical_id) {
+                mutations.push(ContextStateMutation::Remove {
+                    collection: ContextCollection::Checkpoint,
+                    logical_id: (*logical_id).to_string(),
+                });
+            }
+        }
+        for (logical_id, checkpoint) in &next_checkpoints {
+            if current_checkpoints.get(logical_id).copied() != Some(*checkpoint) {
+                let order = next
+                    .checkpoints
+                    .iter()
+                    .position(|candidate| candidate.id == **logical_id)
+                    .ok_or("new checkpoint disappeared while compiling Context Mutation")?;
+                mutations.push(ContextStateMutation::Upsert {
+                    value: ContextNodeValue::Checkpoint((*checkpoint).clone()),
+                    order: Some(u64::try_from(order).map_err(|_| "Checkpoint order exceeds u64")?),
+                });
+            }
+        }
+        if operations.contains("drop-checkpoint") {
+            mutations.push(ContextStateMutation::SetOrder {
+                collection: ContextCollection::Checkpoint,
+                logical_ids: next
+                    .checkpoints
+                    .iter()
+                    .map(|checkpoint| checkpoint.id.clone())
+                    .collect(),
+            });
+        }
+    }
+
+    if current.mutation_clocks != next.mutation_clocks {
+        mutations.push(ContextStateMutation::Upsert {
+            value: ContextNodeValue::MutationClocks(next.mutation_clocks.clone()),
+            order: None,
+        });
+    }
+    Ok(mutations)
+}
+
+fn context_relation_identity(relation: &ContextRelation) -> String {
+    relation_mutation_key(&relation.subject, &relation.relation, &relation.object)
+}
+
+#[cfg(test)]
+fn compile_set_mutations(
+    output: &mut Vec<ContextStateMutation>,
+    collection: ContextCollection,
+    current: &BTreeSet<String>,
+    next: &BTreeSet<String>,
+) {
+    output.extend(
+        current
+            .difference(next)
+            .map(|logical_id| ContextStateMutation::Remove {
+                collection,
+                logical_id: logical_id.clone(),
+            }),
+    );
+    output.extend(
+        next.difference(current)
+            .map(|logical_id| ContextStateMutation::Upsert {
+                value: match collection {
+                    ContextCollection::Retired => ContextNodeValue::Retired(logical_id.clone()),
+                    ContextCollection::Protected => ContextNodeValue::Protected(logical_id.clone()),
+                    _ => unreachable!("set mutation used for a non-set Context collection"),
+                },
+                order: None,
+            }),
+    );
+}
+
+#[cfg(test)]
+fn compile_map_mutations(
+    output: &mut Vec<ContextStateMutation>,
+    collection: ContextCollection,
+    current: &BTreeMap<String, FrameRetirement>,
+    next: &BTreeMap<String, FrameRetirement>,
+) -> Result<(), String> {
+    if collection != ContextCollection::Retiring {
+        return Err("map mutation compiler only supports retiring records".to_string());
+    }
+    for logical_id in current.keys() {
+        if !next.contains_key(logical_id) {
+            output.push(ContextStateMutation::Remove {
+                collection,
+                logical_id: logical_id.clone(),
+            });
+        }
+    }
+    for (logical_id, value) in next {
+        if current.get(logical_id) != Some(value) {
+            output.push(ContextStateMutation::Upsert {
+                value: ContextNodeValue::Retiring(value.clone()),
+                order: None,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn apply_parsed_transaction_with_policy_and_provenance(
     current: &MindState,
     tx: &ParsedTransaction,
@@ -6914,6 +7744,25 @@ fn apply_parsed_transaction_with_policy_and_provenance(
     formation: &FrameFormationContext<'_>,
     track_mutations: bool,
 ) -> Result<(MindState, Vec<ContextChange>), String> {
+    let applied = apply_parsed_transaction_with_policy_and_provenance_native(
+        current,
+        tx,
+        observation_ids,
+        retirement_policy,
+        formation,
+        track_mutations,
+    )?;
+    Ok((applied.next, applied.changes))
+}
+
+fn apply_parsed_transaction_with_policy_and_provenance_native(
+    current: &MindState,
+    tx: &ParsedTransaction,
+    observation_ids: &HashSet<String>,
+    retirement_policy: FrameRetirementPolicy,
+    formation: &FrameFormationContext<'_>,
+    track_mutations: bool,
+) -> Result<AppliedContextTransition, String> {
     if current.version != tx.base_version {
         return Err(format!(
             "Context version conflict: the transaction is based on version {}, but the current version is {}. Read the latest kernel.version and submit again.",
@@ -6922,6 +7771,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
     }
 
     let mut next = current.clone();
+    let mut mutations = ContextMutationAccumulator::new(current);
     let next_version = current.version + 1;
     if track_mutations && next.mutation_clocks.tracking_started_version.is_none() {
         next.mutation_clocks.tracking_started_version = Some(current.version);
@@ -6950,6 +7800,16 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     created_version: next_version,
                     updated_version: next_version,
                 });
+                let frame_order = next.frames.len() - 1;
+                mutations.upsert_ordered(
+                    ContextNodeValue::Frame(
+                        next.frames
+                            .last()
+                            .ok_or("created Frame disappeared before mutation emission")?
+                            .clone(),
+                    ),
+                    frame_order,
+                )?;
                 if track_mutations {
                     next.mutation_clocks.frame_order_version = next_version;
                 }
@@ -6977,6 +7837,16 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     created_version: next_version,
                     updated_version: next_version,
                 });
+                let frame_order = next.frames.len() - 1;
+                mutations.upsert_ordered(
+                    ContextNodeValue::Frame(
+                        next.frames
+                            .last()
+                            .ok_or("derived Frame disappeared before mutation emission")?
+                            .clone(),
+                    ),
+                    frame_order,
+                )?;
                 if track_mutations {
                     next.mutation_clocks.frame_order_version = next_version;
                 }
@@ -7029,7 +7899,19 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 frame.revision += 1;
                 frame.updated_version = next_version;
                 let frame_revision = frame.revision;
+                let frame_index = next
+                    .frames
+                    .iter()
+                    .position(|frame| frame.id == id)
+                    .ok_or_else(|| {
+                        format!("revised Frame '{id}' disappeared before mutation emission")
+                    })?;
+                mutations.upsert_ordered(
+                    ContextNodeValue::Frame(next.frames[frame_index].clone()),
+                    frame_index,
+                )?;
                 if cancelled_retirement {
+                    mutations.remove(ContextCollection::Retiring, id);
                     record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                 }
                 changes.push(change(
@@ -7102,6 +7984,14 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                                 reason: reason.clone(),
                             },
                         );
+                        mutations.upsert(
+                            ContextNodeValue::Retiring(next.retiring.get(id).ok_or_else(|| {
+                                format!(
+                                    "retirement request for '{id}' disappeared before mutation emission"
+                                )
+                            })?.clone()),
+                            None,
+                        );
                         record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         changes.push(change(
                             "retire-frame-requested",
@@ -7112,6 +8002,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         ));
                     } else {
                         if next.retired.insert(id.to_string()) {
+                            mutations.upsert(ContextNodeValue::Retired(id.to_string()), None);
                             record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         }
                         changes.push(change("retire", id, Some(reason.clone())));
@@ -7124,6 +8015,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     let id = validated_id(as_atom(item, "restore target")?)?;
                     ensure_known(&next, observation_ids, id)?;
                     if next.retiring.remove(id).is_some() {
+                        mutations.remove(ContextCollection::Retiring, id);
                         record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                         changes.push(change(
                             "restore",
@@ -7135,6 +8027,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     if !next.retired.remove(id) {
                         return Err(format!("'{}' is not currently retired", id));
                     }
+                    mutations.remove(ContextCollection::Retired, id);
                     record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                     changes.push(change("restore", id, None));
                 }
@@ -7190,6 +8083,8 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 }
                 next.retiring.remove(id);
                 next.retired.insert(id.to_string());
+                mutations.remove(ContextCollection::Retiring, id);
+                mutations.upsert(ContextNodeValue::Retired(id.to_string()), None);
                 record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                 changes.push(change(
                     "retire-frame-finalized",
@@ -7247,6 +8142,12 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     if name == "protect" {
                         let retirement_cancelled = next.retiring.remove(id).is_some();
                         let protection_added = next.protected.insert(id.to_string());
+                        if retirement_cancelled {
+                            mutations.remove(ContextCollection::Retiring, id);
+                        }
+                        if protection_added {
+                            mutations.upsert(ContextNodeValue::Protected(id.to_string()), None);
+                        }
                         let changed = retirement_cancelled || protection_added;
                         if changed {
                             record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
@@ -7254,6 +8155,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     } else if !next.protected.remove(id) {
                         return Err(format!("'{}' is not currently protected", id));
                     } else {
+                        mutations.remove(ContextCollection::Protected, id);
                         record_lifecycle_mutation(&mut next, id, next_version, track_mutations);
                     }
                     changes.push(change(name, id, tx.reason.clone()));
@@ -7267,6 +8169,10 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 )?;
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 place_frame(&mut next, id, &op[2])?;
+                mutations.set_order(
+                    ContextCollection::Frame,
+                    next.frames.iter().map(|frame| frame.id.clone()).collect(),
+                );
                 if track_mutations {
                     next.mutation_clocks.frame_order_version = next_version;
                 }
@@ -7287,6 +8193,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let subject = validated_id(atom_at(op, 1, "relation subject")?)?;
                 let relation = validated_id(atom_at(op, 2, "relation name")?)?;
                 let object = validated_id(atom_at(op, 3, "relation object")?)?;
+                let relation_id = relation_mutation_key(subject, relation, object);
                 ensure_known(&next, observation_ids, subject)?;
                 ensure_known(&next, observation_ids, object)?;
                 let existing = next.relations.iter().position(|candidate| {
@@ -7307,14 +8214,32 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         object: object.to_string(),
                         created_version: next_version,
                     });
+                    let relation_order = next.relations.len() - 1;
+                    mutations.upsert_ordered(
+                        ContextNodeValue::Relation(
+                            next.relations
+                                .last()
+                                .ok_or("created Relation disappeared before mutation emission")?
+                                .clone(),
+                        ),
+                        relation_order,
+                    )?;
                 } else if let Some(index) = existing {
                     next.relations.remove(index);
+                    mutations.remove(ContextCollection::Relation, &relation_id);
                 } else {
                     return Err(format!(
                         "relation '{} {} {}' does not exist and cannot be removed",
                         subject, relation, object
                     ));
                 }
+                mutations.set_order(
+                    ContextCollection::Relation,
+                    next.relations
+                        .iter()
+                        .map(context_relation_identity)
+                        .collect(),
+                );
                 record_relation_mutation(
                     &mut next,
                     subject,
@@ -7350,6 +8275,16 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                     protected: next.protected.clone(),
                     created_version: next_version,
                 });
+                let checkpoint_order = next.checkpoints.len() - 1;
+                mutations.upsert_ordered(
+                    ContextNodeValue::Checkpoint(
+                        next.checkpoints
+                            .last()
+                            .ok_or("created Checkpoint disappeared before mutation emission")?
+                            .clone(),
+                    ),
+                    checkpoint_order,
+                )?;
                 record_checkpoint_mutation(&mut next, id, next_version, track_mutations);
                 changes.push(change(
                     "checkpoint",
@@ -7378,6 +8313,7 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 if track_mutations {
                     next.mutation_clocks.global_barrier_version = next_version;
                 }
+                mutations.mark_broad_replace();
                 changes.push(change("rollback", id, Some(reason.clone())));
             }
             "drop-checkpoint" => {
@@ -7394,9 +8330,17 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                         .position(|checkpoint| checkpoint.id == id)
                         .ok_or_else(|| format!("checkpoint '{}' does not exist", id))?;
                     next.checkpoints.remove(index);
+                    mutations.remove(ContextCollection::Checkpoint, id);
                     record_checkpoint_mutation(&mut next, id, next_version, track_mutations);
                     changes.push(change("drop-checkpoint", id, Some(reason.clone())));
                 }
+                mutations.set_order(
+                    ContextCollection::Checkpoint,
+                    next.checkpoints
+                        .iter()
+                        .map(|checkpoint| checkpoint.id.clone())
+                        .collect(),
+                );
             }
             other => {
                 return Err(format!(
@@ -7425,6 +8369,8 @@ fn apply_parsed_transaction_with_policy_and_provenance(
                 let successor_id = successor.id.clone();
                 next.retiring.remove(&target);
                 next.retired.insert(target.clone());
+                mutations.remove(ContextCollection::Retiring, &target);
+                mutations.upsert(ContextNodeValue::Retired(target.clone()), None);
                 record_lifecycle_mutation(&mut next, &target, next_version, track_mutations);
                 changes.push(change(
                     "retire-frame-finalized",
@@ -7435,8 +8381,19 @@ fn apply_parsed_transaction_with_policy_and_provenance(
         }
     }
 
+    if current.mutation_clocks != next.mutation_clocks {
+        mutations.upsert(
+            ContextNodeValue::MutationClocks(next.mutation_clocks.clone()),
+            None,
+        );
+    }
     next.version = next_version;
-    Ok((next, changes))
+    let emitted = mutations.finish(&next)?;
+    Ok(AppliedContextTransition {
+        next,
+        changes,
+        mutations: emitted,
+    })
 }
 
 fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), String> {
@@ -10036,10 +10993,42 @@ fn project_mind_seed(source: &MindState) -> MindState {
     }
 }
 
-fn mind_state_hash(state: &MindState) -> Result<String, String> {
-    let bytes = serde_json::to_vec(state)
+pub(crate) fn mind_state_hash(state: &MindState) -> Result<String, String> {
+    crate::context_store::context_state_hash(state)
+}
+
+/// Historical opaque JSON fence accepted only while importing or validating
+/// an existing Mind Projection. New authoritative writes use the native
+/// Context AST commitment above.
+fn mind_state_hash_legacy_json(state: &MindState) -> Result<String, String> {
+    let mut writer = Sha256Writer::default();
+    serde_json::to_writer(&mut writer, state)
         .map_err(|error| format!("failed to serialize Mind Snapshot: {error}"))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(format!("{:x}", writer.finish()))
+}
+
+/// Streams the canonical JSON bytes directly into SHA-256. `serde_json` emits
+/// the same compact byte sequence through `to_writer` as through `to_vec`, but
+/// a large Context no longer needs a second Context-sized allocation merely to
+/// establish its optimistic-concurrency fence.
+#[derive(Default)]
+struct Sha256Writer(Sha256);
+
+impl Sha256Writer {
+    fn finish(self) -> sha2::digest::Output<Sha256> {
+        self.0.finalize()
+    }
+}
+
+impl Write for Sha256Writer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Hash view used before object-local Context mutation clocks were persisted.
@@ -10256,8 +11245,14 @@ fn mind_state_hash_v20(state: &MindState) -> Result<Option<String>, String> {
     Ok(Some(format!("{:x}", Sha256::digest(bytes))))
 }
 
-fn mind_state_hash_matches(state: &MindState, recorded_hash: &str) -> Result<bool, String> {
+pub(crate) fn mind_state_hash_matches(
+    state: &MindState,
+    recorded_hash: &str,
+) -> Result<bool, String> {
     if mind_state_hash(state)? == recorded_hash {
+        return Ok(true);
+    }
+    if mind_state_hash_legacy_json(state)? == recorded_hash {
         return Ok(true);
     }
     if mind_state_hash_v34(state)?.as_deref() == Some(recorded_hash) {
@@ -11726,14 +12721,744 @@ mod tests {
     use crate::event::TYPE_AGENT_CALL;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActivationStore as _, DeliveryIngressStore as _, NewAgent, NewCognitiveContext,
+        ActivationStore as _, ContextActivationCausalitySnapshot,
+        ContextExecutionResourcesSnapshot, ContextRuntimeDirectorySnapshot,
+        ContextRuntimeSchedulerSnapshot, DeliveryIngressStore as _, NewAgent, NewCognitiveContext,
         NewPrincipal, NewSession, NewThread, NewThreadActivation, NewWorkAssignment,
         ObjectiveStatus, SessionDirectoryStore as _, SessionMountKind, SessionStore,
         ThreadControlState, ThreadKind, ThreadLifecycle, ThreadStore as _, ThreadSupervision,
         WorkAssignmentStatus,
     };
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
+
+    struct CountingRuntimeSnapshotStore {
+        inner: Arc<SqliteStore>,
+        directory_requests: AtomicUsize,
+        full_mind_payloads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ContextRuntimeSnapshotStore for CountingRuntimeSnapshotStore {
+        fn storage_backend_name(&self) -> &'static str {
+            "sqlite-counting"
+        }
+
+        async fn read_context_runtime_directory_snapshot(
+            &self,
+            request: &ContextRuntimeDirectoryRequest,
+        ) -> Result<Option<ContextRuntimeDirectorySnapshot>, DynError> {
+            self.directory_requests.fetch_add(1, Ordering::SeqCst);
+            let snapshot = self
+                .inner
+                .read_context_runtime_directory_snapshot(request)
+                .await?;
+            if snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.context_state.is_some())
+            {
+                self.full_mind_payloads.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(snapshot)
+        }
+
+        async fn read_context_runtime_scheduler_snapshot(
+            &self,
+            context_id: &str,
+            delivery_thread_ids: &[String],
+            recent_terminal_limit: usize,
+            group_limit: usize,
+        ) -> Result<ContextRuntimeSchedulerSnapshot, DynError> {
+            self.inner
+                .read_context_runtime_scheduler_snapshot(
+                    context_id,
+                    delivery_thread_ids,
+                    recent_terminal_limit,
+                    group_limit,
+                )
+                .await
+        }
+
+        async fn read_context_activation_causality_snapshot(
+            &self,
+            context_id: &str,
+            activation_id: &str,
+            root_turn_id: &str,
+            trigger_event_id: &str,
+        ) -> Result<ContextActivationCausalitySnapshot, DynError> {
+            self.inner
+                .read_context_activation_causality_snapshot(
+                    context_id,
+                    activation_id,
+                    root_turn_id,
+                    trigger_event_id,
+                )
+                .await
+        }
+
+        async fn read_context_execution_resources_snapshot(
+            &self,
+            context_id: &str,
+            principal_id: Option<&str>,
+            target_limit: usize,
+            authorization_limit: usize,
+        ) -> Result<ContextExecutionResourcesSnapshot, DynError> {
+            self.inner
+                .read_context_execution_resources_snapshot(
+                    context_id,
+                    principal_id,
+                    target_limit,
+                    authorization_limit,
+                )
+                .await
+        }
+    }
+
+    #[test]
+    fn context_state_cache_is_bounded_lru_and_rejects_stale_overwrite() {
+        let mut cache = ContextStateCache::new(2);
+        cache.insert(
+            "context-a".to_string(),
+            MindState {
+                version: 1,
+                ..MindState::default()
+            },
+        );
+        cache.insert(
+            "context-b".to_string(),
+            MindState {
+                version: 1,
+                ..MindState::default()
+            },
+        );
+
+        assert_eq!(cache.get("context-a").unwrap().version, 1);
+        cache.insert(
+            "context-c".to_string(),
+            MindState {
+                version: 1,
+                ..MindState::default()
+            },
+        );
+        assert!(cache.get("context-b").is_none());
+        assert!(cache.get("context-a").is_some());
+        assert!(cache.get("context-c").is_some());
+
+        cache.insert(
+            "context-a".to_string(),
+            MindState {
+                version: 3,
+                ..MindState::default()
+            },
+        );
+        cache.insert(
+            "context-a".to_string(),
+            MindState {
+                version: 2,
+                ..MindState::default()
+            },
+        );
+        assert_eq!(cache.get("context-a").unwrap().version, 3);
+    }
+
+    #[tokio::test]
+    async fn context_state_cache_direct_reads_are_exclusive_and_shared_entries_require_a_fence() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("context-cache.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "cached-context".to_string(),
+                agent_id: "cached-agent".to_string(),
+                title: "Cached Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
+
+        engine
+            .apply_context_transaction(
+                "cached-context",
+                "cached-session",
+                "(context-tx (base-version 0) (create cached-frame (fact cached)))",
+            )
+            .await
+            .unwrap();
+        let cached = engine.cached_context_state("cached-context").unwrap();
+        assert_eq!(cached.version, 1);
+        assert_eq!(cached.frames[0].id, "cached-frame");
+
+        let shared = engine.with_worker_coordination_mode(WorkerCoordinationMode::SharedLeases);
+        assert!(shared.cached_context_state("cached-context").is_none());
+        shared.cache_context_state(
+            "cached-context",
+            MindState {
+                version: 2,
+                ..MindState::default()
+            },
+        );
+        assert!(shared.cached_context_state("cached-context").is_none());
+        assert_eq!(
+            shared
+                .resident_context_state("cached-context")
+                .expect("shared workers retain a revision-fenced resident candidate")
+                .version,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_worker_directory_fence_replaces_a_stale_resident_context() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("shared-fence.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "shared-fence-context".to_string(),
+                agent_id: "shared-fence-agent".to_string(),
+                title: "Shared Fence Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "shared-fence-session".to_string(),
+                agent_id: "shared-fence-agent".to_string(),
+                context_id: "shared-fence-context".to_string(),
+                parent_session_id: None,
+                title: "Shared Fence Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let build_engine = || {
+            ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+            .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
+            .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
+            .with_cognitive_clock_store(Arc::clone(&store) as Arc<dyn CognitiveClockStore>)
+            .with_runtime_snapshot_store(Arc::clone(&store) as Arc<dyn ContextRuntimeSnapshotStore>)
+            .with_worker_coordination_mode(WorkerCoordinationMode::SharedLeases)
+        };
+        let stale_worker = build_engine();
+        let initial = stale_worker
+            .build_context_projection(
+                "shared-fence-context",
+                "shared-fence-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(initial.state.version, 0);
+        assert_eq!(
+            stale_worker
+                .resident_context_state("shared-fence-context")
+                .unwrap()
+                .version,
+            0
+        );
+
+        let peer_worker = build_engine();
+        peer_worker
+            .apply_context_transaction(
+                "shared-fence-context",
+                "shared-fence-session",
+                "(context-tx (base-version 0) (create peer-frame (fact peer-commit)))",
+            )
+            .await
+            .unwrap();
+
+        let refreshed = stale_worker
+            .build_context_projection(
+                "shared-fence-context",
+                "shared-fence-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refreshed.state.version, 1);
+        assert!(refreshed
+            .state
+            .frames
+            .iter()
+            .any(|frame| frame.id == "peer-frame"));
+        assert_eq!(
+            stale_worker
+                .resident_context_state("shared-fence-context")
+                .unwrap()
+                .version,
+            1
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_cold_shared_builds_fetch_one_full_contextdb_payload() {
+        const READERS: usize = 16;
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new_with_context_db(
+                tmp.path().join("context-cold-load.db").to_str().unwrap(),
+                &crate::config::SqliteStorageConfig::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "context-cold-load".to_string(),
+                agent_id: "context-cold-agent".to_string(),
+                title: "Context cold load".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "context-cold-session".to_string(),
+                agent_id: "context-cold-agent".to_string(),
+                context_id: "context-cold-load".to_string(),
+                parent_session_id: None,
+                title: "Context cold session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let state = MindState {
+            frames: vec![ContextFrame {
+                id: "resident-frame".to_string(),
+                // Keep the payload large while using the exact canonical
+                // S-expression spelling persisted by ContextDB. Quoting an
+                // atom which needs no quoting is parseable but deliberately
+                // rejected by the native codec's canonical-form boundary.
+                body: format!("(fact {})", "x".repeat(128 * 1024)),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 0,
+                updated_version: 0,
+            }],
+            ..MindState::default()
+        };
+        let state_commitment = crate::context_store::context_state_commitment(&state).unwrap();
+        store
+            .initialize_context_state("context-cold-load", &state, &state_commitment, None, &[])
+            .await
+            .unwrap();
+
+        let snapshots = Arc::new(CountingRuntimeSnapshotStore {
+            inner: Arc::clone(&store),
+            directory_requests: AtomicUsize::new(0),
+            full_mind_payloads: AtomicUsize::new(0),
+        });
+        let engine = Arc::new(
+            ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+            .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
+            .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
+            .with_cognitive_clock_store(Arc::clone(&store) as Arc<dyn CognitiveClockStore>)
+            .with_runtime_snapshot_store(
+                Arc::clone(&snapshots) as Arc<dyn ContextRuntimeSnapshotStore>
+            )
+            .with_worker_coordination_mode(WorkerCoordinationMode::SharedLeases),
+        );
+        let start = Arc::new(Barrier::new(READERS + 1));
+        let mut readers = Vec::with_capacity(READERS);
+        for _ in 0..READERS {
+            let engine = Arc::clone(&engine);
+            let start = Arc::clone(&start);
+            readers.push(tokio::spawn(async move {
+                start.wait().await;
+                engine
+                    .build_context_projection(
+                        "context-cold-load",
+                        "context-cold-session",
+                        &HashSet::new(),
+                    )
+                    .await
+            }));
+        }
+        start.wait().await;
+        for reader in readers {
+            let view = reader.await.unwrap().unwrap();
+            assert_eq!(view.state.frames.len(), 1);
+            assert_eq!(view.state.frames[0].id, "resident-frame");
+        }
+        assert_eq!(snapshots.directory_requests.load(Ordering::SeqCst), READERS);
+        assert_eq!(
+            snapshots.full_mind_payloads.load(Ordering::SeqCst),
+            1,
+            "only the first concurrent reader may transfer and rebuild the full ContextDB AST"
+        );
+    }
+
+    fn apply_context_mutation_plan_reference(
+        current: &MindState,
+        plan: &ContextMutationPlan,
+    ) -> Result<MindState, String> {
+        plan.validate_shape()?;
+        if mind_state_hash(current)? != plan.expected_state_hash {
+            return Err("reference plan before-hash mismatch".to_string());
+        }
+        let mut state = current.clone();
+        for mutation in &plan.mutations {
+            match mutation {
+                ContextStateMutation::ReplaceMind { state: replacement } => {
+                    state = replacement.clone();
+                }
+                ContextStateMutation::Upsert { value, order } => match value {
+                    ContextNodeValue::Frame(frame) => {
+                        if let Some(index) = state
+                            .frames
+                            .iter()
+                            .position(|candidate| candidate.id == frame.id)
+                        {
+                            state.frames.remove(index);
+                        }
+                        let index = usize::try_from(order.unwrap_or(state.frames.len() as u64))
+                            .map_err(|_| "Frame mutation order exceeds usize")?
+                            .min(state.frames.len());
+                        state.frames.insert(index, frame.clone());
+                    }
+                    ContextNodeValue::Relation(relation) => {
+                        let logical_id = context_relation_identity(relation);
+                        if let Some(index) = state.relations.iter().position(|candidate| {
+                            context_relation_identity(candidate) == logical_id
+                        }) {
+                            state.relations.remove(index);
+                        }
+                        let index = usize::try_from(order.unwrap_or(state.relations.len() as u64))
+                            .map_err(|_| "Relation mutation order exceeds usize")?
+                            .min(state.relations.len());
+                        state.relations.insert(index, relation.clone());
+                    }
+                    ContextNodeValue::Retired(logical_id) => {
+                        state.retired.insert(logical_id.clone());
+                    }
+                    ContextNodeValue::Retiring(retirement) => {
+                        state
+                            .retiring
+                            .insert(retirement.frame_id.clone(), retirement.clone());
+                    }
+                    ContextNodeValue::Protected(logical_id) => {
+                        state.protected.insert(logical_id.clone());
+                    }
+                    ContextNodeValue::Checkpoint(checkpoint) => {
+                        if let Some(index) = state
+                            .checkpoints
+                            .iter()
+                            .position(|candidate| candidate.id == checkpoint.id)
+                        {
+                            state.checkpoints.remove(index);
+                        }
+                        let index =
+                            usize::try_from(order.unwrap_or(state.checkpoints.len() as u64))
+                                .map_err(|_| "Checkpoint mutation order exceeds usize")?
+                                .min(state.checkpoints.len());
+                        state.checkpoints.insert(index, checkpoint.clone());
+                    }
+                    ContextNodeValue::MutationClocks(clocks) => {
+                        state.mutation_clocks = clocks.clone();
+                    }
+                },
+                ContextStateMutation::Remove {
+                    collection,
+                    logical_id,
+                } => match collection {
+                    ContextCollection::Frame => {
+                        state.frames.retain(|frame| frame.id != *logical_id);
+                    }
+                    ContextCollection::Relation => state
+                        .relations
+                        .retain(|relation| context_relation_identity(relation) != *logical_id),
+                    ContextCollection::Retired => {
+                        state.retired.remove(logical_id);
+                    }
+                    ContextCollection::Retiring => {
+                        state.retiring.remove(logical_id);
+                    }
+                    ContextCollection::Protected => {
+                        state.protected.remove(logical_id);
+                    }
+                    ContextCollection::Checkpoint => {
+                        state
+                            .checkpoints
+                            .retain(|checkpoint| checkpoint.id != *logical_id);
+                    }
+                    ContextCollection::MutationClocks => {
+                        return Err("mutation clocks cannot be removed".to_string());
+                    }
+                },
+                ContextStateMutation::SetOrder {
+                    collection,
+                    logical_ids,
+                } => match collection {
+                    ContextCollection::Frame => {
+                        let mut by_id = state
+                            .frames
+                            .drain(..)
+                            .map(|frame| (frame.id.clone(), frame))
+                            .collect::<BTreeMap<_, _>>();
+                        state.frames = logical_ids
+                            .iter()
+                            .map(|id| {
+                                by_id
+                                    .remove(id)
+                                    .ok_or_else(|| format!("Frame order references missing '{id}'"))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if !by_id.is_empty() {
+                            return Err("Frame order omitted existing identities".to_string());
+                        }
+                    }
+                    ContextCollection::Relation => {
+                        let mut by_id = state
+                            .relations
+                            .drain(..)
+                            .map(|relation| (context_relation_identity(&relation), relation))
+                            .collect::<BTreeMap<_, _>>();
+                        state.relations = logical_ids
+                            .iter()
+                            .map(|id| {
+                                by_id.remove(id).ok_or_else(|| {
+                                    format!("Relation order references missing '{id}'")
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if !by_id.is_empty() {
+                            return Err("Relation order omitted existing identities".to_string());
+                        }
+                    }
+                    ContextCollection::Checkpoint => {
+                        let mut by_id = state
+                            .checkpoints
+                            .drain(..)
+                            .map(|checkpoint| (checkpoint.id.clone(), checkpoint))
+                            .collect::<BTreeMap<_, _>>();
+                        state.checkpoints = logical_ids
+                            .iter()
+                            .map(|id| {
+                                by_id.remove(id).ok_or_else(|| {
+                                    format!("Checkpoint order references missing '{id}'")
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if !by_id.is_empty() {
+                            return Err("Checkpoint order omitted existing identities".to_string());
+                        }
+                    }
+                    _ => return Err("SetOrder used on an unordered collection".to_string()),
+                },
+            }
+        }
+        state.version = plan.next_revision;
+        if mind_state_hash(&state)? != plan.next_state_hash {
+            return Err("reference plan after-hash mismatch".to_string());
+        }
+        Ok(state)
+    }
+
+    fn planned_test_transaction(
+        current: &MindState,
+        transaction: &str,
+        observation_ids: &HashSet<String>,
+    ) -> AppliedContextTransition {
+        planned_test_transaction_with_policy(
+            current,
+            transaction,
+            observation_ids,
+            FrameRetirementPolicy::legacy_immediate(),
+        )
+    }
+
+    fn planned_test_transaction_with_policy(
+        current: &MindState,
+        transaction: &str,
+        observation_ids: &HashSet<String>,
+        retirement_policy: FrameRetirementPolicy,
+    ) -> AppliedContextTransition {
+        let parsed = parse_transaction(transaction).unwrap();
+        apply_parsed_transaction_with_policy_and_provenance_planned(
+            current,
+            &parsed,
+            observation_ids,
+            retirement_policy,
+            &FrameFormationContext::default(),
+            true,
+        )
+        .unwrap()
+    }
+
+    fn assert_compiled_plan_reproduces_transition(
+        context_id: &str,
+        current: &MindState,
+        applied: &AppliedContextTransition,
+    ) {
+        let plan_for = |mutations| ContextMutationPlan {
+            context_id: context_id.to_string(),
+            expected_revision: current.version,
+            next_revision: applied.next.version,
+            expected_state_hash: mind_state_hash(current).unwrap(),
+            next_state_hash: mind_state_hash(&applied.next).unwrap(),
+            mutations,
+        };
+        let plan = plan_for(applied.mutations.clone());
+        assert_eq!(
+            apply_context_mutation_plan_reference(current, &plan).unwrap(),
+            applied.next
+        );
+
+        // Keep the old snapshot compiler only as an independent semantic
+        // oracle. Production emits mutations while applying primitives; this
+        // assertion prevents the new emitter and Store adapter from agreeing
+        // on the same regression unnoticed.
+        let oracle = plan_for(
+            compile_context_state_mutations(current, &applied.next, &applied.changes).unwrap(),
+        );
+        assert_eq!(
+            apply_context_mutation_plan_reference(current, &oracle).unwrap(),
+            applied.next
+        );
+    }
+
+    #[test]
+    fn native_context_mutation_plan_reproduces_local_lifecycle_and_broad_transitions() {
+        let observation_ids = HashSet::from(["observation-a".to_string()]);
+        let initial = MindState::default();
+        let first = planned_test_transaction(
+            &initial,
+            "(context-tx (base-version 0) (create frame-a (fact a)) (derive frame-b (from observation-a) (fact b)) (relate frame-b supports frame-a) (protect frame-a) (checkpoint cp-a))",
+            &observation_ids,
+        );
+        assert_compiled_plan_reproduces_transition("context-a", &initial, &first);
+
+        let second = planned_test_transaction(
+            &first.next,
+            "(context-tx (base-version 1) (reason maintenance) (revise frame-b (from observation-a) (fact b2)) (place frame-b first) (retire observation-a))",
+            &observation_ids,
+        );
+        assert_compiled_plan_reproduces_transition("context-a", &first.next, &second);
+
+        let third = planned_test_transaction(
+            &second.next,
+            "(context-tx (base-version 2) (reason correction) (restore observation-a) (unprotect frame-a) (unrelate frame-b supports frame-a) (drop-checkpoint cp-a))",
+            &observation_ids,
+        );
+        assert_compiled_plan_reproduces_transition("context-a", &second.next, &third);
+
+        let checkpointed = planned_test_transaction(
+            &third.next,
+            "(context-tx (base-version 3) (checkpoint cp-b))",
+            &observation_ids,
+        );
+        let broad = planned_test_transaction(
+            &checkpointed.next,
+            "(context-tx (base-version 4) (reason undo) (revise frame-a (fact changed)) (rollback cp-b))",
+            &observation_ids,
+        );
+        assert!(matches!(
+            broad.mutations.as_slice(),
+            [ContextStateMutation::ReplaceMind { .. }]
+        ));
+        assert_compiled_plan_reproduces_transition("context-a", &checkpointed.next, &broad);
+    }
+
+    #[test]
+    fn native_context_mutations_coalesce_multi_operation_net_effects() {
+        let initial = MindState::default();
+        let applied = planned_test_transaction(
+            &initial,
+            "(context-tx (base-version 0) (reason cleanup) (create frame-a (fact a)) (revise frame-a (fact revised)) (protect frame-a) (unprotect frame-a) (retire frame-a) (restore frame-a) (create frame-b (fact b)) (relate frame-a supports frame-b) (unrelate frame-a supports frame-b) (checkpoint cp-a) (drop-checkpoint cp-a))",
+            &HashSet::new(),
+        );
+
+        assert_compiled_plan_reproduces_transition("context-coalesced", &initial, &applied);
+        assert_eq!(applied.next.frames.len(), 2);
+        assert!(applied.next.retired.is_empty());
+        assert!(applied.next.retiring.is_empty());
+        assert!(applied.next.protected.is_empty());
+        assert!(applied.next.relations.is_empty());
+        assert!(applied.next.checkpoints.is_empty());
+        assert!(!applied.mutations.iter().any(|mutation| matches!(
+            mutation,
+            ContextStateMutation::Upsert {
+                value: ContextNodeValue::Retired(_)
+                    | ContextNodeValue::Retiring(_)
+                    | ContextNodeValue::Protected(_)
+                    | ContextNodeValue::Relation(_)
+                    | ContextNodeValue::Checkpoint(_),
+                ..
+            } | ContextStateMutation::Remove {
+                collection: ContextCollection::Retired
+                    | ContextCollection::Retiring
+                    | ContextCollection::Protected
+                    | ContextCollection::Relation
+                    | ContextCollection::Checkpoint,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn native_context_mutations_preserve_staged_retirement_fences() {
+        let observation_ids = HashSet::new();
+        let initial = MindState::default();
+        let created = planned_test_transaction_with_policy(
+            &initial,
+            "(context-tx (base-version 0) (create frame-a (fact a)) (create frame-b (fact b)))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(10, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &initial, &created);
+
+        let requested = planned_test_transaction_with_policy(
+            &created.next,
+            "(context-tx (base-version 1) (reason cooling) (retire frame-a frame-b))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(10, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &created.next, &requested);
+        assert_eq!(requested.next.retiring["frame-a"].eligible_at_tick, 18);
+        assert_eq!(requested.next.retiring["frame-b"].generation, 2);
+
+        let revised = planned_test_transaction_with_policy(
+            &requested.next,
+            "(context-tx (base-version 2) (revise frame-a (fact revised)))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(15, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &requested.next, &revised);
+        assert!(!revised.next.retiring.contains_key("frame-a"));
+
+        let finalized = planned_test_transaction_with_policy(
+            &revised.next,
+            "(context-tx (base-version 3) (finalize-retirement frame-b 2 1 18))",
+            &observation_ids,
+            FrameRetirementPolicy::cognitive(18, 8),
+        );
+        assert_compiled_plan_reproduces_transition("context-retirement", &revised.next, &finalized);
+        assert!(!finalized.next.retiring.contains_key("frame-b"));
+        assert!(finalized.next.retired.contains("frame-b"));
+    }
 
     #[test]
     fn cognitive_coordination_card_exists_only_for_an_enabled_context_binding() {
@@ -11878,8 +13603,8 @@ mod tests {
                         Arc::clone(&self.inner) as Arc<dyn EventStore>,
                         OrchestratorConfig::default(),
                     )
-                    .with_mind_projection_store(
-                        Arc::clone(&self.inner) as Arc<dyn MindProjectionStore>
+                    .with_context_store(
+                        Arc::clone(&self.inner) as Arc<dyn crate::memory::ContextStore>
                     );
                 writer
                     .apply_context_transaction(
@@ -13024,7 +14749,7 @@ mod tests {
         for checkpoint in legacy_state["checkpoints"].as_array_mut().unwrap() {
             checkpoint.as_object_mut().unwrap().remove("retiring");
         }
-        let projection = MindProjectionRecord {
+        let projection = crate::memory::MindProjectionRecord {
             context_id: "context-v20".to_string(),
             revision: state.version,
             state: legacy_state,
@@ -13032,8 +14757,9 @@ mod tests {
             head_event_id: Some("tx-7".to_string()),
             updated_at: Utc::now(),
         };
+        let record = crate::memory::decode_legacy_context_state(projection).unwrap();
         assert_eq!(
-            ContextEngine::validate_mind_projection("context-v20", projection).unwrap(),
+            ContextEngine::validate_context_state_record("context-v20", record).unwrap(),
             state
         );
     }
@@ -14115,6 +15841,15 @@ mod tests {
             created_version: 1,
             updated_version: 1,
         });
+        state.frames.push(ContextFrame {
+            id: "free-form-later".to_string(),
+            body: "(whatever (must remain later))".to_string(),
+            sources: Vec::new(),
+            provenance: FrameIdentityProvenance::default(),
+            revision: 1,
+            created_version: 1,
+            updated_version: 1,
+        });
         state.version = 1;
         let pressure = ContextPressure {
             level: "normal".to_string(),
@@ -14381,6 +16116,11 @@ mod tests {
         assert!(rendered.contains("(source-placement"));
         assert!(rendered.contains("(syntax \"(retire ID...)\")"));
         assert!(rendered.contains("(mind (frame"));
+        assert!(
+            rendered.find("(id free-form)").unwrap()
+                < rendered.find("(id free-form-later)").unwrap(),
+            "model-visible Mind must preserve authoritative Frame order for prefix caching",
+        );
         assert!(rendered.contains("(inbox (observation (ref @e7)"));
         assert!(rendered.contains("(observation-state (state (ref @e7)"));
         assert!(!rendered.contains("todo_stack"));
@@ -15830,6 +17570,398 @@ mod tests {
         assert!(observation.preview.contains(&"x".repeat(1_500)));
     }
 
+    #[tokio::test]
+    async fn context_view_manifest_tracks_actual_residency_not_lifecycle_shortcuts() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-view-manifest.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "manifest-context".to_string(),
+                agent_id: "manifest-agent".to_string(),
+                title: "Manifest Context".to_string(),
+            })
+            .await
+            .unwrap();
+        for (id, text) in [
+            ("manifest-full", "short resident evidence".to_string()),
+            (
+                "manifest-preview",
+                format!("preview-only evidence {}", "x".repeat(256)),
+            ),
+        ] {
+            store
+                .append(Event::new(
+                    id.to_string(),
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::json!({
+                        "context_id": "manifest-context",
+                        "session_id": "manifest-session",
+                        "text": text,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig {
+                observation_preview_chars: 32,
+                ..OrchestratorConfig::default()
+            },
+        );
+        let mut view = engine
+            .build_context_encoding("manifest-context", "manifest-session", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            view.observations
+                .iter()
+                .find(|observation| observation.id == "manifest-full")
+                .unwrap()
+                .representation,
+            "full"
+        );
+        assert_eq!(
+            view.observations
+                .iter()
+                .find(|observation| observation.id == "manifest-preview")
+                .unwrap()
+                .representation,
+            "preview"
+        );
+        view.state.frames.extend([
+            ContextFrame {
+                id: "active-frame".to_string(),
+                body: "(fact active)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 1,
+                updated_version: 1,
+            },
+            ContextFrame {
+                id: "retired-frame".to_string(),
+                body: "(fact retired)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 1,
+                updated_version: 1,
+            },
+        ]);
+        view.state.retired.insert("retired-frame".to_string());
+
+        let manifest =
+            ContextViewManifest::from_view(&view, ["continuation-tool-output".to_string()]);
+        assert_eq!(
+            manifest.resident_event_ids,
+            vec![
+                "continuation-tool-output".to_string(),
+                "manifest-full".to_string(),
+            ]
+        );
+        assert_eq!(manifest.resident_frame_ids, vec!["active-frame"]);
+        assert!(
+            !manifest
+                .resident_event_ids
+                .contains(&"manifest-preview".to_string()),
+            "preview-only content must remain Recallable"
+        );
+        assert!(
+            !manifest
+                .resident_frame_ids
+                .contains(&"retired-frame".to_string()),
+            "retired content is non-resident and remains Recallable"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_manifest_never_reads_events_committed_after_the_physical_view() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-causal-frontier.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "recall-causal-context".to_string(),
+                agent_id: "recall-causal-agent".to_string(),
+                title: "Recall physical visibility frontier".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "causal-before-view".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-causal-context",
+                    "session_id": "causal-session-a",
+                    "principal_id": "principal-a",
+                    "text": format!("CAUSAL-ORBIT before {}", "x".repeat(256)),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        store
+            .project_recall_outbox_batch("causal-frontier-before", 8)
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig {
+                observation_preview_chars: 32,
+                ..OrchestratorConfig::default()
+            },
+        )
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        let old_view = engine
+            .build_context_encoding("recall-causal-context", "causal-session-a", &HashSet::new())
+            .await
+            .unwrap();
+        let old_manifest = ContextViewManifest::from_view(&old_view, std::iter::empty());
+        assert_eq!(old_manifest.event_sequence_upper_bound, 1);
+
+        store
+            .append(Event::new(
+                "causal-after-view".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "recall-causal-context",
+                    "session_id": "causal-session-b",
+                    "principal_id": "principal-b",
+                    "text": format!("CAUSAL-ORBIT after {}", "y".repeat(256)),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        store
+            .project_recall_outbox_batch("causal-frontier-after", 8)
+            .await
+            .unwrap();
+
+        let old_page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "recall-causal-context".to_string(),
+                query: "CAUSAL-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(old_manifest),
+            })
+            .await
+            .unwrap();
+        assert_eq!(old_page.matches.len(), 1);
+        assert_eq!(old_page.matches[0].document_id, "causal-before-view");
+
+        let fresh_view = engine
+            .build_context_encoding("recall-causal-context", "causal-session-a", &HashSet::new())
+            .await
+            .unwrap();
+        let fresh_page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "recall-causal-context".to_string(),
+                query: "CAUSAL-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(ContextViewManifest::from_view(
+                    &fresh_view,
+                    std::iter::empty(),
+                )),
+            })
+            .await
+            .unwrap();
+        assert_eq!(fresh_page.matches.len(), 2);
+        assert!(fresh_page
+            .matches
+            .iter()
+            .any(|hit| hit.document_id == "causal-after-view"));
+    }
+
+    #[tokio::test]
+    async fn session_outside_the_fifty_session_view_remains_recallable_across_principals() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-swapped-session.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "swapped-context".to_string(),
+                agent_id: "swapped-agent".to_string(),
+                title: "Swapped Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let mut all_event_ids = BTreeSet::new();
+        for index in 0..=50 {
+            let event_id = format!("swapped-event-{index:02}");
+            all_event_ids.insert(event_id.clone());
+            store
+                .append(Event::new(
+                    event_id,
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::json!({
+                        "context_id": "swapped-context",
+                        "session_id": format!("swapped-session-{index:02}"),
+                        "principal_id": format!("principal-{}", index % 2),
+                        "text": format!("SWAPPED-ORBIT evidence {index:02}"),
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("swapped-session-worker", 64)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        let view = engine
+            .build_context_encoding("swapped-context", "swapped-session-00", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(view.session_working_set.max_sessions, 50);
+        assert_eq!(view.session_working_set.full_session_ids.len(), 50);
+        assert_eq!(view.observations.len(), 50);
+        assert_eq!(view.session_working_set.excluded.over_count, 1);
+        let resident_event_ids = view
+            .observations
+            .iter()
+            .map(|observation| observation.id.clone())
+            .collect::<BTreeSet<_>>();
+        let expected_swapped = all_event_ids
+            .difference(&resident_event_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(expected_swapped.len(), 1);
+
+        let page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "swapped-context".to_string(),
+                query: "SWAPPED-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(ContextViewManifest::from_view(&view, std::iter::empty())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].document_id, expected_swapped[0]);
+    }
+
+    #[tokio::test]
+    async fn retired_observation_is_non_resident_and_remains_recallable() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-retired-observation.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "retired-recall-context".to_string(),
+                agent_id: "retired-recall-agent".to_string(),
+                title: "Retired Recall".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "retired-recall-event".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": "retired-recall-context",
+                    "session_id": "retired-recall-session",
+                    "text": "RETIRED-ORBIT durable evidence",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        engine
+            .apply_context_transaction(
+                "retired-recall-context",
+                "retired-recall-session",
+                "(context-tx (base-version 0) (reason evidence-consumed) (retire retired-recall-event))",
+            )
+            .await
+            .unwrap();
+        loop {
+            let batch = store
+                .project_recall_outbox_batch("retired-recall-worker", 32)
+                .await
+                .unwrap();
+            if batch.claimed == 0 {
+                break;
+            }
+        }
+        let view = engine
+            .build_context_encoding(
+                "retired-recall-context",
+                "retired-recall-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        assert!(view
+            .observations
+            .iter()
+            .all(|observation| observation.id != "retired-recall-event"));
+        let page = engine
+            .search_recall(RecallSearchRequest {
+                context_id: "retired-recall-context".to_string(),
+                query: "RETIRED-ORBIT".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(ContextViewManifest::from_view(&view, std::iter::empty())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.matches.len(), 1);
+        assert_eq!(page.matches[0].document_id, "retired-recall-event");
+        assert!(page.matches[0].retired);
+    }
+
     #[test]
     fn tool_call_history_enters_the_inbox_but_control_events_do_not() {
         let assistant_call = Event::new(
@@ -15979,7 +18111,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
         engine
             .apply_context_transaction(
@@ -16007,6 +18139,7 @@ mod tests {
             include_events: false,
             max_nodes,
             cursor,
+            view_manifest: None,
         };
         let depth_zero = engine
             .recall_frame_graph(request(0, 32, None))
@@ -16060,6 +18193,7 @@ mod tests {
                 include_events: false,
                 max_nodes: 32,
                 cursor: None,
+                view_manifest: None,
             })
             .await
             .unwrap();
@@ -16088,13 +18222,17 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
         let search_cursor = RecallSearchCursor {
             context_id: "recall-graph-context".to_string(),
             normalized_query: "fact".to_string(),
             start_time: None,
             end_time: None,
+            visibility_fingerprint: recall_context_visibility_fingerprint("recall-graph-context"),
+            through_sequence: None,
+            through_mind_version: None,
+            event_visibility_snapshot: None,
             before_sequence: 42,
         };
         let encoded_search_cursor = engine.encode_recall_search_cursor(&search_cursor).unwrap();
@@ -16149,6 +18287,7 @@ mod tests {
                 include_events: false,
                 max_nodes: 128,
                 cursor: None,
+                view_manifest: None,
             })
             .await
             .unwrap();
@@ -16164,6 +18303,88 @@ mod tests {
             cyclic.nodes.len(),
             "cycles must not revisit nodes"
         );
+    }
+
+    #[tokio::test]
+    async fn model_frame_recall_fails_closed_when_mind_changes_after_the_view() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("frame-causal-view.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "frame-causal-context".to_string(),
+                agent_id: "frame-causal-agent".to_string(),
+                title: "Frame causal Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        engine
+            .apply_context_transaction(
+                "frame-causal-context",
+                "frame-causal-session",
+                "(context-tx (base-version 0) (create A (fact before)))",
+            )
+            .await
+            .unwrap();
+        let view = engine
+            .build_context_encoding(
+                "frame-causal-context",
+                "frame-causal-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        let manifest = ContextViewManifest::from_view(&view, std::iter::empty());
+        engine
+            .apply_context_transaction(
+                "frame-causal-context",
+                "frame-causal-session",
+                "(context-tx (base-version 1) (create B (fact after)))",
+            )
+            .await
+            .unwrap();
+
+        let error = engine
+            .recall_frame_graph(FrameRecallRequest {
+                context_id: "frame-causal-context".to_string(),
+                frame_id: "A".to_string(),
+                depth: 0,
+                direction: FrameRecallDirection::Ancestors,
+                include_bodies: true,
+                include_events: false,
+                max_nodes: 32,
+                cursor: None,
+                view_manifest: Some(manifest),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Mind changed after the physical Context View"));
+
+        let current = engine
+            .recall_frame_graph(FrameRecallRequest {
+                context_id: "frame-causal-context".to_string(),
+                frame_id: "A".to_string(),
+                depth: 0,
+                direction: FrameRecallDirection::Ancestors,
+                include_bodies: true,
+                include_events: false,
+                max_nodes: 32,
+                cursor: None,
+                view_manifest: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(current.mind_version, 2);
     }
 
     #[tokio::test]
@@ -16191,7 +18412,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         engine
             .apply_context_transaction(
                 "retirement-race-context",
@@ -16272,7 +18493,7 @@ mod tests {
         config.frame_retirement.cooling_ticks = 2;
         let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
             .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
             .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
             .with_cognitive_clock_store(Arc::clone(&store) as Arc<dyn CognitiveClockStore>);
@@ -16494,7 +18715,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
         let before = engine
             .build_context_encoding(session_id, session_id, &HashSet::new())
@@ -16535,7 +18756,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
         let view = restarted
             .build_context_encoding(session_id, session_id, &HashSet::new())
@@ -16634,7 +18855,7 @@ mod tests {
             OrchestratorConfig::default(),
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         engine
             .apply_context_transaction(
                 "attention-context",
@@ -16731,7 +18952,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         writer
             .apply_context_transaction(
                 "audit-race-context",
@@ -16749,7 +18970,7 @@ mod tests {
             Arc::clone(&racing_store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         let audit = auditor
             .audit_mind_projection("audit-race-context")
             .await
@@ -16801,14 +19022,16 @@ mod tests {
                 Arc::clone(&store) as Arc<dyn EventStore>,
                 OrchestratorConfig::default(),
             )
-            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>),
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+            .with_worker_coordination_mode(WorkerCoordinationMode::SharedHostLeases),
         );
         let engine_right = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
                 OrchestratorConfig::default(),
             )
-            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>),
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+            .with_worker_coordination_mode(WorkerCoordinationMode::SharedHostLeases),
         );
 
         let left = {
@@ -16903,7 +19126,8 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+        .with_worker_coordination_mode(WorkerCoordinationMode::SharedHostLeases);
         let creates = (0..WRITERS)
             .map(|index| format!("(create frame-{index} (fact {index}))"))
             .collect::<Vec<_>>()
@@ -16923,7 +19147,8 @@ mod tests {
                 Arc::clone(&store) as Arc<dyn EventStore>,
                 OrchestratorConfig::default(),
             )
-            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+            .with_worker_coordination_mode(WorkerCoordinationMode::SharedHostLeases);
             handles.push(tokio::spawn(async move {
                 engine
                     .apply_context_transaction(
@@ -16980,7 +19205,8 @@ mod tests {
                     Arc::clone(&store) as Arc<dyn EventStore>,
                     OrchestratorConfig::default(),
                 )
-                .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>),
+                .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
+                .with_worker_coordination_mode(WorkerCoordinationMode::SharedHostLeases),
             );
             handles.push(tokio::spawn(async move {
                 engine
@@ -17002,7 +19228,7 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         let view = verifier
             .build_context_encoding("many-writers-context", "session-0", &HashSet::new())
             .await
@@ -17022,6 +19248,16 @@ mod tests {
     async fn mind_seed_inherits_cognition_without_parent_sessions_or_observations() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-mind-seed.db");
+        #[cfg(feature = "context-db")]
+        let store = Arc::new(
+            SqliteStore::new_with_context_db(
+                db.to_str().unwrap(),
+                &crate::config::SqliteStorageConfig::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        #[cfg(not(feature = "context-db"))]
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         for context_id in ["seed-source", "seed-target"] {
             store
@@ -17076,7 +19312,7 @@ mod tests {
             OrchestratorConfig::default(),
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         engine
             .apply_context_transaction(
                 "seed-source",
@@ -17130,7 +19366,7 @@ mod tests {
         assert_eq!(receipt.source_version, 1);
         assert_eq!(receipt.inherited_frames, 2);
         let seed_snapshot = store
-            .get_latest_mind_snapshot("seed-target")
+            .get_latest_context_snapshot("seed-target")
             .await
             .unwrap()
             .unwrap();
@@ -17209,7 +19445,7 @@ mod tests {
             OrchestratorConfig::default(),
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>);
         let restored = restarted
             .build_context_encoding("seed-target", "seed-session-c", &HashSet::new())
             .await
@@ -17299,7 +19535,7 @@ mod tests {
             OrchestratorConfig::default(),
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
         let mut retirement = String::from(
             "(context-tx (base-version 0) (reason \"retire old projection observations\")",
@@ -17410,7 +19646,7 @@ mod tests {
                 ..OrchestratorConfig::default()
             },
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
         let oversized_instruction = "x".repeat(20_000);
         let error = constrained
@@ -17577,7 +19813,7 @@ mod tests {
             OrchestratorConfig::default(),
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
         .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
 
@@ -17784,7 +20020,7 @@ mod tests {
             OrchestratorConfig::default(),
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
         .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
         let after_restart = restarted

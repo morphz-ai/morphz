@@ -2958,6 +2958,7 @@ async fn handle_search_recall(
             end_time: query.end_time,
             limit: query.limit.unwrap_or(20).clamp(1, 100),
             cursor: query.cursor,
+            view_manifest: None,
         })
         .await
     {
@@ -3024,6 +3025,7 @@ async fn handle_search_dialogue_history(
             end_time: None,
             limit: candidate_limit,
             cursor: None,
+            view_manifest: None,
         })
         .await
     {
@@ -3145,6 +3147,7 @@ async fn handle_recall_frame(
             include_events: query.include_events.unwrap_or(false),
             max_nodes: query.max_nodes.unwrap_or(32),
             cursor: query.cursor.filter(|cursor| !cursor.trim().is_empty()),
+            view_manifest: None,
         })
         .await
     {
@@ -12754,6 +12757,10 @@ account = "xai-account"
         )
         .await;
         assert_eq!(completion.content, "E2E_OK");
+        // The unscoped Client API and process health probe are explicit
+        // operator operations. Neither may invent a fake `operator` Context,
+        // while ordinary Runtime Evaluations remain Agent-account fenced.
+        routed_client.probe_health().await.unwrap();
 
         let capacity = handle_update_inference(
             State(Arc::clone(&state)),

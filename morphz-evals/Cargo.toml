@@ -4,6 +4,19 @@ version = "0.1.0"
 edition = "2021"
 rust-version.workspace = true
 
+[features]
+context-db = ["morphz/context-db"]
+
+[[bin]]
+name = "context_db_postgres_runtime_benchmark"
+path = "src/bin/context_db_postgres_runtime_benchmark.rs"
+required-features = ["context-db"]
+
+[[bin]]
+name = "context_db_postgres_concurrency_benchmark"
+path = "src/bin/context_db_postgres_concurrency_benchmark.rs"
+required-features = ["context-db"]
+
 [dependencies]
 morphz = { path = "../morphz" }
 tokio = { version = "1.35", features = ["full"] }

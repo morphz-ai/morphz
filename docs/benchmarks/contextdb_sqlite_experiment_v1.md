@@ -1,8 +1,8 @@
 # ContextDB SQLite 单机实验与基准 v1
 
 > 日期：2026-09-01
-> 状态：实验结果；不代表当前 Morphz Runtime 已迁移
-> 特性门：Cargo `experimental-context-db` + Runtime `context-db` permit
+> 状态：历史实验结果；2026-09-02 已晋升为默认 Runtime 实现
+> 当前构建：稳定 Cargo `context-db` feature 默认启用，不再需要 Runtime experiment permit
 
 ## 1. 本轮验证的问题
 
@@ -21,7 +21,10 @@
 
 ## 2. 实现边界
 
-实验代码位于 `morphz/src/experimental/context_db.rs`，默认构建和现有 Runtime 都不会使用它。
+基础数据库位于 `morphz/src/context_db.rs`，Runtime Adapter 位于
+`morphz/src/context_db_runtime.rs`，公开 Rust 模块是稳定的 `morphz::context_db`。官方默认
+构建启用 `context-db`；Runtime 通过
+`storage.cognitive_store` 选择 ContextDB 或观察期 legacy 回滚后端，不再使用 experiment permit。
 
 SQLite 中只创建三个带 `experimental_contextdb_` 前缀的对象集合：
 
@@ -36,7 +39,18 @@ SQLite 中只创建三个带 `experimental_contextdb_` 前缀的对象集合：
 - `DeleteSubtree`；
 - `MoveSubtree`。
 
-本轮尚未实现 Reference Edge、Selector、Watch、Historical Snapshot、Archive / Recall 扩展、PostgreSQL 后端和 Runtime Adapter。它们不能因为 SQLite 原型通过而被宣称完成。
+Runtime Integration Preview 已实现：
+
+- 完整 `MindState` 与开放 Frame body 的结构化 AST 往返；
+- 稳定 Node ID、局部 AST Diff 与当前 Mind 权威读取；
+- Agent Trajectory、Session Projection、Recall outbox 和 Runtime Control 的同事务提交；
+- 失败回滚、重启恢复、真实对话与完整 Agent Trajectory 导出；
+- 旧 SQLite Runtime 数据的一次性精确导入；导入后 ContextDB 优先于兼容行；
+- ContextDB 模式下的 Mind、Context Encoding、Runtime Directory 和 Head List 权威读取。
+
+当前尚未实现 Reference Edge、Selector、Watch、Historical Snapshot、独立 Archive 后端、
+PostgreSQL ContextDB 后端和 Runtime Control 全量 AST 化。迁移期仍同步维护旧 Mind 行作为
+兼容读模型，但 ContextDB 模式不从这些行读取当前 Mind。
 
 ## 3. 热路径设计
 
@@ -90,23 +104,30 @@ SQLite `BEGIN IMMEDIATE` 为单文件写入提供确定提交顺序。全局 Con
 13. `:memory:` 模式保持单一、连贯的 SQLite 数据库；
 14. 自动补括号的既有容错被保留，但多个顶层表达式会被拒绝；
 15. future revision、root 删除、重复 Context 和非法 S 表达式均失败且不留下部分状态。
+16. 旧 Runtime Mind 精确导入一次，重复启动不会覆盖 ContextDB 权威状态；
+17. AST、Agent Trajectory、Session retire/restore、Recall outbox 在同一事务中共同提交或回滚；
+18. 兼容 Mind 行被物理破坏后，Mind、Runtime Directory 和 Head List 仍从 ContextDB 精确读取；
+19. 稳定 Node ID 被物理篡改时，优化加载器 fail closed；
+20. ContextDB 模式完成真实消息—模型回复，并导出可验证的完整 Agent Trajectory；
+21. Runtime 重启后恢复待处理工作，不丢失当前 Mind 或控制语义。
 
 测试命令：
 
 ```bash
-cargo test -p morphz --lib --features experimental-context-db context_db::tests
+cargo test -p morphz --lib --features context-db context_db::tests
 ```
 
-最终回归结果：
+以下是 2026-09-01 实验阶段变基到主线 `d86f815c` 后的历史回归结果：
 
-- 默认特性：1098 passed，6 ignored；
-- 启用 `experimental-context-db` 的单线程全量回归：1112 passed，6 ignored；
-- `--all-features` 下 ContextDB 定向测试：15 passed；
-- ContextDB 文档测试与严格 Clippy 检查通过。本轮 Clippy 命令仅屏蔽了工作树其他并行改动产生的既有 warning，没有屏蔽 ContextDB warning。
+- 默认特性单线程全量回归：1100 passed，6 ignored；
+- 当时显式启用 ContextDB 的单线程全量回归：1118 passed，6 ignored；
+- ContextDB 定向测试：18 passed。
+- `cargo check -p morphz --all-targets --all-features` 通过；
+- `cargo clippy -p morphz --all-targets --all-features -- -D warnings` 通过。
 
-并行全量回归两次只出现同一个既有
-`runtime::tests::live_session_signal_is_symmetric_and_runs_target_concurrently`
-60 秒时序超时；该用例单独复跑通过，完整套件使用单线程调度也通过。它没有依赖 ContextDB，但说明现有测试套件仍有一个负载敏感的稳定性问题，应独立跟踪，不能把失败轮次隐藏成全绿。
+并行全量回归曾出现一个权限测试命中 SQLite busy 保护分支；该用例单独复跑通过，包含它的
+完整单线程套件也通过。它没有依赖 ContextDB，但说明现有并行测试套件仍存在负载敏感性，
+应独立跟踪，不能把失败轮次隐藏成全绿。
 
 ## 5. Release 基准
 
@@ -114,7 +135,7 @@ cargo test -p morphz --lib --features experimental-context-db context_db::tests
 
 ```bash
 cargo run -p morphz --release \
-  --features experimental-context-db \
+  --features context-db \
   --example context_db_sqlite_benchmark
 ```
 
@@ -137,17 +158,59 @@ cargo run -p morphz --release \
 - `MORPHZ_CONTEXTDB_BENCH_CONTEXTS`；
 - `MORPHZ_CONTEXTDB_BENCH_WRITES_PER_CONTEXT`。
 
+### 5.1 Runtime Adapter A/B
+
+底层 AST 基准不能代表完整 Runtime 提交。为此增加：
+
+```bash
+cargo run -p morphz --release \
+  --features context-db \
+  --example context_db_runtime_benchmark
+```
+
+该基准让旧 SQLite 路径和 ContextDB 路径提交完全相同的 `MindState`、Agent Trajectory
+Event 和事务控制，只改变当前 Mind authority。每轮修改一个 Frame，同时保持整体 Mind
+尺寸稳定；计时包含调用侧 JSON 构造、state hash、数据库事务和持久化。
+
+| Mind JSON | Frame 数 | 路径 | 完整 Runtime commit p50 / p95 / p99 | 权威 Mind read p50 / p95 / p99 |
+|---:|---:|---|---:|---:|
+| 193,809 B | 256 | 旧 SQLite | 1.193 / 1.618 / 6.012 ms | 0.181 / 0.189 / 0.196 ms |
+| 193,809 B | 256 | ContextDB | 3.060 / 3.674 / 4.224 ms | 1.937 / 2.137 / 2.201 ms |
+| 1,111,313 B | 256 | 旧 SQLite | 4.488 / 6.171 / 11.096 ms | 0.405 / 0.419 / 0.438 ms |
+| 1,111,313 B | 256 | ContextDB | 9.096 / 10.427 / 12.124 ms | 6.723 / 6.994 / 7.076 ms |
+
+当前结论必须诚实分成两层：
+
+- ContextDB 核心局部 AST Mutation 已证明不随未触碰大子树线性重写；
+- 兼容 Runtime Adapter 仍接收完整 `MindState`，因此需要一次结构快照加载、逐 Node
+  校验和 AST Diff。它在约 1.1 MB Mind 下仍保持本机 p95 commit 10.427 ms、read
+  6.994 ms，但尚未比旧单 JSON 行更快。
+
+这不是通过减少语义换性能：Agent Trajectory、Session Projection、Recall 与 Runtime
+Control 仍完整提交。后续优化方向是让 Context domain 直接提交已确定的 Node operations，
+并复用 Resident AST / 编码缓存，从而消除兼容 Adapter 的全状态 Diff；在此之前，不宣称
+ContextDB Runtime 路径具有整体性能优势。
+
 ## 6. 本轮结论与迁移门禁
 
-SQLite 单机实验已经证明：Context AST authority、Node 级局部修改、细粒度 OCC 和物理持久化可以同时成立，而且不需要把应用 Event History 继续作为核心事实源。
+> 以下结论是 2026-09-01 的实验阶段快照，已被
+> `docs/context_store_final_replacement_v1.md` 的 2026-09-02 决策覆盖。
 
-该结果足以进入下一阶段，但还不足以直接替换当前 Runtime。迁移前至少还需要：
+SQLite 单机实验与 Runtime Integration Preview 已经证明：Context AST authority、Node 级
+局部修改、细粒度 OCC 和物理持久化可以同时成立；Morphz 可以保留完整 Agent Trajectory
+与现有恢复能力，而不依赖历史重放来读取当前 Mind。
 
-1. 将当前 Morphz `derive / revise / retire / relate` 确定性编译成 Context Transaction；
-2. 建立旧存储与 ContextDB 的语义 conformance / A-B suite；
-3. 补齐 Reference Edge、Thread/Session 控制节点、Selector 与 Ready Index；
-4. 做真实长时间 Agent、工具恢复和多 Session 压测；
-5. 把后端无关的事务语义从 SQLite 适配器中抽出，再实现 PostgreSQL 后端；
-6. 只有双写、校验、故障注入和回滚门禁通过后，才改变 Runtime authority。
+该结果已经足以在显式特性门下替换 SQLite Runtime 的当前 Mind authority，但还不足以
+成为默认路径或替换所有 Runtime Control 存储。进入默认路径前至少还需要：
 
-因此当前决定是：保留该实现为默认关闭的实验特性，以它作为 ContextDB 语义和性能基线；不在缺少兼容证明时直接替换现有生产路径。
+1. 完成默认与 ContextDB 路径的全量语义 conformance / A-B suite；
+2. 完成工具 continuation、调度恢复、长时间 Agent 和多 Session 故障注入；
+3. 建立明确的 SQL/字节预算和 Runtime Adapter 性能基线；
+4. 决定 Thread/Session Control AST 化的协议，而不是机械迁移现有表；
+5. 补齐 Reference Edge、Selector、Watch 与 Ready Index；
+6. 把后端无关的事务语义从 SQLite 适配器中抽出，再实现 PostgreSQL 后端；
+7. 只有完整回归、性能和回滚门禁通过后，才考虑默认启用。
+
+当时决定是保留默认关闭的完整 SQLite Runtime 路径，以它作为 ContextDB 语义、兼容性和
+性能基线。当前实现已把 ContextDB 晋升为默认 Store；legacy 只通过双向显式迁移与配置选择
+回滚，启动不自动迁移，正常提交不双写。

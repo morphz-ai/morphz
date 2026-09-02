@@ -8,7 +8,7 @@ use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
 };
-use crate::config::{AppConfig, AuthAccountConfig, StorageBackend};
+use crate::config::{AppConfig, AuthAccountConfig, CognitiveStoreBackend, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::{
     Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -38,27 +38,26 @@ use crate::memory::{
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord,
     CapabilityLeaseRestriction, CognitiveContextRecord, ContextCapabilityBindingMutation,
-    ContextCapabilityBindingRecord, ContextTokenBudgetMutation, ContextUpdate, DelegationFilter,
-    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
+    ContextCapabilityBindingRecord, ContextStateSummary, ContextTokenBudgetMutation, ContextUpdate,
+    DelegationFilter, DelegationRecord, DelegationStatus, DialogueTurnRetryMutation,
+    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
     ExecutionJobMonitorRecord, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
     ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
     ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
     ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
-    MessageDispatchMode, MindProjectionHead, MindProjectionStore, NewAgent,
-    NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
-    NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
-    RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
-    SessionContextSharing, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
-    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention,
+    MessageDispatchMode, NewAgent, NewArtifactTransferExecution, NewCognitiveContext,
+    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
+    NewObjective, NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
+    ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
+    SessionRecord, SessionStatus, SessionStore, SessionUpdate, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
+    ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -1068,14 +1067,53 @@ impl MorphzRuntimeBuilder {
                     .unwrap_or_else(|| "injected-runtime-store".to_string()),
             ),
             None => match self.config.storage.backend {
-                StorageBackend::Sqlite => (
-                    Arc::new(
-                        SqliteStore::new_with_config(&database_path, &self.config.storage.sqlite)
-                            .await?,
-                    ),
-                    Some(database_path.clone()),
-                    format!("sqlite:{database_path}"),
-                ),
+                StorageBackend::Sqlite => {
+                    let sqlite_store = match self.config.storage.cognitive_store {
+                        CognitiveStoreBackend::ContextDb => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                SqliteStore::new_with_context_db(
+                                    &database_path,
+                                    &self.config.storage.sqlite,
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                return Err(
+                                    "storage.cognitive_store=context_db requires a ContextDB-enabled binary"
+                                        .into(),
+                                );
+                            }
+                        }
+                        CognitiveStoreBackend::Legacy => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                SqliteStore::new_with_legacy(
+                                    &database_path,
+                                    &self.config.storage.sqlite,
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                SqliteStore::new_with_config(
+                                    &database_path,
+                                    &self.config.storage.sqlite,
+                                )
+                                .await?
+                            }
+                        }
+                    };
+                    (
+                        Arc::new(sqlite_store),
+                        Some(database_path.clone()),
+                        format!(
+                            "sqlite:{database_path}:{}",
+                            self.config.storage.cognitive_store.as_str()
+                        ),
+                    )
+                }
                 StorageBackend::Postgres => {
                     let url_env = self.config.storage.postgres.url_env.trim();
                     if url_env.is_empty() {
@@ -1086,13 +1124,54 @@ impl MorphzRuntimeBuilder {
                             "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
                         )
                     })?;
-                    let store = PostgresStore::new_with_observability(
-                        &database_url,
-                        self.config.storage.postgres.max_connections,
-                        Arc::clone(&observability),
+                    let store = match self.config.storage.cognitive_store {
+                        CognitiveStoreBackend::ContextDb => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                PostgresStore::new_with_context_db(
+                                    &database_url,
+                                    self.config.storage.postgres.max_connections,
+                                    Arc::clone(&observability),
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                return Err(
+                                    "storage.cognitive_store=context_db requires a ContextDB-enabled binary"
+                                        .into(),
+                                );
+                            }
+                        }
+                        CognitiveStoreBackend::Legacy => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                PostgresStore::new_with_legacy(
+                                    &database_url,
+                                    self.config.storage.postgres.max_connections,
+                                    Arc::clone(&observability),
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                PostgresStore::new_with_observability(
+                                    &database_url,
+                                    self.config.storage.postgres.max_connections,
+                                    Arc::clone(&observability),
+                                )
+                                .await?
+                            }
+                        }
+                    };
+                    (
+                        Arc::new(store),
+                        None,
+                        format!(
+                            "postgres:env:{url_env}:{}",
+                            self.config.storage.cognitive_store.as_str()
+                        ),
                     )
-                    .await?;
-                    (Arc::new(store), None, format!("postgres:env:{url_env}"))
                 }
             },
         };
@@ -1217,7 +1296,7 @@ impl MorphzRuntimeBuilder {
                 self.config.llm.model.clone(),
                 self.config.llm.allowed_evaluation_models.clone(),
             )
-            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
             .with_session_projection_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
             )
@@ -2000,6 +2079,16 @@ impl MorphzRuntime {
     /// and Prometheus export.
     pub fn observability(&self) -> Arc<crate::observability::Observability> {
         Arc::clone(&self.inner.observability)
+    }
+
+    /// Process-local Context capacity counters used by diagnostics and load
+    /// tests. These counters deliberately distinguish completed user turns
+    /// from cognitive Context transactions; there is no fixed one-to-one
+    /// relationship between the two.
+    pub fn context_capacity_metrics(
+        &self,
+    ) -> crate::orchestrator::context::ContextCapacityMetricsSnapshot {
+        self.inner.orchestrator.context_capacity_metrics()
     }
 
     pub fn prometheus_metrics(&self) -> String {
@@ -7985,7 +8074,7 @@ impl MorphzRuntime {
                 session_candidate_limit,
             ),
             self.inner.store.count_context_sessions(&context_ids),
-            self.inner.store.list_mind_projection_heads(&context_ids),
+            self.inner.store.list_context_state_summaries(&context_ids),
             self.inner
                 .store
                 .list_open_threads_for_contexts(&context_ids, activity_limit),
@@ -8024,7 +8113,7 @@ impl MorphzRuntime {
         let heads_by_context = mind_heads
             .into_iter()
             .map(|head| (head.context_id.clone(), head))
-            .collect::<HashMap<String, MindProjectionHead>>();
+            .collect::<HashMap<String, ContextStateSummary>>();
         let bindings_by_session = runtime_overview_principals_by_session(principal_bindings);
 
         let mut threads_by_session: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
@@ -10592,6 +10681,12 @@ mod tests {
 
     struct ReplyClient;
 
+    #[cfg(feature = "context-db")]
+    struct ContextDbLearningClient {
+        calls: AtomicU64,
+        observed_committed_context: Arc<AtomicBool>,
+    }
+
     struct EmbeddedProbeTool;
 
     #[async_trait::async_trait]
@@ -11580,6 +11675,65 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "context-db")]
+    #[async_trait::async_trait]
+    impl Client for ContextDbLearningClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(
+                        tools.iter().any(|tool| tool.name == "context_tx"),
+                        "the model-facing Runtime must expose context_tx while learning"
+                    );
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "contextdb-learning-tx".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "context_tx".to_string(),
+                            arguments: serde_json::json!({
+                                "transaction": concat!(
+                                    "(context-tx (base-version 0) (reason learned-from-evidence) ",
+                                    "(create scratch (hypothesis initial)) ",
+                                    "(derive learned (from contextdb-learning-evidence) ",
+                                    "(fact verified) (confidence high)) ",
+                                    "(revise scratch (hypothesis revised)) ",
+                                    "(retire contextdb-learning-evidence))"
+                                )
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let projected = messages
+                        .iter()
+                        .map(|message| message.content.as_str())
+                        .collect::<String>();
+                    let observed = projected.contains("(version 1)")
+                        && projected.contains("(id learned)")
+                        && projected.contains("(hypothesis revised)")
+                        && projected.contains("contextdb-learning-tx");
+                    self.observed_committed_context
+                        .store(observed, Ordering::SeqCst);
+                    assert!(
+                        observed,
+                        "the model must receive the committed authoritative Context before continuing"
+                    );
+                    Ok(text_response("learning-committed"))
+                }
+                call => Err(format!(
+                    "ContextDB learning fixture received unexpected model call {call}"
+                )
+                .into()),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn embedding_host_can_register_a_physical_tool_before_target_materialization() {
         let database = NamedTempFile::new().unwrap();
@@ -11618,16 +11772,28 @@ mod tests {
                 .join("\n");
             let active_target = prompt.contains("(active-session session-signal-live-b)");
             let active_source = prompt.contains("(active-session session-signal-live-a)");
+            // A Session transcript may already contain results from another
+            // concurrently completed Thread.  Route this deterministic test
+            // client by the Runtime-authoritative wake of the *current*
+            // Activation, never by searching the whole prompt for historical
+            // content.  The old content-only classification intermittently
+            // mistook the source tool continuation for the independent B -> A
+            // Signal after those two legal successors changed order under
+            // load.
+            let wake_is_tool_output = prompt.contains("(wake (cause tool-output)");
+            let wake_is_session_signal = prompt.contains("(wake (cause session-signal)");
             let has_session_signal_result = messages
                 .iter()
                 .any(|message| message.role == "tool" && message.content.contains("signalled"));
 
             if active_target {
-                if has_session_signal_result {
+                if wake_is_tool_output {
+                    assert!(has_session_signal_result);
                     self.target_continuation_calls
                         .fetch_add(1, Ordering::SeqCst);
                     return Ok(text_response("target-finished"));
                 }
+                assert!(wake_is_session_signal);
                 self.target_initial_calls.fetch_add(1, Ordering::SeqCst);
                 assert!(prompt.contains("work-request-for-b"));
                 assert!(tools.iter().any(|tool| tool.name == "session_signal"));
@@ -11650,7 +11816,8 @@ mod tests {
             if !active_source {
                 return Ok(text_response("non-dialogue-maintenance"));
             }
-            if has_session_signal_result {
+            if wake_is_tool_output {
+                assert!(has_session_signal_result);
                 self.source_continuation_calls
                     .fetch_add(1, Ordering::SeqCst);
                 tokio::time::timeout(
@@ -11665,12 +11832,8 @@ mod tests {
                     .store(true, Ordering::SeqCst);
                 return Ok(text_response("source-finished"));
             }
-            // The target reply may become visible before the source's tool
-            // continuation is evaluated under a heavily loaded test suite.
-            // Prefer the exact tool-result continuation when both facts are
-            // present; the independently routed target Signal still receives
-            // its own Evaluation and proves the symmetric return path below.
-            if prompt.contains("target-result-from-b") {
+            if wake_is_session_signal {
+                assert!(prompt.contains("target-result-from-b"));
                 self.source_reply_calls.fetch_add(1, Ordering::SeqCst);
                 return Ok(text_response("source-received-result"));
             }
@@ -14006,7 +14169,7 @@ mod tests {
             if call >= 6 {
                 return Err("Session capability rule test produced an extra evaluation".into());
             }
-            if call % 2 == 0 {
+            if call.is_multiple_of(2) {
                 return Ok(Response {
                     content: String::new(),
                     tool_calls: vec![ToolCallRepr {
@@ -14942,6 +15105,270 @@ mod tests {
             "session-runtime"
         );
         assert!(session.inspect_context().await.is_ok());
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn context_db_runtime_completes_a_real_dialogue_turn() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-context-db-runtime-e2e".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "ContextDB Runtime E2E".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        let receipt = session
+            .send(
+                "exercise the ContextDB runtime path",
+                "User-Test",
+                Some("client-context-db-runtime-e2e".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(!receipt.duplicate);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        assert!(session.inspect_context().await.is_ok());
+        let trajectory = crate::trajectory::AgentTrajectoryExporter::export(
+            &runtime,
+            crate::trajectory::TrajectoryExportRequest {
+                context_id: runtime.identity().context_id.clone(),
+                objective_id: None,
+                activation_id: None,
+                start_time: None,
+                end_time: None,
+                max_events: 1_000,
+                profiles: vec!["AT-Core".to_string()],
+                include_payloads: true,
+                include_user_content: true,
+                rights: crate::trajectory::TrajectoryRights::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(trajectory
+            .nodes
+            .iter()
+            .any(|node| node.source_event_id == receipt.event_id));
+        assert!(trajectory.verify().valid);
+
+        let verifier = sqlx::SqlitePool::connect(database.path().to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_contexts WHERE context_id = ?",
+            )
+            .bind(&runtime.identity().context_id)
+            .fetch_one(&verifier)
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_nodes WHERE context_id = ?",
+            )
+            .bind(&runtime.identity().context_id)
+            .fetch_one(&verifier)
+            .await
+            .unwrap()
+                >= 9
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn context_db_model_learning_survives_restart_and_remains_recallable() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let observed_committed_context = Arc::new(AtomicBool::new(false));
+        let runtime = MorphzRuntime::builder(
+            config.clone(),
+            Arc::new(ContextDbLearningClient {
+                calls: AtomicU64::new(0),
+                observed_committed_context: Arc::clone(&observed_committed_context),
+            }),
+        )
+        .database_path(database.path().to_string_lossy())
+        .tool_policy(RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        })
+        .build()
+        .await
+        .unwrap();
+        runtime.start().await.unwrap();
+        let session_id = "session-context-db-learning-e2e";
+        let session = runtime
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "ContextDB Learning E2E".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .append(Event::new(
+                "contextdb-learning-evidence".to_string(),
+                "Tool-Fixture".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                serde_json::json!({
+                    "agent_id": runtime.identity().agent_id,
+                    "context_id": runtime.identity().context_id,
+                    "session_id": session_id,
+                    "text": "CONTEXTDB-LEARNING-EVIDENCE verified durable fact"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        let receipt = session
+            .send(
+                "learn the supplied evidence and retain the result",
+                "User-Test",
+                Some("client-context-db-learning-e2e".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(!receipt.duplicate);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "learning-committed");
+        assert!(observed_committed_context.load(Ordering::SeqCst));
+
+        let view = session.inspect_context_view().await.unwrap();
+        assert_eq!(view.state.version, 1);
+        let learned = view
+            .state
+            .frames
+            .iter()
+            .find(|frame| frame.id == "learned")
+            .expect("the derived learned Frame must be resident");
+        assert!(learned.body.contains("(fact verified)"));
+        assert!(learned.body.contains("(confidence high)"));
+        assert_eq!(
+            learned.sources,
+            vec!["contextdb-learning-evidence".to_string()]
+        );
+        let scratch = view
+            .state
+            .frames
+            .iter()
+            .find(|frame| frame.id == "scratch")
+            .expect("the created and revised Frame must be resident");
+        assert!(scratch.body.contains("(hypothesis revised)"));
+        assert!(!scratch.body.contains("(hypothesis initial)"));
+        assert!(view.state.retired.contains("contextdb-learning-evidence"));
+        assert!(view
+            .observations
+            .iter()
+            .all(|observation| observation.id != "contextdb-learning-evidence"));
+
+        let trajectory = crate::trajectory::AgentTrajectoryExporter::export(
+            &runtime,
+            crate::trajectory::TrajectoryExportRequest {
+                context_id: runtime.identity().context_id.clone(),
+                objective_id: None,
+                activation_id: None,
+                start_time: None,
+                end_time: None,
+                max_events: 1_000,
+                profiles: vec!["AT-Core".to_string()],
+                include_payloads: true,
+                include_user_content: true,
+                rights: crate::trajectory::TrajectoryRights::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(trajectory
+            .nodes
+            .iter()
+            .any(|node| node.kind == "state_transaction"));
+        assert!(trajectory.verify().valid);
+
+        drop(replies);
+        drop(session);
+        drop(runtime);
+
+        let recovered = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        let recovered_view = recovered
+            .context_encoding(&recovered.identity().context_id, session_id)
+            .await
+            .unwrap();
+        assert_eq!(recovered_view.state, view.state);
+        recovered
+            .rebuild_recall_index(&recovered.identity().context_id)
+            .await
+            .unwrap();
+        let recalled = recovered
+            .search_recall(crate::orchestrator::context::RecallSearchRequest {
+                context_id: recovered.identity().context_id.clone(),
+                query: "CONTEXTDB-LEARNING-EVIDENCE".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(
+                    crate::orchestrator::context::ContextViewManifest::from_view(
+                        &recovered_view,
+                        std::iter::empty(),
+                    ),
+                ),
+            })
+            .await
+            .unwrap();
+        let evidence = recalled
+            .matches
+            .iter()
+            .find(|entry| entry.document_id == "contextdb-learning-evidence")
+            .expect("the retired source evidence must remain recallable after restart");
+        assert!(evidence.retired);
     }
 
     #[tokio::test]
@@ -16612,7 +17039,7 @@ mod tests {
         assert_eq!(
             events.len(),
             1,
-            "the durable Event ledger must contain exactly one detached completion reply"
+            "the durable Agent Trajectory must contain exactly one detached completion reply"
         );
         assert_eq!(client.calls.load(Ordering::SeqCst), 3);
     }
@@ -19685,6 +20112,11 @@ mod tests {
             "source-received-result".to_string()
         )));
         assert!(client.observed_concurrent_target.load(Ordering::SeqCst));
+        assert_eq!(client.source_initial_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.source_continuation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.source_reply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.target_initial_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.target_continuation_calls.load(Ordering::SeqCst), 1);
 
         let signals = runtime
             .query_events(QueryFilter {

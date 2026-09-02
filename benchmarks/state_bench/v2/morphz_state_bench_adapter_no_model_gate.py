@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -45,10 +46,66 @@ def _execution_jobs(database: Path) -> list[dict[str, object]]:
     ]
 
 
-def run(binary: Path, output: Path) -> dict[str, object]:
+def _context_store_state(database: Path) -> dict[str, list[list[object]]]:
+    with sqlite3.connect(database) as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        contextdb = (
+            connection.execute(
+                "SELECT context_id, revision, root_hash "
+                "FROM experimental_contextdb_contexts ORDER BY context_id"
+            ).fetchall()
+            if "experimental_contextdb_contexts" in tables
+            else []
+        )
+        legacy = (
+            connection.execute(
+                "SELECT context_id, revision, state_hash "
+                "FROM mind_projections ORDER BY context_id"
+            ).fetchall()
+            if "mind_projections" in tables
+            else []
+        )
+    return {
+        "contextdb": [list(row) for row in contextdb],
+        "legacy": [list(row) for row in legacy],
+    }
+
+
+def _contextdb_advanced(
+    before: dict[str, list[list[object]]],
+    after: dict[str, list[list[object]]],
+) -> bool:
+    old = before["contextdb"]
+    new = after["contextdb"]
+    if not old:
+        return len(new) == 1 and int(new[0][1]) > 0
+    return (
+        len(old) == len(new) == 1
+        and new[0][0] == old[0][0]
+        and int(new[0][1]) > int(old[0][1])
+        and new[0][2] != old[0][2]
+    )
+
+
+def run(
+    binary: Path,
+    output: Path,
+    *,
+    learning_database: Path | None = None,
+    domain: str = "travel",
+) -> dict[str, object]:
     output.mkdir(parents=True, exist_ok=False)
     learning = output / "learning.sqlite"
-    learning.touch()
+    if learning_database is None:
+        learning.touch()
+    else:
+        shutil.copy2(learning_database.resolve(strict=True), learning)
+    context_store_before = _context_store_state(learning)
     task_root = output / "tasks"
     calls: list[dict[str, object]] = []
 
@@ -59,7 +116,7 @@ def run(binary: Path, output: Path) -> dict[str, object]:
     runtime_context = AgentRuntimeContext(
         task_id="deterministic-adapter-gate",
         user_id="gate-user",
-        domain="travel",
+        domain=domain,
         now="2026-08-26T00:00:00Z",
         run_idx=1,
     )
@@ -98,6 +155,9 @@ def run(binary: Path, output: Path) -> dict[str, object]:
         agent_output = Path(trajectory.metadata["me07_agent_system"]["runtime_output"])
 
     jobs = _execution_jobs(agent_output / "morphz.sqlite")
+    context_store_after = _context_store_state(agent_output / "morphz.sqlite")
+    initial_context_tx_commits = int(agent._ready["initial_context_tx_commits"])
+    final_context_tx_commits = int(agent._last_turn["context_tx_commits"])
     checks = {
         "reply_completed": text == "me07-deterministic-gate-complete",
         "state_bench_handler_called_once": calls == [{}],
@@ -109,6 +169,13 @@ def run(binary: Path, output: Path) -> dict[str, object]:
             job["tool_name"] == "gate_probe" and job["status"] == "succeeded"
             for job in jobs
         ),
+        "context_tx_committed_once": final_context_tx_commits
+        == initial_context_tx_commits + 1,
+        "contextdb_authority_advanced": _contextdb_advanced(
+            context_store_before, context_store_after
+        ),
+        "legacy_projection_unchanged": context_store_after["legacy"]
+        == context_store_before["legacy"],
         "runtime_closed": agent._process.poll() == 0,  # gate-only lifecycle assertion
         "token_file_removed": not (agent_output / "bridge.token").exists(),
         "non_reportable_marked": trajectory.metadata["me07_agent_system"]["ready"].get(
@@ -122,6 +189,18 @@ def run(binary: Path, output: Path) -> dict[str, object]:
         "passed": all(checks.values()),
         "checks": checks,
         "execution_jobs": jobs,
+        "context_tx_commits": {
+            "initial": initial_context_tx_commits,
+            "final": final_context_tx_commits,
+        },
+        "context_store": {
+            "before": context_store_before,
+            "after": context_store_after,
+        },
+        "domain": domain,
+        "learning_database_source": (
+            str(learning_database.resolve()) if learning_database is not None else None
+        ),
         "runtime_output": str(agent_output),
     }
     (output / "state_bench_adapter_no_model_gate.json").write_text(
@@ -137,8 +216,25 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--learning-database", type=Path)
+    parser.add_argument(
+        "--domain",
+        choices=("travel", "customer_support", "shopping_assistant"),
+        default="travel",
+    )
     args = parser.parse_args()
-    print(json.dumps(run(args.binary, args.output), ensure_ascii=False, sort_keys=True))
+    print(
+        json.dumps(
+            run(
+                args.binary,
+                args.output,
+                learning_database=args.learning_database,
+                domain=args.domain,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

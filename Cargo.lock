@@ -4093,6 +4093,7 @@ dependencies = [
  "rama-macros",
  "rama-utils",
  "ratatui",
+ "rayon",
  "reqwest 0.11.27",
  "ring",
  "serde",

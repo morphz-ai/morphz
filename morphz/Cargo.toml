@@ -6,12 +6,12 @@ rust-version.workspace = true
 default-run = "morphz"
 
 [features]
-default = []
+default = ["context-db"]
 experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
-# Compile the isolated single-node ContextDB reference backend. Compilation
-# alone never changes Runtime storage; an operator permit is also required to
-# construct the experimental store.
-experimental-context-db = []
+# ContextDB is the default cognitive Store. Keeping it as a named build feature
+# lets deliberately minimal binaries omit the backend without presenting it as
+# an experimental Runtime capability.
+context-db = []
 # Keep one canonical Structured Context seed and append ordered, structured
 # ContextDelta blocks inside one User message. Provider adapters preserve the
 # same block boundaries in their native content representation. The experiment
@@ -24,7 +24,12 @@ experimental-openai-chatgpt-structured-cache = ["experimental-structured-context
 [[example]]
 name = "context_db_sqlite_benchmark"
 path = "examples/context_db_sqlite_benchmark.rs"
-required-features = ["experimental-context-db"]
+required-features = ["context-db"]
+
+[[example]]
+name = "context_db_runtime_benchmark"
+path = "examples/context_db_runtime_benchmark.rs"
+required-features = ["context-db"]
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
@@ -67,6 +72,7 @@ getrandom = "0.3"
 keyring = "4.1.4"
 zeroize = "1.8"
 ring = "0.17.14"
+rayon = "1.10"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "macros", "unstable-rendered-line-info"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 unicode-width = "0.2"

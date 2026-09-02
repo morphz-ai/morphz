@@ -93,8 +93,11 @@ printf '%s\n' "$morphz_pid" >"$runtime_pid_file"
   printf '\n/send\n'
 } >&3
 
+# The durable terminal predicate is sufficient.  A nonzero grace is an
+# explicit diagnostic override, not part of the completion protocol.
 /tmp/morphz-harbor-wait "$MORPHZ_STORAGE_SQLITE_PATH" "$morphz_pid" \
-  "${MORPHZ_HARBOR_TIMEOUT_SECS:-21600}" 20
+  "${MORPHZ_HARBOR_TIMEOUT_SECS:-21600}" \
+  "${MORPHZ_HARBOR_IDLE_GRACE_SECS:-0}"
 
 # Harbor verifies in the same task container after the Agent returns. Keep the
 # Runtime alive until Harbor destroys the container: it owns the read ends of

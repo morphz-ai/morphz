@@ -3,8 +3,8 @@ use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::SessionDirectoryStore as _;
 use morphz::memory::{
-    EventAppend, EventStore, MindProjectionStore, NewCognitiveContext, NewSession, QueryFilter,
-    SessionMountKind, SessionStore,
+    EventAppend, EventStore, NewCognitiveContext, NewSession, QueryFilter, SessionMountKind,
+    SessionStore,
 };
 use morphz::orchestrator::context::{ContextEngine, MindProjectionAudit};
 use serde::Serialize;
@@ -158,7 +158,7 @@ async fn measure_context_transactions(
         OrchestratorConfig::default(),
     )
     .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-    .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+    .with_context_store(Arc::clone(&store) as Arc<dyn morphz::memory::ContextStore>);
 
     let commit_started = Instant::now();
     for revision in 0..transactions {
