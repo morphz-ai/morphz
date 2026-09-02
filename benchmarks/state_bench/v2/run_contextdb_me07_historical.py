@@ -74,7 +74,12 @@ def _classify_timeout(state: dict[str, Any]) -> str:
         or int(state.get("thread_terminal_events", 0)) > 0
     ):
         return "durable_terminal_present"
-    if state.get("pending_required_dependencies"):
+    dependencies = state.get("pending_required_dependencies") or []
+    if dependencies and all(
+        dependency.get("source") == "provider_wait" for dependency in dependencies
+    ):
+        return "provider_wait_at_timeout"
+    if dependencies:
         return "pending_scheduler_dependency"
     active = state.get("active_activations") or []
     if active:

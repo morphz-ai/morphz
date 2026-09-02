@@ -119,6 +119,20 @@ def test_timeout_classification_prioritizes_durable_terminal_and_dependencies() 
         )
         == "pending_scheduler_dependency"
     )
+    assert (
+        _classify_timeout(
+            _state(
+                pending_required_dependencies=[
+                    {
+                        "kind": "resource",
+                        "source": "provider_wait",
+                        "runtime_failure_kind": "server_unavailable",
+                    }
+                ]
+            )
+        )
+        == "provider_wait_at_timeout"
+    )
 
 
 def test_timeout_classification_distinguishes_live_expired_and_idle_scheduler() -> None:
@@ -142,6 +156,7 @@ def test_runner_halts_for_every_timeout_classification() -> None:
         None,
         "runtime_state_unavailable",
         "durable_terminal_present",
+        "provider_wait_at_timeout",
         "pending_scheduler_dependency",
         "active_activation_at_timeout",
         "expired_active_activation",
