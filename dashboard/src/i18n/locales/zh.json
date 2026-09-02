@@ -4,13 +4,14 @@
     "close": "关闭"
   },
   "authentication": {
+    "eyebrow": "MORPHZ · 身份验证",
     "title": "连接 Morphz 运行时",
-    "operatorPlane": "Operator 控制面",
+    "operatorPlane": "管理控制面",
     "connecting": "正在验证连接…",
-    "description": "此运行时需要控制台管理凭证。请输入 Token，验证成功后会保存在当前浏览器中。",
-    "tokenLabel": "控制台 Token",
-    "tokenPlaceholder": "粘贴 MORPHZ_DASHBOARD_TOKEN",
-    "invalidToken": "Token 无效或已经变更，请重新输入。",
+    "description": "此运行时需要控制台管理凭证。请输入访问令牌，验证成功后会保存在当前浏览器中。",
+    "tokenLabel": "控制台访问令牌",
+    "tokenPlaceholder": "粘贴访问令牌",
+    "invalidToken": "访问令牌无效或已经变更，请重新输入。",
     "connect": "验证并连接",
     "connectionFailed": "无法连接到 Morphz 运行时。",
     "retry": "重新连接"

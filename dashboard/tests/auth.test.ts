@@ -15,6 +15,12 @@ const authGateSource = readFileSync(
   'utf8',
 )
 const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
+const chineseLocale = JSON.parse(
+  readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'),
+) as { authentication: Record<string, string> }
+const englishLocale = JSON.parse(
+  readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'),
+) as { authentication: Record<string, string> }
 
 class MemoryStorage implements DashboardTokenStorage {
   private readonly values = new Map<string, string>()
@@ -80,6 +86,22 @@ test('authentication shell inherits the saved Dashboard theme before login', () 
   assert.match(appCss, /\.dashboard-auth-header\s*\{[^}]*border-bottom:\s*1px solid var\(--line\)/s)
   assert.match(appCss, /\.dashboard-auth-card\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--surface\)/s)
   assert.doesNotMatch(appCss, /\.dashboard-auth-shell\s*\{[^}]*var\(--page\)/s)
+})
+
+test('authentication shell uses one complete locale and offers language switching', () => {
+  assert.match(authGateSource, /t\('authentication\.eyebrow'\)/)
+  assert.doesNotMatch(authGateSource, /MORPHZ · OPERATOR/)
+  assert.doesNotMatch(authGateSource, /\{connectionError && <code>/)
+  assert.match(authGateSource, /nextDashboardLanguage\(i18n\.language\)/)
+  assert.match(authGateSource, /persistDashboardLanguage\(language\)/)
+  assert.match(authGateSource, /i18n\.changeLanguage\(language\)/)
+
+  for (const text of Object.values(chineseLocale.authentication)) {
+    assert.doesNotMatch(text, /\b(?:Operator|Runtime|Dashboard|Token)\b/)
+  }
+  for (const text of Object.values(englishLocale.authentication)) {
+    assert.doesNotMatch(text, /[\u3400-\u9fff]/)
+  }
 })
 
 test('a new launch URL rotates the persistent browser credential', () => {

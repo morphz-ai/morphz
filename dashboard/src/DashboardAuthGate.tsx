@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { KeyRound, LoaderCircle, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Globe, KeyRound, LoaderCircle, RefreshCw, ShieldCheck } from 'lucide-react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
@@ -13,15 +13,15 @@ import {
   initialSystemPrefersDark,
   resolveAppearanceMode,
 } from './app/themePreferences'
+import { nextDashboardLanguage, persistDashboardLanguage } from './i18n/language'
 
 export function DashboardAuthGate({ children }: { children: ReactNode }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const location = useLocation()
   const [ready, setReady] = useState(false)
   const [providerSetupRequired, setProviderSetupRequired] = useState(false)
   const [checking, setChecking] = useState(true)
   const [authenticationRequired, setAuthenticationRequired] = useState(false)
-  const [connectionError, setConnectionError] = useState('')
   const [credentialError, setCredentialError] = useState('')
   const [tokenDraft, setTokenDraft] = useState('')
   const [attempt, setAttempt] = useState(0)
@@ -30,11 +30,11 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
   const [systemPrefersDark, setSystemPrefersDark] = useState(initialSystemPrefersDark)
   const tokenInputRef = useRef<HTMLInputElement>(null)
   const resolvedAppearanceMode = resolveAppearanceMode(appearanceMode, systemPrefersDark)
+  const currentLanguageCode = i18n.language?.startsWith('zh') ? 'ZH' : 'EN'
 
   const requireAuthentication = useCallback((error: DashboardApiError) => {
     setReady(false)
     setChecking(false)
-    setConnectionError('')
     setCredentialError(DASHBOARD_API.currentToken() ? error.message : '')
     setAuthenticationRequired(true)
   }, [])
@@ -60,7 +60,6 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       }
       setReady(false)
       setChecking(false)
-      setConnectionError(reason instanceof Error ? reason.message : String(reason))
     }).finally(() => {
       if (!cancelled) setChecking(false)
     })
@@ -93,13 +92,11 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
     setCredentialError('')
     setAuthenticationRequired(false)
     setChecking(true)
-    setConnectionError('')
     setAttempt(current => current + 1)
   }
 
   const retryConnection = () => {
     setChecking(true)
-    setConnectionError('')
     setAttempt(current => current + 1)
   }
 
@@ -120,13 +117,29 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
             <i className="brand-mark">◆</i>
             <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
           </span>
-          <span className="dashboard-auth-plane"><ShieldCheck size={13} />{t('authentication.operatorPlane')}</span>
+          <span className="dashboard-auth-actions">
+            <span className="dashboard-auth-plane"><ShieldCheck size={13} />{t('authentication.operatorPlane')}</span>
+            <button
+              aria-label={t('language.toggle')}
+              className="dashboard-auth-language"
+              title={t('language.toggle')}
+              type="button"
+              onClick={() => {
+                const language = nextDashboardLanguage(i18n.language)
+                persistDashboardLanguage(language)
+                void i18n.changeLanguage(language)
+              }}
+            >
+              <Globe size={13} />
+              <span>{currentLanguageCode}</span>
+            </button>
+          </span>
         </header>
         <div className="dashboard-auth-stage">
           <section className="dashboard-auth-card" aria-live="polite">
             <header>
               <span className="dashboard-auth-mark"><KeyRound size={19} /></span>
-              <span><small>MORPHZ · OPERATOR</small><h1>{t('authentication.title')}</h1></span>
+              <span><small>{t('authentication.eyebrow')}</small><h1>{t('authentication.title')}</h1></span>
             </header>
             {checking ? (
               <div className="dashboard-auth-progress" role="status">
@@ -159,7 +172,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
             ) : (
               <div className="dashboard-auth-failure" role="alert">
                 <p>{t('authentication.connectionFailed')}</p>
-                {connectionError && <code>{connectionError}</code>}
+                <small className="dashboard-auth-endpoint">{CORE_HTTP_URL}</small>
                 <button type="button" onClick={retryConnection}>
                   <RefreshCw size={14} /> {t('authentication.retry')}
                 </button>

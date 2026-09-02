@@ -4,6 +4,7 @@
     "close": "Close"
   },
   "authentication": {
+    "eyebrow": "MORPHZ · AUTHENTICATION",
     "title": "Connect to Morphz Runtime",
     "operatorPlane": "Operator control plane",
     "connecting": "Verifying the connection…",
