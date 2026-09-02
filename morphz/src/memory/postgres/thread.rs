@@ -113,6 +113,14 @@ fn parse_delivery(value: &str) -> Result<DeliveryStatus, StoreError> {
     }
 }
 
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Database(database_error)
+            if database_error.code().as_deref() == Some("23505")
+    )
+}
+
 pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
     Ok(ThreadRecord {
         id: row.get("id"),
@@ -215,7 +223,7 @@ impl ThreadStore for PostgresStore {
     ) -> Result<ThreadRecord, StoreError> {
         thread.supervision.validate(thread.kind)?;
         let now = now_text();
-        let row = sqlx::query(
+        let insert = sqlx::query(
             r#"INSERT INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, target_id,
@@ -251,7 +259,31 @@ impl ThreadStore for PostgresStore {
         .bind(&thread.supervision.completion_contract)
         .bind(now)
         .fetch_one(&self.pool)
-        .await?;
+        .await;
+        let row = match insert {
+            Ok(row) => row,
+            // `threads` is idempotent by `root_turn_id`, but callers also
+            // normally derive the same primary `id` for that root. Two
+            // concurrent first writers may therefore race on either unique
+            // constraint. PostgreSQL only lets one `ON CONFLICT DO UPDATE`
+            // target be named, so recover the primary-key race after the
+            // winning statement commits and re-read the canonical root.
+            Err(error) if is_unique_violation(&error) => sqlx::query(
+                r#"UPDATE threads
+                       SET initiating_principal_id = COALESCE(
+                         threads.initiating_principal_id,
+                         $2
+                       )
+                       WHERE root_turn_id = $1
+                       RETURNING *"#,
+            )
+            .bind(&thread.root_turn_id)
+            .bind(&thread.initiating_principal_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| format!("Thread id '{}' 已被不同 Root Turn 占用", thread.id))?,
+            Err(error) => return Err(error.into()),
+        };
         let existing = thread_from_row(&row)?;
         if existing.context_id != thread.context_id
             || existing.session_id != thread.session_id

@@ -357,6 +357,11 @@ pub struct OrchestratorConfig {
     /// This defaults to true. A false value keeps the production Context projection and durable
     /// Event path while making the Mind read-only for controlled evaluations or restricted hosts.
     pub context_transactions_enabled: bool,
+    /// Maximum number of validated authoritative Context states retained by
+    /// one exclusive Runtime process. A value of zero disables the cache.
+    /// Shared-worker modes bypass it until they can revision-fence a cached
+    /// state against the database head.
+    pub context_state_cache_capacity: usize,
     /// Session history automatically included in the current Context Encoding.
     pub session_working_set: SessionWorkingSetConfig,
     /// Cognitive-activity window between an explicit frame-retirement request and actual retirement.
@@ -399,6 +404,7 @@ impl Default for OrchestratorConfig {
             attempt_soft_checkpoint_interval: 90,
             max_context_transactions_per_turn: 6,
             context_transactions_enabled: true,
+            context_state_cache_capacity: 64,
             session_working_set: SessionWorkingSetConfig::default(),
             frame_retirement: FrameRetirementConfig::default(),
             eval_callable_tools: crate::sexpr_eval::DEFAULT_CALLABLE_TOOLS

@@ -1,14 +1,15 @@
 #![cfg(feature = "experimental-context-db")]
 
 use morphz::context_store::{
-    relation_logical_id, ContextCollection, ContextMutationPlan, ContextStateMutation,
+    context_state_commitment, relation_logical_id, ContextCollection, ContextMutationPlan,
+    ContextNodeValue, ContextStateCommit, ContextStateMutation,
 };
 use morphz::event::Event;
 use morphz::experimental::{self, CONTEXT_DB};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
-    EventStore, MindProjectionCommit, MindProjectionStore, NewAgent, NewCognitiveContext,
+    ContextStore, EventStore, MindProjectionStore, NewAgent, NewCognitiveContext,
     NewMindProjection, NewSession, QueryFilter, RecallDocumentSearchRequest, RecallProjectionStore,
     SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
     SessionProjectionMutation, SessionProjectionStore,
@@ -19,7 +20,6 @@ use morphz::orchestrator::context::{
     MindCheckpoint, MindState,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ fn permit() -> experimental::ExperimentalFeaturePermit {
 }
 
 fn state_hash(state: &MindState) -> String {
-    format!("{:x}", Sha256::digest(serde_json::to_vec(state).unwrap()))
+    morphz::context_store::context_state_hash(state).unwrap()
 }
 
 fn projection(context_id: &str, state: &MindState, event_id: Option<&str>) -> NewMindProjection {
@@ -50,9 +50,7 @@ fn mutation_plan(context_id: &str, current: &MindState, next: &MindState) -> Con
         current,
         next,
         vec![ContextStateMutation::Upsert {
-            collection: ContextCollection::MutationClocks,
-            logical_id: "mutation-clocks".to_string(),
-            body: serde_json::to_value(&next.mutation_clocks).unwrap(),
+            value: ContextNodeValue::MutationClocks(next.mutation_clocks.clone()),
             order: None,
         }],
     )
@@ -180,17 +178,18 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         mutations: Vec::new(),
     };
     let omission = store
-        .commit_mind_projection_transaction(
+        .commit_context_mutation_transaction(
             &omitted_event,
             &[],
             &SessionProjectionMutation::default(),
-            Some(&omitted_plan),
-            0,
-            projection(context_id, &omitted, Some(&omitted_event.id)),
+            &omitted_plan,
+            &omitted,
+            &context_state_commitment(&omitted)?,
+            &[],
         )
         .await
         .unwrap_err();
-    assert!(omission.to_string().contains("fenced projection requires"));
+    assert!(omission.to_string().contains("commits native state"));
     assert_eq!(
         store.get_mind_projection(context_id).await?.unwrap().state,
         serde_json::to_value(&initial)?
@@ -209,16 +208,17 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     next.mutation_clocks.global_barrier_version = 1;
     let event = context_event("contextdb-pg-event-1", context_id);
     let committed = store
-        .commit_mind_projection_transaction(
+        .commit_context_mutation_transaction(
             &event,
             &[],
             &SessionProjectionMutation::default(),
-            Some(&mutation_plan(context_id, &initial, &next)),
-            0,
-            projection(context_id, &next, Some(&event.id)),
+            &mutation_plan(context_id, &initial, &next),
+            &next,
+            &context_state_commitment(&next)?,
+            &[],
         )
         .await?;
-    assert!(matches!(committed, MindProjectionCommit::Committed { .. }));
+    assert!(matches!(committed, ContextStateCommit::Committed { .. }));
 
     // A failure in a later Runtime projection must roll the earlier Context
     // AST mutation and Event append back in the same PostgreSQL transaction.
@@ -227,7 +227,7 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     rejected.mutation_clocks.global_barrier_version = 2;
     let rejected_event = context_event("contextdb-pg-event-rejected", context_id);
     assert!(store
-        .commit_mind_projection_transaction(
+        .commit_context_mutation_transaction(
             &rejected_event,
             &[SessionAttentionUpdate {
                 session_id: session_id.to_string(),
@@ -239,9 +239,10 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
                 event_id: rejected_event.id.clone(),
             }],
             &SessionProjectionMutation::default(),
-            Some(&mutation_plan(context_id, &next, &rejected)),
-            1,
-            projection(context_id, &rejected, Some(&rejected_event.id)),
+            &mutation_plan(context_id, &next, &rejected),
+            &rejected,
+            &context_state_commitment(&rejected)?,
+            &[],
         )
         .await
         .is_err());
@@ -271,13 +272,14 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         let plan = plan.clone();
         tokio::spawn(async move {
             store
-                .commit_mind_projection_transaction(
+                .commit_context_mutation_transaction(
                     &first_event,
                     &[],
                     &SessionProjectionMutation::default(),
-                    Some(&plan),
-                    1,
-                    projection(context_id, &state, Some(&first_event.id)),
+                    &plan,
+                    &state,
+                    &context_state_commitment(&state)?,
+                    &[],
                 )
                 .await
         })
@@ -287,13 +289,14 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         let state = final_state.clone();
         tokio::spawn(async move {
             store
-                .commit_mind_projection_transaction(
+                .commit_context_mutation_transaction(
                     &second_event,
                     &[],
                     &SessionProjectionMutation::default(),
-                    Some(&plan),
-                    1,
-                    projection(context_id, &state, Some(&second_event.id)),
+                    &plan,
+                    &state,
+                    &context_state_commitment(&state)?,
+                    &[],
                 )
                 .await
         })
@@ -302,14 +305,14 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     assert_eq!(
         outcomes
             .iter()
-            .filter(|outcome| matches!(outcome, MindProjectionCommit::Committed { .. }))
+            .filter(|outcome| matches!(outcome, ContextStateCommit::Committed { .. }))
             .count(),
         1
     );
     assert_eq!(
         outcomes
             .iter()
-            .filter(|outcome| matches!(outcome, MindProjectionCommit::Conflict { .. }))
+            .filter(|outcome| matches!(outcome, ContextStateCommit::Conflict { .. }))
             .count(),
         1
     );
@@ -379,51 +382,35 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         &expanded,
         vec![
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Frame,
-                logical_id: frame_a.id.clone(),
-                body: serde_json::to_value(&frame_a)?,
+                value: ContextNodeValue::Frame(frame_a.clone()),
                 order: Some(0),
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Frame,
-                logical_id: frame_b.id.clone(),
-                body: serde_json::to_value(&frame_b)?,
+                value: ContextNodeValue::Frame(frame_b.clone()),
                 order: Some(1),
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Relation,
-                logical_id: relation_id.clone(),
-                body: serde_json::to_value(&relation)?,
+                value: ContextNodeValue::Relation(relation.clone()),
                 order: Some(0),
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Retired,
-                logical_id: "pg-retired-observation".to_string(),
-                body: json!({"id": "pg-retired-observation"}),
+                value: ContextNodeValue::Retired("pg-retired-observation".to_string()),
                 order: None,
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Retiring,
-                logical_id: frame_a.id.clone(),
-                body: serde_json::to_value(&retirement)?,
+                value: ContextNodeValue::Retiring(retirement.clone()),
                 order: None,
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Protected,
-                logical_id: frame_b.id.clone(),
-                body: json!({"id": frame_b.id}),
+                value: ContextNodeValue::Protected(frame_b.id.clone()),
                 order: None,
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Checkpoint,
-                logical_id: checkpoint.id.clone(),
-                body: serde_json::to_value(&checkpoint)?,
+                value: ContextNodeValue::Checkpoint(checkpoint.clone()),
                 order: Some(0),
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::MutationClocks,
-                logical_id: "mutation-clocks".to_string(),
-                body: serde_json::to_value(&expanded.mutation_clocks)?,
+                value: ContextNodeValue::MutationClocks(expanded.mutation_clocks.clone()),
                 order: None,
             },
         ],
@@ -431,16 +418,17 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     let expanded_event = context_event("contextdb-pg-event-expanded", context_id);
     assert!(matches!(
         store
-            .commit_mind_projection_transaction(
+            .commit_context_mutation_transaction(
                 &expanded_event,
                 &[],
                 &SessionProjectionMutation::default(),
-                Some(&expanded_plan),
-                2,
-                projection(context_id, &expanded, Some(&expanded_event.id)),
+                &expanded_plan,
+                &expanded,
+                &context_state_commitment(&expanded)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Committed { .. }
+        ContextStateCommit::Committed { .. }
     ));
 
     let mut reordered = expanded.clone();
@@ -456,9 +444,7 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         &reordered,
         vec![
             ContextStateMutation::Upsert {
-                collection: ContextCollection::Frame,
-                logical_id: reordered.frames[0].id.clone(),
-                body: serde_json::to_value(&reordered.frames[0])?,
+                value: ContextNodeValue::Frame(reordered.frames[0].clone()),
                 order: Some(0),
             },
             ContextStateMutation::SetOrder {
@@ -470,9 +456,7 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
                     .collect(),
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::MutationClocks,
-                logical_id: "mutation-clocks".to_string(),
-                body: serde_json::to_value(&reordered.mutation_clocks)?,
+                value: ContextNodeValue::MutationClocks(reordered.mutation_clocks.clone()),
                 order: None,
             },
         ],
@@ -480,16 +464,17 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     let reordered_event = context_event("contextdb-pg-event-reordered", context_id);
     assert!(matches!(
         store
-            .commit_mind_projection_transaction(
+            .commit_context_mutation_transaction(
                 &reordered_event,
                 &[],
                 &SessionProjectionMutation::default(),
-                Some(&reordered_plan),
-                3,
-                projection(context_id, &reordered, Some(&reordered_event.id)),
+                &reordered_plan,
+                &reordered,
+                &context_state_commitment(&reordered)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Committed { .. }
+        ContextStateCommit::Committed { .. }
     ));
 
     let mut pruned = reordered.clone();
@@ -535,9 +520,7 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
                 logical_id: checkpoint.id,
             },
             ContextStateMutation::Upsert {
-                collection: ContextCollection::MutationClocks,
-                logical_id: "mutation-clocks".to_string(),
-                body: serde_json::to_value(&pruned.mutation_clocks)?,
+                value: ContextNodeValue::MutationClocks(pruned.mutation_clocks.clone()),
                 order: None,
             },
         ],
@@ -545,16 +528,17 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     let pruned_event = context_event("contextdb-pg-event-pruned", context_id);
     assert!(matches!(
         store
-            .commit_mind_projection_transaction(
+            .commit_context_mutation_transaction(
                 &pruned_event,
                 &[],
                 &SessionProjectionMutation::default(),
-                Some(&pruned_plan),
-                4,
-                projection(context_id, &pruned, Some(&pruned_event.id)),
+                &pruned_plan,
+                &pruned,
+                &context_state_commitment(&pruned)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Committed { .. }
+        ContextStateCommit::Committed { .. }
     ));
 
     // Rollback/checkpoint restoration intentionally crosses the broad
@@ -586,21 +570,22 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         expected_state_hash: state_hash(&pruned),
         next_state_hash: state_hash(&replaced),
         mutations: vec![ContextStateMutation::ReplaceMind {
-            state: serde_json::to_value(&replaced)?,
+            state: replaced.clone(),
         }],
     };
     assert!(matches!(
         store
-            .commit_mind_projection_transaction(
+            .commit_context_mutation_transaction(
                 &replaced_event,
                 &[],
                 &SessionProjectionMutation::default(),
-                Some(&replaced_plan),
-                5,
-                projection(context_id, &replaced, Some(&replaced_event.id)),
+                &replaced_plan,
+                &replaced,
+                &context_state_commitment(&replaced)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Committed { .. }
+        ContextStateCommit::Committed { .. }
     ));
 
     // Mind seeding keeps revision zero but replaces the empty authoritative
@@ -633,16 +618,19 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     let seed_event = context_event("contextdb-pg-seed-event", seed_context_id);
     assert!(matches!(
         store
-            .commit_mind_seed_projection(
+            .commit_context_seed_transaction(
                 &seed_event,
+                seed_context_id,
                 context_id,
                 replaced.version,
                 "pg-seed-snapshot-hash",
                 "mind_snapshot",
-                projection(seed_context_id, &seeded, Some(&seed_event.id)),
+                &seeded,
+                &context_state_commitment(&seeded)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Committed { .. }
+        ContextStateCommit::Committed { .. }
     ));
     assert_eq!(
         store
@@ -652,18 +640,50 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
             .state,
         serde_json::to_value(&seeded)?
     );
+    let seed_snapshot = store
+        .get_latest_mind_snapshot(seed_context_id)
+        .await?
+        .expect("a seed transaction must establish its revision-zero recovery boundary");
+    assert_eq!(seed_snapshot.revision, 0);
+    assert_eq!(seed_snapshot.state, serde_json::to_value(&seeded)?);
+    assert_eq!(seed_snapshot.state_hash, state_hash(&seeded));
+    assert_eq!(seed_snapshot.head_event_id, seed_event.id);
+    let seed_provenance = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<String>)>(
+        r#"SELECT seed_context_id, seed_context_version, seed_snapshot_hash
+           FROM cognitive_contexts WHERE id = $1"#,
+    )
+    .bind(seed_context_id)
+    .fetch_one(store.pool())
+    .await?;
+    assert_eq!(seed_provenance.0.as_deref(), Some(context_id));
+    assert_eq!(seed_provenance.1, Some(i64::try_from(replaced.version)?));
+    assert_eq!(seed_provenance.2.as_deref(), Some("pg-seed-snapshot-hash"));
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                context_id: Some(seed_context_id.to_string()),
+                event_id: Some(seed_event.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await?
+            .len(),
+        1,
+    );
     assert!(matches!(
         store
-            .commit_mind_seed_projection(
+            .commit_context_seed_transaction(
                 &seed_event,
+                seed_context_id,
                 context_id,
                 replaced.version,
                 "pg-seed-snapshot-hash",
                 "mind_snapshot",
-                projection(seed_context_id, &seeded, Some(&seed_event.id)),
+                &seeded,
+                &context_state_commitment(&seeded)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Conflict {
+        ContextStateCommit::Conflict {
             current_revision: Some(0)
         }
     ));
@@ -717,28 +737,65 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     assert_eq!(heads.len(), 1);
     assert_eq!(heads[0].revision, replaced.version);
 
+    let directory_request = ContextRuntimeDirectoryRequest {
+        context_id: context_id.to_string(),
+        active_session_id: session_id.to_string(),
+        active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+        max_full_sessions: 50,
+        max_metadata_sessions: 50,
+        known_context_state_revision: None,
+        session_filter: ContextRuntimeSessionFilter::default(),
+    };
     let directory = store
-        .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
-            context_id: context_id.to_string(),
-            active_session_id: session_id.to_string(),
-            active_after: chrono::Utc::now() - chrono::Duration::hours(24),
-            max_full_sessions: 50,
-            max_metadata_sessions: 50,
-            session_filter: ContextRuntimeSessionFilter::default(),
-        })
+        .read_context_runtime_directory_snapshot(&directory_request)
         .await?
         .unwrap();
-    assert_eq!(
-        directory.mind.unwrap().state,
-        serde_json::to_value(&replaced)?
-    );
+    let directory_revision = directory.revision.clone();
+    let directory_head = directory
+        .context_state_head
+        .clone()
+        .expect("ContextDB directory must expose its authoritative Mind head");
+    assert_eq!(directory.context_state.unwrap().state, replaced);
+    let mut resident_directory_request = directory_request.clone();
+    resident_directory_request.known_context_state_revision = Some(directory_head.revision);
+    let resident_directory = store
+        .read_context_runtime_directory_snapshot(&resident_directory_request)
+        .await?
+        .unwrap();
+    assert_eq!(resident_directory.context_state_head, Some(directory_head));
+    assert!(resident_directory.context_state.is_none());
+    assert_eq!(resident_directory.revision, directory_revision);
     let encoding_snapshot = store
-        .read_context_encoding_projection_snapshot(context_id, &[session_id.to_string()], true)
+        .read_context_encoding_state_snapshot(context_id, &[session_id.to_string()], true, None)
         .await?;
+    let encoding_revision = encoding_snapshot
+        .context_state_head
+        .as_ref()
+        .expect("ContextDB snapshot must expose its authoritative Mind head")
+        .revision;
     assert_eq!(
-        encoding_snapshot.mind.unwrap().state,
-        serde_json::to_value(&replaced)?,
+        encoding_snapshot.context_state.as_ref().unwrap().state,
+        replaced,
         "the physical model Context snapshot must read ContextDB rather than the conflicting legacy projection"
+    );
+    let resident_encoding_snapshot = store
+        .read_context_encoding_state_snapshot(
+            context_id,
+            &[session_id.to_string()],
+            true,
+            Some(encoding_revision),
+        )
+        .await?;
+    assert!(
+        resident_encoding_snapshot.context_state.is_none(),
+        "a revision-fenced resident Context must not transfer and rebuild every ContextDB Node"
+    );
+    assert_eq!(
+        resident_encoding_snapshot
+            .context_state_head
+            .as_ref()
+            .map(|head| head.revision),
+        Some(encoding_revision)
     );
 
     // PostgreSQL BIGSERIAL values are reserved before commit. Reproduce the
@@ -798,7 +855,7 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
         ))
         .await?;
     let causal_view = store
-        .read_context_encoding_projection_snapshot(context_id, &[session_id.to_string()], true)
+        .read_context_encoding_state_snapshot(context_id, &[session_id.to_string()], true, None)
         .await?;
     let visibility_snapshot = causal_view
         .event_visibility_snapshot
@@ -877,6 +934,186 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
             .state,
         serde_json::to_value(&replaced)?
     );
+    assert_eq!(
+        restarted
+            .get_context_state(seed_context_id)
+            .await?
+            .expect("seeded Context must survive PostgreSQL Runtime restart")
+            .state,
+        seeded,
+    );
+    assert_eq!(
+        restarted
+            .get_latest_mind_snapshot(seed_context_id)
+            .await?
+            .expect("seed recovery boundary must survive PostgreSQL Runtime restart"),
+        seed_snapshot,
+    );
+    drop(restarted);
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&administration)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_context_db_periodic_snapshot_boundary_is_atomic_sparse_and_restartable_when_configured(
+) -> Result<(), TestError> {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return Ok(());
+    };
+    let (administration, schema, scoped_url) =
+        isolated_database_url(&database_url, "snapshot_boundary").await?;
+    let store = PostgresStore::new_with_context_db(
+        &scoped_url,
+        8,
+        Arc::new(Observability::default()),
+        permit(),
+    )
+    .await?;
+    let context_id = "contextdb-pg-snapshot-boundary";
+    create_bundle(
+        &store,
+        "contextdb-pg-snapshot-agent",
+        context_id,
+        "contextdb-pg-snapshot-session",
+    )
+    .await;
+
+    let at_63 = MindState {
+        version: 63,
+        mutation_clocks: ContextMutationClocks {
+            global_barrier_version: 63,
+            ..ContextMutationClocks::default()
+        },
+        ..MindState::default()
+    };
+    store
+        .initialize_mind_projection(projection(context_id, &at_63, Some("import-at-63")))
+        .await?;
+
+    let at_64 = MindState {
+        version: 64,
+        mutation_clocks: ContextMutationClocks {
+            global_barrier_version: 64,
+            ..at_63.mutation_clocks.clone()
+        },
+        ..at_63.clone()
+    };
+    let rejected_event = context_event("contextdb-pg-snapshot-rejected-64", context_id);
+    store
+        .append(Event::new(
+            rejected_event.id.clone(),
+            "Conflicting-Actor".to_string(),
+            "test-conflict".to_string(),
+            "test/conflict".to_string(),
+            serde_json::Map::new(),
+        ))
+        .await?;
+    assert!(store
+        .commit_context_mutation_transaction(
+            &rejected_event,
+            &[],
+            &SessionProjectionMutation::default(),
+            &mutation_plan(context_id, &at_63, &at_64),
+            &at_64,
+            &context_state_commitment(&at_64)?,
+            &[],
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .get_context_state(context_id)
+            .await?
+            .expect("revision-63 Context must remain installed")
+            .state,
+        at_63,
+        "a later Event failure must roll the native revision-64 AST mutation back",
+    );
+    assert!(store.get_latest_mind_snapshot(context_id).await?.is_none());
+
+    let event_64 = context_event("contextdb-pg-snapshot-event-64", context_id);
+    assert!(matches!(
+        store
+            .commit_context_mutation_transaction(
+                &event_64,
+                &[],
+                &SessionProjectionMutation::default(),
+                &mutation_plan(context_id, &at_63, &at_64),
+                &at_64,
+                &context_state_commitment(&at_64)?,
+                &[],
+            )
+            .await?,
+        ContextStateCommit::Committed { .. }
+    ));
+    let snapshot_64 = store
+        .get_latest_mind_snapshot(context_id)
+        .await?
+        .expect("revision 64 must create the periodic full-state snapshot");
+    assert_eq!(snapshot_64.revision, 64);
+    assert_eq!(snapshot_64.state, serde_json::to_value(&at_64)?);
+    assert_eq!(snapshot_64.state_hash, state_hash(&at_64));
+    assert_eq!(snapshot_64.head_event_id, event_64.id);
+
+    let at_65 = MindState {
+        version: 65,
+        mutation_clocks: ContextMutationClocks {
+            global_barrier_version: 65,
+            ..at_64.mutation_clocks.clone()
+        },
+        ..at_64.clone()
+    };
+    let event_65 = context_event("contextdb-pg-snapshot-event-65", context_id);
+    assert!(matches!(
+        store
+            .commit_context_mutation_transaction(
+                &event_65,
+                &[],
+                &SessionProjectionMutation::default(),
+                &mutation_plan(context_id, &at_64, &at_65),
+                &at_65,
+                &context_state_commitment(&at_65)?,
+                &[],
+            )
+            .await?,
+        ContextStateCommit::Committed { .. }
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mind_snapshots WHERE context_id = $1",)
+            .bind(context_id)
+            .fetch_one(store.pool())
+            .await?,
+        1,
+        "revision 65 must not materialize a second full-state snapshot",
+    );
+
+    store.pool().close().await;
+    drop(store);
+    let restarted = PostgresStore::new_with_context_db(
+        &scoped_url,
+        4,
+        Arc::new(Observability::default()),
+        permit(),
+    )
+    .await?;
+    assert_eq!(
+        restarted
+            .get_context_state(context_id)
+            .await?
+            .expect("Context must survive PostgreSQL Runtime restart")
+            .state,
+        at_65,
+    );
+    assert_eq!(
+        restarted
+            .get_latest_mind_snapshot(context_id)
+            .await?
+            .expect("periodic snapshot must survive PostgreSQL Runtime restart"),
+        snapshot_64,
+    );
+    restarted.pool().close().await;
     drop(restarted);
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&administration)

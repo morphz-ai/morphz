@@ -2,7 +2,20 @@
 
 > 状态：实施约束，完成前不得切换开源发布基线
 >
-> 目标：让 ContextDB 成为 Morphz 唯一、默认、完整的认知存储实现，而不是实验特性
+> 权威目标（已修订）：让 ContextDB 成为 Morphz 唯一、默认、完整的认知存储实现；建立
+> 原生 Context Mutation 协议和统一 ContextStore，完成 SQLite 与 PostgreSQL 等价实现，
+> 移除旧 Mind Projection 热路径与隐式双写；固定 Recall 默认语义为
+> `visible AND non_resident`——排除当前 View 已驻留内容，同时保留 retired 内容与 active
+> 但已 swap out 的内容；通过全量语义、恢复、并发、性能门禁、远端 Terminal Benchmark
+> 和云端同区 A/B 验证后再切换默认实现。
+>
+> 目标修订记录：任务面板中历史遗留的 `retired-only 默认 Recall` 表述已经失效，不得用于
+> 后续实现、审计或验收。Lifecycle 与 residency 是两个独立维度，任何审计结论与本目标
+> 冲突时均以本文件为准。
+>
+> 执行状态修订：ContextDB 接入后的 ME-08 已经完成。后续只复用、核验既有运行产物和
+> 历史对照，不得把 ME-08 再列为待运行项目，也不得为此重复消耗模型额度。ME-09 不属于
+> 本轮替换验收范围。
 >
 > 适用后端：SQLite、PostgreSQL
 
@@ -45,6 +58,9 @@ Thread、Activation、Execution Job、Lease 等调度状态继续由专门表维
 “统一”而机械塞入 Context AST；Context View 可通过显式只读映射选择性呈现它们。
 
 ## 3. Recall 语义
+
+> 决定覆盖说明：本节的 `visible AND non_resident` 是最终语义，覆盖任务摘要、旧计划或历史
+> 讨论中任何 `retired-only` 表述。后续实现与审计不得用 lifecycle 代替 residency。
 
 Recall eligibility 由三个彼此独立的维度决定：
 

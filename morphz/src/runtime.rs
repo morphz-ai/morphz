@@ -36,16 +36,16 @@ use crate::memory::{
     AgentProviderBindingStore, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextTokenBudgetMutation,
-    ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMonitorRecord, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
-    MessageDispatchMode, MindProjectionHead, MindProjectionStore, NewAgent,
+    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextStateSummary,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
+    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
+    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, NewAgent,
     NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
     NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
     NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
@@ -1251,7 +1251,7 @@ impl MorphzRuntimeBuilder {
                 self.config.llm.model.clone(),
                 self.config.llm.allowed_evaluation_models.clone(),
             )
-            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+            .with_context_store(Arc::clone(&store) as Arc<dyn crate::memory::ContextStore>)
             .with_session_projection_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
             )
@@ -2015,6 +2015,16 @@ impl MorphzRuntime {
     /// and Prometheus export.
     pub fn observability(&self) -> Arc<crate::observability::Observability> {
         Arc::clone(&self.inner.observability)
+    }
+
+    /// Process-local Context capacity counters used by diagnostics and load
+    /// tests. These counters deliberately distinguish completed user turns
+    /// from cognitive Context transactions; there is no fixed one-to-one
+    /// relationship between the two.
+    pub fn context_capacity_metrics(
+        &self,
+    ) -> crate::orchestrator::context::ContextCapacityMetricsSnapshot {
+        self.inner.orchestrator.context_capacity_metrics()
     }
 
     pub fn prometheus_metrics(&self) -> String {
@@ -7906,7 +7916,7 @@ impl MorphzRuntime {
                 session_candidate_limit,
             ),
             self.inner.store.count_context_sessions(&context_ids),
-            self.inner.store.list_mind_projection_heads(&context_ids),
+            self.inner.store.list_context_state_summaries(&context_ids),
             self.inner
                 .store
                 .list_open_threads_for_contexts(&context_ids, activity_limit),
@@ -7945,7 +7955,7 @@ impl MorphzRuntime {
         let heads_by_context = mind_heads
             .into_iter()
             .map(|head| (head.context_id.clone(), head))
-            .collect::<HashMap<String, MindProjectionHead>>();
+            .collect::<HashMap<String, ContextStateSummary>>();
         let bindings_by_session = runtime_overview_principals_by_session(principal_bindings);
 
         let mut threads_by_session: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
@@ -11396,16 +11406,28 @@ mod tests {
                 .join("\n");
             let active_target = prompt.contains("(active-session session-signal-live-b)");
             let active_source = prompt.contains("(active-session session-signal-live-a)");
+            // A Session transcript may already contain results from another
+            // concurrently completed Thread.  Route this deterministic test
+            // client by the Runtime-authoritative wake of the *current*
+            // Activation, never by searching the whole prompt for historical
+            // content.  The old content-only classification intermittently
+            // mistook the source tool continuation for the independent B -> A
+            // Signal after those two legal successors changed order under
+            // load.
+            let wake_is_tool_output = prompt.contains("(wake (cause tool-output)");
+            let wake_is_session_signal = prompt.contains("(wake (cause session-signal)");
             let has_session_signal_result = messages
                 .iter()
                 .any(|message| message.role == "tool" && message.content.contains("signalled"));
 
             if active_target {
-                if has_session_signal_result {
+                if wake_is_tool_output {
+                    assert!(has_session_signal_result);
                     self.target_continuation_calls
                         .fetch_add(1, Ordering::SeqCst);
                     return Ok(text_response("target-finished"));
                 }
+                assert!(wake_is_session_signal);
                 self.target_initial_calls.fetch_add(1, Ordering::SeqCst);
                 assert!(prompt.contains("work-request-for-b"));
                 assert!(tools.iter().any(|tool| tool.name == "session_signal"));
@@ -11428,11 +11450,8 @@ mod tests {
             if !active_source {
                 return Ok(text_response("non-dialogue-maintenance"));
             }
-            if prompt.contains("target-result-from-b") {
-                self.source_reply_calls.fetch_add(1, Ordering::SeqCst);
-                return Ok(text_response("source-received-result"));
-            }
-            if has_session_signal_result {
+            if wake_is_tool_output {
+                assert!(has_session_signal_result);
                 self.source_continuation_calls
                     .fetch_add(1, Ordering::SeqCst);
                 tokio::time::timeout(
@@ -11446,6 +11465,11 @@ mod tests {
                 self.observed_concurrent_target
                     .store(true, Ordering::SeqCst);
                 return Ok(text_response("source-finished"));
+            }
+            if wake_is_session_signal {
+                assert!(prompt.contains("target-result-from-b"));
+                self.source_reply_calls.fetch_add(1, Ordering::SeqCst);
+                return Ok(text_response("source-received-result"));
             }
             self.source_initial_calls.fetch_add(1, Ordering::SeqCst);
             assert!(prompt.contains("start-session-coordination"));
@@ -19129,6 +19153,11 @@ mod tests {
             "source-received-result".to_string()
         )));
         assert!(client.observed_concurrent_target.load(Ordering::SeqCst));
+        assert_eq!(client.source_initial_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.source_continuation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.source_reply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.target_initial_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.target_continuation_calls.load(Ordering::SeqCst), 1);
 
         let signals = runtime
             .query_events(QueryFilter {

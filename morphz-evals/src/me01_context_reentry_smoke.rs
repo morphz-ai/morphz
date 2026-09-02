@@ -11,7 +11,7 @@ use morphz::llm::{
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     CognitiveClockStore, EventStore, ExecutionJobStore, ExecutionTargetAuthorizationStore,
-    ExecutionTargetStore, MindProjectionStore, ObjectiveStore, QueryFilter, RecallProjectionStore,
+    ExecutionTargetStore, ObjectiveStore, QueryFilter, RecallProjectionStore,
     SessionProjectionStore, SessionStore,
 };
 use morphz::orchestrator::context::ContextEngine;
@@ -781,7 +781,7 @@ async fn load_context_projection(
     };
     let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
         .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_context_store(Arc::clone(&store) as Arc<dyn morphz::memory::ContextStore>)
         .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
         .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
         .with_cognitive_clock_store(Arc::clone(&store) as Arc<dyn CognitiveClockStore>)

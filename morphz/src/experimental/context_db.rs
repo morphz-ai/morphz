@@ -917,27 +917,7 @@ pub(crate) fn calculate_subtree_hash(
     body_sexpr: &str,
     children: &[(i64, String, String)],
 ) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"morphz-contextdb-node-v1\0");
-    hasher.update(node_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(owner_domain.as_str().as_bytes());
-    hasher.update(b"\0");
-    hasher.update(body_sexpr.as_bytes());
-    for (order_key, child_id, child_hash) in children {
-        hasher.update(b"\0child\0");
-        hasher.update(order_key.to_be_bytes());
-        hasher.update(child_id.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(child_hash.as_bytes());
-    }
-    let digest = hasher.finalize();
-    let mut output = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+    crate::context_ast::hash_context_node(node_id, owner_domain.as_str(), body_sexpr, children)
 }
 
 fn now_string() -> String {

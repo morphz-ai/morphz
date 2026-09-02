@@ -1221,16 +1221,16 @@ impl PlanExecutionCoordinator {
                 }))
             }
             "Context" if id == plan.context_id => {
-                let projection = self
+                let context_state = self
                     .store
-                    .get_mind_projection(id)
+                    .get_context_state(id)
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok(serde_json::json!({
                     "id": id,
                     "agent_identity": plan.agent_id,
-                    "active_mind_projection_identity": projection.as_ref().map(|value| &value.state_hash),
-                    "revision": projection.as_ref().map(|value| value.revision),
+                    "active_context_state_identity": context_state.as_ref().map(|value| &value.state_hash),
+                    "revision": context_state.as_ref().map(|value| value.revision),
                     "authorized_summary": null,
                 }))
             }

@@ -13,6 +13,8 @@ pub mod artifact;
 pub mod build_info;
 pub mod cli;
 pub mod config;
+mod context_ast;
+pub mod context_state;
 pub mod context_store;
 pub mod context_tools;
 pub mod controllers;

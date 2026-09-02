@@ -1,18 +1,19 @@
 #![cfg(feature = "experimental-context-db")]
 
-use morphz::context_store::{ContextCollection, ContextMutationPlan, ContextStateMutation};
+use morphz::context_store::{
+    ContextMutationPlan, ContextNodeValue, ContextStateCommit, ContextStateMutation,
+};
 use morphz::event::Event;
 use morphz::experimental::{self, CONTEXT_DB};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
-    MindProjectionCommit, MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection,
+    ContextStore, MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection,
     NewSession, SessionDirectoryStore, SessionMountKind, SessionProjectionMutation,
 };
 use morphz::observability::Observability;
 use morphz::orchestrator::context::MindState;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -47,7 +48,7 @@ where
 }
 
 fn state_hash(state: &MindState) -> String {
-    format!("{:x}", Sha256::digest(serde_json::to_vec(state).unwrap()))
+    morphz::context_store::context_state_hash(state).unwrap()
 }
 
 fn permit() -> experimental::ExperimentalFeaturePermit {
@@ -162,14 +163,12 @@ async fn run_budget(
             active_after: chrono::Utc::now() - chrono::Duration::hours(24),
             max_full_sessions: 50,
             max_metadata_sessions: 50,
+            known_context_state_revision: None,
             session_filter: ContextRuntimeSessionFilter::default(),
         })
         .await?
         .unwrap();
-    assert_eq!(
-        directory.mind.unwrap().state,
-        serde_json::to_value(&initial)?
-    );
+    assert_eq!(directory.context_state.unwrap().state, initial);
     assert_eq!(
         statements.load(Ordering::Relaxed),
         1,
@@ -197,9 +196,7 @@ async fn run_budget(
         expected_state_hash: state_hash(&initial),
         next_state_hash: state_hash(&next),
         mutations: vec![ContextStateMutation::Upsert {
-            collection: ContextCollection::MutationClocks,
-            logical_id: "mutation-clocks".to_string(),
-            body: serde_json::to_value(&next.mutation_clocks)?,
+            value: ContextNodeValue::MutationClocks(next.mutation_clocks.clone()),
             order: None,
         }],
     };
@@ -207,23 +204,17 @@ async fn run_budget(
     pool_acquires.store(0, Ordering::Relaxed);
     assert!(matches!(
         store
-            .commit_mind_projection_transaction(
+            .commit_context_mutation_transaction(
                 &event,
                 &[],
                 &SessionProjectionMutation::default(),
-                Some(&plan),
-                0,
-                NewMindProjection {
-                    context_id,
-                    revision: 1,
-                    state: serde_json::to_value(&next)?,
-                    state_hash: state_hash(&next),
-                    head_event_id: Some(event.id.clone()),
-                    recall_documents: Vec::new(),
-                },
+                &plan,
+                &next,
+                &morphz::context_store::context_state_commitment(&next)?,
+                &[],
             )
             .await?,
-        MindProjectionCommit::Committed { .. }
+        ContextStateCommit::Committed { .. }
     ));
     assert_eq!(
         statements.load(Ordering::Relaxed),

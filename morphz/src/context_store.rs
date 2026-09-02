@@ -5,7 +5,100 @@
 //! same plan; a backend must never infer a second semantic diff from two full
 //! Mind snapshots.
 
+use crate::context_state::{
+    ContextFrame, ContextMutationClocks, ContextRelation, FrameRetirement, MindCheckpoint,
+    MindState,
+};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Computes the one backend-independent commitment for an authoritative
+/// Context state.
+///
+/// Runtime code, storage adapters, migrations, integration tests and
+/// benchmarks must use this protocol function. Reimplementing the fence as a
+/// JSON digest would create a second state identity which ContextDB correctly
+/// rejects.
+pub fn context_state_hash(state: &MindState) -> Result<String, String> {
+    context_state_commitment(state).map(|commitment| commitment.state_hash)
+}
+
+/// Opaque proof derived from one complete authoritative Context state.
+///
+/// The Runtime already has to compute the native state hash before it emits a
+/// fenced mutation.  ContextDB also needs the seven canonical collection-root
+/// hashes to compare the bounded patch with an independently materialized
+/// full-state root. Keeping both in this non-serializable value lets the Store
+/// reuse that work without weakening the independent integrity check or
+/// putting backend-specific hashes into the mutation protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextStateCommitment {
+    revision: u64,
+    state_hash: String,
+    pub(crate) roots: Vec<(i64, String, String)>,
+}
+
+impl ContextStateCommitment {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn state_hash(&self) -> &str {
+        &self.state_hash
+    }
+
+    pub(crate) fn roots(&self) -> &[(i64, String, String)] {
+        &self.roots
+    }
+}
+
+/// Computes the backend-independent state fence and its reusable physical
+/// collection-root proof in one canonical S-expression traversal.
+pub fn context_state_commitment(state: &MindState) -> Result<ContextStateCommitment, String> {
+    let (state_hash, roots) = crate::context_ast::native_mind_state_commitment_parts(state)?;
+    Ok(ContextStateCommitment {
+        revision: state.version,
+        state_hash,
+        roots,
+    })
+}
+
+/// Typed authoritative Context state returned to the Runtime.
+///
+/// This is the native read model. Unlike the legacy `MindProjectionRecord`,
+/// it does not serialize the state through an opaque JSON value between the
+/// Store and Context engine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextStateRecord {
+    pub context_id: String,
+    pub revision: u64,
+    pub state: MindState,
+    pub state_hash: String,
+    pub head_event_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Small authoritative Context head returned after a native mutation commit.
+///
+/// A normal commit does not materialize the complete Mind merely to return a
+/// compatibility projection to its caller.  The Runtime already owns the
+/// exact `MindState` which produced the mutation plan; the Store returns only
+/// the durable fence that proves which state won.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextStateHead {
+    pub context_id: String,
+    pub revision: u64,
+    pub state_hash: String,
+    pub head_event_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ContextStateCommit {
+    Committed { head: ContextStateHead },
+    Conflict { current_revision: Option<u64> },
+}
 
 /// Stable logical identity for a relation value.
 ///
@@ -34,6 +127,51 @@ pub enum ContextCollection {
     MutationClocks,
 }
 
+/// One native value stored in the persistent cognitive Context AST.
+///
+/// The variant is the schema tag. Its payload remains a typed domain value
+/// until the shared Context AST codec renders the canonical S-expression.
+/// This prevents a backend from interpreting an untyped JSON object or
+/// inventing a backend-specific record encoding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ContextNodeValue {
+    Frame(ContextFrame),
+    Relation(ContextRelation),
+    Retired(String),
+    Retiring(FrameRetirement),
+    Protected(String),
+    Checkpoint(MindCheckpoint),
+    MutationClocks(ContextMutationClocks),
+}
+
+impl ContextNodeValue {
+    pub fn collection(&self) -> ContextCollection {
+        match self {
+            Self::Frame(_) => ContextCollection::Frame,
+            Self::Relation(_) => ContextCollection::Relation,
+            Self::Retired(_) => ContextCollection::Retired,
+            Self::Retiring(_) => ContextCollection::Retiring,
+            Self::Protected(_) => ContextCollection::Protected,
+            Self::Checkpoint(_) => ContextCollection::Checkpoint,
+            Self::MutationClocks(_) => ContextCollection::MutationClocks,
+        }
+    }
+
+    pub fn logical_id(&self) -> String {
+        match self {
+            Self::Frame(frame) => frame.id.clone(),
+            Self::Relation(relation) => {
+                relation_logical_id(&relation.subject, &relation.relation, &relation.object)
+            }
+            Self::Retired(id) | Self::Protected(id) => id.clone(),
+            Self::Retiring(retirement) => retirement.frame_id.clone(),
+            Self::Checkpoint(checkpoint) => checkpoint.id.clone(),
+            Self::MutationClocks(_) => "mutation-clocks".to_string(),
+        }
+    }
+}
+
 impl ContextCollection {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -50,16 +188,14 @@ impl ContextCollection {
 
 /// One net semantic change to the authoritative Context AST.
 ///
-/// `body` is the canonical JSON representation of the domain record. The
-/// shared Context codec converts it to the physical Node representation once;
-/// individual backends do not serialize domain objects independently.
+/// `value` remains a native domain value. The shared Context AST codec renders
+/// it directly to the physical canonical S-expression once; individual
+/// backends do not serialize or reinterpret domain objects independently.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ContextStateMutation {
     Upsert {
-        collection: ContextCollection,
-        logical_id: String,
-        body: serde_json::Value,
+        value: ContextNodeValue,
         /// Position in collections whose order is semantically observable.
         /// `None` is used for map/set-like collections.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,15 +212,16 @@ pub enum ContextStateMutation {
     },
     /// A deliberately broad semantic barrier, currently used by rollback and
     /// initial import/seed. Ordinary transactions must use local mutations.
-    ReplaceMind { state: serde_json::Value },
+    ReplaceMind { state: MindState },
 }
 
 impl ContextStateMutation {
     pub fn collection(&self) -> Option<ContextCollection> {
         match self {
-            Self::Upsert { collection, .. }
-            | Self::Remove { collection, .. }
-            | Self::SetOrder { collection, .. } => Some(*collection),
+            Self::Upsert { value, .. } => Some(value.collection()),
+            Self::Remove { collection, .. } | Self::SetOrder { collection, .. } => {
+                Some(*collection)
+            }
             Self::ReplaceMind { .. } => None,
         }
     }
@@ -141,19 +278,18 @@ impl ContextMutationPlan {
         let mut ordered = std::collections::HashSet::new();
         for mutation in &self.mutations {
             match mutation {
-                ContextStateMutation::Upsert { logical_id, .. } if logical_id.trim().is_empty() => {
+                ContextStateMutation::Upsert { value, .. }
+                    if value.logical_id().trim().is_empty() =>
+                {
                     return Err("Context mutation contains an empty logical identity".to_string());
                 }
                 ContextStateMutation::Remove { logical_id, .. } if logical_id.trim().is_empty() => {
                     return Err("Context mutation contains an empty logical identity".to_string());
                 }
-                ContextStateMutation::Upsert {
-                    collection,
-                    logical_id,
-                    order,
-                    ..
-                } => {
-                    if !written.insert((*collection, logical_id.as_str())) {
+                ContextStateMutation::Upsert { value, order } => {
+                    let collection = value.collection();
+                    let logical_id = value.logical_id();
+                    if !written.insert((collection, logical_id.clone())) {
                         return Err(format!(
                             "Context mutation writes '{}:{}' more than once",
                             collection.as_str(),
@@ -173,7 +309,7 @@ impl ContextMutationPlan {
                             logical_id
                         ));
                     }
-                    if *collection == ContextCollection::MutationClocks
+                    if collection == ContextCollection::MutationClocks
                         && logical_id != "mutation-clocks"
                     {
                         return Err(
@@ -189,7 +325,7 @@ impl ContextMutationPlan {
                     if *collection == ContextCollection::MutationClocks {
                         return Err("mutation_clocks cannot be removed".to_string());
                     }
-                    if !written.insert((*collection, logical_id.as_str())) {
+                    if !written.insert((*collection, logical_id.clone())) {
                         return Err(format!(
                             "Context mutation writes '{}:{}' more than once",
                             collection.as_str(),
@@ -251,9 +387,15 @@ mod tests {
     #[test]
     fn local_plan_shape_is_valid() {
         plan(vec![ContextStateMutation::Upsert {
-            collection: ContextCollection::Frame,
-            logical_id: "frame-a".to_string(),
-            body: serde_json::json!({"id": "frame-a"}),
+            value: ContextNodeValue::Frame(ContextFrame {
+                id: "frame-a".to_string(),
+                body: "(fact a)".to_string(),
+                sources: Vec::new(),
+                provenance: Default::default(),
+                revision: 1,
+                created_version: 1,
+                updated_version: 1,
+            }),
             order: Some(0),
         }])
         .validate_shape()
@@ -264,7 +406,7 @@ mod tests {
     fn broad_barrier_cannot_hide_local_mutations() {
         let error = plan(vec![
             ContextStateMutation::ReplaceMind {
-                state: serde_json::json!({}),
+                state: MindState::default(),
             },
             ContextStateMutation::Remove {
                 collection: ContextCollection::Frame,

@@ -7,28 +7,30 @@
 //! explicit product configuration; merely defining a PostgreSQL URL never
 //! changes the active backend.
 
+use crate::context_store::{ContextStateCommit, ContextStateHead, ContextStateRecord};
 use crate::event::Event;
 use crate::memory::{
-    causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
-    ContextActivationCausalitySnapshot, ContextCapabilityBindingMutation,
+    causal_payload_string, decode_legacy_context_state, AttentionAcknowledgementRecord,
+    CognitiveClockStore, ContextActivationCausalitySnapshot, ContextCapabilityBindingMutation,
     ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
-    ContextEncodingProjectionSnapshot, ContextExecutionResourcesSnapshot,
+    ContextEncodingStateSnapshot, ContextExecutionResourcesSnapshot,
     ContextRuntimeDirectoryRequest, ContextRuntimeDirectorySnapshot,
     ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore,
-    EventAppend, EventStore, MindProjectionCommit, MindProjectionHead, MindProjectionRecord,
-    MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer,
-    NewThread, NewWorkAssignment, ObjectiveCompletionIntent, ObjectiveMutation,
-    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
-    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
-    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
-    SessionProjectionStore, StorageMaintenanceReport, StorageMaintenanceStore, TimerStore,
-    TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
-    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
+    ContextStateSummary, ContextStore, EventAppend, EventStore, MindProjectionCommit,
+    MindProjectionHead, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
+    NewMindProjection, NewObjective, NewRuntimeTimer, NewThread, NewWorkAssignment,
+    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord,
+    ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
+    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
+    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, StorageMaintenanceReport,
+    StorageMaintenanceStore, TimerStore, TransientStorageRetention, WorkAssignmentCreateResult,
+    WorkAssignmentMutation, WorkAssignmentMutationResult, WorkAssignmentRecord,
+    WorkAssignmentStatus, WorkAssignmentStore,
 };
 use crate::observability::Observability;
 use crate::scheduler::{
@@ -2908,6 +2910,10 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         let max_full_sessions = i64::try_from(request.max_full_sessions)?;
         let max_metadata_sessions = i64::try_from(request.max_metadata_sessions)?;
         let principal_ids = request.session_filter.principal_ids.clone();
+        let known_context_state_revision = request
+            .known_context_state_revision
+            .map(i64::try_from)
+            .transpose()?;
         // PostgreSQL gives one MVCC snapshot to the complete statement. Every
         // aggregate therefore describes one real directory state without a
         // client-driven BEGIN + seven sequential protocol round trips.
@@ -3023,11 +3029,13 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
 "#;
         let legacy_mind_columns = r#"
                  COALESCE(
-                   (SELECT (to_jsonb(projection) - 'state_json')
+                   (SELECT CASE WHEN projection.revision = $7
+                      THEN 'null'::jsonb
+                      ELSE (to_jsonb(projection) - 'state_json')
                              || jsonb_build_object(
                                   'state', projection.state_json,
                                   'head_event_id', head.head_event_id
-                                )
+                                ) END
                     FROM mind_projections projection
                     JOIN context_heads head ON head.context_id = projection.context_id
                     WHERE projection.context_id = c.id
@@ -3035,10 +3043,21 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                       AND projection.state_hash = head.projection_hash),
                    'null'::jsonb
                  ) AS mind_json,
+                 (SELECT context_id FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_context_id,
                  (SELECT revision FROM context_heads WHERE context_id = c.id)
                    AS mind_head_revision,
+                 (SELECT projection.updated_at
+                    FROM mind_projections projection
+                    JOIN context_heads head ON head.context_id = projection.context_id
+                   WHERE projection.context_id = c.id
+                     AND projection.revision = head.revision
+                     AND projection.state_hash = head.projection_hash)
+                   AS mind_head_updated_at,
                  (SELECT projection_hash FROM context_heads WHERE context_id = c.id)
                    AS mind_head_hash,
+                 (SELECT head_event_id FROM context_heads WHERE context_id = c.id)
+                   AS mind_head_event_id,
                  (SELECT revision FROM mind_projections WHERE context_id = c.id)
                    AS mind_projection_revision,
                  (SELECT state_hash FROM mind_projections WHERE context_id = c.id)
@@ -3046,7 +3065,9 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
 "#;
         let context_db_mind_columns = r#"
                  COALESCE(
-                   (SELECT jsonb_build_object(
+                   (SELECT CASE WHEN runtime_head.revision = $7
+                    THEN 'null'::jsonb
+                    ELSE jsonb_build_object(
                       'context_id', context_db.context_id,
                       'revision', context_db.revision,
                       'root_node_id', context_db.root_node_id,
@@ -3068,11 +3089,29 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                          WHERE node.context_id = context_db.context_id),
                         '[]'::jsonb
                       )
-                    )
+                    ) END
                     FROM experimental_contextdb_contexts context_db
-                    WHERE context_db.context_id = c.id),
+                    JOIN experimental_contextdb_runtime_heads runtime_head
+                      ON runtime_head.context_id = context_db.context_id
+                    WHERE context_db.context_id = c.id
+                      AND context_db.schema_version = 1),
                    'null'::jsonb
                  ) AS context_db_mind_json,
+                 (SELECT context_id FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_context_id,
+                 (SELECT revision FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_revision,
+                 (SELECT updated_at FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_updated_at,
+                 (SELECT state_hash FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_hash,
+                 (SELECT head_event_id FROM experimental_contextdb_runtime_heads
+                   WHERE context_id = c.id)
+                   AS mind_head_event_id,
 "#;
         let directory_sql_suffix = r#"
                  COALESCE(
@@ -3189,6 +3228,7 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
             .bind(max_full_sessions)
             .bind(max_metadata_sessions)
             .bind(principal_ids)
+            .bind(known_context_state_revision)
             .fetch_optional(&self.pool)
             .await?;
 
@@ -3199,8 +3239,25 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         let read_legacy_mind = !use_context_db;
         #[cfg(not(feature = "experimental-context-db"))]
         let read_legacy_mind = true;
+        let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
+        let context_state_head = match head_revision {
+            Some(revision) => Some(ContextStateHead {
+                context_id: row
+                    .get::<Option<String>, _>("mind_head_context_id")
+                    .ok_or("Context state head 缺少 context_id")?,
+                revision: u64::try_from(revision)?,
+                state_hash: row
+                    .get::<Option<String>, _>("mind_head_hash")
+                    .ok_or("Context state head 缺少 state_hash")?,
+                head_event_id: row.get("mind_head_event_id"),
+                updated_at: parse_time(
+                    &row.get::<Option<String>, _>("mind_head_updated_at")
+                        .ok_or("Context state head 缺少 updated_at")?,
+                )?,
+            }),
+            None => None,
+        };
         let legacy_mind = if read_legacy_mind {
-            let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
             let projection_revision = row.get::<Option<i64>, _>("mind_projection_revision");
             match (head_revision, projection_revision) {
                 (None, None) => None,
@@ -3217,13 +3274,14 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                         )
                         .into());
                     }
-                    Some(
-                        postgres_snapshot_component::<Option<MindProjectionRecord>>(
-                            &row,
-                            "mind_json",
-                        )?
-                        .ok_or("一致的 Mind Projection 没有返回投影内容")?,
-                    )
+                    let projection = postgres_snapshot_component::<Option<MindProjectionRecord>>(
+                        &row,
+                        "mind_json",
+                    )?;
+                    if projection.is_none() && Some(head_revision) != known_context_state_revision {
+                        return Err("一致的 Mind Projection 没有返回投影内容".into());
+                    }
+                    projection.map(decode_legacy_context_state).transpose()?
                 }
                 _ => return Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
             }
@@ -3231,18 +3289,29 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
             None
         };
         #[cfg(feature = "experimental-context-db")]
-        let mind = if let Some(context_db) = &self.context_db {
-            context_db
-                .decode_projection_snapshot_value(row.get::<JsonValue, _>("context_db_mind_json"))?
+        let context_state = if let Some(context_db) = &self.context_db {
+            context_db.decode_context_state_snapshot_value(
+                row.get::<JsonValue, _>("context_db_mind_json"),
+            )?
         } else {
             legacy_mind
         };
         #[cfg(not(feature = "experimental-context-db"))]
-        let mind = legacy_mind;
+        let context_state = legacy_mind;
+        if context_state.is_none()
+            && context_state_head
+                .as_ref()
+                .is_some_and(|head| Some(head.revision) != request.known_context_state_revision)
+        {
+            return Err(
+                "ContextStore directory snapshot omitted a non-matching state payload".into(),
+            );
+        }
         ContextRuntimeDirectorySnapshot::from_components(
             postgres_snapshot_component(&row, "context_json")?,
             postgres_snapshot_component(&row, "cognitive_clock_json")?,
-            mind,
+            context_state_head,
+            context_state,
             postgres_snapshot_component::<ContextRuntimeSessionExclusions>(
                 &row,
                 "session_exclusions_json",
@@ -6840,12 +6909,16 @@ impl SessionProjectionStore for PostgresStore {
             .collect()
     }
 
-    async fn read_context_encoding_projection_snapshot(
+    async fn read_context_encoding_state_snapshot(
         &self,
         context_id: &str,
         session_ids: &[String],
         include_context_wide: bool,
-    ) -> Result<ContextEncodingProjectionSnapshot, StoreError> {
+        known_context_state_revision: Option<u64>,
+    ) -> Result<ContextEncodingStateSnapshot, StoreError> {
+        let known_context_state_revision = known_context_state_revision
+            .map(i64::try_from)
+            .transpose()?;
         let mut builder = QueryBuilder::<Postgres>::new(
             r#"SELECT snapshot.row_kind, snapshot.event_sequence,
                       snapshot.event_id, snapshot.event_timestamp,
@@ -6869,8 +6942,12 @@ impl SessionProjectionStore for PostgresStore {
                         NULL::TEXT AS event_actor, NULL::TEXT AS event_type,
                         NULL::TEXT AS event_topic, NULL::JSONB AS event_payload,
                         context_db.context_id AS mind_context_id,
-                        context_db.revision AS mind_revision,
-                        jsonb_build_object(
+                        runtime_head.revision AS mind_revision,
+                        CASE WHEN runtime_head.revision = "#,
+            );
+            builder.push_bind(known_context_state_revision);
+            builder.push(
+                r#" THEN NULL::JSONB ELSE jsonb_build_object(
                           'context_id', context_db.context_id,
                           'revision', context_db.revision,
                           'root_node_id', context_db.root_node_id,
@@ -6892,12 +6969,14 @@ impl SessionProjectionStore for PostgresStore {
                              WHERE node.context_id = context_db.context_id),
                             '[]'::jsonb
                           )
-                        ) AS mind_state_json,
-                        context_db.root_hash AS mind_state_hash,
-                        NULL::TEXT AS mind_head_event_id,
-                        context_db.updated_at AS mind_updated_at,
+                        ) END AS mind_state_json,
+                        runtime_head.state_hash AS mind_state_hash,
+                        runtime_head.head_event_id AS mind_head_event_id,
+                        runtime_head.updated_at AS mind_updated_at,
                         NULL::TEXT AS event_visibility_snapshot
                  FROM experimental_contextdb_contexts context_db
+                 JOIN experimental_contextdb_runtime_heads runtime_head
+                   ON runtime_head.context_id = context_db.context_id
                  WHERE context_db.context_id = "#,
             );
             builder.push_bind(context_id);
@@ -6911,7 +6990,11 @@ impl SessionProjectionStore for PostgresStore {
                         NULL::TEXT AS event_topic, NULL::JSONB AS event_payload,
                         projection.context_id AS mind_context_id,
                         projection.revision AS mind_revision,
-                        projection.state_json AS mind_state_json,
+                        CASE WHEN projection.revision = "#,
+            );
+            builder.push_bind(known_context_state_revision);
+            builder.push(
+                r#" THEN NULL::JSONB ELSE projection.state_json END AS mind_state_json,
                         projection.state_hash AS mind_state_hash,
                         head.head_event_id AS mind_head_event_id,
                         projection.updated_at AS mind_updated_at,
@@ -6983,41 +7066,54 @@ impl SessionProjectionStore for PostgresStore {
         builder.push_bind(context_id);
         builder.push(") snapshot ORDER BY snapshot.sort_key, snapshot.event_sequence ASC");
         let rows = builder.build().fetch_all(&self.pool).await?;
-        let mut mind = None;
+        let mut context_state_head = None;
+        let mut context_state = None;
         let mut events = Vec::with_capacity(rows.len().saturating_sub(2));
         let mut event_sequence_upper_bound = 0;
         let mut event_visibility_snapshot = None;
         for row in rows {
             match row.get::<String, _>("row_kind").as_str() {
                 "mind" => {
+                    let context_id = row
+                        .get::<Option<String>, _>("mind_context_id")
+                        .ok_or("Mind Projection snapshot 缺少 context_id")?;
+                    let revision = u64::try_from(
+                        row.get::<Option<i64>, _>("mind_revision")
+                            .ok_or("Mind Projection snapshot 缺少 revision")?,
+                    )?;
+                    let updated_at = parse_time(
+                        &row.get::<Option<String>, _>("mind_updated_at")
+                            .ok_or("Mind Projection snapshot 缺少 updated_at")?,
+                    )?;
+                    let state_hash = row
+                        .get::<Option<String>, _>("mind_state_hash")
+                        .ok_or("Context state snapshot 缺少 state_hash")?;
+                    let head_event_id: Option<String> = row.get("mind_head_event_id");
+                    context_state_head = Some(ContextStateHead {
+                        context_id: context_id.clone(),
+                        revision,
+                        state_hash: state_hash.clone(),
+                        head_event_id: head_event_id.clone(),
+                        updated_at,
+                    });
                     #[cfg(feature = "experimental-context-db")]
                     if let Some(context_db) = &self.context_db {
-                        mind = context_db.decode_projection_snapshot_value(
-                            row.get::<Option<JsonValue>, _>("mind_state_json")
-                                .unwrap_or(JsonValue::Null),
-                        )?;
+                        if let Some(value) = row.get::<Option<JsonValue>, _>("mind_state_json") {
+                            context_state =
+                                context_db.decode_context_state_snapshot_value(value)?;
+                        }
                         continue;
                     }
-                    mind = Some(MindProjectionRecord {
-                        context_id: row
-                            .get::<Option<String>, _>("mind_context_id")
-                            .ok_or("Mind Projection snapshot 缺少 context_id")?,
-                        revision: u64::try_from(
-                            row.get::<Option<i64>, _>("mind_revision")
-                                .ok_or("Mind Projection snapshot 缺少 revision")?,
-                        )?,
-                        state: row
-                            .get::<Option<JsonValue>, _>("mind_state_json")
-                            .ok_or("Mind Projection snapshot 缺少 state_json")?,
-                        state_hash: row
-                            .get::<Option<String>, _>("mind_state_hash")
-                            .ok_or("Mind Projection snapshot 缺少 state_hash")?,
-                        head_event_id: row.get("mind_head_event_id"),
-                        updated_at: parse_time(
-                            &row.get::<Option<String>, _>("mind_updated_at")
-                                .ok_or("Mind Projection snapshot 缺少 updated_at")?,
-                        )?,
-                    });
+                    if let Some(state) = row.get::<Option<JsonValue>, _>("mind_state_json") {
+                        context_state = Some(ContextStateRecord {
+                            context_id,
+                            revision,
+                            state: serde_json::from_value(state)?,
+                            state_hash,
+                            head_event_id,
+                            updated_at,
+                        });
+                    }
                 }
                 "event" => events.push(Event {
                     id: row
@@ -7057,8 +7153,9 @@ impl SessionProjectionStore for PostgresStore {
                 }
             }
         }
-        Ok(ContextEncodingProjectionSnapshot {
-            mind,
+        Ok(ContextEncodingStateSnapshot {
+            context_state_head,
+            context_state,
             events,
             event_sequence_upper_bound,
             event_visibility_snapshot,
@@ -7271,27 +7368,32 @@ impl TimerStore for PostgresStore {
 }
 
 #[async_trait::async_trait]
-impl MindProjectionStore for PostgresStore {
-    async fn get_mind_projection(
+impl ContextStore for PostgresStore {
+    async fn get_context_state(
         &self,
         context_id: &str,
-    ) -> Result<Option<MindProjectionRecord>, StoreError> {
+    ) -> Result<Option<ContextStateRecord>, StoreError> {
         #[cfg(feature = "experimental-context-db")]
         if let Some(context_db) = &self.context_db {
-            let mut transaction = self.pool.begin().await?;
-            let projection = context_db
-                .load_projection_in_transaction(&mut transaction, context_id)
-                .await?;
-            transaction.commit().await?;
-            return Ok(projection);
+            return Ok(context_db.load_context_state(context_id).await?);
         }
-        get_projection_consistent(&self.pool, context_id).await
+        let Some(projection) = get_projection_consistent(&self.pool, context_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ContextStateRecord {
+            context_id: projection.context_id,
+            revision: projection.revision,
+            state: serde_json::from_value(projection.state)?,
+            state_hash: projection.state_hash,
+            head_event_id: projection.head_event_id,
+            updated_at: projection.updated_at,
+        }))
     }
 
-    async fn list_mind_projection_heads(
+    async fn list_context_state_summaries(
         &self,
         context_ids: &[String],
-    ) -> Result<Vec<MindProjectionHead>, StoreError> {
+    ) -> Result<Vec<ContextStateSummary>, StoreError> {
         if context_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -7302,7 +7404,14 @@ impl MindProjectionStore for PostgresStore {
                 .load_projection_heads_in_transaction(&mut transaction, context_ids)
                 .await?;
             transaction.commit().await?;
-            return Ok(heads);
+            return Ok(heads
+                .into_iter()
+                .map(|head| ContextStateSummary {
+                    context_id: head.context_id,
+                    revision: head.revision,
+                    updated_at: head.updated_at,
+                })
+                .collect());
         }
         let rows = sqlx::query(
             r#"SELECT p.context_id, p.revision, p.updated_at
@@ -7318,7 +7427,7 @@ impl MindProjectionStore for PostgresStore {
         .await?;
         rows.iter()
             .map(|row| {
-                Ok(MindProjectionHead {
+                Ok(ContextStateSummary {
                     context_id: row.get("context_id"),
                     revision: u64::try_from(row.get::<i64, _>("revision"))?,
                     updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
@@ -7327,7 +7436,7 @@ impl MindProjectionStore for PostgresStore {
             .collect()
     }
 
-    async fn get_latest_mind_snapshot(
+    async fn get_latest_context_snapshot(
         &self,
         context_id: &str,
     ) -> Result<Option<MindSnapshotRecord>, StoreError> {
@@ -7345,7 +7454,7 @@ impl MindProjectionStore for PostgresStore {
                 id: row.get("id"),
                 context_id: row.get("context_id"),
                 revision: u64::try_from(row.get::<i64, _>("revision"))
-                    .map_err(|_| "Mind Snapshot revision 不能为负数")?,
+                    .map_err(|_| "Context Snapshot revision 不能为负数")?,
                 state: row.get("state_json"),
                 state_hash: row.get("state_hash"),
                 head_event_id: row.get("head_event_id"),
@@ -7355,7 +7464,209 @@ impl MindProjectionStore for PostgresStore {
         .transpose()
     }
 
+    async fn initialize_context_state(
+        &self,
+        context_id: &str,
+        state: &crate::context_state::MindState,
+        commitment: &crate::context_store::ContextStateCommitment,
+        head_event_id: Option<&str>,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateRecord, StoreError> {
+        self.initialize_context_state_impl(
+            context_id,
+            state,
+            commitment,
+            head_event_id,
+            recall_documents,
+        )
+        .await
+    }
+
+    async fn commit_context_mutation_transaction(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: &crate::context_store::ContextMutationPlan,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, StoreError> {
+        self.commit_context_mutation_transaction_impl(
+            event,
+            attention_updates,
+            session_projection,
+            mutation_plan,
+            next_state,
+            next_commitment,
+            recall_documents,
+        )
+        .await
+    }
+
+    async fn commit_context_seed_transaction(
+        &self,
+        event: &Event,
+        target_context_id: &str,
+        source_context_id: &str,
+        source_version: u64,
+        source_state_hash: &str,
+        projection_kind: &str,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, StoreError> {
+        self.commit_context_seed_transaction_impl(
+            event,
+            target_context_id,
+            source_context_id,
+            source_version,
+            source_state_hash,
+            projection_kind,
+            next_state,
+            next_commitment,
+            recall_documents,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl MindProjectionStore for PostgresStore {
+    async fn get_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindProjectionRecord>, StoreError> {
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            return Ok(context_db.load_projection(context_id).await?);
+        }
+        get_projection_consistent(&self.pool, context_id).await
+    }
+
+    async fn list_mind_projection_heads(
+        &self,
+        context_ids: &[String],
+    ) -> Result<Vec<MindProjectionHead>, StoreError> {
+        Ok(
+            ContextStore::list_context_state_summaries(self, context_ids)
+                .await?
+                .into_iter()
+                .map(|summary| MindProjectionHead {
+                    context_id: summary.context_id,
+                    revision: summary.revision,
+                    updated_at: summary.updated_at,
+                })
+                .collect(),
+        )
+    }
+
+    async fn get_latest_mind_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindSnapshotRecord>, StoreError> {
+        ContextStore::get_latest_context_snapshot(self, context_id).await
+    }
+
     async fn initialize_mind_projection(
+        &self,
+        projection: NewMindProjection,
+    ) -> Result<MindProjectionRecord, StoreError> {
+        self.initialize_mind_projection_impl(projection).await
+    }
+
+    async fn commit_mind_projection_transaction(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: Option<&crate::context_store::ContextMutationPlan>,
+        expected_revision: u64,
+        next_projection: NewMindProjection,
+    ) -> Result<MindProjectionCommit, StoreError> {
+        self.commit_mind_projection_transaction_impl(
+            event,
+            attention_updates,
+            session_projection,
+            mutation_plan,
+            expected_revision,
+            next_projection,
+        )
+        .await
+    }
+}
+
+impl PostgresStore {
+    async fn initialize_context_state_impl(
+        &self,
+        context_id: &str,
+        state: &crate::context_state::MindState,
+        commitment: &crate::context_store::ContextStateCommitment,
+        head_event_id: Option<&str>,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateRecord, StoreError> {
+        if commitment.revision() != state.version
+            || commitment.state_hash() != crate::context_store::context_state_hash(state)?
+        {
+            return Err("Context initialization commitment differs from its typed state".into());
+        }
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let now = now_text();
+            let now_instant = parse_time(&now)?;
+            let mut tx = self.pool.begin().await?;
+            let context = sqlx::query("SELECT id FROM cognitive_contexts WHERE id = $1 FOR UPDATE")
+                .bind(context_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if context.is_none() {
+                return Err(format!("Context '{context_id}' 不存在").into());
+            }
+            let already_initialized = context_db
+                .load_context_state_in_transaction(&mut tx, context_id)
+                .await?
+                .is_some();
+            let installed = context_db
+                .install_context_state_in_transaction(
+                    &mut tx,
+                    context_id,
+                    state,
+                    commitment,
+                    head_event_id,
+                    now_instant,
+                )
+                .await?;
+            if !already_initialized {
+                for document in recall_documents {
+                    enqueue_recall_document_in_tx(&mut tx, document).await?;
+                }
+            }
+            tx.commit().await?;
+            return Ok(installed);
+        }
+        let installed = self
+            .initialize_mind_projection(NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: state.version,
+                state: serde_json::to_value(state)?,
+                state_hash: commitment.state_hash().to_string(),
+                head_event_id: head_event_id.map(str::to_string),
+                recall_documents: recall_documents.to_vec(),
+            })
+            .await?;
+        Ok(ContextStateRecord {
+            context_id: installed.context_id,
+            revision: installed.revision,
+            state: serde_json::from_value(installed.state)?,
+            state_hash: installed.state_hash,
+            head_event_id: installed.head_event_id,
+            updated_at: installed.updated_at,
+        })
+    }
+}
+
+impl PostgresStore {
+    async fn initialize_mind_projection_impl(
         &self,
         projection: NewMindProjection,
     ) -> Result<MindProjectionRecord, StoreError> {
@@ -7437,8 +7748,152 @@ impl MindProjectionStore for PostgresStore {
         tx.commit().await?;
         Ok(installed)
     }
+}
 
-    async fn commit_mind_projection_transaction(
+impl PostgresStore {
+    async fn commit_context_mutation_transaction_impl(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
+        mutation_plan: &crate::context_store::ContextMutationPlan,
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, StoreError> {
+        mutation_plan
+            .validate_shape()
+            .map_err(|error| -> StoreError { error.into() })?;
+        if mutation_plan.next_revision != mutation_plan.expected_revision.saturating_add(1)
+            || next_state.version != mutation_plan.next_revision
+            || event.payload.get("context_id").and_then(JsonValue::as_str)
+                != Some(mutation_plan.context_id.as_str())
+        {
+            return Err("native Context Mutation revision or Event route differs".into());
+        }
+
+        #[cfg(feature = "experimental-context-db")]
+        if let Some(context_db) = &self.context_db {
+            let now = now_text();
+            let now_instant = parse_time(&now)?;
+            let mut tx = self.pool.begin().await?;
+            let committed_head = match context_db
+                .apply_mutation_plan_in_transaction(
+                    &mut tx,
+                    mutation_plan,
+                    next_state,
+                    next_commitment,
+                    &event.id,
+                    now_instant,
+                )
+                .await
+            {
+                Ok(head) => head,
+                Err(crate::experimental::context_db::ContextDbError::Conflict {
+                    actual, ..
+                }) => {
+                    tx.rollback().await?;
+                    return Ok(ContextStateCommit::Conflict {
+                        current_revision: Some(actual),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            for update in attention_updates {
+                let changed = sqlx::query(
+                    r#"UPDATE sessions SET attention_state = $1,
+                              attention_revision = attention_revision + 1,
+                              attention_reason = $2, attention_changed_at = $3,
+                              attention_event_id = $4, updated_at = $3
+                       WHERE id = $5 AND context_id = $6 AND attention_revision = $7"#,
+                )
+                .bind(update.state.as_str())
+                .bind(&update.reason)
+                .bind(
+                    update
+                        .changed_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                )
+                .bind(&update.event_id)
+                .bind(&update.session_id)
+                .bind(&update.context_id)
+                .bind(i64::try_from(update.expected_revision)?)
+                .execute(&mut *tx)
+                .await?;
+                if changed.rows_affected() != 1 {
+                    return Err(format!(
+                        "Session '{}' attention revision 冲突或 Context 不匹配",
+                        update.session_id
+                    )
+                    .into());
+                }
+            }
+            append_event_in_tx(&mut tx, event).await?;
+            mutate_session_projection_in_tx(&mut tx, &mutation_plan.context_id, session_projection)
+                .await?;
+            for document in recall_documents {
+                enqueue_recall_document_in_tx(&mut tx, document).await?;
+            }
+            if requires_snapshot(event, mutation_plan.next_revision) {
+                let snapshot = NewMindProjection {
+                    context_id: mutation_plan.context_id.clone(),
+                    revision: mutation_plan.next_revision,
+                    state: serde_json::to_value(next_state)?,
+                    state_hash: mutation_plan.next_state_hash.clone(),
+                    head_event_id: Some(event.id.clone()),
+                    recall_documents: Vec::new(),
+                };
+                insert_snapshot_in_tx(&mut tx, &snapshot, &event.id, &now).await?;
+            }
+            tx.commit().await?;
+            return Ok(ContextStateCommit::Committed {
+                head: committed_head,
+            });
+        }
+
+        if next_commitment.revision() != next_state.version
+            || next_commitment.state_hash() != mutation_plan.next_state_hash
+        {
+            return Err(
+                "legacy fallback state differs from its native Context Mutation fence".into(),
+            );
+        }
+        let committed = self
+            .commit_mind_projection_transaction(
+                event,
+                attention_updates,
+                session_projection,
+                Some(mutation_plan),
+                mutation_plan.expected_revision,
+                NewMindProjection {
+                    context_id: mutation_plan.context_id.clone(),
+                    revision: mutation_plan.next_revision,
+                    state: serde_json::to_value(next_state)?,
+                    state_hash: mutation_plan.next_state_hash.clone(),
+                    head_event_id: Some(event.id.clone()),
+                    recall_documents: recall_documents.to_vec(),
+                },
+            )
+            .await?;
+        Ok(match committed {
+            MindProjectionCommit::Committed { projection } => ContextStateCommit::Committed {
+                head: crate::context_store::ContextStateHead {
+                    context_id: projection.context_id,
+                    revision: projection.revision,
+                    state_hash: projection.state_hash,
+                    head_event_id: projection.head_event_id,
+                    updated_at: projection.updated_at,
+                },
+            },
+            MindProjectionCommit::Conflict { current_revision } => {
+                ContextStateCommit::Conflict { current_revision }
+            }
+        })
+    }
+}
+
+impl PostgresStore {
+    async fn commit_mind_projection_transaction_impl(
         &self,
         event: &Event,
         attention_updates: &[SessionAttentionUpdate],
@@ -7480,16 +7935,22 @@ impl MindProjectionStore for PostgresStore {
             let plan = mutation_plan.ok_or(
                 "authoritative PostgreSQL ContextDB commits require a domain-emitted Context Mutation plan",
             )?;
-            let committed = match context_db
+            let next_state = serde_json::from_value::<crate::context_state::MindState>(
+                next_projection.state.clone(),
+            )?;
+            let next_commitment = crate::context_store::context_state_commitment(&next_state)?;
+            let committed_head = match context_db
                 .apply_mutation_plan_in_transaction(
                     &mut tx,
                     plan,
-                    &next_projection,
+                    &next_state,
+                    &next_commitment,
+                    &event.id,
                     parse_time(&now)?,
                 )
                 .await
             {
-                Ok(projection) => projection,
+                Ok(head) => head,
                 Err(crate::experimental::context_db::ContextDbError::Conflict {
                     actual, ..
                 }) => {
@@ -7544,7 +8005,14 @@ impl MindProjectionStore for PostgresStore {
             }
             tx.commit().await?;
             return Ok(MindProjectionCommit::Committed {
-                projection: committed,
+                projection: MindProjectionRecord {
+                    context_id: committed_head.context_id,
+                    revision: committed_head.revision,
+                    state: next_projection.state,
+                    state_hash: committed_head.state_hash,
+                    head_event_id: committed_head.head_event_id,
+                    updated_at: committed_head.updated_at,
+                },
             });
         }
         let head = sqlx::query(
@@ -7635,52 +8103,65 @@ impl MindProjectionStore for PostgresStore {
             projection: committed,
         })
     }
+}
 
-    async fn commit_mind_seed_projection(
+impl PostgresStore {
+    async fn commit_context_seed_transaction_impl(
         &self,
         event: &Event,
+        target_context_id: &str,
         source_context_id: &str,
         source_version: u64,
-        snapshot_hash: &str,
+        source_state_hash: &str,
         projection_kind: &str,
-        next_projection: NewMindProjection,
-    ) -> Result<MindProjectionCommit, StoreError> {
-        if next_projection.revision != 0
-            || next_projection.head_event_id.as_deref() != Some(event.id.as_str())
-        {
-            return Err("Seed Mind Projection revision/head_event_id 非法".into());
+        next_state: &crate::context_state::MindState,
+        next_commitment: &crate::context_store::ContextStateCommitment,
+        recall_documents: &[RecallDocument],
+    ) -> Result<ContextStateCommit, StoreError> {
+        if next_state.version != 0 || next_commitment.revision() != 0 {
+            return Err("Seed Context revision 必须为 0".into());
         }
-        if event.payload.get("context_id").and_then(JsonValue::as_str)
-            != Some(next_projection.context_id.as_str())
-        {
-            return Err("Seed Event 与 Mind Projection 的 context_id 不一致".into());
+        if next_commitment.state_hash() != crate::context_store::context_state_hash(next_state)? {
+            return Err("Seed Context commitment 与原生状态不一致".into());
         }
+        if event.payload.get("context_id").and_then(JsonValue::as_str) != Some(target_context_id) {
+            return Err("Seed Event 与目标 Context 的 context_id 不一致".into());
+        }
+        let state_value = serde_json::to_value(next_state)?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
         #[cfg(feature = "experimental-context-db")]
         if let Some(context_db) = &self.context_db {
             let context = sqlx::query("SELECT id FROM cognitive_contexts WHERE id = $1 FOR UPDATE")
-                .bind(&next_projection.context_id)
+                .bind(target_context_id)
                 .fetch_optional(&mut *tx)
                 .await?;
             if context.is_none() {
-                return Err(format!("Context '{}' 不存在", next_projection.context_id).into());
+                return Err(format!("Context '{target_context_id}' 不存在").into());
             }
             let current = context_db
-                .load_projection_in_transaction(&mut tx, &next_projection.context_id)
+                .load_projection_in_transaction(&mut tx, target_context_id)
                 .await?
                 .ok_or_else(|| {
                     format!(
                         "Context '{}' 缺少待写入的初始 PostgreSQL ContextDB Mind",
-                        next_projection.context_id
+                        target_context_id
                     )
                 })?;
             if current.revision != 0 || current.head_event_id.is_some() {
                 tx.rollback().await?;
-                return Ok(MindProjectionCommit::Conflict {
+                return Ok(ContextStateCommit::Conflict {
                     current_revision: Some(current.revision),
                 });
             }
+            let next_projection = NewMindProjection {
+                context_id: target_context_id.to_string(),
+                revision: 0,
+                state: state_value.clone(),
+                state_hash: next_commitment.state_hash().to_string(),
+                head_event_id: Some(event.id.clone()),
+                recall_documents: Vec::new(),
+            };
             let committed = context_db
                 .sync_projection_in_transaction(&mut tx, &next_projection, parse_time(&now)?)
                 .await?;
@@ -7692,33 +8173,39 @@ impl MindProjectionStore for PostgresStore {
             )
             .bind(source_context_id)
             .bind(i64::try_from(source_version)?)
-            .bind(snapshot_hash)
+            .bind(source_state_hash)
             .bind(projection_kind)
             .bind(&now)
-            .bind(&next_projection.context_id)
+            .bind(target_context_id)
             .execute(&mut *tx)
             .await?;
             if context.rows_affected() != 1 {
                 return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
             }
             append_event_in_tx(&mut tx, event).await?;
-            for document in &next_projection.recall_documents {
+            for document in recall_documents {
                 enqueue_recall_document_in_tx(&mut tx, document).await?;
             }
             insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
             tx.commit().await?;
-            return Ok(MindProjectionCommit::Committed {
-                projection: committed,
+            return Ok(ContextStateCommit::Committed {
+                head: crate::context_store::ContextStateHead {
+                    context_id: committed.context_id,
+                    revision: committed.revision,
+                    state_hash: committed.state_hash,
+                    head_event_id: committed.head_event_id,
+                    updated_at: committed.updated_at,
+                },
             });
         }
         let head = sqlx::query(
             r#"UPDATE context_heads SET projection_hash = $1, head_event_id = $2, updated_at = $3
                WHERE context_id = $4 AND revision = 0 AND head_event_id IS NULL"#,
         )
-        .bind(&next_projection.state_hash)
+        .bind(next_commitment.state_hash())
         .bind(&event.id)
         .bind(&now)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
         if head.rows_affected() != 1 {
@@ -7726,12 +8213,12 @@ impl MindProjectionStore for PostgresStore {
             let current = sqlx::query_scalar::<_, i64>(
                 "SELECT revision FROM context_heads WHERE context_id = $1",
             )
-            .bind(&next_projection.context_id)
+            .bind(target_context_id)
             .fetch_optional(&self.pool)
             .await?
             .map(u64::try_from)
             .transpose()?;
-            return Ok(MindProjectionCommit::Conflict {
+            return Ok(ContextStateCommit::Conflict {
                 current_revision: current,
             });
         }
@@ -7739,10 +8226,10 @@ impl MindProjectionStore for PostgresStore {
             r#"UPDATE mind_projections SET state_json = $1, state_hash = $2, updated_at = $3
                WHERE context_id = $4 AND revision = 0"#,
         )
-        .bind(&next_projection.state)
-        .bind(&next_projection.state_hash)
+        .bind(&state_value)
+        .bind(next_commitment.state_hash())
         .bind(&now)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
         if projection.rows_affected() != 1 {
@@ -7755,26 +8242,40 @@ impl MindProjectionStore for PostgresStore {
         )
         .bind(source_context_id)
         .bind(i64::try_from(source_version)?)
-        .bind(snapshot_hash)
+        .bind(source_state_hash)
         .bind(projection_kind)
         .bind(&now)
-        .bind(&next_projection.context_id)
+        .bind(target_context_id)
         .execute(&mut *tx)
         .await?;
         if context.rows_affected() != 1 {
             return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
         }
         append_event_in_tx(&mut tx, event).await?;
-        for document in &next_projection.recall_documents {
+        for document in recall_documents {
             enqueue_recall_document_in_tx(&mut tx, document).await?;
         }
+        let next_projection = NewMindProjection {
+            context_id: target_context_id.to_string(),
+            revision: 0,
+            state: state_value,
+            state_hash: next_commitment.state_hash().to_string(),
+            head_event_id: Some(event.id.clone()),
+            recall_documents: Vec::new(),
+        };
         insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
-        let committed = get_projection(&mut *tx, &next_projection.context_id)
+        let committed = get_projection(&mut *tx, target_context_id)
             .await?
             .ok_or("Seed 提交后 PostgreSQL Mind Projection 不完整")?;
         tx.commit().await?;
-        Ok(MindProjectionCommit::Committed {
-            projection: committed,
+        Ok(ContextStateCommit::Committed {
+            head: crate::context_store::ContextStateHead {
+                context_id: committed.context_id,
+                revision: committed.revision,
+                state_hash: committed.state_hash,
+                head_event_id: committed.head_event_id,
+                updated_at: committed.updated_at,
+            },
         })
     }
 }

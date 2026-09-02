@@ -1,5 +1,7 @@
 use morphz::approval_authority::stable_approval_identity;
 use morphz::config::AppConfig;
+use morphz::context_state::MindState;
+use morphz::context_store::context_state_hash;
 use morphz::event::Event;
 use morphz::execution::ExecutionJobManager;
 use morphz::llm::{Client, Message, Response, ToolDefinition};
@@ -715,16 +717,26 @@ where
         target_id: None,
         supervision: morphz::memory::ThreadSupervision::legacy(),
     };
+    let start = Arc::new(Barrier::new(3));
     let first = {
         let store = Arc::clone(&store);
         let thread = thread.clone();
-        tokio::spawn(async move { store.ensure_thread(thread).await })
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            store.ensure_thread(thread).await
+        })
     };
     let second = {
         let store = Arc::clone(&store);
         let thread = thread.clone();
-        tokio::spawn(async move { store.ensure_thread(thread).await })
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            store.ensure_thread(thread).await
+        })
     };
+    start.wait().await;
     let first = first.await.unwrap().unwrap();
     let second = second.await.unwrap().unwrap();
     assert_eq!(first, second);
@@ -5082,6 +5094,11 @@ where
         .await
         .unwrap()
         .unwrap();
+    let mut retired_state = MindState::default();
+    retired_state.version = current.revision + 1;
+    retired_state
+        .protected
+        .insert("projection:retired".to_string());
     let retire_event = context_event("conformance-projection-retire", context_id);
     let retired = store
         .commit_mind_projection_transaction(
@@ -5096,8 +5113,8 @@ where
             NewMindProjection {
                 context_id: context_id.to_string(),
                 revision: current.revision + 1,
-                state: json!({"version": current.revision + 1, "projection": "retired"}),
-                state_hash: "conformance-projection-retired-hash".to_string(),
+                state: serde_json::to_value(&retired_state).unwrap(),
+                state_hash: context_state_hash(&retired_state).unwrap(),
                 head_event_id: Some(retire_event.id.clone()),
                 recall_documents: Vec::new(),
             },
@@ -5112,16 +5129,39 @@ where
         .iter()
         .all(|event| event.id != observation.id));
     let retired_snapshot = store
-        .read_context_encoding_projection_snapshot(context_id, &selected, true)
+        .read_context_encoding_state_snapshot(context_id, &selected, true, None)
         .await
         .unwrap();
     assert_eq!(
         retired_snapshot
-            .mind
+            .context_state
             .as_ref()
-            .and_then(|mind| mind.state.get("projection"))
-            .and_then(serde_json::Value::as_str),
-        Some("retired")
+            .is_some_and(|record| record.state.protected.contains("projection:retired")),
+        true
+    );
+    let retired_revision = retired_snapshot
+        .context_state_head
+        .as_ref()
+        .expect("snapshot must expose its authoritative Mind head")
+        .revision;
+    assert_eq!(
+        retired_snapshot.context_state.as_ref().unwrap().revision,
+        retired_revision
+    );
+    let resident_snapshot = store
+        .read_context_encoding_state_snapshot(context_id, &selected, true, Some(retired_revision))
+        .await
+        .unwrap();
+    assert!(
+        resident_snapshot.context_state.is_none(),
+        "matching resident revision must omit the duplicate Mind payload"
+    );
+    assert_eq!(
+        resident_snapshot
+            .context_state_head
+            .as_ref()
+            .map(|head| head.revision),
+        Some(retired_revision)
     );
     assert!(
         retired_snapshot
@@ -5144,6 +5184,11 @@ where
         .await
         .unwrap()
         .unwrap();
+    let mut restored_state = MindState::default();
+    restored_state.version = current.revision + 1;
+    restored_state
+        .protected
+        .insert("projection:restored".to_string());
     let restore_event = context_event("conformance-projection-restore", context_id);
     let restored = store
         .commit_mind_projection_transaction(
@@ -5158,8 +5203,8 @@ where
             NewMindProjection {
                 context_id: context_id.to_string(),
                 revision: current.revision + 1,
-                state: json!({"version": current.revision + 1, "projection": "restored"}),
-                state_hash: "conformance-projection-restored-hash".to_string(),
+                state: serde_json::to_value(&restored_state).unwrap(),
+                state_hash: context_state_hash(&restored_state).unwrap(),
                 head_event_id: Some(restore_event.id.clone()),
                 recall_documents: Vec::new(),
             },
@@ -5178,16 +5223,19 @@ where
         1
     );
     let restored_snapshot = store
-        .read_context_encoding_projection_snapshot(context_id, &selected, true)
+        .read_context_encoding_state_snapshot(context_id, &selected, true, Some(retired_revision))
         .await
         .unwrap();
+    assert!(
+        restored_snapshot.context_state.is_some(),
+        "a changed authoritative revision must return the new Mind payload"
+    );
     assert_eq!(
         restored_snapshot
-            .mind
+            .context_state
             .as_ref()
-            .and_then(|mind| mind.state.get("projection"))
-            .and_then(serde_json::Value::as_str),
-        Some("restored")
+            .is_some_and(|record| record.state.protected.contains("projection:restored")),
+        true
     );
     assert_eq!(
         restored_snapshot
@@ -5226,6 +5274,16 @@ where
                     restored_event_ids: Vec::new(),
                 }
             };
+            let mut next_state = MindState::default();
+            next_state.version = current.revision + 1;
+            next_state
+                .protected
+                .insert("snapshot_observation_state_known".to_string());
+            if active {
+                next_state
+                    .protected
+                    .insert("snapshot_observation_active".to_string());
+            }
             let committed = writer_store
                 .commit_mind_projection_transaction(
                     &event,
@@ -5236,11 +5294,8 @@ where
                     NewMindProjection {
                         context_id: context_id.to_string(),
                         revision: current.revision + 1,
-                        state: json!({
-                            "version": current.revision + 1,
-                            "snapshot_observation_active": active,
-                        }),
-                        state_hash: format!("conformance-snapshot-toggle-{index}"),
+                        state: serde_json::to_value(&next_state).unwrap(),
+                        state_hash: context_state_hash(&next_state).unwrap(),
                         head_event_id: Some(event.id.clone()),
                         recall_documents: Vec::new(),
                     },
@@ -5254,14 +5309,24 @@ where
     });
     for _ in 0..512 {
         let snapshot = store
-            .read_context_encoding_projection_snapshot(context_id, &selected, true)
+            .read_context_encoding_state_snapshot(context_id, &selected, true, None)
             .await
             .unwrap();
         if let Some(active) = snapshot
-            .mind
+            .context_state
             .as_ref()
-            .and_then(|mind| mind.state.get("snapshot_observation_active"))
-            .and_then(serde_json::Value::as_bool)
+            .filter(|record| {
+                record
+                    .state
+                    .protected
+                    .contains("snapshot_observation_state_known")
+            })
+            .map(|record| {
+                record
+                    .state
+                    .protected
+                    .contains("snapshot_observation_active")
+            })
         {
             let observed = snapshot
                 .events
@@ -9665,7 +9730,7 @@ where
 
 async fn assert_context_runtime_directory_snapshot_conformance<S>(store: Arc<S>)
 where
-    S: morphz::memory::RuntimeStore + 'static,
+    S: morphz::memory::RuntimeStore + MindProjectionStore + 'static,
 {
     let context_id = "conformance-context";
     let context = store
@@ -9679,6 +9744,7 @@ where
         active_after: chrono::Utc::now() - chrono::Duration::hours(24),
         max_full_sessions: 50,
         max_metadata_sessions: 50,
+        known_context_state_revision: None,
         session_filter: ContextRuntimeSessionFilter::default(),
     };
     let actual = store
@@ -9691,9 +9757,21 @@ where
         actual.cognitive_clock,
         store.get_context_cognitive_clock(context_id).await.unwrap()
     );
+    let legacy_state = store.get_mind_projection(context_id).await.unwrap();
     assert_eq!(
-        actual.mind,
-        store.get_mind_projection(context_id).await.unwrap()
+        actual.context_state.as_ref().map(|record| record.revision),
+        legacy_state.as_ref().map(|record| record.revision)
+    );
+    assert_eq!(
+        actual
+            .context_state
+            .as_ref()
+            .map(|record| serde_json::to_value(&record.state).unwrap()),
+        legacy_state.as_ref().map(|record| record.state.clone())
+    );
+    assert_eq!(
+        actual.context_state_head.as_ref().map(|head| head.revision),
+        actual.context_state.as_ref().map(|mind| mind.revision)
     );
     assert!(actual.sessions.len() <= 100);
     assert!(actual
@@ -9709,6 +9787,33 @@ where
         .principal_bindings
         .iter()
         .all(|binding| selected_ids.contains(binding.session_id.as_str())));
+    if let Some(revision) = actual.context_state.as_ref().map(|mind| mind.revision) {
+        let mut fenced_request = request.clone();
+        fenced_request.known_context_state_revision = Some(revision);
+        let fenced = store
+            .read_context_runtime_directory_snapshot(&fenced_request)
+            .await
+            .unwrap()
+            .expect("revision-fenced directory snapshot must exist");
+        assert_eq!(fenced.context_state_head, actual.context_state_head);
+        assert!(
+            fenced.context_state.is_none(),
+            "a matching resident revision must omit the large Mind payload"
+        );
+        assert_eq!(
+            fenced.revision, actual.revision,
+            "payload transfer is not part of the directory content revision"
+        );
+
+        let mut stale_request = request.clone();
+        stale_request.known_context_state_revision = Some(revision.saturating_add(1));
+        let stale = store
+            .read_context_runtime_directory_snapshot(&stale_request)
+            .await
+            .unwrap()
+            .expect("stale-fenced directory snapshot must exist");
+        assert_eq!(stale.context_state, actual.context_state);
+    }
     assert_eq!(
         store
             .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {

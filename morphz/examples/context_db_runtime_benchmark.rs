@@ -11,16 +11,17 @@
 //! - `MORPHZ_CONTEXTDB_RUNTIME_BENCH_READS` (default: 200)
 
 use morphz::config::SqliteStorageConfig;
-use morphz::context_store::{ContextCollection, ContextMutationPlan, ContextStateMutation};
+use morphz::context_store::{
+    ContextMutationPlan, ContextNodeValue, ContextStateCommit, ContextStateMutation,
+};
 use morphz::event::Event;
 use morphz::experimental::{require_enabled, CONTEXT_DB};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    MindProjectionCommit, MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection,
-    SessionDirectoryStore, SessionProjectionMutation,
+    MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection, SessionDirectoryStore,
+    SessionProjectionMutation,
 };
 use morphz::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::env;
 use std::time::{Duration, Instant};
@@ -33,10 +34,7 @@ fn setting(name: &str, default: usize) -> usize {
 }
 
 fn state_hash(state: &MindState) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(state).expect("serialize benchmark Mind"))
-    )
+    morphz::context_store::context_state_hash(state).expect("commit benchmark Mind")
 }
 
 fn percentile(samples: &[Duration], percentile: f64) -> Duration {
@@ -64,7 +62,7 @@ fn initial_state(frame_count: usize, body_bytes: usize) -> MindState {
         frames: (0..frame_count)
             .map(|index| ContextFrame {
                 id: format!("frame-{index:06}"),
-                body: format!("(fact \"{}\")", "x".repeat(body_bytes)),
+                body: format!("(fact payload-{})", "x".repeat(body_bytes)),
                 sources: Vec::new(),
                 provenance: FrameIdentityProvenance::default(),
                 revision: 1,
@@ -126,13 +124,12 @@ async fn run_workload(
         let frame_index = iteration % state.frames.len();
         let frame = &mut state.frames[frame_index];
         frame.body = format!(
-            "(fact (iteration {iteration}) \"{}\")",
+            "(fact (iteration {iteration}) payload-{})",
             "y".repeat(body_bytes)
         );
         frame.revision += 1;
         frame.updated_version = state.version;
-        let frame_id = frame.id.clone();
-        let frame_body = serde_json::to_value(frame).expect("serialize changed benchmark Frame");
+        let frame_value = ContextNodeValue::Frame(frame.clone());
         let next_state_hash = state_hash(&state);
         let mutation_plan = ContextMutationPlan {
             context_id: context_id.clone(),
@@ -141,9 +138,7 @@ async fn run_workload(
             expected_state_hash,
             next_state_hash: next_state_hash.clone(),
             mutations: vec![ContextStateMutation::Upsert {
-                collection: ContextCollection::Frame,
-                logical_id: frame_id,
-                body: frame_body,
+                value: frame_value,
                 order: Some(u64::try_from(frame_index).expect("Frame index fits u64")),
             }],
         };
@@ -157,26 +152,22 @@ async fn run_workload(
                 .expect("object payload")
                 .clone(),
         );
+        let commitment = morphz::context_store::context_state_commitment(&state)
+            .expect("benchmark Context commitment");
         let started = Instant::now();
         let result = store
-            .commit_mind_projection_transaction(
+            .commit_context_mutation_transaction(
                 &event,
                 &[],
                 &SessionProjectionMutation::default(),
-                Some(&mutation_plan),
-                expected_revision,
-                NewMindProjection {
-                    context_id: context_id.clone(),
-                    revision: state.version,
-                    state: serde_json::to_value(&state).expect("serialize benchmark Mind"),
-                    state_hash: next_state_hash,
-                    head_event_id: Some(event.id.clone()),
-                    recall_documents: Vec::new(),
-                },
+                &mutation_plan,
+                &state,
+                &commitment,
+                &[],
             )
             .await
             .expect("commit benchmark Mind");
-        assert!(matches!(result, MindProjectionCommit::Committed { .. }));
+        assert!(matches!(result, ContextStateCommit::Committed { .. }));
         commit_samples.push(started.elapsed());
     }
     print_latency(&format!("{label} full Runtime commit"), &commit_samples);
