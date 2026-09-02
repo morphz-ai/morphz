@@ -18,6 +18,7 @@ from benchmarks.state_bench.v2.public_agent_systems import (
 from benchmarks.state_bench.v2.run_contextdb_me07_historical import (
     _classify_timeout,
     _is_timeout_like,
+    _result_audit_classification,
     _runtime_state,
     _timeout_halt_classifications,
 )
@@ -90,7 +91,9 @@ def test_public_runtime_adapter_has_an_external_receipt_timeout() -> None:
         stream.close()
 
 
-def test_trial_runtime_closes_registered_resources_after_failure(tmp_path: Path) -> None:
+def test_trial_runtime_closes_registered_resources_after_failure(
+    tmp_path: Path,
+) -> None:
     class Resource:
         closed = False
 
@@ -147,6 +150,40 @@ def test_runner_halts_for_every_timeout_classification() -> None:
     }
     assert _timeout_halt_classifications(classifications) == sorted(
         value for value in classifications if value is not None
+    )
+
+
+def test_invalid_formal_results_require_manual_audit() -> None:
+    assert (
+        _result_audit_classification(
+            {
+                "runner_result": {
+                    "status": "OK",
+                    "scoring_status": "ERR",
+                    "scoring_error": "ux judge returned None",
+                },
+                "official_score_eligible": False,
+            }
+        )
+        == "evaluator_scoring_failure"
+    )
+    assert (
+        _result_audit_classification(
+            {
+                "runner_result": {"status": "ERR", "error": "HTTP 502"},
+                "official_score_eligible": False,
+            }
+        )
+        == "runner_error"
+    )
+    assert (
+        _result_audit_classification(
+            {
+                "runner_result": {"status": "OK", "scoring_status": "OK"},
+                "official_score_eligible": True,
+            }
+        )
+        is None
     )
 
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run only the ContextDB ME-07 candidate against preserved Morphz history.
 
 The legacy cognitive store already has one complete 150-task formal run.  This
@@ -19,8 +18,6 @@ import argparse
 import json
 import os
 import sqlite3
-import subprocess
-import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -40,8 +37,9 @@ from benchmarks.state_bench.v2.run_public_systems_formal import (
     _valid_terminal_job,
 )
 
-
 CANDIDATE_PROTOCOL_ID = "ME-07-ContextDB-against-preserved-Morphz-history-v1"
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -94,6 +92,21 @@ def _timeout_halt_classifications(classifications: set[Any]) -> list[str]:
     return sorted(str(value) for value in classifications if value is not None)
 
 
+def _result_audit_classification(job: dict[str, Any]) -> str | None:
+    """Identify invalid formal results that must not be silently consumed."""
+
+    result = job.get("runner_result")
+    if not isinstance(result, dict):
+        return "runner_result_missing"
+    if result.get("status") != "OK":
+        return "runner_error"
+    if result.get("scoring_status") != "OK":
+        return "evaluator_scoring_failure"
+    if job.get("official_score_eligible") is not True:
+        return "ineligible_formal_result"
+    return None
+
+
 def _runtime_directory(output: Path, cell: dict[str, Any]) -> Path | None:
     root = output / "runtime" / "morphz"
     if not root.is_dir():
@@ -104,9 +117,10 @@ def _runtime_directory(output: Path, cell: dict[str, Any]) -> Path | None:
             value = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if value.get("domain") == cell["domain"] and value.get("task_id") == cell[
-            "task_id"
-        ]:
+        if (
+            value.get("domain") == cell["domain"]
+            and value.get("task_id") == cell["task_id"]
+        ):
             matches.append(manifest.parent)
     if len(matches) != 1:
         return None
@@ -215,9 +229,13 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
         activation_values += (root_turn_id,)
         now = datetime.now(UTC)
         active_activations: list[dict[str, Any]] = []
-        for activation_id, status, lease, updated, activation_root in connection.execute(
-            activation_query, activation_values
-        ):
+        for (
+            activation_id,
+            status,
+            lease,
+            updated,
+            activation_root,
+        ) in connection.execute(activation_query, activation_values):
             lease_time = _parse_timestamp(lease)
             updated_time = _parse_timestamp(updated)
             active_activations.append(
@@ -258,7 +276,13 @@ def _runtime_state(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
         }
         pending_dependencies: list[dict[str, Any]] = []
         if "scheduler_dependencies" in tables:
-            for owner_kind, owner_id, kind, dependency_id, metadata_json in connection.execute(
+            for (
+                owner_kind,
+                owner_id,
+                kind,
+                dependency_id,
+                metadata_json,
+            ) in connection.execute(
                 "SELECT owner_kind, owner_id, dependency_kind, dependency_id, "
                 "metadata_json "
                 "FROM scheduler_dependencies WHERE status = 'pending' AND required = 1"
@@ -356,9 +380,11 @@ def _enrich_job(output: Path, cell: dict[str, Any]) -> dict[str, Any]:
     state = _runtime_state(output, cell)
     timeout_like = _is_timeout_like(job)
     classification = _classify_timeout(state) if timeout_like else None
+    result_audit_classification = _result_audit_classification(job)
     job["contextdb_candidate_diagnostics"] = {
         "timeout_like": timeout_like,
         "timeout_classification": classification,
+        "result_audit_classification": result_audit_classification,
         "runtime_state": state,
     }
     _atomic_json(path, job)
@@ -369,7 +395,9 @@ def _load_baseline(output: Path, queue: list[dict[str, Any]]) -> dict[str, Any]:
     output = output.resolve(strict=True)
     baseline_queue = json.loads((output / "queue.json").read_text(encoding="utf-8"))
     if baseline_queue.get("cells") != queue:
-        raise RuntimeError("historical ME-07 queue differs from the frozen candidate queue")
+        raise RuntimeError(
+            "historical ME-07 queue differs from the frozen candidate queue"
+        )
     jobs: dict[str, dict[str, Any]] = {}
     for cell in queue:
         path = output / "jobs" / str(cell["cell_id"]) / "morphz.json"
@@ -386,7 +414,10 @@ def _load_baseline(output: Path, queue: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _score(job: dict[str, Any]) -> dict[str, float]:
     trajectory = job.get("trajectory")
-    if not isinstance(trajectory, dict) or job.get("official_score_eligible") is not True:
+    if (
+        not isinstance(trajectory, dict)
+        or job.get("official_score_eligible") is not True
+    ):
         return {"completion": 0.0, "state": 0.0, "task": 0.0, "ux": 0.0}
     return {
         "completion": float(trajectory.get("task_completion_pass") or 0),
@@ -404,10 +435,21 @@ def _aggregate(jobs: list[dict[str, Any]], expected: int) -> dict[str, Any]:
         if job.get("runner_result", {}).get("status") != "OK"
     )
     timeouts = Counter(
-        str(job.get("contextdb_candidate_diagnostics", {}).get("timeout_classification"))
+        str(
+            job.get("contextdb_candidate_diagnostics", {}).get("timeout_classification")
+        )
+        for job in jobs
+        if job.get("contextdb_candidate_diagnostics", {}).get("timeout_classification")
+    )
+    result_audit_failures = Counter(
+        str(
+            job.get("contextdb_candidate_diagnostics", {}).get(
+                "result_audit_classification"
+            )
+        )
         for job in jobs
         if job.get("contextdb_candidate_diagnostics", {}).get(
-            "timeout_classification"
+            "result_audit_classification"
         )
     )
     denominator = expected or 1
@@ -427,6 +469,7 @@ def _aggregate(jobs: list[dict[str, Any]], expected: int) -> dict[str, Any]:
         "ux_mean_all_tasks": sum(score["ux"] for score in scores) / denominator,
         "error_counts": dict(sorted(errors.items())),
         "timeout_classifications": dict(sorted(timeouts.items())),
+        "result_audit_classifications": dict(sorted(result_audit_failures.items())),
     }
 
 
@@ -483,6 +526,9 @@ def _comparison(
                 "timeout_classification": candidate.get(
                     "contextdb_candidate_diagnostics", {}
                 ).get("timeout_classification"),
+                "result_audit_classification": candidate.get(
+                    "contextdb_candidate_diagnostics", {}
+                ).get("result_audit_classification"),
             }
         )
     candidate_jobs = list(candidate_by_id.values())
@@ -494,8 +540,7 @@ def _comparison(
         "historical": historical_summary,
         "contextdb": candidate_summary,
         "completion_rate_delta": (
-            candidate_summary["completion_rate"]
-            - historical_summary["completion_rate"]
+            candidate_summary["completion_rate"] - historical_summary["completion_rate"]
         ),
         "regression_gate_passed": (
             candidate_summary["passed"] >= historical_summary["passed"]
@@ -508,6 +553,7 @@ def _comparison(
             and not candidate_summary["timeout_classifications"].get(
                 "durable_terminal_present"
             )
+            and not candidate_summary["result_audit_classifications"]
         ),
         "per_task": rows,
     }
@@ -571,7 +617,9 @@ def main() -> int:
     for domain in ("travel", "customer_support", "shopping_assistant"):
         (snapshots / f"{domain}.sqlite").resolve(strict=True)
     if not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is required from the benchmark proxy wrapper")
+        raise RuntimeError(
+            "OPENAI_API_KEY is required from the benchmark proxy wrapper"
+        )
 
     protocol = load_default_protocol()
     queue = _queue(protocol, 1)
@@ -591,12 +639,16 @@ def main() -> int:
     }
     if args.resume:
         if json.loads(queue_path.read_text(encoding="utf-8")) != queue_value:
-            raise RuntimeError("resume queue or worker count differs from the candidate run")
+            raise RuntimeError(
+                "resume queue or worker count differs from the candidate run"
+            )
         manifest = json.loads(
             (output / "run_manifest.json").read_text(encoding="utf-8")
         )
         if manifest["runtime"]["binary_sha256"] != _sha256(binary):
-            raise RuntimeError("resume binary differs from the initialized candidate run")
+            raise RuntimeError(
+                "resume binary differs from the initialized candidate run"
+            )
     else:
         _atomic_json(queue_path, queue_value)
         _atomic_json(
@@ -612,9 +664,7 @@ def main() -> int:
                     "enabled_experiments": ["context-db"],
                 },
                 "runner": {
-                    "source_commit": _git_head(
-                        Path(__file__).resolve().parents[3]
-                    ),
+                    "source_commit": _git_head(Path(__file__).resolve().parents[3]),
                     "path": str(Path(__file__).resolve()),
                     "workers": args.workers,
                     "max_attempts": 1,
@@ -622,7 +672,8 @@ def main() -> int:
                     "automatic_restart": False,
                     "explicit_resume_only": True,
                     "transient_transport_retry": {
-                        "http_statuses": [429, 502, 503, 504],
+                        "http_statuses": [408, 429, 500, 502, 503, 504],
+                        "transport_errors": True,
                         "max_attempts": 4,
                         "base_delay_seconds": 1.0,
                         "max_delay_seconds": 30.0,
@@ -705,6 +756,7 @@ def main() -> int:
                             "task_completion_pass"
                         ),
                         "timeout": diagnostics.get("timeout_classification"),
+                        "audit": diagnostics.get("result_audit_classification"),
                     },
                     ensure_ascii=False,
                 ),
@@ -717,13 +769,22 @@ def main() -> int:
             for _, job in results
         }
         timeout_classifications = _timeout_halt_classifications(classifications)
-        if timeout_classifications:
+        result_audit_classifications = _timeout_halt_classifications(
+            {
+                job["contextdb_candidate_diagnostics"].get(
+                    "result_audit_classification"
+                )
+                for _, job in results
+            }
+        )
+        if timeout_classifications or result_audit_classifications:
             _atomic_json(
-                output / "scheduler_halt.json",
+                output / "manual_audit_halt.json",
                 {
                     "protocol_id": CANDIDATE_PROTOCOL_ID,
-                    "halt_reason": "timeout_requires_manual_audit",
-                    "classifications": timeout_classifications,
+                    "halt_reason": "result_requires_manual_audit",
+                    "timeout_classifications": timeout_classifications,
+                    "result_audit_classifications": result_audit_classifications,
                     "progress": progress,
                 },
             )

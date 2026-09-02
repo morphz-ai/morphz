@@ -25,7 +25,12 @@ def test_transient_responses_failures_retry_with_auditable_receipt() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal attempts
         attempts += 1
-        if attempts < 3:
+        if attempts == 1:
+            return httpx.Response(
+                408,
+                json={"error": {"code": "response_stream_disconnected"}},
+            )
+        if attempts == 2:
             return httpx.Response(
                 502,
                 json={"error": {"code": "server_is_overloaded"}},
@@ -60,10 +65,10 @@ def test_transient_responses_failures_retry_with_auditable_receipt() -> None:
             "transient_transport_failures": [
                 {
                     "attempt": 1,
-                    "status_code": 502,
+                    "status_code": 408,
                     "retry_delay_seconds": 0.25,
                     "detail": json.dumps(
-                        {"error": {"code": "server_is_overloaded"}},
+                        {"error": {"code": "response_stream_disconnected"}},
                         separators=(",", ":"),
                     ),
                 },
@@ -77,6 +82,44 @@ def test_transient_responses_failures_retry_with_auditable_receipt() -> None:
                     ),
                 },
             ],
+        }
+    ]
+
+
+def test_transport_exception_retries_with_auditable_receipt() -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("stream stalled", request=request)
+        return httpx.Response(200, json=_response_payload())
+
+    client = ME07ResponsesClient(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        retry_base_delay_seconds=0.25,
+        retry_sleep=sleeps.append,
+    )
+    client._http.close()
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        value = client.create(input_items=[])
+    finally:
+        client.close()
+
+    assert value["id"] == "resp-test"
+    assert attempts == 2
+    assert sleeps == [0.25]
+    assert client.receipts[0]["transport_attempts"] == 2
+    assert client.receipts[0]["transient_transport_failures"] == [
+        {
+            "attempt": 1,
+            "error_type": "ReadTimeout",
+            "retry_delay_seconds": 0.25,
+            "detail": "stream stalled",
         }
     ]
 

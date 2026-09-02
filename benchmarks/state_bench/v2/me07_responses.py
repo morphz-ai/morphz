@@ -14,7 +14,7 @@ import httpx
 class ME07ResponsesClient:
     """Bind exactly to GPT-5.6 Sol/max/no-fallback through CLIProxyAPI."""
 
-    _TRANSIENT_HTTP_STATUSES = frozenset({429, 502, 503, 504})
+    _TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
     def __init__(
         self,
@@ -46,13 +46,14 @@ class ME07ResponsesClient:
         self._http = httpx.Client(timeout=timeout_seconds)
         self.receipts: list[dict[str, Any]] = []
 
-    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
-        retry_after = response.headers.get("retry-after")
-        if retry_after is not None:
-            try:
-                return min(30.0, max(0.0, float(retry_after)))
-            except ValueError:
-                pass
+    def _retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
+        if response is not None:
+            retry_after = response.headers.get("retry-after")
+            if retry_after is not None:
+                try:
+                    return min(30.0, max(0.0, float(retry_after)))
+                except ValueError:
+                    pass
         return min(30.0, self._retry_base_delay_seconds * (2 ** (attempt - 1)))
 
     @staticmethod
@@ -116,11 +117,30 @@ class ME07ResponsesClient:
         transient_failures: list[dict[str, Any]] = []
         response: httpx.Response | None = None
         for attempt in range(1, self._max_transport_attempts + 1):
-            response = self._http.post(
-                f"{self.base_url}/responses",
-                headers={"authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
+            try:
+                response = self._http.post(
+                    f"{self.base_url}/responses",
+                    headers={"authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+            except httpx.TransportError as error:
+                if attempt >= self._max_transport_attempts:
+                    raise RuntimeError(
+                        "ME-07 Responses request failed after "
+                        f"{attempt} transport attempt(s) with "
+                        f"{type(error).__name__}: {error}"
+                    ) from error
+                delay = self._retry_delay(None, attempt)
+                transient_failures.append(
+                    {
+                        "attempt": attempt,
+                        "error_type": type(error).__name__,
+                        "retry_delay_seconds": delay,
+                        "detail": str(error)[:500],
+                    }
+                )
+                self._retry_sleep(delay)
+                continue
             if not response.is_error:
                 break
             detail = response.text[:2000]
@@ -142,7 +162,9 @@ class ME07ResponsesClient:
                 f"{attempt} transport attempt(s) with HTTP "
                 f"{response.status_code}: {detail}"
             )
-        if response is None:  # pragma: no cover - constructor validation makes this unreachable
+        if (
+            response is None
+        ):  # pragma: no cover - constructor validation makes this unreachable
             raise RuntimeError("ME-07 Responses request made no transport attempt")
         value = response.json()
         if value.get("model") != self.model:
