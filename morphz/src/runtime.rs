@@ -1,7 +1,7 @@
 use crate::approval::{
     capability_lease_policy_digest, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
-    ApprovalRequest, CapabilityLeaseOffer, EscalatingApprovalProvider, HumanApprovalHub,
-    HumanApprovalProvider, PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider,
+    PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
     CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG,
 };
 use crate::artifact::{
@@ -1360,10 +1360,12 @@ impl MorphzRuntimeBuilder {
             .cloned()
             .unwrap_or_else(|| Arc::clone(&self.client));
         let built_in_auto_review_provider = if self.approval_provider.is_none() {
-            Some(Arc::new(AiAutoReviewProvider::new(
-                auto_review_client,
-                Arc::clone(&store) as Arc<dyn EventStore>,
-            )))
+            let store = Arc::clone(&store) as Arc<dyn EventStore>;
+            Some(Arc::new(if separate_reviewer_client.is_some() {
+                AiAutoReviewProvider::new(auto_review_client, store)
+            } else {
+                AiAutoReviewProvider::following_request_model(auto_review_client, store)
+            }))
         } else {
             None
         };
@@ -1374,14 +1376,10 @@ impl MorphzRuntimeBuilder {
                     human_approval_hub.clone(),
                     Arc::clone(&store) as Arc<dyn ApprovalStore>,
                 ));
-                let automatic_review: Arc<dyn ApprovalProvider> =
-                    Arc::new(EscalatingApprovalProvider::new(
-                        built_in_auto_review_provider
-                            .as_ref()
-                            .cloned()
-                            .expect("built-in auto reviewer must exist"),
-                        Arc::clone(&human_review),
-                    ));
+                let automatic_review: Arc<dyn ApprovalProvider> = built_in_auto_review_provider
+                    .as_ref()
+                    .cloned()
+                    .expect("built-in auto reviewer must exist");
                 (automatic_review, human_review)
             }
         };
@@ -2691,7 +2689,7 @@ impl MorphzRuntime {
             .as_ref()
             .cloned()
             .unwrap_or_else(|| Arc::clone(&self.inner.client));
-        reviewer.replace_client(active_client)?;
+        reviewer.replace_client(active_client, separate_client.is_none())?;
         *self
             .inner
             .reviewer_client
@@ -6773,6 +6771,7 @@ impl MorphzRuntime {
                     root_turn_id: activation.root_turn_id,
                     trigger_event_id: activation.trigger_event_id,
                     trigger_sequence: activation.trigger_sequence,
+                    model_alias: activation.model_alias,
                     action,
                     requested,
                     justification: record.justification,
@@ -10727,10 +10726,23 @@ mod tests {
 
     struct ReviewerDecisionClient {
         calls: AtomicU64,
+        requested_models: std::sync::Mutex<Vec<Option<String>>>,
     }
 
     #[async_trait::async_trait]
     impl Client for ReviewerDecisionClient {
+        async fn bind_requested_model_attempt(
+            &self,
+            request: &crate::llm::ModelRequestContext,
+            requested_model: Option<&str>,
+        ) -> Result<crate::llm::ModelAttemptBinding, crate::llm::ModelAttemptBindingError> {
+            self.requested_models
+                .lock()
+                .unwrap()
+                .push(requested_model.map(str::to_string));
+            self.bind_model_attempt(request).await
+        }
+
         async fn create_completion(
             &self,
             messages: Vec<Message>,
@@ -11614,6 +11626,8 @@ mod tests {
         delay: std::time::Duration,
         calls: AtomicU64,
     }
+
+    struct FailingReviewClient;
 
     /// Stops the processes a test deliberately left running. The registry is
     /// process-wide and the suite runs in parallel, so a test that walks away
@@ -12589,6 +12603,7 @@ mod tests {
         let database = NamedTempFile::new().unwrap();
         let reviewer = Arc::new(ReviewerDecisionClient {
             calls: AtomicU64::new(0),
+            requested_models: std::sync::Mutex::new(Vec::new()),
         });
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
@@ -12606,6 +12621,7 @@ mod tests {
                 root_turn_id: "turn-independent-reviewer".to_string(),
                 trigger_event_id: "event-independent-reviewer".to_string(),
                 trigger_sequence: 1,
+                model_alias: None,
                 action: crate::approval::ApprovalAction::ToolOperation {
                     tool: "read".to_string(),
                     operation: "read".to_string(),
@@ -12622,6 +12638,53 @@ mod tests {
             .unwrap();
         assert!(matches!(decision, ApprovalDecision::AllowOnce { .. }));
         assert_eq!(reviewer.calls.load(Ordering::SeqCst), 1);
+        assert!(reviewer.requested_models.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn automatic_review_without_an_override_follows_the_request_session_model() {
+        let database = NamedTempFile::new().unwrap();
+        let shared_client = Arc::new(ReviewerDecisionClient {
+            calls: AtomicU64::new(0),
+            requested_models: std::sync::Mutex::new(Vec::new()),
+        });
+        let runtime = MorphzRuntime::builder(AppConfig::default(), shared_client.clone())
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let decision = runtime
+            .review_edge_tool_permission(&ApprovalRequest {
+                approval_id: "approval-session-reviewer".to_string(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-gemini".to_string(),
+                attempt_id: "attempt-session-reviewer".to_string(),
+                thread_id: "thread-session-reviewer".to_string(),
+                root_turn_id: "turn-session-reviewer".to_string(),
+                trigger_event_id: "event-session-reviewer".to_string(),
+                trigger_sequence: 1,
+                model_alias: Some("gemini-3.7-flash-high".to_string()),
+                action: crate::approval::ApprovalAction::ToolOperation {
+                    tool: "read".to_string(),
+                    operation: "read".to_string(),
+                    target: Some(PathBuf::from("/outside/workspace")),
+                },
+                requested: crate::approval::CapabilityDelta {
+                    read_roots: vec![PathBuf::from("/outside")],
+                    ..Default::default()
+                },
+                justification: "follow the causal Session model".to_string(),
+                lease_offer: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(decision, ApprovalDecision::AllowOnce { .. }));
+        assert_eq!(shared_client.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *shared_client.requested_models.lock().unwrap(),
+            vec![Some("gemini-3.7-flash-high".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -14155,6 +14218,32 @@ mod tests {
                 }
                 _ => Err("交互式审批工具产生了冗余 Delivery 模型求值".into()),
             }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for FailingReviewClient {
+        fn model(&self) -> Option<String> {
+            Some("unavailable-reviewer".to_string())
+        }
+
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            Err("reviewer account is rate limited".into())
+        }
+
+        async fn create_completion_bound_stream(
+            &self,
+            _binding: &ModelAttemptBinding,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+            _measurement: Option<crate::llm::PromptTokenCount>,
+            _stream: crate::llm::ModelStreamSender,
+        ) -> Result<Response, RuntimeError> {
+            Err("reviewer account is rate limited".into())
         }
     }
 
@@ -17750,6 +17839,131 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(jobs.len(), 1, "one tool call must map to one physical Job");
+        assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn unavailable_automatic_reviewer_hands_the_same_job_to_human_review() {
+        let database = NamedTempFile::new().unwrap();
+        let fixture = NamedTempFile::new().unwrap();
+        std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
+        let observed_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(ApprovalReadClient {
+            calls: AtomicU64::new(0),
+            path: fixture.path().to_string_lossy().into_owned(),
+            expected_rejected: false,
+            observed_result: Arc::clone(&observed_result),
+            observed_tool_schemas: Arc::new(std::sync::Mutex::new(Vec::new())),
+        });
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::AutoReview;
+        config.permissions.read_only_outside_workspace = false;
+        let runtime = MorphzRuntime::builder(config, Arc::clone(&client) as Arc<dyn Client>)
+            .reviewer_client(Arc::new(FailingReviewClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-auto-review-fallback".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Automatic reviewer fallback".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut escalations = runtime.subscribe("runtime/approval_escalated", 4);
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "read the fixture even if the reviewer is unavailable",
+                "User-Test",
+                Some("client-auto-review-fallback".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let escalation =
+            tokio::time::timeout(std::time::Duration::from_secs(4), escalations.recv())
+                .await
+                .expect("automatic-review failure did not produce a human hand-off")
+                .expect("approval escalation stream closed");
+        let approval_id = escalation.payload["approval_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pending = runtime
+            .inner
+            .store
+            .get_approval(&approval_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.status, crate::memory::ApprovalStatus::PendingHuman);
+        assert!(pending
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("reviewer account is rate limited")));
+        assert!(runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id.clone()),
+                topic: Some("chat/runtime_error".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        let activations = runtime
+            .inner
+            .store
+            .list_context_thread_activations(&runtime.identity().context_id, true)
+            .await
+            .unwrap();
+        assert!(activations
+            .iter()
+            .any(|activation| activation.status == crate::memory::ThreadActivationStatus::Running));
+        assert!(activations
+            .iter()
+            .all(|activation| activation.status != crate::memory::ThreadActivationStatus::Failed));
+
+        runtime
+            .decide_approval(
+                &approval_id,
+                ApprovalDecision::AllowOnce {
+                    rationale: "human approved after reviewer outage".to_string(),
+                    risk_tags: vec!["human-approved".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "approval-work-complete");
+        assert!(observed_result.load(Ordering::SeqCst));
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id.clone()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
     }

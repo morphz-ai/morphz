@@ -281,6 +281,11 @@ pub struct PermissionProfile {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub protected_paths: Vec<String>,
+    /// Operator-configured network policy for the restricted workspace
+    /// sandbox. `network` is the effective value and is necessarily true in
+    /// full-access mode, so it cannot be used to reconstruct this intent when
+    /// a live Session switches back to a restricted preset.
+    configured_network: bool,
     pub network: bool,
     pub shell_environment_policy: ShellEnvironmentPolicy,
 }
@@ -335,6 +340,7 @@ impl PermissionProfile {
             read_roots,
             write_roots,
             protected_paths: config.protected_paths.clone(),
+            configured_network: config.network,
             network: sandbox_mode == SandboxMode::DangerFullAccess || config.network,
             shell_environment_policy: config.shell_environment_policy,
         })
@@ -635,9 +641,7 @@ impl PermissionBroker {
             profile.reviewer = reviewer;
             profile.network = match sandbox_mode {
                 SandboxMode::DangerFullAccess => true,
-                SandboxMode::WorkspaceWrite => {
-                    self.profile.sandbox_mode == SandboxMode::WorkspaceWrite && self.profile.network
-                }
+                SandboxMode::WorkspaceWrite => self.profile.configured_network,
             };
             return Arc::new(profile);
         }
@@ -650,15 +654,11 @@ impl PermissionBroker {
         profile.mode = PermissionMode::Custom;
         profile.sandbox_mode = requested;
         // Full access necessarily permits network. Returning to a Workspace
-        // sandbox restores the startup Profile's explicit network choice when
-        // it was itself sandboxed; a full-access startup has no evidence that
-        // network was intentionally enabled for its restricted form, so fail
-        // closed there.
+        // sandbox restores the operator's original restricted-mode choice;
+        // the effective full-access value deliberately does not erase it.
         profile.network = match requested {
             SandboxMode::DangerFullAccess => true,
-            SandboxMode::WorkspaceWrite => {
-                self.profile.sandbox_mode == SandboxMode::WorkspaceWrite && self.profile.network
-            }
+            SandboxMode::WorkspaceWrite => self.profile.configured_network,
         };
         Arc::new(profile)
     }
@@ -713,14 +713,40 @@ impl PermissionBroker {
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, PermissionError> {
         match self.profile().reviewer {
-            ReviewerKind::User => self.human_approval.review(request).await,
-            ReviewerKind::AutoReview => self.automatic_approval.review(request).await,
+            ReviewerKind::User => self.review_human(request).await,
+            ReviewerKind::AutoReview => match self.review_automatic(request).await {
+                Ok(ApprovalDecision::AskHuman { .. }) => self.review_human(request).await,
+                Ok(decision) => Ok(decision),
+                Err(error) => {
+                    tracing::warn!(
+                        approval_id = %request.approval_id,
+                        %error,
+                        event_code = "permission.auto_review.fallback_to_human",
+                        "Automatic permission review could not complete; requesting human review"
+                    );
+                    self.review_human(request).await
+                }
+            },
             ReviewerKind::Deny => Ok(ApprovalDecision::Deny {
                 rationale: "the current permission Profile forbids capability expansion"
                     .to_string(),
                 risk_tags: vec!["permission_profile_deny".to_string()],
             }),
         }
+    }
+
+    pub async fn review_automatic(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalDecision, PermissionError> {
+        self.automatic_approval.review(request).await
+    }
+
+    pub async fn review_human(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalDecision, PermissionError> {
+        self.human_approval.review(request).await
     }
 
     pub fn approval_requirement_for_path(
@@ -863,6 +889,7 @@ impl PermissionBroker {
                 root_turn_id: nonempty(context.root_turn_id, "unknown-root-turn"),
                 trigger_event_id: nonempty(context.trigger_event_id, "unknown-trigger"),
                 trigger_sequence: context.trigger_sequence,
+                model_alias: None,
                 action,
                 requested,
                 justification,
@@ -1363,5 +1390,30 @@ mod tests {
                 assert!(broker.profile().full_access());
             })
             .await;
+    }
+
+    #[test]
+    fn restricted_session_presets_restore_network_enabled_before_full_access_startup() {
+        let root = TempDir::new().unwrap();
+        let config = PermissionConfig {
+            mode: PermissionMode::FullAccess,
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            network: true,
+            ..PermissionConfig::default()
+        };
+        let broker = PermissionBroker::new(
+            Arc::new(PermissionProfile::from_config(&config).unwrap()),
+            Arc::new(DenyAllApprovalProvider::new("must not be called")),
+        );
+
+        for mode in [PermissionMode::AutoReview, PermissionMode::RequestApproval] {
+            broker.set_session_permission_mode("session-network", Some(mode));
+            let profile = broker.profile_for_session("session-network");
+            assert_eq!(profile.sandbox_mode, SandboxMode::WorkspaceWrite);
+            assert!(
+                profile.network,
+                "{mode:?} must retain the configured network baseline"
+            );
+        }
     }
 }

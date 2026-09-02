@@ -3,7 +3,7 @@
 use super::execution::{ensure_job_in_tx, execution_job_from_row, validate_new_job};
 use super::{append_event_in_tx, now_text, parse_time, PostgresStore, StoreError};
 use crate::approval_authority::{
-    approval_decision_event, stable_approval_identity, stable_grant_id,
+    approval_decision_event, approval_escalation_event, stable_approval_identity, stable_grant_id,
 };
 use crate::event::Event;
 use crate::memory::{
@@ -489,6 +489,103 @@ impl ApprovalStore for PostgresStore {
             );
         }
         Ok(records)
+    }
+
+    async fn commit_approval_escalation_to_human(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ApprovalAuditCommit, StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err("Approval escalation reason must not be empty".into());
+        }
+        let reason = reason.chars().take(100_000).collect::<String>();
+        let mut tx = self.pool.begin().await?;
+        let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(audit(ApprovalMutation::NotFound, false, None));
+        };
+        let current = approval_from_row(&row)?;
+        if current.status == ApprovalStatus::PendingHuman {
+            let job = approval_job_in_tx(&mut tx, &current).await?;
+            let event = approval_escalation_event(&current, &job);
+            let created = append_event_in_tx(&mut tx, &event).await?;
+            tx.commit().await?;
+            return Ok(audit(
+                ApprovalMutation::Existing(current),
+                created,
+                Some(event),
+            ));
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(audit(
+                ApprovalMutation::Conflict {
+                    current,
+                    reason: "Approval escalation revision changed".to_string(),
+                },
+                false,
+                None,
+            ));
+        }
+        if current.status != ApprovalStatus::PendingAuto {
+            tx.commit().await?;
+            return Ok(audit(
+                ApprovalMutation::Rejected {
+                    current,
+                    reason: "Only a pending automatic Approval can be escalated".to_string(),
+                },
+                false,
+                None,
+            ));
+        }
+        let now = now_text();
+        let updated = sqlx::query(
+            r#"UPDATE approval_requests
+               SET revision = revision + 1, status = 'pending_human',
+                   last_error = $1, updated_at = $2
+               WHERE id = $3 AND revision = $4 AND status = 'pending_auto'"#,
+        )
+        .bind(&reason)
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(audit(
+                mutation_failure(
+                    self,
+                    id,
+                    expected_revision,
+                    "Approval escalation precondition no longer holds",
+                )
+                .await?,
+                false,
+                None,
+            ));
+        }
+        let row = sqlx::query("SELECT * FROM approval_requests WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = approval_from_row(&row)?;
+        let job = approval_job_in_tx(&mut tx, &updated).await?;
+        let event = approval_escalation_event(&updated, &job);
+        let created = append_event_in_tx(&mut tx, &event).await?;
+        tx.commit().await?;
+        Ok(audit(
+            ApprovalMutation::Updated(updated),
+            created,
+            Some(event),
+        ))
     }
 
     async fn commit_approval_decision(

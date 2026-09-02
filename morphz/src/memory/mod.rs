@@ -6197,6 +6197,19 @@ pub trait ApprovalStore: Send + Sync {
             .filter(|approval| job_ids.contains(&approval.job_id))
             .collect())
     }
+    /// Atomically hands an automatic-review request to the human authority
+    /// after the reviewer explicitly asks for a person or cannot complete.
+    /// The transition is revision-fenced and records the reviewer failure in
+    /// both the mutable authority and an immutable audit Event, so restart
+    /// recovery does not repeatedly invoke a known-unavailable reviewer.
+    async fn commit_approval_escalation_to_human(
+        &self,
+        _id: &str,
+        _expected_revision: u64,
+        _reason: &str,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+        Err("this Approval Store does not support automatic-to-human escalation".into())
+    }
     /// Atomically commits a revision-fenced allow/deny decision and its
     /// deterministic `runtime/approval_decision` Event. An exact retry of a
     /// committed decision returns `Existing` and repairs a missing Event; an

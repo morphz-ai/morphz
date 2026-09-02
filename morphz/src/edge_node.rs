@@ -1906,6 +1906,7 @@ impl EdgeNodeWorker {
                 root_turn_id: command.job_id.clone(),
                 trigger_event_id: command.job_id.clone(),
                 trigger_sequence: 0,
+                model_alias: None,
                 action: requirement.action,
                 requested: requirement.requested.clone(),
                 justification: format!(

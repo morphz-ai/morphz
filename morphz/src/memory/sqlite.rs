@@ -1,5 +1,5 @@
 use crate::approval_authority::{
-    approval_decision_event, stable_approval_identity, stable_grant_id,
+    approval_decision_event, approval_escalation_event, stable_approval_identity, stable_grant_id,
 };
 use crate::config::{CognitiveStoreBackend, SqliteStorageConfig};
 use crate::context_store::{ContextStateCommit, ContextStateHead, ContextStateRecord};
@@ -24342,6 +24342,109 @@ impl ApprovalStore for SqliteStore {
         Ok(records)
     }
 
+    async fn commit_approval_escalation_to_human(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err("Approval escalation reason must not be empty".into());
+        }
+        let reason = reason.chars().take(100_000).collect::<String>();
+        let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
+        let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::NotFound,
+                event_created: false,
+                event: None,
+            });
+        };
+        let current = approval_from_row(&row)?;
+        if current.status == ApprovalStatus::PendingHuman {
+            let job = approval_job_in_transaction(&mut tx, &current).await?;
+            let event = approval_escalation_event(&current, &job);
+            let event_created = append_event_idempotent_in_transaction(&mut tx, &event).await?;
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Existing(current),
+                event_created,
+                event: Some(event),
+            });
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Conflict {
+                    current,
+                    reason: "Approval escalation revision changed".to_string(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
+        if current.status != ApprovalStatus::PendingAuto {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Rejected {
+                    current,
+                    reason: "Only a pending automatic Approval can be escalated".to_string(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Approval revision exceeds SQLite INTEGER range")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE approval_requests
+               SET revision = revision + 1, status = 'pending_human',
+                   last_error = ?, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'pending_auto'"#,
+        )
+        .bind(&reason)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_sql)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: approval_mutation_failure(
+                    self,
+                    id,
+                    expected_revision,
+                    "Approval escalation precondition no longer holds",
+                )
+                .await?,
+                event_created: false,
+                event: None,
+            });
+        }
+        let row = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = approval_from_row(&row)?;
+        let job = approval_job_in_transaction(&mut tx, &updated).await?;
+        let event = approval_escalation_event(&updated, &job);
+        let event_created = append_event_idempotent_in_transaction(&mut tx, &event).await?;
+        tx.commit().await?;
+        Ok(ApprovalAuditCommit {
+            mutation: ApprovalMutation::Updated(updated),
+            event_created,
+            event: Some(event),
+        })
+    }
+
     async fn commit_approval_decision(
         &self,
         id: &str,
@@ -30769,6 +30872,60 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn automatic_approval_failure_is_durably_escalated_once_for_human_review() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let job = seed_execution_job(
+            &store,
+            "approval-auto-escalation",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let request = new_approval_request(&job, ApprovalStatus::PendingAuto);
+        let pending = match store.ensure_approval_request(request).await.unwrap() {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let reason = "automatic reviewer route is rate limited";
+        let escalated = store
+            .commit_approval_escalation_to_human(&pending.id, pending.revision, reason)
+            .await
+            .unwrap();
+        let record = match escalated.mutation {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected escalation: {other:?}"),
+        };
+        assert_eq!(record.status, ApprovalStatus::PendingHuman);
+        assert_eq!(record.revision, 2);
+        assert_eq!(record.last_error.as_deref(), Some(reason));
+        assert!(escalated.event_created);
+        assert_eq!(
+            escalated.event.as_ref().map(|event| event.topic.as_str()),
+            Some("runtime/approval_escalated")
+        );
+
+        let replay = store
+            .commit_approval_escalation_to_human(&pending.id, pending.revision, "different retry")
+            .await
+            .unwrap();
+        assert!(matches!(
+            replay.mutation,
+            ApprovalMutation::Existing(existing) if existing == record
+        ));
+        let events = store
+            .query(QueryFilter {
+                event_id: Some(format!("approval_escalated_{}_pending_human", pending.id)),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
     }
 
     #[tokio::test]

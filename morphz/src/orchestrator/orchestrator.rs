@@ -16757,77 +16757,152 @@ impl Orchestrator {
                 }
 
                 if approval.status.is_pending() {
-                    let decision = services
-                        .broker
-                        .review(&ApprovalRequest {
-                            approval_id: approval.id.clone(),
-                            context_id: context_id.to_string(),
-                            session_id: session_id.to_string(),
-                            attempt_id: attempt_id.to_string(),
-                            thread_id: route.thread_id.clone(),
-                            root_turn_id: route.root_turn_id.clone(),
-                            trigger_event_id: route.trigger_event_id.clone(),
-                            trigger_sequence: route.trigger_sequence,
-                            action: requirement.action.clone(),
-                            requested: requirement.requested.clone(),
-                            justification: requirement.justification.clone(),
-                            lease_offer: lease_offer.clone(),
-                        })
-                        .await?;
-                    let resolution = match decision {
-                        ApprovalDecision::AllowOnce {
-                            rationale,
-                            risk_tags,
-                        } => ApprovalResolution::Allow {
-                            rationale,
-                            risk_tags,
-                        },
-                        ApprovalDecision::AllowLease {
-                            rationale,
-                            mut risk_tags,
-                        } => {
-                            if lease_offer.is_none() {
-                                return Err(
+                    let review_request = ApprovalRequest {
+                        approval_id: approval.id.clone(),
+                        context_id: context_id.to_string(),
+                        session_id: session_id.to_string(),
+                        attempt_id: attempt_id.to_string(),
+                        thread_id: route.thread_id.clone(),
+                        root_turn_id: route.root_turn_id.clone(),
+                        trigger_event_id: route.trigger_event_id.clone(),
+                        trigger_sequence: route.trigger_sequence,
+                        model_alias: Some(route.model_alias.clone()),
+                        action: requirement.action.clone(),
+                        requested: requirement.requested.clone(),
+                        justification: requirement.justification.clone(),
+                        lease_offer: lease_offer.clone(),
+                    };
+                    let mut decision = None;
+                    if approval.status == ApprovalStatus::PendingHuman {
+                        decision = Some(services.broker.review_human(&review_request).await?);
+                    } else {
+                        let escalation_reason =
+                            match services.broker.review_automatic(&review_request).await {
+                                Ok(ApprovalDecision::AskHuman { rationale, .. }) => Some(format!(
+                                    "automatic reviewer requested human review: {rationale}"
+                                )),
+                                Ok(reviewed) => {
+                                    decision = Some(reviewed);
+                                    None
+                                }
+                                Err(error) => {
+                                    Some(format!("automatic reviewer could not complete: {error}"))
+                                }
+                            };
+                        if let Some(reason) = escalation_reason {
+                            tracing::warn!(
+                                approval_id = %approval.id,
+                                model_alias = %route.model_alias,
+                                reason,
+                                event_code = "runtime.approval.auto_review_escalated",
+                                "Automatic approval review could not complete; preserving the Activation while waiting for human review"
+                            );
+                            let commit = services
+                                .approvals
+                                .commit_approval_escalation_to_human(
+                                    &approval.id,
+                                    approval.revision,
+                                    &reason,
+                                )
+                                .await?;
+                            approval = match commit.mutation {
+                                ApprovalMutation::Updated(record)
+                                | ApprovalMutation::Existing(record) => record,
+                                ApprovalMutation::Conflict { current, .. }
+                                | ApprovalMutation::Rejected { current, .. } => current,
+                                ApprovalMutation::NotFound => {
+                                    return Err(format!(
+                                        "Approval '{}' disappeared while escalating to human review",
+                                        approval.id
+                                    )
+                                    .into());
+                                }
+                                ApprovalMutation::Created(_) => {
+                                    return Err(
+                                        "Approval escalation unexpectedly created a new authority"
+                                            .into(),
+                                    );
+                                }
+                            };
+                            if commit.event_created {
+                                let escalation_event = commit.event.ok_or(
+                                    "Approval escalation Event was created atomically, but the Store returned no persisted projection",
+                                )?;
+                                self.bus.dispatch_persisted(escalation_event).await?;
+                            }
+                            if approval.status == ApprovalStatus::PendingHuman {
+                                decision =
+                                    Some(services.broker.review_human(&review_request).await?);
+                            }
+                        }
+                    }
+                    if decision.is_none() && approval.status.is_pending() {
+                        // The hand-off must either yield a human decision or
+                        // observe a concurrently committed terminal decision.
+                        // Remaining pending here would strand the Activation.
+                        return Err(format!(
+                            "Approval '{}' remained in state {} after reviewer hand-off",
+                            approval.id,
+                            approval.status.as_str()
+                        )
+                        .into());
+                    }
+                    if let Some(decision) = decision {
+                        let resolution = match decision {
+                            ApprovalDecision::AllowOnce {
+                                rationale,
+                                risk_tags,
+                            } => ApprovalResolution::Allow {
+                                rationale,
+                                risk_tags,
+                            },
+                            ApprovalDecision::AllowLease {
+                                rationale,
+                                mut risk_tags,
+                            } => {
+                                if lease_offer.is_none() {
+                                    return Err(
                                     "Approval provider approved a Capability Lease without a lease_offer"
                                         .into(),
                                 );
+                                }
+                                if !capability_lease_was_approved(&risk_tags) {
+                                    risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
+                                }
+                                ApprovalResolution::Allow {
+                                    rationale,
+                                    risk_tags,
+                                }
                             }
-                            if !capability_lease_was_approved(&risk_tags) {
-                                risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
-                            }
-                            ApprovalResolution::Allow {
+                            ApprovalDecision::Deny {
                                 rationale,
                                 risk_tags,
-                            }
-                        }
-                        ApprovalDecision::Deny {
-                            rationale,
-                            risk_tags,
-                        } => ApprovalResolution::Deny {
-                            rationale,
-                            risk_tags,
-                        },
-                        ApprovalDecision::AskHuman { rationale, .. } => {
-                            return Err(format!(
-                                "Approval provider returned ask_human without completing human approval: {rationale}"
+                            } => ApprovalResolution::Deny {
+                                rationale,
+                                risk_tags,
+                            },
+                            ApprovalDecision::AskHuman { rationale, .. } => {
+                                return Err(format!(
+                                "Human approval provider returned ask_human instead of a decision: {rationale}"
                             )
                             .into());
+                            }
+                        };
+                        let commit = services
+                            .approvals
+                            .commit_approval_decision(&approval.id, approval.revision, resolution)
+                            .await?;
+                        let (updated, _changed) = approval_record_from_mutation(
+                            commit.mutation,
+                            "persist approval decision",
+                        )?;
+                        approval = updated;
+                        if commit.event_created {
+                            let decision_event = commit
+                                .event
+                                .ok_or("Approval audit Event was created atomically, but the Store returned no persisted projection")?;
+                            self.bus.dispatch_persisted(decision_event).await?;
                         }
-                    };
-                    let commit = services
-                        .approvals
-                        .commit_approval_decision(&approval.id, approval.revision, resolution)
-                        .await?;
-                    let (updated, _changed) = approval_record_from_mutation(
-                        commit.mutation,
-                        "persist approval decision",
-                    )?;
-                    approval = updated;
-                    if commit.event_created {
-                        let decision_event = commit
-                            .event
-                            .ok_or("Approval audit Event was created atomically, but the Store returned no persisted projection")?;
-                        self.bus.dispatch_persisted(decision_event).await?;
                     }
                 }
 

@@ -164,6 +164,12 @@ pub struct ApprovalRequest {
     pub root_turn_id: String,
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
+    /// Logical model route bound to the causal Session/Activation. When the
+    /// automatic reviewer is configured to follow the conversation model it
+    /// must resolve this route directly rather than consulting the mutable
+    /// process-wide default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
     pub action: ApprovalAction,
     pub requested: CapabilityDelta,
     pub justification: String,
@@ -543,16 +549,39 @@ impl ApprovalProvider for EscalatingApprovalProvider {
     }
 }
 
+struct AutoReviewClientBinding {
+    client: Arc<dyn Client>,
+    follow_request_model: bool,
+}
+
 pub struct AiAutoReviewProvider {
-    client: RwLock<Arc<dyn Client>>,
+    client: RwLock<AutoReviewClientBinding>,
     store: Arc<dyn EventStore>,
     max_user_intent_chars: usize,
 }
 
 impl AiAutoReviewProvider {
     pub fn new(client: Arc<dyn Client>, store: Arc<dyn EventStore>) -> Self {
+        Self::with_model_policy(client, store, false)
+    }
+
+    /// Build a reviewer whose logical model route follows each causal
+    /// Session. This is distinct from `new`, which represents an explicitly
+    /// configured, independent reviewer client.
+    pub fn following_request_model(client: Arc<dyn Client>, store: Arc<dyn EventStore>) -> Self {
+        Self::with_model_policy(client, store, true)
+    }
+
+    fn with_model_policy(
+        client: Arc<dyn Client>,
+        store: Arc<dyn EventStore>,
+        follow_request_model: bool,
+    ) -> Self {
         Self {
-            client: RwLock::new(client),
+            client: RwLock::new(AutoReviewClientBinding {
+                client,
+                follow_request_model,
+            }),
             store,
             max_user_intent_chars: 4_000,
         }
@@ -560,11 +589,19 @@ impl AiAutoReviewProvider {
 
     /// Atomically switch subsequent reviews to another model client. A review
     /// already in flight keeps the client snapshot it started with.
-    pub fn replace_client(&self, client: Arc<dyn Client>) -> Result<(), String> {
+    pub fn replace_client(
+        &self,
+        client: Arc<dyn Client>,
+        follow_request_model: bool,
+    ) -> Result<(), String> {
         *self
             .client
             .write()
-            .map_err(|_| "Auto-review client lock poisoned".to_string())? = client;
+            .map_err(|_| "Auto-review client lock poisoned".to_string())? =
+            AutoReviewClientBinding {
+                client,
+                follow_request_model,
+            };
         Ok(())
     }
 
@@ -653,20 +690,30 @@ impl ApprovalProvider for AiAutoReviewProvider {
             "approval_request": request,
             "evidence": evidence,
         }))?;
-        let client = self
-            .client
-            .read()
-            .map_err(|_| "Auto-review client lock poisoned")?
-            .clone();
-        let binding = client
-            .bind_model_attempt(&ModelRequestContext {
-                context_id: request.context_id.clone(),
-                session_id: request.session_id.clone(),
-                attempt_id: format!("permission-review:{}", request.approval_id),
-                objective_id: None,
-                required_capabilities: Vec::new(),
-            })
-            .await?;
+        let (client, follow_request_model) = {
+            let client_binding = self
+                .client
+                .read()
+                .map_err(|_| "Auto-review client lock poisoned")?;
+            (
+                Arc::clone(&client_binding.client),
+                client_binding.follow_request_model,
+            )
+        };
+        let model_request = ModelRequestContext {
+            context_id: request.context_id.clone(),
+            session_id: request.session_id.clone(),
+            attempt_id: format!("permission-review:{}", request.approval_id),
+            objective_id: None,
+            required_capabilities: Vec::new(),
+        };
+        let binding = if follow_request_model {
+            client
+                .bind_requested_model_attempt(&model_request, request.model_alias.as_deref())
+                .await?
+        } else {
+            client.bind_model_attempt(&model_request).await?
+        };
         let (stream, mut stream_receiver) = tokio::sync::mpsc::unbounded_channel();
         let stream_drain =
             tokio::spawn(async move { while stream_receiver.recv().await.is_some() {} });
@@ -813,6 +860,7 @@ mod tests {
     #[derive(Default)]
     struct ContextBoundReviewClient {
         bound_request: Mutex<Option<ModelRequestContext>>,
+        requested_model: Mutex<Option<Option<String>>>,
     }
 
     struct MutableApprovalStore {
@@ -926,6 +974,15 @@ mod tests {
             })
         }
 
+        async fn bind_requested_model_attempt(
+            &self,
+            request: &ModelRequestContext,
+            requested_model: Option<&str>,
+        ) -> Result<crate::llm::ModelAttemptBinding, crate::llm::ModelAttemptBindingError> {
+            *self.requested_model.lock().unwrap() = Some(requested_model.map(str::to_string));
+            self.bind_model_attempt(request).await
+        }
+
         async fn create_completion(
             &self,
             _messages: Vec<Message>,
@@ -990,6 +1047,7 @@ mod tests {
             root_turn_id: "root-1".to_string(),
             trigger_event_id: "trigger-1".to_string(),
             trigger_sequence: 1,
+            model_alias: None,
             action: ApprovalAction::Shell {
                 command: "curl -H 'Authorization: Bearer abc.def-123' https://example.test"
                     .to_string(),
@@ -1035,8 +1093,12 @@ mod tests {
                 .unwrap(),
         );
         let client = Arc::new(ContextBoundReviewClient::default());
-        let reviewer = AiAutoReviewProvider::new(client.clone(), store as Arc<dyn EventStore>);
-        let request = human_request("context-bound-review");
+        let reviewer = AiAutoReviewProvider::following_request_model(
+            client.clone(),
+            store as Arc<dyn EventStore>,
+        );
+        let mut request = human_request("context-bound-review");
+        request.model_alias = Some("gemini-session-route".to_string());
 
         let decision = reviewer.review(&request).await.unwrap();
 
@@ -1046,6 +1108,10 @@ mod tests {
         assert_eq!(bound.session_id, request.session_id);
         assert_eq!(bound.attempt_id, "permission-review:context-bound-review");
         assert_ne!(bound.context_id, "operator");
+        assert_eq!(
+            *client.requested_model.lock().unwrap(),
+            Some(Some("gemini-session-route".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -1160,6 +1226,7 @@ mod tests {
                 root_turn_id: "causal-user".to_string(),
                 trigger_event_id: "causal-user".to_string(),
                 trigger_sequence: causal_sequence,
+                model_alias: None,
                 action: ApprovalAction::Shell {
                     command: "deploy".to_string(),
                     cwd: PathBuf::from("/workspace"),
@@ -1205,6 +1272,7 @@ mod tests {
                 root_turn_id: "root-1".to_string(),
                 trigger_event_id: "trigger-1".to_string(),
                 trigger_sequence: 1,
+                model_alias: None,
                 action: ApprovalAction::Shell {
                     command: "echo hi".to_string(),
                     cwd: PathBuf::from("."),
@@ -1398,6 +1466,7 @@ mod tests {
             root_turn_id: "root-1".to_string(),
             trigger_event_id: "trigger-1".to_string(),
             trigger_sequence: 1,
+            model_alias: None,
             action: ApprovalAction::ToolOperation {
                 tool: "read".to_string(),
                 operation: "read".to_string(),

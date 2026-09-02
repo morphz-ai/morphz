@@ -149,6 +149,51 @@ pub fn approval_decision_event(approval: &ApprovalRecord, job: &ExecutionJobReco
     event
 }
 
+/// Immutable audit projection for the non-terminal authority hand-off from
+/// the automatic reviewer to a human. The Approval identity remains stable;
+/// only its fenced pending state and diagnostic reason advance.
+pub fn approval_escalation_event(approval: &ApprovalRecord, job: &ExecutionJobRecord) -> Event {
+    let mut event = Event::new(
+        format!("approval_escalated_{}_pending_human", approval.id),
+        "System-ApprovalAuthority".to_string(),
+        "approval_escalation".to_string(),
+        "runtime/approval_escalated".to_string(),
+        serde_json::Map::from_iter([
+            ("context_id".to_string(), serde_json::json!(job.context_id)),
+            ("session_id".to_string(), serde_json::json!(job.session_id)),
+            ("correlation_id".to_string(), serde_json::json!(approval.id)),
+            ("approval_id".to_string(), serde_json::json!(approval.id)),
+            ("job_id".to_string(), serde_json::json!(approval.job_id)),
+            (
+                "activation_id".to_string(),
+                serde_json::json!(job.activation_id),
+            ),
+            ("thread_id".to_string(), serde_json::json!(job.thread_id)),
+            (
+                "tool_call_id".to_string(),
+                serde_json::json!(job.tool_call_id),
+            ),
+            (
+                "status".to_string(),
+                serde_json::json!(approval.status.as_str()),
+            ),
+            (
+                "last_error".to_string(),
+                serde_json::json!(approval.last_error),
+            ),
+            (
+                "text".to_string(),
+                serde_json::json!(format!(
+                    "Automatic review for Approval {} could not complete; human review is now required",
+                    approval.id
+                )),
+            ),
+        ]),
+    );
+    event.timestamp = approval.updated_at;
+    event
+}
+
 fn require_nonempty<'a>(field: &str, value: &'a str) -> Result<&'a str, String> {
     let value = value.trim();
     if value.is_empty() {
