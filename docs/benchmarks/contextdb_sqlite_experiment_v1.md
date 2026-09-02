@@ -1,8 +1,8 @@
 # ContextDB SQLite 单机实验与基准 v1
 
 > 日期：2026-09-01
-> 状态：实验结果 + 默认关闭的 SQLite Runtime Integration Preview
-> 特性门：Cargo `experimental-context-db` + Runtime `context-db` permit
+> 状态：历史实验结果；2026-09-02 已晋升为默认 Runtime 实现
+> 当前构建：稳定 Cargo `context-db` feature 默认启用，不再需要 Runtime experiment permit
 
 ## 1. 本轮验证的问题
 
@@ -21,10 +21,10 @@
 
 ## 2. 实现边界
 
-基础数据库位于 `morphz/src/experimental/context_db.rs`，Runtime Adapter 位于
-`morphz/src/experimental/context_db_runtime.rs`。默认构建不会启用它；同时打开 Cargo
-`experimental-context-db` 和 Runtime `context-db` permit 后，SQLite Runtime 使用
-ContextDB 作为当前 Mind 的权威存储。
+基础数据库位于 `morphz/src/context_db.rs`，Runtime Adapter 位于
+`morphz/src/context_db_runtime.rs`，公开 Rust 模块是稳定的 `morphz::context_db`。官方默认
+构建启用 `context-db`；Runtime 通过
+`storage.cognitive_store` 选择 ContextDB 或观察期 legacy 回滚后端，不再使用 experiment permit。
 
 SQLite 中只创建三个带 `experimental_contextdb_` 前缀的对象集合：
 
@@ -114,13 +114,13 @@ SQLite `BEGIN IMMEDIATE` 为单文件写入提供确定提交顺序。全局 Con
 测试命令：
 
 ```bash
-cargo test -p morphz --lib --features experimental-context-db context_db::tests
+cargo test -p morphz --lib --features context-db context_db::tests
 ```
 
-变基到主线 `d86f815c` 后的最终回归结果：
+以下是 2026-09-01 实验阶段变基到主线 `d86f815c` 后的历史回归结果：
 
 - 默认特性单线程全量回归：1100 passed，6 ignored；
-- 启用 `experimental-context-db` 的单线程全量回归：1118 passed，6 ignored；
+- 当时显式启用 ContextDB 的单线程全量回归：1118 passed，6 ignored；
 - ContextDB 定向测试：18 passed。
 - `cargo check -p morphz --all-targets --all-features` 通过；
 - `cargo clippy -p morphz --all-targets --all-features -- -D warnings` 通过。
@@ -135,7 +135,7 @@ cargo test -p morphz --lib --features experimental-context-db context_db::tests
 
 ```bash
 cargo run -p morphz --release \
-  --features experimental-context-db \
+  --features context-db \
   --example context_db_sqlite_benchmark
 ```
 
@@ -164,7 +164,7 @@ cargo run -p morphz --release \
 
 ```bash
 cargo run -p morphz --release \
-  --features experimental-context-db \
+  --features context-db \
   --example context_db_runtime_benchmark
 ```
 
@@ -193,6 +193,9 @@ ContextDB Runtime 路径具有整体性能优势。
 
 ## 6. 本轮结论与迁移门禁
 
+> 以下结论是 2026-09-01 的实验阶段快照，已被
+> `docs/context_store_final_replacement_v1.md` 的 2026-09-02 决策覆盖。
+
 SQLite 单机实验与 Runtime Integration Preview 已经证明：Context AST authority、Node 级
 局部修改、细粒度 OCC 和物理持久化可以同时成立；Morphz 可以保留完整 Agent Trajectory
 与现有恢复能力，而不依赖历史重放来读取当前 Mind。
@@ -208,5 +211,6 @@ SQLite 单机实验与 Runtime Integration Preview 已经证明：Context AST au
 6. 把后端无关的事务语义从 SQLite 适配器中抽出，再实现 PostgreSQL 后端；
 7. 只有完整回归、性能和回滚门禁通过后，才考虑默认启用。
 
-因此当前决定是：保留默认关闭的完整 SQLite Runtime 路径，以它作为 ContextDB 语义、
-兼容性和性能基线；继续保留一键回到旧实现的能力，在门禁完成前不改变默认生产路径。
+当时决定是保留默认关闭的完整 SQLite Runtime 路径，以它作为 ContextDB 语义、兼容性和
+性能基线。当前实现已把 ContextDB 晋升为默认 Store；legacy 只通过双向显式迁移与配置选择
+回滚，启动不自动迁移，正常提交不双写。

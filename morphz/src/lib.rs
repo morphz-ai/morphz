@@ -14,6 +14,12 @@ pub mod build_info;
 pub mod cli;
 pub mod config;
 mod context_ast;
+#[cfg(feature = "context-db")]
+pub mod context_db;
+#[cfg(feature = "context-db")]
+pub(crate) mod context_db_postgres_runtime;
+#[cfg(feature = "context-db")]
+pub(crate) mod context_db_runtime;
 pub mod context_state;
 pub mod context_store;
 pub mod context_tools;

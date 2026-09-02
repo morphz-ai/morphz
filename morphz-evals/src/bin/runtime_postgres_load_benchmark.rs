@@ -14,8 +14,6 @@ use morphz::runtime::{
 };
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
-#[cfg(feature = "experimental-context-db")]
-use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -504,28 +502,20 @@ async fn main() -> Result<(), BenchError> {
             Arc::new(PostgresStore::new(&scoped_database_url, pool_size).await?)
         }
         ContextStoreKind::ContextDb => {
-            #[cfg(feature = "experimental-context-db")]
+            #[cfg(feature = "context-db")]
             {
-                let enabled = BTreeSet::from([morphz::experimental::CONTEXT_DB.to_string()]);
-                let permit = morphz::experimental::require_enabled(
-                    &enabled,
-                    morphz::experimental::CONTEXT_DB,
-                )?;
                 Arc::new(
                     PostgresStore::new_with_context_db(
                         &scoped_database_url,
                         pool_size,
                         Arc::new(morphz::observability::Observability::default()),
-                        permit,
                     )
                     .await?,
                 )
             }
-            #[cfg(not(feature = "experimental-context-db"))]
+            #[cfg(not(feature = "context-db"))]
             {
-                return Err(
-                    "contextdb benchmark arm requires --features experimental-context-db".into(),
-                );
+                return Err("contextdb benchmark arm requires --features context-db".into());
             }
         }
     };

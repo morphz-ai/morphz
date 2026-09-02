@@ -640,6 +640,38 @@ pub enum StorageBackend {
     Postgres,
 }
 
+/// Authoritative representation used for the Agent's current cognitive state.
+///
+/// ContextDB is the product default. `Legacy` is an explicit, temporary
+/// rollback mode kept only for the pre-release stabilization window; selecting
+/// the physical database backend never changes this choice implicitly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitiveStoreBackend {
+    #[default]
+    ContextDb,
+    Legacy,
+}
+
+impl CognitiveStoreBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextDb => "context_db",
+            Self::Legacy => "legacy",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "context_db" | "context-db" | "contextdb" => Ok(Self::ContextDb),
+            "legacy" => Ok(Self::Legacy),
+            _ => Err(format!(
+                "cognitive_store supports only context_db or legacy: {value}"
+            )),
+        }
+    }
+}
+
 /// Local single-process persistence. SQLite remains the product default and
 /// is never replaced merely because a PostgreSQL URL happens to exist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -704,6 +736,7 @@ impl Default for PostgresStorageConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     pub backend: StorageBackend,
+    pub cognitive_store: CognitiveStoreBackend,
     pub sqlite: SqliteStorageConfig,
     pub postgres: PostgresStorageConfig,
     pub retention: StorageRetentionConfig,
@@ -3517,6 +3550,9 @@ impl AppConfig {
         if let Ok(value) = std::env::var("MORPHZ_STORAGE_BACKEND") {
             self.storage.backend = parse_storage_backend_env(&value)?;
         }
+        if let Ok(value) = std::env::var("MORPHZ_COGNITIVE_STORE") {
+            self.storage.cognitive_store = parse_cognitive_store_backend_env(&value)?;
+        }
         apply_u32_env(
             "MORPHZ_POSTGRES_MAX_CONNECTIONS",
             &mut self.storage.postgres.max_connections,
@@ -3727,6 +3763,11 @@ fn parse_storage_backend_env(value: &str) -> Result<StorageBackend, String> {
             "MORPHZ_STORAGE_BACKEND supports only sqlite or postgres: {value}"
         )),
     }
+}
+
+fn parse_cognitive_store_backend_env(value: &str) -> Result<CognitiveStoreBackend, String> {
+    CognitiveStoreBackend::parse(value)
+        .map_err(|_| format!("MORPHZ_COGNITIVE_STORE supports only context_db or legacy: {value}"))
 }
 
 fn parse_server_identity_mode_env(value: &str) -> Result<ServerIdentityMode, String> {
@@ -4364,6 +4405,10 @@ mod tests {
         assert_eq!(cfg.orchestrator.max_delegation_depth, 3);
         assert_eq!(cfg.orchestrator.max_active_delegations_per_agent, 8);
         assert_eq!(cfg.storage.backend, StorageBackend::Sqlite);
+        assert_eq!(
+            cfg.storage.cognitive_store,
+            CognitiveStoreBackend::ContextDb
+        );
         assert_eq!(cfg.storage.sqlite.path, "morphz.db");
         assert_eq!(cfg.storage.sqlite.max_connections, 8);
         assert_eq!(cfg.storage.postgres.url_env, "MORPHZ_POSTGRES_URL");
@@ -4417,6 +4462,20 @@ mod tests {
             StorageBackend::Postgres
         );
         assert!(parse_storage_backend_env("d1").is_err());
+
+        assert_eq!(
+            parse_cognitive_store_backend_env("context_db").unwrap(),
+            CognitiveStoreBackend::ContextDb
+        );
+        assert_eq!(
+            parse_cognitive_store_backend_env("CONTEXT-DB").unwrap(),
+            CognitiveStoreBackend::ContextDb
+        );
+        assert_eq!(
+            parse_cognitive_store_backend_env("legacy").unwrap(),
+            CognitiveStoreBackend::Legacy
+        );
+        assert!(parse_cognitive_store_backend_env("projection").is_err());
 
         assert_eq!(
             parse_server_identity_mode_env("trusted_gateway").unwrap(),

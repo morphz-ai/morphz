@@ -5094,8 +5094,10 @@ where
         .await
         .unwrap()
         .unwrap();
-    let mut retired_state = MindState::default();
-    retired_state.version = current.revision + 1;
+    let mut retired_state = MindState {
+        version: current.revision + 1,
+        ..MindState::default()
+    };
     retired_state
         .protected
         .insert("projection:retired".to_string());
@@ -5132,13 +5134,10 @@ where
         .read_context_encoding_state_snapshot(context_id, &selected, true, None)
         .await
         .unwrap();
-    assert_eq!(
-        retired_snapshot
-            .context_state
-            .as_ref()
-            .is_some_and(|record| record.state.protected.contains("projection:retired")),
-        true
-    );
+    assert!(retired_snapshot
+        .context_state
+        .as_ref()
+        .is_some_and(|record| record.state.protected.contains("projection:retired")));
     let retired_revision = retired_snapshot
         .context_state_head
         .as_ref()
@@ -5184,8 +5183,10 @@ where
         .await
         .unwrap()
         .unwrap();
-    let mut restored_state = MindState::default();
-    restored_state.version = current.revision + 1;
+    let mut restored_state = MindState {
+        version: current.revision + 1,
+        ..MindState::default()
+    };
     restored_state
         .protected
         .insert("projection:restored".to_string());
@@ -5230,13 +5231,10 @@ where
         restored_snapshot.context_state.is_some(),
         "a changed authoritative revision must return the new Mind payload"
     );
-    assert_eq!(
-        restored_snapshot
-            .context_state
-            .as_ref()
-            .is_some_and(|record| record.state.protected.contains("projection:restored")),
-        true
-    );
+    assert!(restored_snapshot
+        .context_state
+        .as_ref()
+        .is_some_and(|record| record.state.protected.contains("projection:restored")));
     assert_eq!(
         restored_snapshot
             .events
@@ -5274,8 +5272,10 @@ where
                     restored_event_ids: Vec::new(),
                 }
             };
-            let mut next_state = MindState::default();
-            next_state.version = current.revision + 1;
+            let mut next_state = MindState {
+                version: current.revision + 1,
+                ..MindState::default()
+            };
             next_state
                 .protected
                 .insert("snapshot_observation_state_known".to_string());

@@ -123,7 +123,7 @@ class ContextDbMe08HistoricalTest(unittest.TestCase):
             )
             self.assertEqual(
                 contextdb["runtime"]["build_features"],
-                ["experimental-context-db"],
+                ["context-db"],
             )
             self.assertEqual(
                 contextdb["runtime"]["binary_sha256"],

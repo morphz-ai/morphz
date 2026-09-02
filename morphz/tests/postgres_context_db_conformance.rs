@@ -1,11 +1,10 @@
-#![cfg(feature = "experimental-context-db")]
+#![cfg(feature = "context-db")]
 
 use morphz::context_store::{
     context_state_commitment, relation_logical_id, ContextCollection, ContextMutationPlan,
     ContextNodeValue, ContextStateCommit, ContextStateMutation,
 };
 use morphz::event::Event;
-use morphz::experimental::{self, CONTEXT_DB};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
@@ -24,10 +23,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
-
-fn permit() -> experimental::ExperimentalFeaturePermit {
-    experimental::require_enabled(&BTreeSet::from([CONTEXT_DB.to_string()]), CONTEXT_DB).unwrap()
-}
 
 fn state_hash(state: &MindState) -> String {
     morphz::context_store::context_state_hash(state).unwrap()
@@ -141,13 +136,8 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     let (administration, schema, scoped_url) =
         isolated_database_url(&database_url, "authority").await?;
     let store = Arc::new(
-        PostgresStore::new_with_context_db(
-            &scoped_url,
-            8,
-            Arc::new(Observability::default()),
-            permit(),
-        )
-        .await?,
+        PostgresStore::new_with_context_db(&scoped_url, 8, Arc::new(Observability::default()))
+            .await?,
     );
     let agent_id = "contextdb-pg-agent";
     let context_id = "contextdb-pg-context";
@@ -919,13 +909,9 @@ async fn postgres_context_db_is_atomic_fenced_restartable_and_directory_consiste
     audit_pool.close().await;
 
     drop(store);
-    let restarted = PostgresStore::new_with_context_db(
-        &scoped_url,
-        4,
-        Arc::new(Observability::default()),
-        permit(),
-    )
-    .await?;
+    let restarted =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
     assert_eq!(
         restarted
             .get_mind_projection(context_id)
@@ -964,13 +950,9 @@ async fn postgres_context_db_periodic_snapshot_boundary_is_atomic_sparse_and_res
     };
     let (administration, schema, scoped_url) =
         isolated_database_url(&database_url, "snapshot_boundary").await?;
-    let store = PostgresStore::new_with_context_db(
-        &scoped_url,
-        8,
-        Arc::new(Observability::default()),
-        permit(),
-    )
-    .await?;
+    let store =
+        PostgresStore::new_with_context_db(&scoped_url, 8, Arc::new(Observability::default()))
+            .await?;
     let context_id = "contextdb-pg-snapshot-boundary";
     create_bundle(
         &store,
@@ -1091,13 +1073,9 @@ async fn postgres_context_db_periodic_snapshot_boundary_is_atomic_sparse_and_res
 
     store.pool().close().await;
     drop(store);
-    let restarted = PostgresStore::new_with_context_db(
-        &scoped_url,
-        4,
-        Arc::new(Observability::default()),
-        permit(),
-    )
-    .await?;
+    let restarted =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
     assert_eq!(
         restarted
             .get_context_state(context_id)
@@ -1122,7 +1100,7 @@ async fn postgres_context_db_periodic_snapshot_boundary_is_atomic_sparse_and_res
 }
 
 #[tokio::test]
-async fn postgres_context_db_requires_and_performs_explicit_exact_migration_when_configured(
+async fn postgres_context_db_default_switch_performs_exact_migration_when_configured(
 ) -> Result<(), TestError> {
     let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
         return Ok(());
@@ -1143,34 +1121,29 @@ async fn postgres_context_db_requires_and_performs_explicit_exact_migration_when
         .await?;
     drop(legacy);
 
-    assert!(PostgresStore::new_with_context_db(
+    let rejected =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await
+            .err()
+            .ok_or("ContextDB startup unexpectedly migrated PostgreSQL state")?;
+    assert!(rejected
+        .to_string()
+        .contains("storage migrate-cognitive-store --to context_db"));
+    let transition = PostgresStore::migrate_cognitive_store(
         &scoped_url,
         4,
-        Arc::new(Observability::default()),
-        permit(),
-    )
-    .await
-    .is_err());
-    let report =
-        PostgresStore::migrate_legacy_mind_projections_to_context_db(&scoped_url, 4, permit())
-            .await?;
-    assert_eq!(report.discovered, 1);
-    assert_eq!(report.imported, 1);
-    assert_eq!(report.already_authoritative, 0);
-    let second =
-        PostgresStore::migrate_legacy_mind_projections_to_context_db(&scoped_url, 4, permit())
-            .await?;
-    assert_eq!(second.discovered, 1);
-    assert_eq!(second.imported, 0);
-    assert_eq!(second.already_authoritative, 1);
-
-    let authoritative = PostgresStore::new_with_context_db(
-        &scoped_url,
-        4,
-        Arc::new(Observability::default()),
-        permit(),
+        morphz::config::CognitiveStoreBackend::ContextDb,
     )
     .await?;
+    assert_eq!(transition.previous, None);
+    assert_eq!(
+        transition.selected,
+        morphz::config::CognitiveStoreBackend::ContextDb
+    );
+    assert_eq!(transition.synchronized, 1);
+    let authoritative =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
     assert_eq!(
         authoritative
             .get_mind_projection("migration-context")
@@ -1179,6 +1152,308 @@ async fn postgres_context_db_requires_and_performs_explicit_exact_migration_when
         expected
     );
     drop(authoritative);
+    let report =
+        PostgresStore::migrate_legacy_mind_projections_to_context_db(&scoped_url, 4).await?;
+    assert_eq!(report.discovered, 1);
+    assert_eq!(report.imported, 0);
+    assert_eq!(report.already_authoritative, 1);
+    let second =
+        PostgresStore::migrate_legacy_mind_projections_to_context_db(&scoped_url, 4).await?;
+    assert_eq!(second.discovered, 1);
+    assert_eq!(second.imported, 0);
+    assert_eq!(second.already_authoritative, 1);
+
+    let authoritative =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
+    assert_eq!(
+        authoritative
+            .get_mind_projection("migration-context")
+            .await?
+            .unwrap(),
+        expected
+    );
+    drop(authoritative);
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&administration)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_cognitive_store_switch_round_trips_without_hidden_dual_write(
+) -> Result<(), TestError> {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return Ok(());
+    };
+    let (administration, schema, scoped_url) =
+        isolated_database_url(&database_url, "store_switch").await?;
+    let context_id = "postgres-cognitive-store-switch-context";
+    let legacy =
+        PostgresStore::new_with_legacy(&scoped_url, 4, Arc::new(Observability::default())).await?;
+    create_bundle(
+        &legacy,
+        "postgres-cognitive-store-switch-agent",
+        context_id,
+        "postgres-cognitive-store-switch-session",
+    )
+    .await;
+    let initial = MindState::default();
+    legacy
+        .initialize_context_state(
+            context_id,
+            &initial,
+            &context_state_commitment(&initial)?,
+            None,
+            &[],
+        )
+        .await?;
+    legacy.pool().close().await;
+    drop(legacy);
+
+    let rejected =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await
+            .err()
+            .ok_or("ContextDB startup unexpectedly migrated PostgreSQL state")?;
+    assert!(rejected
+        .to_string()
+        .contains("storage migrate-cognitive-store --to context_db"));
+    PostgresStore::migrate_cognitive_store(
+        &scoped_url,
+        4,
+        morphz::config::CognitiveStoreBackend::ContextDb,
+    )
+    .await?;
+    let context_db =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
+    assert_eq!(
+        context_db
+            .get_context_state(context_id)
+            .await?
+            .unwrap()
+            .state,
+        initial
+    );
+    let mut context_db_state = initial.clone();
+    context_db_state.version = 1;
+    context_db_state
+        .protected
+        .insert("postgres-context-db-only".to_string());
+    let context_db_plan = mutation_plan_with(
+        context_id,
+        &initial,
+        &context_db_state,
+        vec![ContextStateMutation::ReplaceMind {
+            state: context_db_state.clone(),
+        }],
+    );
+    assert!(matches!(
+        context_db
+            .commit_context_mutation_transaction(
+                &context_event("postgres-cognitive-store-context-db-event", context_id),
+                &[],
+                &SessionProjectionMutation::default(),
+                &context_db_plan,
+                &context_db_state,
+                &context_state_commitment(&context_db_state)?,
+                &[],
+            )
+            .await?,
+        ContextStateCommit::Committed { .. }
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT revision FROM context_heads WHERE context_id = $1")
+            .bind(context_id)
+            .fetch_one(context_db.pool())
+            .await?,
+        0,
+        "normal ContextDB commits must not dual-write legacy"
+    );
+    context_db.pool().close().await;
+    drop(context_db);
+
+    let rejected =
+        PostgresStore::new_with_legacy(&scoped_url, 4, Arc::new(Observability::default()))
+            .await
+            .err()
+            .ok_or("legacy startup unexpectedly migrated PostgreSQL state")?;
+    assert!(rejected
+        .to_string()
+        .contains("storage migrate-cognitive-store --to legacy"));
+    PostgresStore::migrate_cognitive_store(
+        &scoped_url,
+        4,
+        morphz::config::CognitiveStoreBackend::Legacy,
+    )
+    .await?;
+    let legacy =
+        PostgresStore::new_with_legacy(&scoped_url, 4, Arc::new(Observability::default())).await?;
+    assert_eq!(
+        legacy.get_context_state(context_id).await?.unwrap().state,
+        context_db_state
+    );
+    let mut legacy_state = context_db_state.clone();
+    legacy_state.version = 2;
+    legacy_state
+        .protected
+        .insert("postgres-legacy-only".to_string());
+    let legacy_plan = mutation_plan_with(
+        context_id,
+        &context_db_state,
+        &legacy_state,
+        vec![ContextStateMutation::ReplaceMind {
+            state: legacy_state.clone(),
+        }],
+    );
+    assert!(matches!(
+        legacy
+            .commit_context_mutation_transaction(
+                &context_event("postgres-cognitive-store-legacy-event", context_id),
+                &[],
+                &SessionProjectionMutation::default(),
+                &legacy_plan,
+                &legacy_state,
+                &context_state_commitment(&legacy_state)?,
+                &[],
+            )
+            .await?,
+        ContextStateCommit::Committed { .. }
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM experimental_contextdb_runtime_heads WHERE context_id = $1"
+        )
+        .bind(context_id)
+        .fetch_one(legacy.pool())
+        .await?,
+        1,
+        "normal legacy commits must not dual-write ContextDB"
+    );
+    legacy.pool().close().await;
+    drop(legacy);
+
+    let rejected =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await
+            .err()
+            .ok_or("ContextDB startup unexpectedly migrated PostgreSQL state")?;
+    assert!(rejected
+        .to_string()
+        .contains("storage migrate-cognitive-store --to context_db"));
+    PostgresStore::migrate_cognitive_store(
+        &scoped_url,
+        4,
+        morphz::config::CognitiveStoreBackend::ContextDb,
+    )
+    .await?;
+    let context_db =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
+    let final_state = context_db.get_context_state(context_id).await?.unwrap();
+    assert_eq!(final_state.revision, 2);
+    assert_eq!(final_state.state, legacy_state);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT active_store FROM cognitive_store_control WHERE singleton = 1"
+        )
+        .fetch_one(context_db.pool())
+        .await?,
+        "context_db"
+    );
+    context_db.pool().close().await;
+    drop(context_db);
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&administration)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_cognitive_store_migration_rejects_equal_revision_divergence(
+) -> Result<(), TestError> {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return Ok(());
+    };
+    let (administration, schema, scoped_url) =
+        isolated_database_url(&database_url, "store_divergence").await?;
+    let context_id = "postgres-cognitive-store-divergence-context";
+    let legacy =
+        PostgresStore::new_with_legacy(&scoped_url, 4, Arc::new(Observability::default())).await?;
+    create_bundle(
+        &legacy,
+        "postgres-cognitive-store-divergence-agent",
+        context_id,
+        "postgres-cognitive-store-divergence-session",
+    )
+    .await;
+    let initial = MindState::default();
+    legacy
+        .initialize_context_state(
+            context_id,
+            &initial,
+            &context_state_commitment(&initial)?,
+            None,
+            &[],
+        )
+        .await?;
+    legacy.pool().close().await;
+    drop(legacy);
+
+    PostgresStore::migrate_cognitive_store(
+        &scoped_url,
+        4,
+        morphz::config::CognitiveStoreBackend::ContextDb,
+    )
+    .await?;
+    let context_db =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
+    let mut divergent = initial;
+    divergent
+        .protected
+        .insert("inactive-store-divergence".to_string());
+    let divergent_hash = state_hash(&divergent);
+    sqlx::query(
+        "UPDATE mind_projections SET state_json = $1, state_hash = $2 WHERE context_id = $3",
+    )
+    .bind(serde_json::to_value(&divergent)?)
+    .bind(&divergent_hash)
+    .bind(context_id)
+    .execute(context_db.pool())
+    .await?;
+    sqlx::query("UPDATE context_heads SET projection_hash = $1 WHERE context_id = $2")
+        .bind(divergent_hash)
+        .bind(context_id)
+        .execute(context_db.pool())
+        .await?;
+    context_db.pool().close().await;
+    drop(context_db);
+
+    let error = PostgresStore::migrate_cognitive_store(
+        &scoped_url,
+        4,
+        morphz::config::CognitiveStoreBackend::Legacy,
+    )
+    .await
+    .err()
+    .ok_or("equal-revision PostgreSQL divergence unexpectedly migrated")?;
+    assert!(error.to_string().contains("diverge at revision 0"));
+
+    let reopened =
+        PostgresStore::new_with_context_db(&scoped_url, 4, Arc::new(Observability::default()))
+            .await?;
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT active_store FROM cognitive_store_control WHERE singleton = 1"
+        )
+        .fetch_one(reopened.pool())
+        .await?,
+        "context_db"
+    );
+    reopened.pool().close().await;
+    drop(reopened);
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&administration)
         .await?;
@@ -1211,13 +1486,9 @@ async fn postgres_schema_bootstrap_never_removes_a_peer_runtime_fast_path() -> R
     let transient_url = format!(
         "{database_url}{separator}options=-csearch_path%3D{transient_schema}%2C{peer_schema}"
     );
-    let transient = PostgresStore::new_with_context_db(
-        &transient_url,
-        2,
-        Arc::new(Observability::default()),
-        permit(),
-    )
-    .await?;
+    let transient =
+        PostgresStore::new_with_context_db(&transient_url, 2, Arc::new(Observability::default()))
+            .await?;
     drop(transient);
     sqlx::query(&format!("DROP SCHEMA {transient_schema} CASCADE"))
         .execute(&administration)

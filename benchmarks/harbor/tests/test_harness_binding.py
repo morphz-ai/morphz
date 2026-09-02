@@ -260,7 +260,7 @@ class HarnessBindingSetupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_dir:
             asyncio.run(scenario(Path(raw_dir)))
 
-    def test_context_db_arm_is_explicitly_enabled_and_preflighted(self) -> None:
+    def test_context_db_arm_selects_the_stable_store_without_experiment_gate(self) -> None:
         async def scenario(root: Path) -> None:
             (root / "logs").mkdir()
             binary = root / "morphz"
@@ -284,9 +284,9 @@ class HarnessBindingSetupTest(unittest.TestCase):
             config = (root / "logs" / "morphz-harbor.toml").read_text(
                 encoding="utf-8"
             )
-            self.assertIn('[experimental]\nenabled = ["context-db"]', config)
-            self.assertEqual(len(environment.commands), 2)
-            self.assertIn("experiment check context-db", environment.commands[1])
+            self.assertIn('cognitive_store = \'context_db\'', config)
+            self.assertNotIn("[experimental]", config)
+            self.assertEqual(len(environment.commands), 1)
 
         with tempfile.TemporaryDirectory() as raw_dir:
             asyncio.run(scenario(Path(raw_dir)))

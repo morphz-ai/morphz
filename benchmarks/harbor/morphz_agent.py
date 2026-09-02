@@ -183,19 +183,15 @@ class MorphzAgent(BaseAgent):
                     '[orchestrator.activation_admission]',
                     'max_in_flight = 16',
                     '',
+                    '[storage]',
+                    'backend = "sqlite"',
+                    f'cognitive_store = {("context_db" if context_store == "contextdb" else "legacy")!r}',
+                    '',
                     '[permissions]',
                     'mode = "full_access"',
                     'shell_environment_policy = "remove_sensitive"',
                     '',
                 ]
-        if context_store == "contextdb":
-            config_lines.extend(
-                [
-                    '[experimental]',
-                    'enabled = ["context-db"]',
-                    '',
-                ]
-            )
         config.write_text("\n".join(config_lines))
         runner = Path(__file__).with_name("run_morphz_harbor.sh")
         await environment.upload_file(binary, "/tmp/morphz")
@@ -209,18 +205,6 @@ class MorphzAgent(BaseAgent):
         )
         if result.return_code != 0:
             raise RuntimeError(result.stderr or "failed to install Morphz")
-        if context_store == "contextdb":
-            result = await environment.exec(
-                command=(
-                    "/tmp/morphz --config-file /tmp/morphz-harbor.toml "
-                    "experiment check context-db --format=json"
-                )
-            )
-            if result.return_code != 0:
-                raise RuntimeError(
-                    "ContextDB benchmark binary/config preflight failed: "
-                    + (result.stderr or result.stdout or f"exit {result.return_code}")
-                )
 
     async def run(
         self,

@@ -1,8 +1,8 @@
 //! Side-by-side Runtime commit benchmark for the legacy SQLite Mind path and
-//! the experimental ContextDB-authoritative path.
+//! the ContextDB-authoritative path.
 //!
 //! Run with:
-//! `cargo run -p morphz --release --features experimental-context-db --example context_db_runtime_benchmark`
+//! `cargo run -p morphz --release --example context_db_runtime_benchmark`
 //!
 //! Optional environment variables:
 //! - `MORPHZ_CONTEXTDB_RUNTIME_BENCH_FRAMES` (default: 256)
@@ -15,14 +15,12 @@ use morphz::context_store::{
     ContextMutationPlan, ContextNodeValue, ContextStateCommit, ContextStateMutation,
 };
 use morphz::event::Event;
-use morphz::experimental::{require_enabled, CONTEXT_DB};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection, SessionDirectoryStore,
-    SessionProjectionMutation,
+    ContextStore, MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection,
+    SessionDirectoryStore, SessionProjectionMutation,
 };
 use morphz::orchestrator::context::{ContextFrame, FrameIdentityProvenance, MindState};
-use std::collections::BTreeSet;
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -212,12 +210,9 @@ async fn main() {
     )
     .await
     .expect("open legacy Runtime store");
-    let permit = require_enabled(&BTreeSet::from([CONTEXT_DB.to_string()]), CONTEXT_DB)
-        .expect("ContextDB feature permit");
     let context_db = SqliteStore::new_with_context_db(
         context_db_path.to_str().expect("ContextDB path"),
         &SqliteStorageConfig::default(),
-        permit,
     )
     .await
     .expect("open ContextDB Runtime store");

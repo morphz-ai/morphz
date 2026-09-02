@@ -272,6 +272,12 @@ async fn durable_plan_infer_dispatches_its_committed_signal_without_restart() {
 #[tokio::test]
 async fn plan_infer_tool_continuation_bypasses_its_waiting_parent_event_bus_slot() {
     let database = NamedTempFile::new().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname = \"plan-infer-fixture\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await
@@ -281,6 +287,7 @@ async fn plan_infer_tool_continuation_bypasses_its_waiting_parent_event_bus_slot
     let mut config = AppConfig::default();
     config.orchestrator.event_bus.max_in_flight = 1;
     config.orchestrator.activation_admission.max_in_flight = 1;
+    config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
     let runtime = MorphzRuntime::builder(config, client.clone())
         .store(
             "sqlite:plan-infer-child-tool-handoff-test",
@@ -316,10 +323,58 @@ async fn plan_infer_tool_continuation_bypasses_its_waiting_parent_event_bus_slot
         .await
         .unwrap();
 
-    let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
-        .await
-        .expect("the child tool continuation must not queue behind its waiting parent")
-        .expect("reply stream should remain open");
+    let reply = match tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv()).await
+    {
+        Ok(Some(reply)) => reply,
+        Ok(None) => panic!("reply stream closed before the child tool continuation completed"),
+        Err(_) => {
+            let plans = store
+                .list_plan_executions(PlanExecutionFilter {
+                    context_id: Some(runtime.identity().context_id.clone()),
+                    include_terminal: true,
+                    ..PlanExecutionFilter::default()
+                })
+                .await
+                .unwrap();
+            let events = runtime
+                .query_events(QueryFilter {
+                    context_id: Some(runtime.identity().context_id.clone()),
+                    top_k: Some(200),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap();
+            panic!(
+                "the child tool continuation queued behind its waiting parent; plans={:#?}; relevant_events={:#?}",
+                plans
+                    .iter()
+                    .map(|plan| (
+                        &plan.id,
+                        &plan.tool_call_id,
+                        plan.revision,
+                        plan.status,
+                        plan.pending_kind,
+                        &plan.pending_id,
+                        &plan.error,
+                    ))
+                    .collect::<Vec<_>>(),
+                events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event.topic.as_str(),
+                            "chat/infer_request"
+                                | "chat/assistant_call"
+                                | "runtime/tool_calls_selected"
+                                | "chat/tool_output"
+                                | "chat/reply"
+                        )
+                    })
+                    .map(|event| (&event.id, &event.topic, &event.payload))
+                    .collect::<Vec<_>>()
+            );
+        }
+    };
     assert_eq!(reply.payload["text"], "parent-after-child-tool");
     assert_eq!(client.calls.load(Ordering::SeqCst), 4);
 
@@ -458,9 +513,37 @@ async fn concurrent_plan_infers_share_one_suspended_parent_admission_slot() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
     assert_eq!(plans.len(), 2);
-    assert!(plans
+    if !plans
         .iter()
-        .all(|plan| plan.status == PlanExecutionStatus::Succeeded));
+        .all(|plan| plan.status == PlanExecutionStatus::Succeeded)
+    {
+        let events = runtime
+            .query_events(QueryFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                top_k: Some(200),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        panic!(
+            "concurrent Plan terminal states diverged: {:#?}; tool outputs={:#?}",
+            plans
+                .iter()
+                .map(|plan| (
+                    &plan.id,
+                    &plan.tool_call_id,
+                    plan.revision,
+                    plan.status,
+                    &plan.error,
+                ))
+                .collect::<Vec<_>>(),
+            events
+                .iter()
+                .filter(|event| event.topic == "chat/tool_output")
+                .map(|event| (&event.id, &event.payload))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[tokio::test]

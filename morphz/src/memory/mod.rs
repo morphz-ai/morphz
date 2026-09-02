@@ -787,6 +787,61 @@ pub struct NewMindProjection {
     pub recall_documents: Vec<RecallDocument>,
 }
 
+pub(crate) fn cognitive_projections_equivalent(
+    left: &MindProjectionRecord,
+    right: &MindProjectionRecord,
+) -> bool {
+    left.context_id == right.context_id
+        && left.revision == right.revision
+        && left.state == right.state
+        && left.state_hash == right.state_hash
+        && left.head_event_id == right.head_event_id
+}
+
+/// Establishes authority for databases created before the explicit Store mode
+/// marker existed. The highest complete revision wins; equal revisions must
+/// describe exactly the same canonical state or startup fails closed.
+pub(crate) fn select_initial_cognitive_projection(
+    context_id: &str,
+    legacy: Option<MindProjectionRecord>,
+    context_db: Option<MindProjectionRecord>,
+) -> Result<MindProjectionRecord, String> {
+    match (legacy, context_db) {
+        (Some(legacy), Some(context_db)) => {
+            if legacy.revision == context_db.revision {
+                if !cognitive_projections_equivalent(&legacy, &context_db) {
+                    return Err(format!(
+                        "cannot establish cognitive Store authority for Context '{context_id}': legacy and ContextDB diverge at revision {}",
+                        legacy.revision
+                    ));
+                }
+                Ok(context_db)
+            } else if legacy.revision > context_db.revision {
+                Ok(legacy)
+            } else {
+                Ok(context_db)
+            }
+        }
+        (Some(legacy), None) => Ok(legacy),
+        (None, Some(context_db)) => Ok(context_db),
+        (None, None) => Err(format!(
+            "cannot establish cognitive Store authority for Context '{context_id}': neither representation has a complete state"
+        )),
+    }
+}
+
+pub(crate) fn cognitive_store_migration_required(
+    source: crate::config::CognitiveStoreBackend,
+    target: crate::config::CognitiveStoreBackend,
+) -> String {
+    format!(
+        "cognitive Store selection '{}' is not synchronized with active Store '{}'; run `morphz storage migrate-cognitive-store --to {}` before starting the Runtime",
+        target.as_str(),
+        source.as_str(),
+        target.as_str()
+    )
+}
+
 /// Observation membership changes caused by one Context transaction.
 /// IDs which name Frames are harmless: Store implementations only mutate a
 /// Session Projection when the target resolves to an Observation Event.

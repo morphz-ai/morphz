@@ -1,10 +1,9 @@
-#![cfg(feature = "experimental-context-db")]
+#![cfg(feature = "context-db")]
 
 use morphz::context_store::{
     ContextMutationPlan, ContextNodeValue, ContextStateCommit, ContextStateMutation,
 };
 use morphz::event::Event;
-use morphz::experimental::{self, CONTEXT_DB};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextRuntimeDirectoryRequest, ContextRuntimeSessionFilter, ContextRuntimeSnapshotStore,
@@ -14,7 +13,6 @@ use morphz::memory::{
 use morphz::observability::Observability;
 use morphz::orchestrator::context::MindState;
 use serde_json::json;
-use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tracing::{Event as TracingEvent, Subscriber};
@@ -49,10 +47,6 @@ where
 
 fn state_hash(state: &MindState) -> String {
     morphz::context_store::context_state_hash(state).unwrap()
-}
-
-fn permit() -> experimental::ExperimentalFeaturePermit {
-    experimental::require_enabled(&BTreeSet::from([CONTEXT_DB.to_string()]), CONTEXT_DB).unwrap()
 }
 
 /// Runs in its own integration-test process so the PostgreSQL change listener
@@ -110,13 +104,9 @@ async fn run_budget(
     let separator = if database_url.contains('?') { '&' } else { '?' };
     let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
 
-    let store = PostgresStore::new_with_context_db(
-        &scoped_url,
-        8,
-        Arc::new(Observability::default()),
-        permit(),
-    )
-    .await?;
+    let store =
+        PostgresStore::new_with_context_db(&scoped_url, 8, Arc::new(Observability::default()))
+            .await?;
     let agent_id = format!("pg-contextdb-budget-agent-{suffix}");
     let context_id = format!("pg-contextdb-budget-context-{suffix}");
     let session_id = format!("pg-contextdb-budget-session-{suffix}");

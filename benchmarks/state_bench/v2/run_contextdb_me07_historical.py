@@ -673,8 +673,9 @@ def main() -> int:
                     "source_commit": args.runtime_source_commit,
                     "binary": str(binary),
                     "binary_sha256": _sha256(binary),
-                    "compiled_features": ["experimental-context-db"],
-                    "enabled_experiments": ["context-db"],
+                    "compiled_features": ["context-db"],
+                    "cognitive_store": "context_db",
+                    "enabled_experiments": [],
                 },
                 "runner": {
                     "source_commit": _git_head(Path(__file__).resolve().parents[3]),

@@ -7,30 +7,32 @@
 //! explicit product configuration; merely defining a PostgreSQL URL never
 //! changes the active backend.
 
+use crate::config::CognitiveStoreBackend;
 use crate::context_store::{ContextStateCommit, ContextStateHead, ContextStateRecord};
 use crate::event::Event;
 use crate::memory::{
-    causal_payload_string, decode_legacy_context_state, AttentionAcknowledgementRecord,
-    CognitiveClockStore, ContextActivationCausalitySnapshot, ContextCapabilityBindingMutation,
-    ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
-    ContextEncodingStateSnapshot, ContextExecutionResourcesSnapshot,
-    ContextRuntimeDirectoryRequest, ContextRuntimeDirectorySnapshot,
-    ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore,
-    ContextStateSummary, ContextStore, EventAppend, EventStore, MindProjectionCommit,
-    MindProjectionHead, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
-    NewMindProjection, NewObjective, NewRuntimeTimer, NewThread, NewWorkAssignment,
-    ObjectiveCompletionIntent, ObjectiveMutation, ObjectiveReadinessCounts, ObjectiveRecord,
-    ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
-    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
-    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, StorageMaintenanceReport,
-    StorageMaintenanceStore, TimerStore, TransientStorageRetention, WorkAssignmentCreateResult,
-    WorkAssignmentMutation, WorkAssignmentMutationResult, WorkAssignmentRecord,
-    WorkAssignmentStatus, WorkAssignmentStore,
+    causal_payload_string, cognitive_projections_equivalent, cognitive_store_migration_required,
+    decode_legacy_context_state, select_initial_cognitive_projection,
+    AttentionAcknowledgementRecord, CognitiveClockStore, ContextActivationCausalitySnapshot,
+    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
+    ContextCapabilityBindingStore, ContextCognitiveClock, ContextEncodingStateSnapshot,
+    ContextExecutionResourcesSnapshot, ContextRuntimeDirectoryRequest,
+    ContextRuntimeDirectorySnapshot, ContextRuntimeSchedulerSnapshot,
+    ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore, ContextStateSummary,
+    ContextStore, EventAppend, EventStore, MindProjectionCommit, MindProjectionHead,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
+    NewRuntimeTimer, NewThread, NewWorkAssignment, ObjectiveCompletionIntent, ObjectiveMutation,
+    ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
+    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
+    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
+    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, StorageMaintenanceReport, StorageMaintenanceStore, TimerStore,
+    TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
+    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
 };
 use crate::observability::Observability;
 use crate::scheduler::{
@@ -42,6 +44,7 @@ use serde_json::Value as JsonValue;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgListener, PgPoolOptions, PgRow};
 use sqlx::{ConnectOptions, Connection, PgPool, Postgres, QueryBuilder, Row};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -52,6 +55,7 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 // dedicated connection so a Store configured with a one-connection pool can
 // still migrate without deadlocking itself.
 const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
+const COGNITIVE_STORE_SWITCH_LOCK: i64 = 0x4D4F_5250_485A_0002_i64;
 const THREAD_SIGNAL_NOTIFY_CHANNEL: &str = "morphz_thread_signal_change";
 const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
 
@@ -76,17 +80,144 @@ pub struct PostgresStore {
     observability: Arc<Observability>,
     edge_command_notify: Arc<Notify>,
     thread_signal_notify: Arc<Notify>,
-    #[cfg(feature = "experimental-context-db")]
-    context_db:
-        Option<crate::experimental::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter>,
+    #[cfg(feature = "context-db")]
+    context_db: Option<crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter>,
 }
 
-#[cfg(feature = "experimental-context-db")]
+#[cfg(feature = "context-db")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PostgresContextDbLegacyMigrationReport {
     pub discovered: usize,
     pub imported: usize,
     pub already_authoritative: usize,
+}
+
+#[cfg(feature = "context-db")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostgresCognitiveStoreTransitionReport {
+    pub previous: Option<CognitiveStoreBackend>,
+    pub selected: CognitiveStoreBackend,
+    pub synchronized: usize,
+}
+
+#[cfg(feature = "context-db")]
+async fn load_postgres_cognitive_projection(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    context_db: &crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter,
+    backend: CognitiveStoreBackend,
+    context_id: &str,
+) -> Result<Option<MindProjectionRecord>, StoreError> {
+    match backend {
+        CognitiveStoreBackend::ContextDb => Ok(context_db
+            .load_projection_in_transaction(transaction, context_id)
+            .await?),
+        CognitiveStoreBackend::Legacy => {
+            let Some(record) = get_projection(&mut **transaction, context_id).await? else {
+                return Ok(None);
+            };
+            let canonical =
+                crate::context_db_runtime::canonicalize_legacy_projection(&NewMindProjection {
+                    context_id: record.context_id.clone(),
+                    revision: record.revision,
+                    state: record.state.clone(),
+                    state_hash: record.state_hash.clone(),
+                    head_event_id: record.head_event_id.clone(),
+                    recall_documents: Vec::new(),
+                })?;
+            Ok(Some(MindProjectionRecord {
+                context_id: canonical.context_id,
+                revision: canonical.revision,
+                state: canonical.state,
+                state_hash: canonical.state_hash,
+                head_event_id: canonical.head_event_id,
+                updated_at: record.updated_at,
+            }))
+        }
+    }
+}
+
+#[cfg(feature = "context-db")]
+async fn write_postgres_cognitive_projection(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    context_db: &crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter,
+    backend: CognitiveStoreBackend,
+    projection: &MindProjectionRecord,
+) -> Result<(), StoreError> {
+    match backend {
+        CognitiveStoreBackend::ContextDb => {
+            let projection_input = NewMindProjection {
+                context_id: projection.context_id.clone(),
+                revision: projection.revision,
+                state: projection.state.clone(),
+                state_hash: projection.state_hash.clone(),
+                head_event_id: projection.head_event_id.clone(),
+                recall_documents: Vec::new(),
+            };
+            if context_db
+                .load_projection_in_transaction(transaction, &projection.context_id)
+                .await?
+                .is_some()
+            {
+                context_db
+                    .sync_projection_in_transaction(
+                        transaction,
+                        &projection_input,
+                        projection.updated_at,
+                    )
+                    .await?;
+            } else {
+                context_db
+                    .install_projection_in_transaction(
+                        transaction,
+                        &projection_input,
+                        projection.updated_at,
+                    )
+                    .await?;
+            }
+        }
+        CognitiveStoreBackend::Legacy => {
+            let revision = i64::try_from(projection.revision)
+                .map_err(|_| "Mind Projection revision exceeds PostgreSQL BIGINT")?;
+            let updated_at = projection
+                .updated_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            sqlx::query(
+                r#"INSERT INTO context_heads
+                   (context_id, revision, projection_hash, head_event_id, updated_at)
+                   VALUES ($1, $2, $3, $4, $5)
+                   ON CONFLICT(context_id) DO UPDATE SET
+                     revision = excluded.revision,
+                     projection_hash = excluded.projection_hash,
+                     head_event_id = excluded.head_event_id,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(&projection.context_id)
+            .bind(revision)
+            .bind(&projection.state_hash)
+            .bind(&projection.head_event_id)
+            .bind(&updated_at)
+            .execute(&mut **transaction)
+            .await?;
+            sqlx::query(
+                r#"INSERT INTO mind_projections
+                   (context_id, revision, state_json, state_hash, updated_at)
+                   VALUES ($1, $2, $3, $4, $5)
+                   ON CONFLICT(context_id) DO UPDATE SET
+                     revision = excluded.revision,
+                     state_json = excluded.state_json,
+                     state_hash = excluded.state_hash,
+                     updated_at = excluded.updated_at"#,
+            )
+            .bind(&projection.context_id)
+            .bind(revision)
+            .bind(&projection.state)
+            .bind(&projection.state_hash)
+            .bind(updated_at)
+            .execute(&mut **transaction)
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 impl PostgresStore {
@@ -151,7 +282,7 @@ impl PostgresStore {
             observability,
             edge_command_notify: Arc::new(Notify::new()),
             thread_signal_notify: Arc::new(Notify::new()),
-            #[cfg(feature = "experimental-context-db")]
+            #[cfg(feature = "context-db")]
             context_db: None,
         };
         let migrations = async {
@@ -446,47 +577,418 @@ impl PostgresStore {
     /// authoritative current-Mind representation. Startup never imports an
     /// opaque legacy projection: an operator must run the explicit migration
     /// first, making rollback and verification a deliberate deployment step.
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     pub async fn new_with_context_db(
         database_url: &str,
         max_connections: u32,
         observability: Arc<Observability>,
-        permit: crate::experimental::ExperimentalFeaturePermit,
     ) -> Result<Self, StoreError> {
         let mut store =
             Self::new_with_observability(database_url, max_connections, observability).await?;
-        let context_db = crate::experimental::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
-            store.pool.clone(),
-            permit,
-        )
-        .await?;
-        let pending_legacy = context_db.pending_legacy_count().await?;
-        if pending_legacy != 0 {
-            return Err(format!(
-                "{pending_legacy} legacy PostgreSQL Mind Projection(s) require explicit ContextDB migration before authoritative startup"
+        let context_db =
+            crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+                store.pool.clone(),
             )
-            .into());
-        }
+            .await?;
+        store
+            .validate_cognitive_store_selection(&context_db, CognitiveStoreBackend::ContextDb)
+            .await?;
         store.context_db = Some(context_db);
         Ok(store)
+    }
+
+    #[cfg(feature = "context-db")]
+    pub async fn new_with_legacy(
+        database_url: &str,
+        max_connections: u32,
+        observability: Arc<Observability>,
+    ) -> Result<Self, StoreError> {
+        let store =
+            Self::new_with_observability(database_url, max_connections, observability).await?;
+        let context_db =
+            crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+                store.pool.clone(),
+            )
+            .await?;
+        store
+            .validate_cognitive_store_selection(&context_db, CognitiveStoreBackend::Legacy)
+            .await?;
+        Ok(store)
+    }
+
+    #[cfg(feature = "context-db")]
+    pub async fn migrate_cognitive_store(
+        database_url: &str,
+        max_connections: u32,
+        selected: CognitiveStoreBackend,
+    ) -> Result<PostgresCognitiveStoreTransitionReport, StoreError> {
+        let store = Self::new(database_url, max_connections).await?;
+        let context_db =
+            crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+                store.pool.clone(),
+            )
+            .await?;
+        store
+            .transition_cognitive_store(&context_db, selected)
+            .await
+    }
+
+    #[cfg(feature = "context-db")]
+    async fn validate_cognitive_store_selection(
+        &self,
+        context_db: &crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter,
+        selected: CognitiveStoreBackend,
+    ) -> Result<(), StoreError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(COGNITIVE_STORE_SWITCH_LOCK)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS cognitive_store_control (
+                   singleton SMALLINT PRIMARY KEY CHECK(singleton = 1),
+                   active_store TEXT NOT NULL CHECK(active_store IN ('context_db', 'legacy')),
+                   updated_at TEXT NOT NULL
+               )"#,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        let previous = sqlx::query_scalar::<_, String>(
+            "SELECT active_store FROM cognitive_store_control WHERE singleton = 1 FOR UPDATE",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?
+        .map(|value| CognitiveStoreBackend::parse(&value))
+        .transpose()?;
+        if let Some(previous) = previous {
+            if previous != selected {
+                return Err(cognitive_store_migration_required(previous, selected).into());
+            }
+            transaction.commit().await?;
+            return Ok(());
+        }
+
+        let legacy_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let context_db_ids = sqlx::query_scalar::<_, String>(
+            "SELECT context_id FROM experimental_contextdb_contexts ORDER BY context_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let (selected_ids, other_ids) = match selected {
+            CognitiveStoreBackend::ContextDb => (&context_db_ids, &legacy_ids),
+            CognitiveStoreBackend::Legacy => (&legacy_ids, &context_db_ids),
+        };
+        let can_adopt_without_migration = if other_ids.is_empty() {
+            true
+        } else if selected_ids == other_ids {
+            let mut equivalent = true;
+            for context_id in selected_ids {
+                let selected_projection = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    context_id,
+                )
+                .await?;
+                let other_projection = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    match selected {
+                        CognitiveStoreBackend::ContextDb => CognitiveStoreBackend::Legacy,
+                        CognitiveStoreBackend::Legacy => CognitiveStoreBackend::ContextDb,
+                    },
+                    context_id,
+                )
+                .await?;
+                if !matches!(
+                    (selected_projection.as_ref(), other_projection.as_ref()),
+                    (Some(left), Some(right)) if cognitive_projections_equivalent(left, right)
+                ) {
+                    equivalent = false;
+                    break;
+                }
+            }
+            equivalent
+        } else {
+            false
+        };
+        if !can_adopt_without_migration {
+            let source = match selected {
+                CognitiveStoreBackend::ContextDb => CognitiveStoreBackend::Legacy,
+                CognitiveStoreBackend::Legacy => CognitiveStoreBackend::ContextDb,
+            };
+            return Err(cognitive_store_migration_required(source, selected).into());
+        }
+        sqlx::query(
+            r#"INSERT INTO cognitive_store_control(singleton, active_store, updated_at)
+               VALUES (1, $1, $2)"#,
+        )
+        .bind(selected.as_str())
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "context-db")]
+    async fn transition_cognitive_store(
+        &self,
+        context_db: &crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter,
+        selected: CognitiveStoreBackend,
+    ) -> Result<PostgresCognitiveStoreTransitionReport, StoreError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(COGNITIVE_STORE_SWITCH_LOCK)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS cognitive_store_control (
+                   singleton SMALLINT PRIMARY KEY CHECK(singleton = 1),
+                   active_store TEXT NOT NULL CHECK(active_store IN ('context_db', 'legacy')),
+                   updated_at TEXT NOT NULL
+               )"#,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        let previous = sqlx::query_scalar::<_, String>(
+            "SELECT active_store FROM cognitive_store_control WHERE singleton = 1 FOR UPDATE",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?
+        .map(|value| CognitiveStoreBackend::parse(&value))
+        .transpose()?;
+
+        if previous == Some(selected) {
+            transaction.commit().await?;
+            return Ok(PostgresCognitiveStoreTransitionReport {
+                previous,
+                selected,
+                synchronized: 0,
+            });
+        }
+
+        let legacy_ids = sqlx::query_scalar::<_, String>(
+            r#"SELECT context_id FROM context_heads
+               UNION
+               SELECT context_id FROM mind_projections
+               ORDER BY context_id"#,
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let context_db_ids = sqlx::query_scalar::<_, String>(
+            "SELECT context_id FROM experimental_contextdb_contexts ORDER BY context_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+        let mut synchronized = 0;
+        if let Some(previous) = previous {
+            let (source_ids, target_ids) = match previous {
+                CognitiveStoreBackend::ContextDb => (&context_db_ids, &legacy_ids),
+                CognitiveStoreBackend::Legacy => (&legacy_ids, &context_db_ids),
+            };
+            let target_only = target_ids
+                .difference(source_ids)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !target_only.is_empty() {
+                return Err(format!(
+                    "cannot switch cognitive Store from '{}' to '{}': inactive Store contains Context(s) absent from the active authority: {}",
+                    previous.as_str(),
+                    selected.as_str(),
+                    target_only.join(", ")
+                )
+                .into());
+            }
+            for context_id in source_ids {
+                let source = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    previous,
+                    context_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "active cognitive Store '{}' has no complete state for Context '{context_id}'",
+                        previous.as_str()
+                    )
+                })?;
+                let target = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    context_id,
+                )
+                .await?;
+                if let Some(target) = &target {
+                    if target.revision > source.revision {
+                        return Err(format!(
+                            "cannot switch Context '{context_id}' from '{}' revision {} to '{}' because the inactive target is unexpectedly ahead at revision {}",
+                            previous.as_str(),
+                            source.revision,
+                            selected.as_str(),
+                            target.revision
+                        )
+                        .into());
+                    }
+                    if target.revision == source.revision
+                        && !cognitive_projections_equivalent(&source, target)
+                    {
+                        return Err(format!(
+                            "cannot switch Context '{context_id}': '{}' and '{}' diverge at revision {}",
+                            previous.as_str(),
+                            selected.as_str(),
+                            source.revision
+                        )
+                        .into());
+                    }
+                    if cognitive_projections_equivalent(&source, target) {
+                        continue;
+                    }
+                }
+                write_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    &source,
+                )
+                .await?;
+                let verified = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    context_id,
+                )
+                .await?
+                .ok_or_else(|| -> StoreError {
+                    format!(
+                        "cognitive Store migration wrote no complete target state for Context '{context_id}'"
+                    )
+                    .into()
+                })?;
+                if !cognitive_projections_equivalent(&source, &verified) {
+                    return Err(format!(
+                        "cognitive Store migration verification failed for Context '{context_id}'"
+                    )
+                    .into());
+                }
+                synchronized += 1;
+            }
+        } else {
+            let context_ids = legacy_ids
+                .union(&context_db_ids)
+                .cloned()
+                .collect::<Vec<_>>();
+            for context_id in context_ids {
+                let legacy = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    CognitiveStoreBackend::Legacy,
+                    &context_id,
+                )
+                .await?;
+                let native = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    CognitiveStoreBackend::ContextDb,
+                    &context_id,
+                )
+                .await?;
+                let source = select_initial_cognitive_projection(&context_id, legacy, native)?;
+                let selected_projection = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    &context_id,
+                )
+                .await?;
+                if selected_projection
+                    .as_ref()
+                    .is_some_and(|target| cognitive_projections_equivalent(&source, target))
+                {
+                    continue;
+                }
+                write_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    &source,
+                )
+                .await?;
+                let verified = load_postgres_cognitive_projection(
+                    &mut transaction,
+                    context_db,
+                    selected,
+                    &context_id,
+                )
+                .await?
+                .ok_or_else(|| -> StoreError {
+                    format!(
+                        "cognitive Store migration wrote no complete target state for Context '{context_id}'"
+                    )
+                    .into()
+                })?;
+                if !cognitive_projections_equivalent(&source, &verified) {
+                    return Err(format!(
+                        "cognitive Store migration verification failed for Context '{context_id}'"
+                    )
+                    .into());
+                }
+                synchronized += 1;
+            }
+        }
+
+        sqlx::query(
+            r#"INSERT INTO cognitive_store_control(singleton, active_store, updated_at)
+               VALUES (1, $1, $2)
+               ON CONFLICT(singleton) DO UPDATE SET
+                 active_store = excluded.active_store,
+                 updated_at = excluded.updated_at"#,
+        )
+        .bind(selected.as_str())
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(PostgresCognitiveStoreTransitionReport {
+            previous,
+            selected,
+            synchronized,
+        })
     }
 
     /// Explicitly imports complete legacy PostgreSQL Mind Projections into the
     /// authoritative Context AST. Each Context is locked, reproduced exactly,
     /// verified through the shared decoder and committed independently so the
     /// command is restart-safe and idempotent.
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     pub async fn migrate_legacy_mind_projections_to_context_db(
         database_url: &str,
         max_connections: u32,
-        permit: crate::experimental::ExperimentalFeaturePermit,
     ) -> Result<PostgresContextDbLegacyMigrationReport, StoreError> {
         let store = Self::new(database_url, max_connections).await?;
-        let context_db = crate::experimental::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
-            store.pool.clone(),
-            permit,
-        )
-        .await?;
+        let context_db =
+            crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter::attach(
+                store.pool.clone(),
+            )
+            .await?;
         let context_ids = sqlx::query_scalar::<_, String>(
             r#"SELECT context_id FROM context_heads
                UNION
@@ -519,16 +1021,14 @@ impl PostgresStore {
                     )
                 })?;
             let canonical =
-                crate::experimental::context_db_runtime::canonicalize_legacy_projection(
-                    &NewMindProjection {
-                        context_id: legacy.context_id.clone(),
-                        revision: legacy.revision,
-                        state: legacy.state.clone(),
-                        state_hash: legacy.state_hash.clone(),
-                        head_event_id: legacy.head_event_id.clone(),
-                        recall_documents: Vec::new(),
-                    },
-                )?;
+                crate::context_db_runtime::canonicalize_legacy_projection(&NewMindProjection {
+                    context_id: legacy.context_id.clone(),
+                    revision: legacy.revision,
+                    state: legacy.state.clone(),
+                    state_hash: legacy.state_hash.clone(),
+                    head_event_id: legacy.head_event_id.clone(),
+                    recall_documents: Vec::new(),
+                })?;
             let imported = context_db
                 .install_projection_in_transaction(&mut transaction, &canonical, legacy.updated_at)
                 .await?;
@@ -3208,9 +3708,9 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                ) AS principal_bindings_json
                FROM cognitive_contexts c
                WHERE c.id = $1"#;
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         let use_context_db = self.context_db.is_some();
-        #[cfg(not(feature = "experimental-context-db"))]
+        #[cfg(not(feature = "context-db"))]
         let use_context_db = false;
         static LEGACY_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         static CONTEXT_DB_DIRECTORY_SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -3235,9 +3735,9 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         let read_legacy_mind = !use_context_db;
-        #[cfg(not(feature = "experimental-context-db"))]
+        #[cfg(not(feature = "context-db"))]
         let read_legacy_mind = true;
         let head_revision = row.get::<Option<i64>, _>("mind_head_revision");
         let context_state_head = match head_revision {
@@ -3288,7 +3788,7 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         } else {
             None
         };
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         let context_state = if let Some(context_db) = &self.context_db {
             context_db.decode_context_state_snapshot_value(
                 row.get::<JsonValue, _>("context_db_mind_json"),
@@ -3296,7 +3796,7 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         } else {
             legacy_mind
         };
-        #[cfg(not(feature = "experimental-context-db"))]
+        #[cfg(not(feature = "context-db"))]
         let context_state = legacy_mind;
         if context_state.is_none()
             && context_state_head
@@ -6930,9 +7430,9 @@ impl SessionProjectionStore for PostgresStore {
                       snapshot.event_visibility_snapshot
                FROM ("#,
         );
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         let use_context_db = self.context_db.is_some();
-        #[cfg(not(feature = "experimental-context-db"))]
+        #[cfg(not(feature = "context-db"))]
         let use_context_db = false;
         if use_context_db {
             builder.push(
@@ -7096,7 +7596,7 @@ impl SessionProjectionStore for PostgresStore {
                         head_event_id: head_event_id.clone(),
                         updated_at,
                     });
-                    #[cfg(feature = "experimental-context-db")]
+                    #[cfg(feature = "context-db")]
                     if let Some(context_db) = &self.context_db {
                         if let Some(value) = row.get::<Option<JsonValue>, _>("mind_state_json") {
                             context_state =
@@ -7373,7 +7873,7 @@ impl ContextStore for PostgresStore {
         &self,
         context_id: &str,
     ) -> Result<Option<ContextStateRecord>, StoreError> {
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             return Ok(context_db.load_context_state(context_id).await?);
         }
@@ -7397,7 +7897,7 @@ impl ContextStore for PostgresStore {
         if context_ids.is_empty() {
             return Ok(Vec::new());
         }
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             let mut transaction = self.pool.begin().await?;
             let heads = context_db
@@ -7537,7 +8037,7 @@ impl MindProjectionStore for PostgresStore {
         &self,
         context_id: &str,
     ) -> Result<Option<MindProjectionRecord>, StoreError> {
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             return Ok(context_db.load_projection(context_id).await?);
         }
@@ -7610,7 +8110,7 @@ impl PostgresStore {
         {
             return Err("Context initialization commitment differs from its typed state".into());
         }
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             let now = now_text();
             let now_instant = parse_time(&now)?;
@@ -7680,7 +8180,7 @@ impl PostgresStore {
         if context.is_none() {
             return Err(format!("Context '{}' 不存在", projection.context_id).into());
         }
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             let already_initialized = context_db
                 .load_projection_in_transaction(&mut tx, &projection.context_id)
@@ -7751,6 +8251,10 @@ impl PostgresStore {
 }
 
 impl PostgresStore {
+    // Mirrors the ContextStore transactional contract one-for-one so no
+    // mutation, session projection, or Recall input can be dropped in an
+    // adapter-specific wrapper.
+    #[allow(clippy::too_many_arguments)]
     async fn commit_context_mutation_transaction_impl(
         &self,
         event: &Event,
@@ -7772,7 +8276,7 @@ impl PostgresStore {
             return Err("native Context Mutation revision or Event route differs".into());
         }
 
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             let now = now_text();
             let now_instant = parse_time(&now)?;
@@ -7789,9 +8293,7 @@ impl PostgresStore {
                 .await
             {
                 Ok(head) => head,
-                Err(crate::experimental::context_db::ContextDbError::Conflict {
-                    actual, ..
-                }) => {
+                Err(crate::context_db::ContextDbError::Conflict { actual, .. }) => {
                     tx.rollback().await?;
                     return Ok(ContextStateCommit::Conflict {
                         current_revision: Some(actual),
@@ -7930,7 +8432,7 @@ impl PostgresStore {
         let next = i64::try_from(next_projection.revision)?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             let plan = mutation_plan.ok_or(
                 "authoritative PostgreSQL ContextDB commits require a domain-emitted Context Mutation plan",
@@ -7951,9 +8453,7 @@ impl PostgresStore {
                 .await
             {
                 Ok(head) => head,
-                Err(crate::experimental::context_db::ContextDbError::Conflict {
-                    actual, ..
-                }) => {
+                Err(crate::context_db::ContextDbError::Conflict { actual, .. }) => {
                     tx.rollback().await?;
                     return Ok(MindProjectionCommit::Conflict {
                         current_revision: Some(actual),
@@ -8106,6 +8606,8 @@ impl PostgresStore {
 }
 
 impl PostgresStore {
+    // Mirrors the ContextStore seed contract one-for-one at the SQL boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn commit_context_seed_transaction_impl(
         &self,
         event: &Event,
@@ -8130,7 +8632,7 @@ impl PostgresStore {
         let state_value = serde_json::to_value(next_state)?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
             let context = sqlx::query("SELECT id FROM cognitive_contexts WHERE id = $1 FOR UPDATE")
                 .bind(target_context_id)

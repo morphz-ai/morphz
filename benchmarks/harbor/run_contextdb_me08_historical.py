@@ -296,12 +296,12 @@ def build_toolchain_lock(
         "git_commit": commit,
         "build_git_commit": commit,
         "build_profile": "release",
-        "build_features": ["experimental-context-db"],
+        "build_features": ["context-db"],
         "build_command": (
             "docker buildx build --file benchmarks/harbor/runtime.Dockerfile "
             "--target export --output type=local,dest=./build-output "
             f"--build-arg MORPHZ_BUILD_GIT_COMMIT={commit} "
-            "--build-arg MORPHZ_CARGO_FEATURES=experimental-context-db ."
+            "--build-arg MORPHZ_CARGO_FEATURES=context-db ."
         ),
         "target": "x86_64-unknown-linux-gnu",
         "container_platform": "linux/amd64",

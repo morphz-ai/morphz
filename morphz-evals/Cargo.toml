@@ -5,17 +5,17 @@ edition = "2021"
 rust-version.workspace = true
 
 [features]
-experimental-context-db = ["morphz/experimental-context-db"]
+context-db = ["morphz/context-db"]
 
 [[bin]]
 name = "context_db_postgres_runtime_benchmark"
 path = "src/bin/context_db_postgres_runtime_benchmark.rs"
-required-features = ["experimental-context-db"]
+required-features = ["context-db"]
 
 [[bin]]
 name = "context_db_postgres_concurrency_benchmark"
 path = "src/bin/context_db_postgres_concurrency_benchmark.rs"
-required-features = ["experimental-context-db"]
+required-features = ["context-db"]
 
 [dependencies]
 morphz = { path = "../morphz" }

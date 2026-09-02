@@ -7,7 +7,7 @@ use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
 };
-use crate::config::{AppConfig, AuthAccountConfig, StorageBackend};
+use crate::config::{AppConfig, AuthAccountConfig, CognitiveStoreBackend, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::{
     Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
@@ -1064,29 +1064,50 @@ impl MorphzRuntimeBuilder {
             ),
             None => match self.config.storage.backend {
                 StorageBackend::Sqlite => {
-                    #[cfg(feature = "experimental-context-db")]
-                    let sqlite_store = if let Ok(permit) = crate::experimental::require_enabled(
-                        &self.config.experimental.enabled,
-                        crate::experimental::CONTEXT_DB,
-                    ) {
-                        SqliteStore::new_with_context_db(
-                            &database_path,
-                            &self.config.storage.sqlite,
-                            permit,
-                        )
-                        .await?
-                    } else {
-                        SqliteStore::new_with_config(&database_path, &self.config.storage.sqlite)
-                            .await?
+                    let sqlite_store = match self.config.storage.cognitive_store {
+                        CognitiveStoreBackend::ContextDb => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                SqliteStore::new_with_context_db(
+                                    &database_path,
+                                    &self.config.storage.sqlite,
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                return Err(
+                                    "storage.cognitive_store=context_db requires a ContextDB-enabled binary"
+                                        .into(),
+                                );
+                            }
+                        }
+                        CognitiveStoreBackend::Legacy => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                SqliteStore::new_with_legacy(
+                                    &database_path,
+                                    &self.config.storage.sqlite,
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                SqliteStore::new_with_config(
+                                    &database_path,
+                                    &self.config.storage.sqlite,
+                                )
+                                .await?
+                            }
+                        }
                     };
-                    #[cfg(not(feature = "experimental-context-db"))]
-                    let sqlite_store =
-                        SqliteStore::new_with_config(&database_path, &self.config.storage.sqlite)
-                            .await?;
                     (
                         Arc::new(sqlite_store),
                         Some(database_path.clone()),
-                        format!("sqlite:{database_path}"),
+                        format!(
+                            "sqlite:{database_path}:{}",
+                            self.config.storage.cognitive_store.as_str()
+                        ),
                     )
                 }
                 StorageBackend::Postgres => {
@@ -1099,34 +1120,54 @@ impl MorphzRuntimeBuilder {
                             "PostgreSQL Storage was selected, but environment variable '{url_env}' does not exist or is not valid Unicode"
                         )
                     })?;
-                    #[cfg(feature = "experimental-context-db")]
-                    let store = if let Ok(permit) = crate::experimental::require_enabled(
-                        &self.config.experimental.enabled,
-                        crate::experimental::CONTEXT_DB,
-                    ) {
-                        PostgresStore::new_with_context_db(
-                            &database_url,
-                            self.config.storage.postgres.max_connections,
-                            Arc::clone(&observability),
-                            permit,
-                        )
-                        .await?
-                    } else {
-                        PostgresStore::new_with_observability(
-                            &database_url,
-                            self.config.storage.postgres.max_connections,
-                            Arc::clone(&observability),
-                        )
-                        .await?
+                    let store = match self.config.storage.cognitive_store {
+                        CognitiveStoreBackend::ContextDb => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                PostgresStore::new_with_context_db(
+                                    &database_url,
+                                    self.config.storage.postgres.max_connections,
+                                    Arc::clone(&observability),
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                return Err(
+                                    "storage.cognitive_store=context_db requires a ContextDB-enabled binary"
+                                        .into(),
+                                );
+                            }
+                        }
+                        CognitiveStoreBackend::Legacy => {
+                            #[cfg(feature = "context-db")]
+                            {
+                                PostgresStore::new_with_legacy(
+                                    &database_url,
+                                    self.config.storage.postgres.max_connections,
+                                    Arc::clone(&observability),
+                                )
+                                .await?
+                            }
+                            #[cfg(not(feature = "context-db"))]
+                            {
+                                PostgresStore::new_with_observability(
+                                    &database_url,
+                                    self.config.storage.postgres.max_connections,
+                                    Arc::clone(&observability),
+                                )
+                                .await?
+                            }
+                        }
                     };
-                    #[cfg(not(feature = "experimental-context-db"))]
-                    let store = PostgresStore::new_with_observability(
-                        &database_url,
-                        self.config.storage.postgres.max_connections,
-                        Arc::clone(&observability),
+                    (
+                        Arc::new(store),
+                        None,
+                        format!(
+                            "postgres:env:{url_env}:{}",
+                            self.config.storage.cognitive_store.as_str()
+                        ),
                     )
-                    .await?;
-                    (Arc::new(store), None, format!("postgres:env:{url_env}"))
                 }
             },
         };
@@ -10347,7 +10388,7 @@ mod tests {
 
     struct ReplyClient;
 
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     struct ContextDbLearningClient {
         calls: AtomicU64,
         observed_committed_context: Arc<AtomicBool>,
@@ -11309,7 +11350,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     #[async_trait::async_trait]
     impl Client for ContextDbLearningClient {
         async fn create_completion(
@@ -11833,15 +11874,6 @@ mod tests {
     async fn restart_recovers_background_wake_before_following_user_signal_without_starvation() {
         let database = NamedTempFile::new().unwrap();
         let config = AppConfig::default();
-        #[cfg(feature = "experimental-context-db")]
-        let config = {
-            let mut config = config;
-            config
-                .experimental
-                .enabled
-                .insert(crate::experimental::CONTEXT_DB.to_string());
-            config
-        };
         let tool_policy = RuntimeToolPolicy {
             context_only: true,
             coding_eval: true,
@@ -14501,17 +14533,13 @@ mod tests {
         assert!(session.inspect_context().await.is_ok());
     }
 
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     #[tokio::test]
-    async fn gated_context_db_runtime_completes_a_real_dialogue_turn() {
+    async fn context_db_runtime_completes_a_real_dialogue_turn() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
-        config
-            .experimental
-            .enabled
-            .insert(crate::experimental::CONTEXT_DB.to_string());
         let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -14597,17 +14625,13 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     #[tokio::test]
-    async fn gated_context_db_model_learning_survives_restart_and_remains_recallable() {
+    async fn context_db_model_learning_survives_restart_and_remains_recallable() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
-        config
-            .experimental
-            .enabled
-            .insert(crate::experimental::CONTEXT_DB.to_string());
         let observed_committed_context = Arc::new(AtomicBool::new(false));
         let runtime = MorphzRuntime::builder(
             config.clone(),

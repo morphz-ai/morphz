@@ -12,7 +12,6 @@ use super::context_db_runtime::{
     runtime_node_id, validate_new_projection, validate_runtime_snapshot, ProjectionMeta,
     RuntimeContextSnapshot, RuntimeMutationBasis, RuntimeStoragePatch, META_NODE_ID, ROOT_NODE_ID,
 };
-use super::{ExperimentalFeaturePermit, CONTEXT_DB};
 use crate::context_ast::decode_context_head;
 use crate::context_store::{
     ContextMutationPlan, ContextStateCommitment, ContextStateHead, ContextStateMutation,
@@ -42,13 +41,7 @@ struct LockedRuntimeBasis {
 }
 
 impl PostgresContextDbRuntimeAdapter {
-    pub(crate) async fn attach(
-        pool: PgPool,
-        permit: ExperimentalFeaturePermit,
-    ) -> ContextDbResult<Self> {
-        if !permit.permits(CONTEXT_DB) {
-            return Err(ContextDbError::FeatureDenied);
-        }
+    pub(crate) async fn attach(pool: PgPool) -> ContextDbResult<Self> {
         let adapter = Self { pool };
         adapter.initialize().await?;
         Ok(adapter)
@@ -161,23 +154,6 @@ impl PostgresContextDbRuntimeAdapter {
         .await?;
         transaction.commit().await?;
         Ok(())
-    }
-
-    pub(crate) async fn pending_legacy_count(&self) -> ContextDbResult<i64> {
-        Ok(sqlx::query_scalar::<_, i64>(
-            r#"SELECT COUNT(*)
-               FROM (
-                 SELECT context_id FROM context_heads
-                 UNION
-                 SELECT context_id FROM mind_projections
-               ) legacy
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM experimental_contextdb_contexts authoritative
-                 WHERE authoritative.context_id = legacy.context_id
-               )"#,
-        )
-        .fetch_one(&self.pool)
-        .await?)
     }
 
     pub(crate) async fn install_context_state_in_transaction(

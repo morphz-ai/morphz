@@ -12990,21 +12990,15 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "experimental-context-db")]
+    #[cfg(feature = "context-db")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_cold_shared_builds_fetch_one_full_contextdb_payload() {
         const READERS: usize = 16;
         let tmp = TempDir::new().unwrap();
-        let permit = crate::experimental::require_enabled(
-            &BTreeSet::from([crate::experimental::CONTEXT_DB.to_string()]),
-            crate::experimental::CONTEXT_DB,
-        )
-        .unwrap();
         let store = Arc::new(
             SqliteStore::new_with_context_db(
                 tmp.path().join("context-cold-load.db").to_str().unwrap(),
                 &crate::config::SqliteStorageConfig::default(),
-                permit,
             )
             .await
             .unwrap(),
@@ -19236,21 +19230,16 @@ mod tests {
     async fn mind_seed_inherits_cognition_without_parent_sessions_or_observations() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-mind-seed.db");
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         let store = Arc::new(
             SqliteStore::new_with_context_db(
                 db.to_str().unwrap(),
                 &crate::config::SqliteStorageConfig::default(),
-                crate::experimental::require_enabled(
-                    &BTreeSet::from([crate::experimental::CONTEXT_DB.to_string()]),
-                    crate::experimental::CONTEXT_DB,
-                )
-                .unwrap(),
             )
             .await
             .unwrap(),
         );
-        #[cfg(not(feature = "experimental-context-db"))]
+        #[cfg(not(feature = "context-db"))]
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         for context_id in ["seed-source", "seed-target"] {
             store

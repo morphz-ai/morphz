@@ -1,7 +1,7 @@
-//! Repeatable microbenchmark for the experimental single-node ContextDB.
+//! Repeatable microbenchmark for the single-node ContextDB.
 //!
 //! Run with a release build:
-//! `cargo run -p morphz --release --features experimental-context-db --example context_db_sqlite_benchmark`
+//! `cargo run -p morphz --release --example context_db_sqlite_benchmark`
 //!
 //! Optional environment variables:
 //! - `MORPHZ_CONTEXTDB_BENCH_MIB` (default: 1)
@@ -9,12 +9,10 @@
 //! - `MORPHZ_CONTEXTDB_BENCH_CONTEXTS` (default: 8)
 //! - `MORPHZ_CONTEXTDB_BENCH_WRITES_PER_CONTEXT` (default: 25)
 
-use morphz::experimental::context_db::{
+use morphz::context_db::{
     AuthorityDomain, ContextAuthority, ContextNodeDraft, ContextOperation, ContextStore,
     ContextTransaction, CreateContextRequest, SqliteContextDb,
 };
-use morphz::experimental::{require_enabled, CONTEXT_DB};
-use std::collections::BTreeSet;
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -165,9 +163,7 @@ async fn main() {
 
     let directory = tempfile::tempdir().expect("temporary benchmark directory");
     let path = directory.path().join("context.db");
-    let enabled = BTreeSet::from([CONTEXT_DB.to_string()]);
-    let permit = require_enabled(&enabled, CONTEXT_DB).expect("ContextDB feature permit");
-    let store = SqliteContextDb::open(&path, permit)
+    let store = SqliteContextDb::open(&path)
         .await
         .expect("open ContextDB benchmark store");
 

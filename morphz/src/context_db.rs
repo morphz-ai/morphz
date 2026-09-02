@@ -1,11 +1,10 @@
-//! Single-node SQLite reference backend for the ContextDB experiment.
+//! Single-node SQLite backend for the authoritative ContextDB.
 //!
 //! Its authority is the current Context AST itself. Application Event History,
 //! Recall and audit history are not prerequisites for reading or mutating that
 //! state. The optional Runtime adapter composes this backend with the existing
 //! Agent Trajectory and Runtime Control capabilities in one SQLite transaction.
 
-use super::{ExperimentalFeaturePermit, CONTEXT_DB};
 use crate::sexpr::{self, SExpr};
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
@@ -27,7 +26,6 @@ pub type ContextDbResult<T> = Result<T, ContextDbError>;
 
 #[derive(Debug)]
 pub enum ContextDbError {
-    FeatureDenied,
     Invalid(String),
     NotFound(String),
     AlreadyExists(String),
@@ -51,9 +49,6 @@ pub enum ContextDbError {
 impl fmt::Display for ContextDbError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FeatureDenied => formatter.write_str(
-                "ContextDB requires the compiled and operator-enabled context-db experiment",
-            ),
             Self::Invalid(message) => write!(formatter, "invalid ContextDB request: {message}"),
             Self::NotFound(message) => write!(formatter, "ContextDB object not found: {message}"),
             Self::AlreadyExists(message) => {
@@ -322,13 +317,7 @@ pub struct SqliteContextDb {
 }
 
 impl SqliteContextDb {
-    pub async fn open(
-        path: impl AsRef<Path>,
-        permit: ExperimentalFeaturePermit,
-    ) -> ContextDbResult<Self> {
-        if !permit.permits(CONTEXT_DB) {
-            return Err(ContextDbError::FeatureDenied);
-        }
+    pub async fn open(path: impl AsRef<Path>) -> ContextDbResult<Self> {
         let path = path.as_ref();
         // SQLite gives every independent `:memory:` connection a different
         // database. Keep that useful test/development mode on one connection;
@@ -357,13 +346,7 @@ impl SqliteContextDb {
     /// Sharing the pool is essential for the Runtime adapter: one physical
     /// SQLite transaction can then commit the authoritative Context AST,
     /// immutable Agent Trajectory facts and scheduler/control state together.
-    pub(crate) async fn attach(
-        pool: SqlitePool,
-        permit: ExperimentalFeaturePermit,
-    ) -> ContextDbResult<Self> {
-        if !permit.permits(CONTEXT_DB) {
-            return Err(ContextDbError::FeatureDenied);
-        }
+    pub(crate) async fn attach(pool: SqlitePool) -> ContextDbResult<Self> {
         let store = Self { pool };
         store.initialize().await?;
         Ok(store)
@@ -1768,7 +1751,6 @@ fn audit_node_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::experimental::require_enabled;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::Barrier;
@@ -1783,20 +1765,13 @@ mod tests {
         async fn new() -> Self {
             let directory = tempfile::tempdir().expect("temporary ContextDB directory");
             let path = directory.path().join("context.db");
-            let store = SqliteContextDb::open(&path, context_db_permit())
-                .await
-                .expect("open experimental ContextDB");
+            let store = SqliteContextDb::open(&path).await.expect("open ContextDB");
             Self {
                 _directory: directory,
                 path,
                 store,
             }
         }
-    }
-
-    fn context_db_permit() -> ExperimentalFeaturePermit {
-        let enabled = BTreeSet::from([CONTEXT_DB.to_string()]);
-        require_enabled(&enabled, CONTEXT_DB).expect("test enabled ContextDB feature")
     }
 
     fn authority(
@@ -2357,9 +2332,7 @@ mod tests {
         let before = create_mind_with_frames(&harness.store, "restart", 3).await;
         harness.store.close().await;
 
-        let reopened = SqliteContextDb::open(&harness.path, context_db_permit())
-            .await
-            .unwrap();
+        let reopened = SqliteContextDb::open(&harness.path).await.unwrap();
         let after = reopened.get_context("restart").await.unwrap();
         assert_eq!(after, before);
         assert!(reopened.audit_context("restart").await.unwrap().matches);
@@ -2683,9 +2656,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_mode_uses_one_coherent_sqlite_database() {
-        let store = SqliteContextDb::open(":memory:", context_db_permit())
-            .await
-            .unwrap();
+        let store = SqliteContextDb::open(":memory:").await.unwrap();
         let created = create_context(&store, "memory").await;
         let loaded = store.get_context("memory").await.unwrap();
         assert_eq!(loaded, created);
@@ -2699,20 +2670,6 @@ mod tests {
         assert!(matches!(
             canonicalize_body("(frame) (second-root)"),
             Err(ContextDbError::Invalid(message)) if message.contains("exactly one")
-        ));
-    }
-
-    #[cfg(feature = "experimental-cognitive-coordination")]
-    #[tokio::test]
-    async fn a_permit_for_another_experiment_cannot_open_context_db() {
-        use crate::experimental::COGNITIVE_COORDINATION;
-
-        let directory = tempfile::tempdir().unwrap();
-        let enabled = BTreeSet::from([COGNITIVE_COORDINATION.to_string()]);
-        let wrong_permit = require_enabled(&enabled, COGNITIVE_COORDINATION).unwrap();
-        assert!(matches!(
-            SqliteContextDb::open(directory.path().join("wrong.db"), wrong_permit).await,
-            Err(ContextDbError::FeatureDenied)
         ));
     }
 }

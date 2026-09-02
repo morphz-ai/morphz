@@ -191,19 +191,12 @@ def _write_runtime_config(
         "",
         "[storage]",
         'backend = "sqlite"',
+        f'cognitive_store = {json.dumps("context_db" if context_store == "contextdb" else "legacy")}',
         "",
         "[edge_execution]",
         "max_in_flight_per_node = 8",
         "",
     ]
-    if context_store == "contextdb":
-        lines.extend(
-            [
-                "[experimental]",
-                'enabled = ["context-db"]',
-                "",
-            ]
-        )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 

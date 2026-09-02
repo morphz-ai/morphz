@@ -10,7 +10,6 @@ use super::context_db::{
     ContextDbResult, ContextNodeDraft, ContextNodeRecord, ContextOperation, ContextSnapshot,
     ContextTransaction, CreateContextRequest, SqliteContextDb,
 };
-use super::ExperimentalFeaturePermit;
 use crate::context_ast::{
     decode_context_head, decode_context_value, encode_context_head, encode_context_value,
     native_mind_state_hash_from_roots, ContextAstHead,
@@ -195,11 +194,8 @@ async fn persist_runtime_head(
 }
 
 impl ContextDbRuntimeAdapter {
-    pub(crate) async fn attach(
-        pool: SqlitePool,
-        permit: ExperimentalFeaturePermit,
-    ) -> ContextDbResult<Self> {
-        let db = SqliteContextDb::attach(pool.clone(), permit).await?;
+    pub(crate) async fn attach(pool: SqlitePool) -> ContextDbResult<Self> {
+        let db = SqliteContextDb::attach(pool.clone()).await?;
         initialize_runtime_heads(&pool).await?;
         Ok(Self { db })
     }
@@ -532,6 +528,9 @@ impl ContextDbRuntimeAdapter {
         })
     }
 
+    // These fields form one fenced snapshot/AST synchronization boundary;
+    // keeping them explicit makes the transaction's preconditions auditable.
+    #[allow(clippy::too_many_arguments)]
     async fn sync_context_state_against_snapshot(
         &self,
         transaction: &mut sqlx::Transaction<'_, Sqlite>,

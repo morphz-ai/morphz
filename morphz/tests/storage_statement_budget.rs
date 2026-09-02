@@ -10,12 +10,10 @@ use morphz::memory::{
     SessionMountKind, SessionProjectionStore, SessionStatus, SessionStore, SessionUpdate,
     ThreadActivationStatus, WorkAssignmentStore, WorkerCoordinationMode,
 };
-#[cfg(feature = "experimental-context-db")]
+#[cfg(feature = "context-db")]
 use morphz::memory::{MindProjectionStore, NewMindProjection};
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
-#[cfg(feature = "experimental-context-db")]
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -157,25 +155,17 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
 
-        // Compiling the ContextDB experiment must not silently weaken the
+        // Compiling the stable ContextDB backend must not silently weaken the
         // original one-statement Runtime-directory contract. Exercise the
         // authoritative AST path itself, including its complete structural
         // validation and Mind decoding, rather than merely counting an empty
         // experimental schema lookup.
-        #[cfg(feature = "experimental-context-db")]
+        #[cfg(feature = "context-db")]
         {
             let context_db_file = NamedTempFile::new().unwrap();
-            let permit = morphz::experimental::require_enabled(
-                &std::collections::BTreeSet::from([
-                    morphz::experimental::CONTEXT_DB.to_string()
-                ]),
-                morphz::experimental::CONTEXT_DB,
-            )
-            .unwrap();
             let context_db_store = SqliteStore::new_with_context_db(
                 context_db_file.path().to_str().unwrap(),
                 &morphz::config::SqliteStorageConfig::default(),
-                permit,
             )
             .await
             .unwrap();
@@ -204,10 +194,7 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
                 .unwrap();
             let initial_mind = morphz::orchestrator::context::MindState::default();
             let initial_state = serde_json::to_value(&initial_mind).unwrap();
-            let initial_hash = format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&initial_mind).unwrap())
-            );
+            let initial_hash = morphz::context_store::context_state_hash(&initial_mind).unwrap();
             context_db_store
                 .initialize_mind_projection(NewMindProjection {
                     context_id: "context-db-statement-budget-context".to_string(),

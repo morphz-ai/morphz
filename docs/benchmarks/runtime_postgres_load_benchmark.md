@@ -51,7 +51,7 @@ MORPHZ_BENCH_CONCURRENCY=16 \
 MORPHZ_BENCH_MESSAGES=64 \
 MORPHZ_BENCH_POSTGRES_POOL_SIZE=16 \
 MORPHZ_BENCH_MODEL_DELAY_MS=0 \
-cargo run -q -p morphz-evals --features experimental-context-db \
+cargo run -q -p morphz-evals --features context-db \
   --bin runtime_postgres_load_benchmark
 ```
 
@@ -87,7 +87,7 @@ MORPHZ_BENCH_POSTGRES_URL='postgresql://...' \
 MORPHZ_CONTEXTDB_RUNTIME_BENCH_FRAMES=256 \
 MORPHZ_CONTEXTDB_RUNTIME_BENCH_BODY_BYTES=4096 \
 cargo run -q -p morphz-evals --release \
-  --features experimental-context-db \
+  --features context-db \
   --bin context_db_postgres_runtime_benchmark
 ```
 
@@ -106,7 +106,7 @@ MORPHZ_CONTEXTDB_CONCURRENCY_FRAMES=64 \
 MORPHZ_CONTEXTDB_CONCURRENCY_BODY_BYTES=512 \
 MORPHZ_CONTEXTDB_CONCURRENCY_POOL_SIZE=64 \
 cargo run -q -p morphz-evals --release \
-  --features experimental-context-db \
+  --features context-db \
   --bin context_db_postgres_concurrency_benchmark
 ```
 

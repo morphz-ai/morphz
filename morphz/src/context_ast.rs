@@ -124,9 +124,12 @@ pub(crate) fn decode_context_value(
 /// cognitive state has one commitment on every backend. The hierarchy lets a
 /// Store verify a bounded mutation from changed leaves plus persisted sibling
 /// hashes instead of serializing the complete Mind as JSON.
+pub(crate) type NativeCollectionCommitment = (i64, String, String);
+pub(crate) type NativeMindStateCommitmentParts = (String, Vec<NativeCollectionCommitment>);
+
 pub(crate) fn native_mind_state_commitment_parts(
     state: &MindState,
-) -> Result<(String, Vec<(i64, String, String)>), String> {
+) -> Result<NativeMindStateCommitmentParts, String> {
     let mut roots = Vec::with_capacity(STATE_ROOTS.len());
 
     roots.push(collection_subtree_hash(

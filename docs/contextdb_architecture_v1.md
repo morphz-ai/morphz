@@ -1,19 +1,20 @@
 # ContextDB：面向认知 Runtime 的分布式 AST 数据库架构 v1
 
-> 状态：Architecture Baseline / SQLite + PostgreSQL Runtime Integration Preview
+> 状态：Architecture Baseline / SQLite + PostgreSQL Default Runtime Integration
 >
 > 日期：2026-09-01
 >
 > 适用范围：ContextDB、Morphz Runtime、Morphz Cloud 的长期存储边界
 >
-> 本文同时描述长期目标与 2026-09-01 的实现基线。默认关闭的
-> `experimental-context-db` 已接入 SQLite 与 PostgreSQL Runtime：Context AST 是当前 Mind
+> 本文同时描述长期目标与 2026-09-02 的实现基线。稳定的 `context-db` feature 在官方构建中
+> 默认启用并已接入 SQLite 与 PostgreSQL Runtime：Context AST 是当前 Mind
 > 的唯一运行时权威，原生 Mutation、Agent Trajectory、Session Projection、Recall Projection
 > 与 Runtime Control 在各自后端的同一事务域内原子提交，现有数据库可进行一次性精确导入。
 > 双后端真实数据库 Conformance、statement budget、真实对话和重启恢复已经通过测试；旧
 > `mind_projections` / `context_heads` 数据只作为显式迁移输入，不参与 ContextDB 模式的当前
 > Mind 读写。完整 Runtime Control AST 化、Edge、Watch、通用 Selector、Reference Model
-> 和分布式复制仍属于后续阶段。
+> 和分布式复制仍属于后续阶段。观察期保留显式 `legacy` 回滚后端，但启动不会迁移或双写；
+> 两个方向都必须先运行 `morphz storage migrate-cognitive-store --to ...`。
 
 ## 1. 核心决策
 
@@ -32,7 +33,7 @@ ContextDB 核心不依赖历史重放；Morphz Runtime 仍将完整 Agent Trajec
 
 三种架构状态的区别是：
 
-| 维度 | 旧 Runtime | 当前双后端 Integration Preview | ContextDB 长期目标 |
+| 维度 | 旧 Runtime | 当前默认 ContextDB + 显式回滚 | ContextDB 长期目标 |
 | --- | --- | --- | --- |
 | 当前 Mind 权威 | `mind_projections` + `context_heads` | Context AST | Context AST |
 | 模型 Context | 从多表和 Projection 组装 | Mind 从 ContextDB 读取，其余控制投影保持现状 | ContextDB View / Selector |
@@ -42,9 +43,11 @@ ContextDB 核心不依赖历史重放；Morphz Runtime 仍将完整 Agent Trajec
 | Agent Trajectory | 完整保留 | 完整保留并可验证导出 | Morphz 能力；不作为 ContextDB 当前状态的重放前提 |
 | 分布式复制 | 依赖外部关系数据库 | SQLite 单机 | ContextDB Shard / Raft 或成熟分布式 KV |
 
-当前接入以默认关闭的实验特性提供可回滚边界。SQLite 与 PostgreSQL 路径已经证明 Mind
-authority 可以切换而不牺牲 Agent Trajectory、Session/Thread、调度、Recall 和恢复语义；后续仍按
-兼容矩阵逐域迁移，不能把“接入了 Mind”误写成“全部 Runtime 状态已经 AST 化”。
+当前接入以稳定配置 `storage.cognitive_store = "context_db" | "legacy"` 提供观察期回滚边界。
+SQLite 与 PostgreSQL 路径已经证明 Mind authority 可以通过双向显式迁移切换而不牺牲
+Agent Trajectory、Session/Thread、调度、Recall 和恢复语义。正常提交只写活动 Store；配置
+与活动权威不一致时启动失败。后续仍按兼容矩阵逐域迁移，不能把“接入了 Mind”误写成
+“全部 Runtime 状态已经 AST 化”。
 
 ## 2. 目标与非目标
 

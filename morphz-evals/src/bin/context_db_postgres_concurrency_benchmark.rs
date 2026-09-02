@@ -12,7 +12,6 @@ use morphz::context_store::{
     ContextStateMutation,
 };
 use morphz::event::Event;
-use morphz::experimental::{require_enabled, CONTEXT_DB};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextStore, MindProjectionStore, NewAgent, NewCognitiveContext, NewMindProjection,
@@ -550,13 +549,11 @@ async fn main() -> Result<(), BenchError> {
     sqlx::query(&format!("CREATE SCHEMA {schema}"))
         .execute(&administration)
         .await?;
-    let permit = require_enabled(&BTreeSet::from([CONTEXT_DB.to_string()]), CONTEXT_DB)?;
     let store = Arc::new(
         PostgresStore::new_with_context_db(
             &scoped_url(&database_url, &schema),
             pool_size,
             Arc::new(Observability::default()),
-            permit,
         )
         .await?,
     );

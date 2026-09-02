@@ -124,9 +124,10 @@ class Me09SharedContextTest(unittest.TestCase):
             )
             config = config_path.read_text(encoding="utf-8")
             self.assertIn(
-                '[experimental]\nenabled = ["context-db"]',
+                '[storage]\nbackend = "sqlite"\ncognitive_store = "context_db"',
                 config,
             )
+            self.assertNotIn("[experimental]", config)
 
     def test_context_db_arm_gate_reads_the_authoritative_context_row(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:

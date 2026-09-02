@@ -9,7 +9,6 @@ use morphz::context_store::{
     ContextMutationPlan, ContextNodeValue, ContextStateCommit, ContextStateMutation,
 };
 use morphz::event::Event;
-use morphz::experimental::{require_enabled, CONTEXT_DB};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::{
     ContextStore, EventStore, MindProjectionStore, NewAgent, NewCognitiveContext,
@@ -21,7 +20,6 @@ use morphz::orchestrator::context::{
 };
 use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
-use std::collections::BTreeSet;
 use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -321,13 +319,11 @@ async fn main() -> Result<(), BenchError> {
 
     let legacy =
         Arc::new(PostgresStore::new(&scoped_url(&database_url, &legacy_schema), pool_size).await?);
-    let permit = require_enabled(&BTreeSet::from([CONTEXT_DB.to_string()]), CONTEXT_DB)?;
     let context_db = Arc::new(
         PostgresStore::new_with_context_db(
             &scoped_url(&database_url, &context_db_schema),
             pool_size,
             Arc::new(Observability::default()),
-            permit,
         )
         .await?,
     );

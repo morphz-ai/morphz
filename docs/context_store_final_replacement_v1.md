@@ -2,7 +2,7 @@
 
 > 状态：实施约束，完成前不得切换开源发布基线
 >
-> 权威目标（已修订）：让 ContextDB 成为 Morphz 唯一、默认、完整的认知存储实现；建立
+> 权威目标（已修订）：让 ContextDB 成为 Morphz 默认、完整的认知存储实现；建立
 > 原生 Context Mutation 协议和统一 ContextStore，完成 SQLite 与 PostgreSQL 等价实现，
 > 移除旧 Mind Projection 热路径与隐式双写；固定 Recall 默认语义为
 > `visible AND non_resident`——排除当前 View 已驻留内容，同时保留 retired 内容与 active
@@ -17,22 +17,27 @@
 > 历史对照，不得把 ME-08 再列为待运行项目，也不得为此重复消耗模型额度。ME-09 不属于
 > 本轮替换验收范围。
 >
+> 观察期边界（2026-09-02）：本轮保留 `legacy` 作为显式回滚后端。Runtime 任一时刻只有
+> 一个认知 Store 具有写入权威；启动只选择并校验，不迁移、不双写。双向切换必须先执行
+> 显式迁移命令。删除 legacy 是观察稳定后的独立任务，不属于本轮实现。
+>
 > 适用后端：SQLite、PostgreSQL
 
 ## 1. 最终决定
 
 Morphz 开源版以 Context AST 作为 Agent 当前认知状态的唯一权威。最终 Runtime：
 
-1. 默认启用 ContextDB，不要求 Cargo feature、Runtime permit 或隐藏配置；
+1. 官方构建默认编译并启用稳定的 `context-db` feature，不要求 experimental permit 或隐藏配置；
 2. 不在请求热路径读写 `mind_projections` / `context_heads`；
 3. 不在 ContextDB 失败时静默回退到旧 Mind Projection；
 4. 不以双写作为长期兼容方案；
 5. 保留显式、可重复、可校验的旧数据迁移器；
-6. 保留冻结的旧实现测试构建，仅用于 A/B 正确性与性能比较，不进入发布产物；
+6. 观察期保留 `storage.cognitive_store = "legacy"` 作为显式回滚选择；
 7. SQLite 与 PostgreSQL 实现同一协议，通过同一套 Conformance Suite。
 
-开发分支允许分阶段落地，但合并为开源基线前必须删除上述运行时双轨。任何尚未完成的
-后端、迁移或语义门禁都必须使构建或启动明确失败，不能用隐式降级掩盖。
+ContextDB 与 legacy 不是同时活跃的双轨实现。`cognitive_store_control` 记录唯一活动权威，
+普通提交只写当前 Store。配置选择与该标记不一致时启动必须明确失败，不能用隐式迁移、
+静默回退或双写掩盖。观察期结束后是否删除 legacy，由独立清理任务和 Canary 结果决定。
 
 ## 2. 权威边界
 
@@ -205,19 +210,33 @@ Runtime 不依赖 SQLite 表名、PostgreSQL JSONB 形态或未来的复制实�
 - 缓存缺失、损坏或删除后可以完全从权威 AST 重建；
 - 缓存绝不成为第二份权威 Mind。
 
-## 6. 迁移与删除旧路径
+## 6. 显式迁移、切换与旧路径观察期
 
-迁移是显式运维步骤，不是永久双写：
+迁移是显式运维步骤，不是启动副作用，也不是永久双写。正式入口为：
 
-1. 冻结目标 Context 的旧写入；
-2. 读取旧 Mind Projection，规范化并导入 ContextDB；
-3. 校验 state hash、规范编码、Frame/Relation/retirement 集合和 Context head；
-4. 记录迁移结果与源版本；
-5. 重复执行必须幂等；
-6. 校验失败时保持旧数据不变并明确失败；
-7. 切换后 Runtime 只读取 ContextDB；
-8. 开源发布前删除运行时兼容双写和静默旧读；
-9. 旧表可由独立清理命令在备份后删除，迁移器本身保留版本化输入支持。
+```text
+morphz storage migrate-cognitive-store --to context_db
+morphz storage migrate-cognitive-store --to legacy
+```
+
+切换协议：
+
+1. 停止 Runtime 或冻结所有认知写入；
+2. 从 `cognitive_store_control` 指定的当前权威读取全部 Context；无标记的历史数据库仅在
+   显式迁移命令中比较两侧完整 revision 与规范状态来确立来源；
+3. 将来源规范化并完整同步到目标 Store；
+4. 校验 state hash、规范编码、Frame/Relation/retirement 集合和 Context head；
+5. 同 revision 但状态、hash 或 head 不同视为分歧，整个迁移失败；
+6. 在同一事务中写入目标并把活动权威标记切换到目标；
+7. 重复迁移到当前权威必须幂等；
+8. 校验失败时回滚全部写入并保留原活动权威；
+9. 迁移完成后显式修改 `storage.cognitive_store`，再启动 Runtime；
+10. 未迁移就修改配置时，Runtime 必须报出所需迁移命令并拒绝启动；
+11. 正常提交只写活动 Store，inactive Store 保持在上次迁移 revision，用于证明没有隐式双写；
+12. legacy 表及配置开关的删除在观察期之后单独决定，本轮不执行。
+
+新建空数据库可以直接采用配置选择并建立活动标记；两侧已经逐 Context 完全等价的历史
+数据库也可以只建立标记，因为这不涉及数据复制。除此之外，启动过程不得改写认知数据。
 
 ## 7. 正确性门禁
 
@@ -356,17 +375,17 @@ commit、构建参数、Runtime 配置、任务清单、逐任务轨迹、评分
 3. shared Context、50 Session、restart、Tool continuation 等 Morphz 核心能力单独报告；
 4. 远端服务器只在本地双后端和冻结构建准备完成后开启，避免验证即将被删除的中间适配层。
 
-## 10. 完成定义
+## 10. 本轮完成定义
 
 只有同时满足以下条件，目标才算完成：
 
-- ContextDB 是默认且唯一的 Runtime Mind Store；
-- `experimental-context-db` 和 `context-db` permit 从正常使用路径移除；
+- ContextDB 是默认 Runtime Mind Store，legacy 仅作为显式选择的观察期回滚后端；
+- 稳定 Cargo feature 名为 `context-db`，ContextDB 已从 experiment 清单和 Runtime permit 中移除；
 - SQLite、PostgreSQL 实现相同协议并通过同一 Conformance Suite；
 - 旧 Mind Projection 热路径和隐式双写已删除；
-- 显式迁移器可校验、幂等、失败安全；
+- 双向显式迁移器可校验、幂等、失败安全；未迁移切换会拒绝启动；
 - 默认 Recall 为 visibility-aware、non-resident-only，并覆盖 retired archive 与被 swap out
   的 active Session；
 - 全量语义、恢复、并发、性能、Terminal Benchmark、云端 A/B 和 Canary 门禁通过；
 - 文档只陈述已经由可复现实验证明的能力；
-- 开源用户无需知道旧架构存在，也不会因兼容层承担其复杂度和成本。
+- legacy 删除不计入本轮完成条件；观察期结束后另立任务，不能在本轮顺手删除。
