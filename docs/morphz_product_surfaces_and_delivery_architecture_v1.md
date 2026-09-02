@@ -4,7 +4,7 @@
 >
 > 日期：2026-07-21
 >
-> 相关文档：[产品化架构收口 v1](./morphz_productization_architecture_v1.md)、[Dashboard / Runtime Console 设计 v1](./morphz_dashboard_runtime_console_design_v1.md)、[SDK 与可信 Gateway 身份接入](./morphz_sdk_and_trusted_gateway_identity_v1.md)
+> 相关文档：[产品化架构收口 v1](./morphz_productization_architecture_v1.md)、[Dashboard / Runtime Console 设计 v1](./morphz_dashboard_runtime_console_design_v1.md)、[SDK 与可信 Gateway 身份接入](./morphz_sdk_and_trusted_gateway_identity_v1.md)、[通用能力与产品表达矩阵 v1](./roadmap/morphz_product_capability_surface_matrix_v1.md)
 
 ## 1. 为什么需要重新划分产品面
 
