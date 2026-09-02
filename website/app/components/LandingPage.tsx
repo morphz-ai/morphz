@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
+import { sitePath, SITE_LINKS } from "@/lib/site";
 import { CognitiveField } from "./CognitiveField";
 import { ContextEvaluationField } from "./ContextEvaluationField";
 import { LandingMotion } from "./LandingMotion";
@@ -13,7 +14,7 @@ const content = {
     title: ["上下文，", "不再只是", "消息历史。"],
     lead: "Morphz 让结构化上下文成为模型直接求值的对象。模型负责非确定性的语义处理，运行时负责事实、权限、状态与执行。",
     idea: "理解这个想法",
-    start: "开始运行",
+    start: "下载 Morphz",
     source: "检视源码",
     boundaryIndex: "01 / 计算边界",
     boundaryTitle: "把认知交给模型，\n把确定性留给运行\u2060时。",
@@ -41,13 +42,14 @@ const content = {
       ["失败之后继续", "网络、工具或进程失败留下可检查终态，工作可以恢复而不是重新猜测。", "activation: interrupted → resumed"],
     ],
     evidenceIndex: "04 / 证据路径",
-    evidenceTitle: "先读思想，\n再检查证据。",
-    evidenceLead: "文章、论文实验、源码与公开文档承担不同职责。它们共同构成 Morphz 的技术主张。",
+    evidenceTitle: "从思想，\n进入证据与实现。",
+    evidenceLead: "文章解释计算模型，论文建立论证边界，源码与文档给出可复现的实现。实时人格是一个独立运行的 Morphz 实例。",
     evidence: [
       ["IDEA", "从聊天补全到结构化上下文求值", "一篇解释新计算模型的技术文章。", "blog"],
-      ["EVIDENCE", "论文实验中心", "冻结协议、失败样本、Pilot 与确认性证据边界。", "research"],
+      ["PAPER", "非确定性认知符号求值", "计算模型、实现边界与分层实验的双语预印本。", "paper"],
       ["SOURCE", "运行时源码", "真实实现、测试、迁移与可审计状态机。", "source"],
       ["SPEC", "产品文档", "只描述当前能够验证的公开行为。", "docs"],
+      ["LIVE", "运行中的 Morphz", "前往独立的人格站，观察一个持续活动的官方实例。", "live"],
     ],
     runIndex: "05 / 第一次运行",
     runTitle: "从一台本地机器开始。",
@@ -69,7 +71,7 @@ const content = {
     title: ["Context is", "no longer", "a transcript."],
     lead: "Morphz makes structured Context the object a model evaluates directly. The model handles nondeterministic semantics; the runtime owns facts, authority, state, and execution.",
     idea: "Read the idea",
-    start: "Start running",
+    start: "Download Morphz",
     source: "Inspect the source",
     boundaryIndex: "01 / COMPUTATIONAL BOUNDARY",
     boundaryTitle: "Cognition belongs to the model.\nCertainty belongs to the runtime.",
@@ -97,13 +99,14 @@ const content = {
       ["Continuation after failure", "Network, tool, and process failures leave inspectable states that can be resumed.", "activation: interrupted → resumed"],
     ],
     evidenceIndex: "04 / EVIDENCE PATH",
-    evidenceTitle: "Read the idea.\nThen inspect the evidence.",
-    evidenceLead: "The essay, research program, source, and public documentation have different jobs. Together they support the technical claim.",
+    evidenceTitle: "From the idea\nto evidence and implementation.",
+    evidenceLead: "The essay explains the computational model, the paper establishes its claim boundary, and the source and documentation make the implementation reproducible. The live agent is a separately operated Morphz instance.",
     evidence: [
       ["IDEA", "From Chat Completion to Structured Context Evaluation", "The technical essay introducing the computational model.", "blog"],
-      ["EVIDENCE", "Paper evaluation center", "Frozen protocols, failures, pilots, and confirmatory boundaries.", "research"],
+      ["PAPER", "Nondeterministic Cognitive Symbol Evaluation", "The bilingual preprint defining the model, implementation boundary, and layered evidence.", "paper"],
       ["SOURCE", "Runtime source", "The implementation, tests, migrations, and auditable state machines.", "source"],
       ["SPEC", "Product documentation", "Only behavior that can be verified in the current implementation.", "docs"],
+      ["LIVE", "Morphz in operation", "Visit the separate persona site and observe a continuously active official instance.", "live"],
     ],
     runIndex: "05 / FIRST RUN",
     runTitle: "Start on one local machine.",
@@ -123,11 +126,16 @@ const content = {
 
 export function LandingPage({ locale }: { locale: Locale }) {
   const t = content[locale];
-  const docs = locale === "zh" ? "/docs" : "/en/docs";
-  const blog = locale === "zh" ? "/blog/from-chat-completion-to-structured-context-evaluation" : "/en/blog/from-chat-completion-to-structured-context-evaluation";
-  const research = "https://github.com/yaowenai/morphz/tree/main/docs/research/paper_evaluation";
-  const source = "https://github.com/yaowenai/morphz";
-  const evidenceHref = (kind: string) => kind === "blog" ? blog : kind === "research" ? research : kind === "source" ? source : docs;
+  const docs = sitePath(locale, "/docs");
+  const blog = sitePath(locale, "/blog/from-chat-completion-to-structured-context-evaluation");
+  const download = sitePath(locale, "/download");
+  const evidenceHref = (kind: string) => {
+    if (kind === "blog") return blog;
+    if (kind === "paper") return sitePath(locale, "/paper");
+    if (kind === "source") return SITE_LINKS.source;
+    if (kind === "live") return SITE_LINKS.liveAgent;
+    return docs;
+  };
 
   return (
     <main className="landing-shell">
@@ -151,8 +159,8 @@ export function LandingPage({ locale }: { locale: Locale }) {
           <p className="hero-immersive__lead">{t.lead}</p>
           <div className="hero-immersive__actions">
             <Link className="hero-action hero-action--primary" href={blog}>{t.idea}<span aria-hidden="true">↗</span></Link>
-            <Link className="hero-action" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
-            <a className="hero-action hero-action--quiet" href={source}>{t.source}<span aria-hidden="true">↗</span></a>
+            <Link className="hero-action" href={download}>{t.start}<span aria-hidden="true">→</span></Link>
+            <a className="hero-action hero-action--quiet" href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
           </div>
         </div>
         <div className="hero-immersive__evaluation" data-reveal>
@@ -218,10 +226,10 @@ export function LandingPage({ locale }: { locale: Locale }) {
       <section className="site-section landing-section run-section run-stage">
         <div className="run-section__copy" data-reveal>
           <p className="chapter-heading__index">{t.runIndex}</p><h2>{t.runTitle}</h2><p>{t.runLead}</p>
-          <Link className="text-action text-action--primary" href={`${docs}/getting-started`}>{t.start}<span aria-hidden="true">→</span></Link>
+          <Link className="text-action text-action--primary" href={download}>{t.start}<span aria-hidden="true">→</span></Link>
         </div>
         <div className="run-sheet" aria-label={t.copyLabel} data-reveal>
-          <div><span>{t.copyLabel}</span><span>macOS · Linux</span></div>
+          <div><span>{t.copyLabel}</span><span>macOS · Linux · Windows</span></div>
           <pre><code><b>01</b> cargo build --release{"\n"}<b>02</b> ./target/release/morphz setup{"\n"}<b>03</b> ./target/release/morphz</code></pre>
           <footer><span>{t.preview}</span><p>{t.previewBody}</p></footer>
         </div>

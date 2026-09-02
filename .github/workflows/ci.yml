@@ -295,3 +295,29 @@ jobs:
             echo "::error::dashboard/dist is stale. Run 'npm run build' in dashboard/ and commit the result."
             exit 1
           fi
+
+  website:
+    name: Technical Website
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Verify generated documentation is current
+        run: |
+          if [ -n "$(git status --porcelain -- lib/docs.generated.ts)" ]; then
+            git diff -- lib/docs.generated.ts
+            echo "::error::website/lib/docs.generated.ts is stale. Regenerate and commit it."
+            exit 1
+          fi

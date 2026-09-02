@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stat } from "node:fs/promises";
 import test from "node:test";
 
 async function render(path = "/") {
@@ -61,6 +62,42 @@ test("renders the bilingual journal and its first essay", async () => {
   assert.match(html[3], /Morphz Project/);
   assert.doesNotMatch(html[2], /我叫 Morphz|一台认知机，也应当拥有自己的声音/);
   assert.doesNotMatch(html[3], /I am Morphz|A cognitive machine should have a voice of its own/);
+});
+
+test("renders the bilingual paper and native distribution pages", async () => {
+  const routes = ["/paper", "/en/paper", "/download", "/en/download"];
+  const responses = await Promise.all(routes.map(render));
+  for (const response of responses) assert.equal(response.status, 200);
+  const html = await Promise.all(responses.map((response) => response.text()));
+
+  assert.match(html[0], /结构化上下文上的非确定性认知符号求值/);
+  assert.match(html[0], /morphz_nondeterministic_cognitive_symbol_evaluation_preprint_zh\.pdf/);
+  assert.match(html[1], /Nondeterministic Cognitive Symbol Evaluation over Structured Context/);
+  assert.match(html[1], /morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en\.pdf/);
+  assert.match(html[2], /macOS/);
+  assert.match(html[2], /Linux/);
+  assert.match(html[2], /Windows/);
+  assert.match(html[2], /Windows 版是原生程序/);
+  assert.match(html[3], /The Windows build is native/);
+
+  for (const filename of [
+    "morphz_nondeterministic_cognitive_symbol_evaluation_preprint_zh.pdf",
+    "morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf",
+  ]) {
+    const paper = await stat(new URL(`../public/paper/${filename}`, import.meta.url));
+    assert.ok(paper.size > 100_000, `${filename} is missing or unexpectedly small`);
+  }
+});
+
+test("keeps the technical main site separate from the live persona product", async () => {
+  const response = await render("/");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /chat\.morphz\.ai/);
+  assert.match(html, /实时人格/);
+  assert.match(html, /论文/);
+  assert.match(html, /下载/);
+  assert.doesNotMatch(html, /创建我的 Agent|私有 Agent|个人 Agent/);
 });
 
 test("returns not found for an unknown documentation slug", async () => {

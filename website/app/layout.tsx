@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,31 +12,26 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export async function generateMetadata(): Promise<Metadata> {
-  const requestHeaders = await headers();
-  const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
-  const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  const origin = new URL(`${protocol}://${host}`);
-  const image = new URL("/og.png", origin).toString();
-  return {
-    metadataBase: origin,
-    title: { default: "Morphz — S-Expression Cognitive Machine", template: "%s · Morphz" },
-    description: "Morphz is an S-Expression Cognitive Machine that evaluates structured Context through a nondeterministic semantic processor and a deterministic runtime kernel.",
-    openGraph: {
-      type: "website",
-      siteName: "Morphz",
-      title: "Morphz — S-Expression Cognitive Machine",
-      description: "From chat completion to structured Context evaluation.",
-      images: [{ url: image, width: 1200, height: 630, alt: "Morphz Agent Runtime" }],
-    },
-    twitter: {
-      card: "summary_large_image",
-      title: "Morphz — S-Expression Cognitive Machine",
-      description: "From chat completion to structured Context evaluation.",
-      images: [image],
-    },
-  };
-}
+const canonicalOrigin = new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://morphz.ai");
+
+export const metadata: Metadata = {
+  metadataBase: canonicalOrigin,
+  title: { default: "Morphz — S-Expression Cognitive Machine", template: "%s · Morphz" },
+  description: "Morphz is an S-Expression Cognitive Machine that evaluates structured Context through a nondeterministic semantic processor and a deterministic runtime kernel.",
+  openGraph: {
+    type: "website",
+    siteName: "Morphz",
+    title: "Morphz — S-Expression Cognitive Machine",
+    description: "From chat completion to structured Context evaluation.",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Morphz Agent Runtime" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Morphz — S-Expression Cognitive Machine",
+    description: "From chat completion to structured Context evaluation.",
+    images: ["/og.png"],
+  },
+};
 
 export default function RootLayout({
   children,

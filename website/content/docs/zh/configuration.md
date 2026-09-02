@@ -43,7 +43,7 @@ API 密钥和 OAuth 令牌不应直接写在 `morphz.toml`。配置只保存凭�
 
 ## HTTP 代理路由
 
-模型服务、OAuth 和认知协调流量默认遵循系统代理。标准 `NO_PROXY` 排除规则始终生效；如果一台机器通过代理访问互联网、但需要直连本地认知协调网格（Mesh），可以这样启动：
+模型服务、OAuth 和认知协调流量默认遵循系统代理。标准 `NO_PROXY` 排除规则始终生效；如果一台机器通过代理访问互联网、但需要直连本地认知协调网格，可以这样启动：
 
 ```bash
 NO_PROXY=.local,localhost,127.0.0.1,::1 morphz serve ...
@@ -53,14 +53,14 @@ NO_PROXY=.local,localhost,127.0.0.1,::1 morphz serve ...
 
 ## 默认执行设备
 
-本地、自托管和命令行部署默认把运行 Morphz 的机器作为 Execution Target，用户无需额外选择。云端 C 端服务不应让用户任务落到服务主机，可在可信宿主配置中关闭这个默认值：
+本地、自托管和命令行部署默认把运行 Morphz 的机器作为执行设备，用户无需额外选择。云端 C 端服务不应让用户任务落到服务主机，可在可信宿主配置中关闭这个默认值：
 
 ```toml
 [execution_targets]
 local_enabled = false
 ```
 
-也可设置 `MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED=false`。此时 Session 未选择设备时仍可正常对话；第一次需要物理工具时，Runtime 会返回 `EXECUTION_TARGET_REQUIRED`。客户端可调用 `GET /api/sessions/:session_id/execution-targets`，据其 `reason` 区分“安装并配对 `morphz-edge`”与“从已有设备中选择”。Session 的选择只影响随后创建的新任务，已运行任务不会迁移。
+也可设置 `MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED=false`。此时会话未选择设备时仍可正常对话；第一次需要物理工具时，运行时会返回 `EXECUTION_TARGET_REQUIRED`。客户端可调用 `GET /api/sessions/:session_id/execution-targets`，据其 `reason` 区分“安装并配对 `morphz-edge`”与“从已有设备中选择”。会话的选择只影响随后创建的新任务，已运行任务不会迁移。
 
 ## 容量覆盖
 
@@ -97,4 +97,4 @@ max_input_attachment_bytes = 67108864
 max_input_attachment_total_bytes = 201326592
 ```
 
-最终请求逐项采用宿主策略与物理模型声明中更严格的值。物理模型未声明这些字段时保持“未知”，Morphz 不会根据模型名称猜测。每个 Model Attempt 会记录实际附件数量、总字节数、有效上限和限制来源。
+最终请求逐项采用宿主策略与物理模型声明中更严格的值。物理模型未声明这些字段时保持“未知”，Morphz 不会根据模型名称猜测。每次模型尝试都会记录实际附件数量、总字节数、有效上限和限制来源。
