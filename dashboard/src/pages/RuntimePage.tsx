@@ -1,9 +1,33 @@
-import { Brain, CheckCircle2, ChevronDown, Database, GitBranch, KeyRound, Layers3, Radio, RefreshCw, Server, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react'
+import { useState } from 'react'
+import { Brain, CheckCircle2, ChevronDown, Clock3, Database, GitBranch, KeyRound, Layers3, Pencil, Radio, RefreshCw, Save, Server, ShieldCheck, Terminal, Trash2, TriangleAlert, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { statusLabel } from '../app/presentation'
 import { RuntimeMonitor } from './RuntimeMonitor'
 import type { RuntimeOverview, RuntimeOverviewObjective, RuntimeOverviewThread } from './RuntimeOverviewPage'
+
+export interface CapabilityDeltaSummary {
+  network: boolean
+  read_roots: string[]
+  write_roots: string[]
+  secret_env: string[]
+}
+
+export interface CapabilityLeaseSummary {
+  id: string
+  revision: number
+  principal_id: string
+  agent_id: string
+  scope: 'thread' | 'session'
+  session_id: string
+  thread_id: string
+  target_id: string
+  capabilities: string[]
+  requested: CapabilityDeltaSummary
+  status: string
+  issued_at: string
+  expires_at: string
+}
 
 interface RuntimePageProps {
   overview: RuntimeOverview | null
@@ -56,7 +80,7 @@ interface RuntimePageProps {
   contextCapacity: Record<string, unknown>
   executionTargets: Array<{ id: string; revision: number; name: string; kind: string; status: string; platform?: string; workspace_root?: string; provider_node_id?: string; capabilities: string[] }>
   executionNodes: Array<{ id: string; revision: number; name: string; status: string; platform?: string; protocol_version: number; capabilities: string[]; last_seen_at?: string }>
-  capabilityLeases: Array<{ id: string; revision: number; thread_id: string; target_id: string; capabilities: string[]; status: string; expires_at: string }>
+  capabilityLeases: CapabilityLeaseSummary[]
   executionJobs: Array<{ id: string; revision: number; thread_id: string; target_id: string; tool_name: string; status: string; claimed_by?: string; progress_ref?: string; created_at: string }>
   onRefresh: () => void
   onRefreshOverview: () => void
@@ -74,6 +98,7 @@ interface RuntimePageProps {
   onSetTargetStatus: (targetId: string, revision: number, status: 'online' | 'disabled') => void
   onRevokeNode: (nodeId: string, revision: number) => void
   onRevokeLease: (leaseId: string, revision: number) => void
+  onRestrictLease: (leaseId: string, revision: number, requested: CapabilityDeltaSummary, expiresAt: string) => Promise<boolean>
   onCancelJob: (jobId: string, revision: number) => void
 }
 
@@ -103,6 +128,95 @@ function formatBytes(value: number) {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`
   if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`
   return `${(value / 1024 ** 3).toFixed(1)} GiB`
+}
+
+function localDateTimeValue(iso: string) {
+  const date = new Date(iso)
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 19)
+}
+
+function AuthorizationRule({
+  lease,
+  onRestrict,
+  onRevoke,
+}: {
+  lease: CapabilityLeaseSummary
+  onRestrict: RuntimePageProps['onRestrictLease']
+  onRevoke: RuntimePageProps['onRevokeLease']
+}) {
+  const { t } = useTranslation()
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [network, setNetwork] = useState(lease.requested.network)
+  const [readRoots, setReadRoots] = useState(() => new Set(lease.requested.read_roots))
+  const [writeRoots, setWriteRoots] = useState(() => new Set(lease.requested.write_roots))
+  const [secretEnv, setSecretEnv] = useState(() => new Set(lease.requested.secret_env))
+  const [expiresAt, setExpiresAt] = useState(() => localDateTimeValue(lease.expires_at))
+  const [minimumExpiry] = useState(() => localDateTimeValue(new Date(Date.now() + 60_000).toISOString()))
+  const permissionCount = Number(network) + readRoots.size + writeRoots.size + secretEnv.size
+  const permissions = [
+    ...(lease.requested.network ? [t('runtime.authorizationNetwork')] : []),
+    ...lease.requested.read_roots.map(path => t('runtime.authorizationRead', { path })),
+    ...lease.requested.write_roots.map(path => t('runtime.authorizationWrite', { path })),
+    ...lease.requested.secret_env.map(name => t('runtime.authorizationSecret', { name })),
+  ]
+  const toggleSet = (current: Set<string>, value: string, setter: (next: Set<string>) => void) => {
+    const next = new Set(current)
+    if (next.has(value)) next.delete(value)
+    else next.add(value)
+    setter(next)
+  }
+  const save = async () => {
+    if (permissionCount === 0 || saving) return
+    setSaving(true)
+    const saved = await onRestrict(
+      lease.id,
+      lease.revision,
+      {
+        network,
+        read_roots: [...readRoots],
+        write_roots: [...writeRoots],
+        secret_env: [...secretEnv],
+      },
+      new Date(expiresAt).toISOString(),
+    )
+    setSaving(false)
+    if (saved) setEditing(false)
+  }
+  return <article className="authorization-rule">
+    <i data-status={lease.status} />
+    <div className="authorization-rule-body">
+      <header>
+        <strong>{lease.capabilities.join(', ') || '—'}</strong>
+        <span>{t(`runtime.authorizationScope.${lease.scope}`)}</span>
+      </header>
+      <small title={lease.id}>{lease.target_id} · {lease.scope === 'session' ? lease.session_id : lease.thread_id}</small>
+      <div className="authorization-rule-permissions">
+        {permissions.map(permission => <code key={permission}>{permission}</code>)}
+      </div>
+      <em><Clock3 size={11} /> {t('runtime.authorizationExpires', { value: new Date(lease.expires_at).toLocaleString() })}</em>
+      {editing && <div className="authorization-rule-editor">
+        <p>{t('runtime.authorizationAdjustHint')}</p>
+        <div className="authorization-rule-checks">
+          {lease.requested.network && <label><input type="checkbox" checked={network} onChange={event => setNetwork(event.target.checked)} /> {t('runtime.authorizationNetwork')}</label>}
+          {lease.requested.read_roots.map(path => <label key={`read:${path}`}><input type="checkbox" checked={readRoots.has(path)} onChange={() => toggleSet(readRoots, path, setReadRoots)} /> {t('runtime.authorizationRead', { path })}</label>)}
+          {lease.requested.write_roots.map(path => <label key={`write:${path}`}><input type="checkbox" checked={writeRoots.has(path)} onChange={() => toggleSet(writeRoots, path, setWriteRoots)} /> {t('runtime.authorizationWrite', { path })}</label>)}
+          {lease.requested.secret_env.map(name => <label key={`secret:${name}`}><input type="checkbox" checked={secretEnv.has(name)} onChange={() => toggleSet(secretEnv, name, setSecretEnv)} /> {t('runtime.authorizationSecret', { name })}</label>)}
+        </div>
+        <label className="authorization-rule-expiry"><span>{t('runtime.authorizationExpiry')}</span><input type="datetime-local" step="1" min={minimumExpiry} max={localDateTimeValue(lease.expires_at)} value={expiresAt} onChange={event => setExpiresAt(event.target.value)} /></label>
+        {permissionCount === 0 && <strong className="authorization-rule-warning">{t('runtime.authorizationEmptyHint')}</strong>}
+        <footer>
+          <button type="button" disabled={saving || permissionCount === 0 || !expiresAt} onClick={() => void save()}><Save size={12} /> {saving ? t('runtime.saving') : t('runtime.saveRule')}</button>
+          <button type="button" onClick={() => setEditing(false)}><X size={12} /> {t('runtime.cancel')}</button>
+        </footer>
+      </div>}
+    </div>
+    <div className="authorization-rule-actions">
+      <button type="button" onClick={() => setEditing(current => !current)}><Pencil size={12} /> {t('runtime.adjustRule')}</button>
+      <button type="button" className="danger" onClick={() => onRevoke(lease.id, lease.revision)}><Trash2 size={12} /> {t('runtime.deleteRule')}</button>
+    </div>
+  </article>
 }
 
 export function RuntimePage(props: RuntimePageProps) {
@@ -200,17 +314,11 @@ export function RuntimePage(props: RuntimePageProps) {
               {props.executionJobs.length === 0 && <p>{t('runtime.noExecutionJobs')}</p>}
             </div>
           </section>
-          <section>
+          <section className="authorization-rules-panel">
             <header><span><ShieldCheck size={13} /> {t('runtime.capabilityLeases')}</span><b>{props.capabilityLeases.length}</b></header>
-            <div className="execution-plane-list">
-              {props.capabilityLeases.map(lease => (
-                <article key={lease.id}>
-                  <i data-status={lease.status} />
-                  <span><strong>{lease.capabilities.join(', ') || '—'}</strong><small title={lease.id}>{lease.target_id} · {lease.thread_id}</small></span>
-                  <em>{statusLabel(lease.status, t)}</em>
-                  {lease.status === 'active' && <button type="button" onClick={() => props.onRevokeLease(lease.id, lease.revision)}>{t('runtime.revoke')}</button>}
-                </article>
-              ))}
+            <p className="authorization-rules-hint">{t('runtime.authorizationRulesHint')}</p>
+            <div className="execution-plane-list authorization-rules-list">
+              {props.capabilityLeases.map(lease => <AuthorizationRule key={`${lease.id}:${lease.revision}`} lease={lease} onRestrict={props.onRestrictLease} onRevoke={props.onRevokeLease} />)}
               {props.capabilityLeases.length === 0 && <p>{t('runtime.noCapabilityLeases')}</p>}
             </div>
           </section>

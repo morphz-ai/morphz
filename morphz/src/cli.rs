@@ -471,7 +471,10 @@ fn global_args(locale: Locale) -> Vec<Arg> {
             "add-dir",
             "add-dir",
             "DIR",
-            locale.text("Add a readable and writable directory", "添加可读写目录"),
+            locale.text(
+                "Add an additional readable and writable Workspace directory",
+                "添加额外的可读写工作区目录",
+            ),
         )
         .action(ArgAction::Append),
         Arg::new("network")

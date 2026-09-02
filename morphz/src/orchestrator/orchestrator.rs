@@ -4,9 +4,9 @@ use crate::activation_admission::{
 };
 use crate::admission::{AdmissionClass, AdmissionKey};
 use crate::approval::{
-    capability_lease_policy_digest, capability_lease_was_approved, stable_capability_lease_id,
-    ApprovalDecision, ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub,
-    CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    capability_lease_is_session_scoped, capability_lease_policy_digest,
+    capability_lease_was_approved, stable_capability_lease_id, ApprovalDecision, ApprovalRequest,
+    CapabilityLeaseOffer, HumanApprovalHub, CAPABILITY_LEASE_APPROVED_RISK_TAG,
 };
 use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
@@ -33,19 +33,19 @@ use crate::memory::{
     stable_thread_activation_id, stable_thread_id, ActionGroupFilter, ActionGroupMemberRecord,
     ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStore, ActivationOutcomeCommit,
     ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
-    ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStore,
-    DelegationFilter, DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, NewActionGroup, NewActionGroupMember,
-    NewApprovalRequest, NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob,
-    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveStatus,
-    ObjectiveWaitCondition, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
-    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord,
-    SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSupervision,
-    ThreadSupervisorKind,
+    ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseScope,
+    CapabilityLeaseStore, DelegationFilter, DelegationStatus, DeliveryFlushCommit, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, NewActionGroup,
+    NewActionGroupMember, NewApprovalRequest, NewCapabilityLease, NewCognitiveContext,
+    NewDelegation, NewExecutionJob, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
+    NewThreadSignal, ObjectiveStatus, ObjectiveWaitCondition, PlanExecutionFilter,
+    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus, SessionStore,
+    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadGroupFilter, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadRecord, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{
@@ -1594,7 +1594,7 @@ async fn covering_capability_lease_grant(
         .list_capability_leases(CapabilityLeaseFilter {
             principal_id: Some(principal_id.to_string()),
             agent_id: Some(agent_id.to_string()),
-            thread_id: Some(thread.id.clone()),
+            session_id: Some(thread.session_id.clone()),
             target_id: Some(target.id.clone()),
             capability: Some(capability.clone()),
             active_at: Some(Utc::now()),
@@ -1602,6 +1602,7 @@ async fn covering_capability_lease_grant(
             // scope. Authorization correctness must not depend on a recent
             // row window.
             limit: None,
+            ..CapabilityLeaseFilter::default()
         })
         .await?;
     Ok(leases.into_iter().find_map(|lease| {
@@ -1610,6 +1611,10 @@ async fn covering_capability_lease_grant(
                 .capabilities
                 .iter()
                 .any(|candidate| candidate == &capability)
+            || match lease.scope {
+                CapabilityLeaseScope::Thread => lease.thread_id != thread.id,
+                CapabilityLeaseScope::Session => lease.session_id != thread.session_id,
+            }
         {
             return None;
         }
@@ -14778,6 +14783,7 @@ impl Orchestrator {
         let leases = match services
             .capability_leases
             .list_capability_leases(CapabilityLeaseFilter {
+                scope: Some(CapabilityLeaseScope::Thread),
                 thread_id: Some(thread_id.to_string()),
                 active_at: Some(Utc::now()),
                 limit: Some(1_000),
@@ -16611,6 +16617,7 @@ impl Orchestrator {
                     .map(|principal_id| CapabilityLeaseOffer {
                         principal_id: principal_id.clone(),
                         agent_id: agent_id.to_string(),
+                        session_id: thread.session_id.clone(),
                         thread_id: thread.id.clone(),
                         target_id: new_job.target_id.clone(),
                         capability: requirement.action.lease_capability(),
@@ -16749,6 +16756,12 @@ impl Orchestrator {
                         id: stable_capability_lease_id(&approval.id),
                         principal_id: offer.principal_id.clone(),
                         agent_id: offer.agent_id.clone(),
+                        scope: if capability_lease_is_session_scoped(&approval.risk_tags) {
+                            CapabilityLeaseScope::Session
+                        } else {
+                            CapabilityLeaseScope::Thread
+                        },
+                        session_id: offer.session_id.clone(),
                         thread_id: offer.thread_id.clone(),
                         target_id: offer.target_id.clone(),
                         capabilities: vec![offer.capability.clone()],

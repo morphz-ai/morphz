@@ -562,11 +562,27 @@
     "executionTargets": "执行目标",
     "executionNodes": "执行节点",
     "executionJobs": "执行作业",
-    "capabilityLeases": "能力租约",
+    "capabilityLeases": "授权规则",
     "noExecutionTargets": "当前没有可用执行目标",
     "noExecutionNodes": "当前身份没有已配对执行节点",
     "noExecutionJobs": "当前没有执行作业",
-    "noCapabilityLeases": "当前没有有效能力租约",
+    "noCapabilityLeases": "当前没有可复用的授权规则",
+    "authorizationRulesHint": "这里仅管理人工批准后形成的受限规则。完全访问只能从输入框的权限预设启用。",
+    "authorizationScope": {
+      "thread": "本轮任务",
+      "session": "本会话"
+    },
+    "authorizationNetwork": "允许网络访问",
+    "authorizationRead": "读取 {{path}}",
+    "authorizationWrite": "写入 {{path}}",
+    "authorizationSecret": "使用凭证 {{name}}",
+    "authorizationExpires": "有效至 {{value}}",
+    "authorizationExpiry": "有效期",
+    "authorizationAdjustHint": "只能取消已有权限或缩短有效期；扩大范围必须由新的请求重新审批。",
+    "authorizationEmptyHint": "若要移除全部权限，请删除这条规则。",
+    "adjustRule": "调整规则",
+    "saveRule": "保存调整",
+    "deleteRule": "删除规则",
     "enable": "启用",
     "disable": "禁用",
     "revoke": "撤销",
@@ -809,7 +825,7 @@
     "label": "权限预设",
     "title": "立即修改当前会话随后开始的工具工作的沙箱与审批策略；已在运行的进程和其他会话不受影响",
     "autoApproval": "自动审批",
-    "requestApproval": "请求人工审批",
+    "requestApproval": "请求审批",
     "fullAccess": "完全访问",
     "customDefault": "自定义（服务默认）"
   },
@@ -1123,6 +1139,8 @@
       "quickActions": "当前待审批请求的快捷操作",
       "viewAll": "查看审批（{{count}}）",
       "allowOnce": "仅允许这一次",
+      "allowTask": "本轮任务内始终允许",
+      "allowSession": "本会话内始终允许",
       "deny": "拒绝"
     },
     "admission": {
@@ -1565,6 +1583,8 @@
     "attentionAcknowledged": "用户已查看该精确版本的问题并确认已知；保留审计历史",
     "approval": {
       "allow_once": "用户通过控制台仅批准这一次能力申请",
+      "allow_lease": "用户通过控制台允许当前任务后续使用这项能力边界",
+      "allow_session": "用户通过控制台允许本会话后续操作复用当前精确能力边界",
       "deny": "用户通过控制台拒绝能力申请"
     }
   },
@@ -1589,6 +1609,10 @@
     "cancelDelegationBody": "{{task}}\n\n运行时将取消当前委派及其所有非终态后代；已经发生的外部副作用和审计历史仍会保留。",
     "denyApprovalTitle": "拒绝能力申请？",
     "denyApproval": "拒绝后该执行作业将无法使用申请的能力。确定拒绝？",
+    "allowSessionApprovalTitle": "本会话内始终允许这项权限？",
+    "allowSessionApproval": "这会批准当前请求，并为本会话建立仅匹配同一身份、Agent、执行目标、能力类型及权限边界的受限规则；不会启用完全访问，也不会影响其他会话。",
+    "revokeAuthorizationRuleTitle": "删除这条授权规则？",
+    "revokeAuthorizationRule": "后续请求将不能再复用这条规则；审计记录仍会保留。",
     "cancelScheduleTitle": "取消调度计划？",
     "cancelSchedule": "取消后这个调度计划不会再触发。确定取消？",
     "rescheduleAt": "新的触发时间（标准时间或本地日期时间）",

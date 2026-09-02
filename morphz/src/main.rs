@@ -206,6 +206,7 @@ async fn main() -> Result<(), AppError> {
     if dispatch_experiment_command(&invocation, &resolved.config)? {
         return Ok(());
     }
+    ensure_selected_persistent_workspace(&resolved.config)?;
     morphz::experimental::require_all_enabled_compiled(&resolved.config.experimental.enabled)?;
     let protected_config_paths = resolved
         .loaded_paths()
@@ -473,7 +474,92 @@ fn resolve_invocation_config(
     resolved.apply_cli_set_overrides(&set_overrides)?;
     apply_cli_config(invocation, &mut resolved.config)?;
     mark_cli_config_sources(invocation, &mut resolved);
+    apply_default_workspace_policy(invocation, cwd, &mut resolved)?;
     Ok(resolved)
+}
+
+fn apply_default_workspace_policy(
+    invocation: &Invocation,
+    launch_directory: &Path,
+    resolved: &mut config::ResolvedConfig,
+) -> Result<(), AppError> {
+    if resolved.source_for("permissions.workspace_root") != "built-in-default" {
+        return Ok(());
+    }
+    let persistent_workspace = config::morphz_workspace_dir().ok_or_else(|| {
+        "cannot determine the default Morphz Workspace; set MORPHZ_HOME or permissions.workspace_root"
+            .to_string()
+    })?;
+    apply_default_workspace_policy_at(
+        invocation,
+        launch_directory,
+        &persistent_workspace,
+        resolved,
+    );
+    Ok(())
+}
+
+fn apply_default_workspace_policy_at(
+    invocation: &Invocation,
+    launch_directory: &Path,
+    persistent_workspace: &Path,
+    resolved: &mut config::ResolvedConfig,
+) {
+    let persistent_workspace = persistent_workspace.to_string_lossy().into_owned();
+    let command = invocation.command_path().join(" ");
+    if matches!(
+        command.as_str(),
+        "serve" | "dashboard" | "setup" | "edge run"
+    ) {
+        resolved.config.permissions.workspace_root = persistent_workspace;
+        resolved.mark_source(
+            "permissions.workspace_root",
+            "runtime-default:persistent-service-workspace",
+        );
+        return;
+    }
+
+    let write_roots_were_default =
+        resolved.source_for("permissions.write_roots") == "built-in-default";
+    resolved.config.permissions.workspace_root = launch_directory.to_string_lossy().into_owned();
+    if !resolved
+        .config
+        .permissions
+        .write_roots
+        .contains(&persistent_workspace)
+    {
+        resolved
+            .config
+            .permissions
+            .write_roots
+            .push(persistent_workspace);
+    }
+    resolved.mark_source(
+        "permissions.workspace_root",
+        "runtime-default:foreground-launch-directory",
+    );
+    if write_roots_were_default {
+        resolved.mark_source(
+            "permissions.write_roots",
+            "runtime-default:persistent-user-workspace",
+        );
+    }
+}
+
+fn ensure_selected_persistent_workspace(app_config: &config::AppConfig) -> Result<(), AppError> {
+    let Some(persistent_workspace) = config::morphz_workspace_dir() else {
+        return Ok(());
+    };
+    let selected = Path::new(&app_config.permissions.workspace_root) == persistent_workspace
+        || app_config
+            .permissions
+            .write_roots
+            .iter()
+            .any(|root| Path::new(root) == persistent_workspace);
+    if selected {
+        config::ensure_morphz_workspace_dir()?;
+    }
+    Ok(())
 }
 
 fn should_run_first_time_setup_with_terminal(
@@ -863,16 +949,33 @@ fn dispatch_experiment_command(
 }
 
 fn protect_runtime_files(app_config: &mut config::AppConfig, config_paths: &[PathBuf]) {
-    for path in config_paths
-        .iter()
-        .cloned()
-        .chain(std::env::current_exe().ok())
-    {
+    let mut paths = config_paths.to_vec();
+    paths.extend(std::env::current_exe().ok());
+    if let Some(home) = config::morphz_home_dir() {
+        paths.extend(runtime_control_plane_paths(&home));
+    }
+    for path in paths {
         let protected = path.to_string_lossy().into_owned();
         if !app_config.permissions.protected_paths.contains(&protected) {
             app_config.permissions.protected_paths.push(protected);
         }
     }
+}
+
+fn runtime_control_plane_paths(home: &Path) -> Vec<PathBuf> {
+    [
+        ".env",
+        "morphz.toml",
+        "models.toml",
+        "active-profile",
+        "managed-secrets.json",
+        "managed-secret-usage.jsonl",
+        "profiles",
+        "edge",
+    ]
+    .into_iter()
+    .map(|name| home.join(name))
+    .collect()
 }
 
 fn command_needs_llm(invocation: &Invocation) -> bool {
@@ -5014,27 +5117,148 @@ async fn shutdown_signal() -> ShutdownSignal {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cli_config, bootstrap_config_language, build_client, command_needs_llm,
-        console_message_from_event, create_session_command, dashboard_browser_url,
-        dashboard_setup_browser_url, ensure_cli_identity_records, format_tool_call_activity,
-        generate_dashboard_token, parse_terminal_approval_input, read_console_input,
-        resolve_resumed_session, select_or_create_console_session,
+        apply_cli_config, apply_default_workspace_policy, apply_default_workspace_policy_at,
+        bootstrap_config_language, build_client, command_needs_llm, console_message_from_event,
+        create_session_command, dashboard_browser_url, dashboard_setup_browser_url,
+        ensure_cli_identity_records, format_tool_call_activity, generate_dashboard_token,
+        parse_terminal_approval_input, read_console_input, resolve_resumed_session,
+        runtime_control_plane_paths, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
         validate_coding_eval_storage_isolation, wait_for_session_reply, ConsoleInput,
         ConsoleMessageKind, OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
-    use morphz::config::{AppConfig, TuiTheme};
+    use morphz::config::{AppConfig, ResolvedConfig, TuiTheme};
     use morphz::event::Event;
     use morphz::i18n::UiLanguage;
     use morphz::llm::{Client, ReasoningEffort};
     use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
     use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
     use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
+    use std::collections::BTreeMap;
     use std::io::Cursor;
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn default_resolved_config() -> ResolvedConfig {
+        ResolvedConfig {
+            config: AppConfig::default(),
+            layers: Vec::new(),
+            sources: BTreeMap::new(),
+            source_history: BTreeMap::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn default_workspace_does_not_expose_morphz_control_plane_siblings() {
+        let paths = runtime_control_plane_paths(Path::new("/home/person/.morphz"));
+        assert!(paths.contains(&Path::new("/home/person/.morphz/.env").to_path_buf()));
+        assert!(
+            paths.contains(&Path::new("/home/person/.morphz/managed-secrets.json").to_path_buf())
+        );
+        assert!(paths.contains(&Path::new("/home/person/.morphz/profiles").to_path_buf()));
+        assert!(paths.contains(&Path::new("/home/person/.morphz/edge").to_path_buf()));
+        assert!(!paths.contains(&Path::new("/home/person/.morphz/workspace").to_path_buf()));
+    }
+
+    #[test]
+    fn persistent_service_commands_use_the_host_owned_default_workspace() {
+        let parser = morphz_command_line_parser();
+        for arguments in [
+            vec!["serve"],
+            vec!["dashboard"],
+            vec!["setup"],
+            vec!["edge", "run"],
+        ] {
+            let invocation = parser.clone().parse(arguments).unwrap();
+            let mut resolved = default_resolved_config();
+
+            apply_default_workspace_policy_at(
+                &invocation,
+                Path::new("/launch/project"),
+                Path::new("/home/person/.morphz/workspace"),
+                &mut resolved,
+            );
+
+            assert_eq!(
+                resolved.config.permissions.workspace_root,
+                "/home/person/.morphz/workspace"
+            );
+            assert!(!resolved
+                .config
+                .permissions
+                .write_roots
+                .iter()
+                .any(|root| root == "/launch/project"));
+        }
+    }
+
+    #[test]
+    fn foreground_commands_keep_launch_directory_and_persistent_workspace_writable() {
+        let parser = morphz_command_line_parser();
+        for invocation in [
+            parser.clone().parse(std::iter::empty::<&str>()).unwrap(),
+            parser.clone().parse(["exec", "hello"]).unwrap(),
+        ] {
+            let mut resolved = default_resolved_config();
+            apply_default_workspace_policy_at(
+                &invocation,
+                Path::new("/launch/project"),
+                Path::new("/home/person/.morphz/workspace"),
+                &mut resolved,
+            );
+
+            assert_eq!(
+                resolved.config.permissions.workspace_root,
+                "/launch/project"
+            );
+            assert_eq!(
+                resolved.config.permissions.write_roots,
+                ["/home/person/.morphz/workspace"]
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_workspace_and_additional_root_sources_are_not_hidden_by_defaults() {
+        let parser = morphz_command_line_parser();
+        let foreground = parser.parse(std::iter::empty::<&str>()).unwrap();
+        let mut explicit = default_resolved_config();
+        explicit.config.permissions.workspace_root = "/configured/workspace".to_string();
+        explicit.mark_source("permissions.workspace_root", "explicit:test");
+        apply_default_workspace_policy(&foreground, Path::new("/launch/project"), &mut explicit)
+            .unwrap();
+        assert_eq!(
+            explicit.config.permissions.workspace_root,
+            "/configured/workspace"
+        );
+        assert!(explicit.config.permissions.write_roots.is_empty());
+
+        let mut with_added_root = default_resolved_config();
+        with_added_root
+            .config
+            .permissions
+            .write_roots
+            .push("/data/shared".to_string());
+        with_added_root.mark_source("permissions.write_roots", "cli:--add-dir");
+        apply_default_workspace_policy_at(
+            &foreground,
+            Path::new("/launch/project"),
+            Path::new("/home/person/.morphz/workspace"),
+            &mut with_added_root,
+        );
+        assert_eq!(
+            with_added_root.config.permissions.write_roots,
+            ["/data/shared", "/home/person/.morphz/workspace"]
+        );
+        assert_eq!(
+            with_added_root.source_for("permissions.write_roots"),
+            "cli:--add-dir"
+        );
+    }
 
     #[test]
     fn coding_eval_sqlite_requires_an_explicit_isolated_database() {

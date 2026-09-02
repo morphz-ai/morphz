@@ -12602,8 +12602,10 @@ Body
         Arc::new(PermissionConfig {
             mode: PermissionMode::AutoReview,
             workspace_root: root.to_string_lossy().to_string(),
+            read_only_outside_workspace: false,
             read_roots: Vec::new(),
             write_roots: Vec::new(),
+            network: false,
             ..PermissionConfig::default()
         })
     }
@@ -13221,15 +13223,26 @@ Body
     }
 
     #[tokio::test]
-    async fn default_profile_requires_approval_for_path_outside_allowed_roots() {
-        // Absolute-path syntax is valid; `/etc/passwd` requires approval because its resolved path is
-        // outside allowed roots.
-        let read_tool = ReadFileTool::new(Arc::new(PermissionConfig::default()));
-        let bad_args = serde_json::json!({
-            "path": "/etc/passwd"
-        });
-        let res = read_tool.execute(&bad_args.to_string()).await.unwrap();
-        assert!(res.contains("permission policy") || res.contains("System error"));
+    async fn default_profile_reads_outside_workspace_without_granting_write_access() {
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("host-fact.txt");
+        std::fs::write(&outside_file, "read-only host fact").unwrap();
+        let config = PermissionConfig {
+            workspace_root: workspace.path().to_string_lossy().into_owned(),
+            ..PermissionConfig::default()
+        };
+        let read_tool = ReadFileTool::new(Arc::new(config));
+        let result = read_tool
+            .execute(
+                &serde_json::json!({
+                    "path": outside_file
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(result.contains("read-only host fact"));
     }
 
     #[tokio::test]

@@ -211,6 +211,10 @@ pub enum ShellEnvironmentPolicy {
 pub struct PermissionConfig {
     pub mode: PermissionMode,
     pub workspace_root: String,
+    /// Keep the host filesystem readable while restricting writes to the
+    /// primary Workspace and explicit writable roots. Protected paths remain
+    /// inaccessible even when this compatibility-oriented default is enabled.
+    pub read_only_outside_workspace: bool,
     pub read_roots: Vec<String>,
     pub write_roots: Vec<String>,
     pub protected_paths: Vec<String>,
@@ -230,6 +234,7 @@ impl Default for PermissionConfig {
         Self {
             mode: PermissionMode::AutoReview,
             workspace_root: ".".to_string(),
+            read_only_outside_workspace: true,
             read_roots: Vec::new(),
             write_roots: Vec::new(),
             protected_paths: vec![
@@ -242,7 +247,7 @@ impl Default for PermissionConfig {
                 ".morphz/config.toml".to_string(),
                 ".morphz/morphz.toml".to_string(),
             ],
-            network: false,
+            network: true,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             approval_policy: ApprovalPolicy::OnRequest,
             reviewer: ReviewerKind::AutoReview,
@@ -302,6 +307,9 @@ impl PermissionProfile {
         let (sandbox_mode, approval_policy, reviewer) = config.preset();
         let mut read_roots = vec![workspace_root.clone()];
         let mut write_roots = vec![workspace_root.clone()];
+        if config.read_only_outside_workspace {
+            push_unique(&mut read_roots, filesystem_root(&workspace_root));
+        }
         for root in &config.read_roots {
             push_unique(
                 &mut read_roots,
@@ -454,6 +462,13 @@ impl PermissionProfile {
         }
         rules
     }
+}
+
+fn filesystem_root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .last()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1038,13 +1053,19 @@ mod tests {
     }
 
     #[test]
-    fn outside_paths_need_approval_and_protected_paths_cannot_escalate() {
+    fn outside_paths_are_read_only_and_protected_paths_cannot_escalate() {
         let root = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
         let profile = profile(root.path());
         assert!(matches!(
             profile
                 .inspect_path(outside.path().to_str().unwrap(), FilesystemAccess::Read)
+                .unwrap(),
+            PathDecision::Allowed(_)
+        ));
+        assert!(matches!(
+            profile
+                .inspect_path(outside.path().to_str().unwrap(), FilesystemAccess::Write)
                 .unwrap(),
             PathDecision::NeedsApproval { .. }
         ));
@@ -1055,6 +1076,41 @@ mod tests {
                 .unwrap(),
             PathDecision::Denied(_)
         ));
+        let outside_secret = outside.path().join(".env");
+        std::fs::write(&outside_secret, "TOKEN=y").unwrap();
+        assert!(matches!(
+            profile
+                .inspect_path(outside_secret.to_str().unwrap(), FilesystemAccess::Read)
+                .unwrap(),
+            PathDecision::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn additional_workspace_roots_are_readable_and_writable() {
+        let root = TempDir::new().unwrap();
+        let additional = TempDir::new().unwrap();
+        let config = PermissionConfig {
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            write_roots: vec![additional.path().to_string_lossy().into_owned()],
+            ..PermissionConfig::default()
+        };
+        let profile = PermissionProfile::from_config(&config).unwrap();
+
+        for access in [FilesystemAccess::Read, FilesystemAccess::Write] {
+            assert!(matches!(
+                profile
+                    .inspect_path(additional.path().to_str().unwrap(), access)
+                    .unwrap(),
+                PathDecision::Allowed(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn default_permission_boundary_keeps_network_available() {
+        let root = TempDir::new().unwrap();
+        assert!(profile(root.path()).network);
     }
 
     #[test]
@@ -1225,6 +1281,7 @@ mod tests {
         let config = PermissionConfig {
             mode: PermissionMode::FullAccess,
             workspace_root: root.path().to_string_lossy().into_owned(),
+            network: false,
             ..PermissionConfig::default()
         };
         let broker = Arc::new(PermissionBroker::new_with_reviewers(

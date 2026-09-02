@@ -1,7 +1,8 @@
-import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
+import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, KeyRound, LoaderCircle, Pause, Play, Radio, ShieldCheck, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
 import type {
+  ApprovalDecision,
   ApprovalRecord,
   ScheduleRecord,
   SchedulerActivationSnapshot,
@@ -79,7 +80,7 @@ function ExecutionJobRow({
   t: TFunction
   locale: string
   decidingApprovalId: string
-  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
+  onApproval: (approval: ApprovalRecord, decision: ApprovalDecision) => void
 }) {
   const { job, approval, result } = snapshot
   const summary = summarizeToolCall(job.tool_name, JSON.stringify(job.request), t)
@@ -112,6 +113,10 @@ function ExecutionJobRow({
             {approval.status === 'pending_human' && (
               <div className="approval-actions">
                 <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
+                {job.initiating_principal_id && <>
+                  <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_lease')}><ShieldCheck size={13} /> {t('work.approvals.allowTask')}</button>
+                  <button disabled={decidingApprovalId === approval.id} className="session-rule" type="button" onClick={() => onApproval(approval, 'allow_session')}><KeyRound size={13} /> {t('work.approvals.allowSession')}</button>
+                </>}
                 <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => onApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
               </div>
             )}
@@ -146,7 +151,7 @@ function ActivationGroup({
   t: TFunction
   locale: string
   decidingApprovalId: string
-  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
+  onApproval: (approval: ApprovalRecord, decision: ApprovalDecision) => void
 }) {
   return (
     <section className="causal-activation">
@@ -203,7 +208,7 @@ export function ThreadCausalCard({
   decidingApprovalId: string
   mutatingScheduleId: string
   mutatingThreadId: string
-  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
+  onApproval: (approval: ApprovalRecord, decision: ApprovalDecision) => void
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
   onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
   selectedSupervisorId?: string

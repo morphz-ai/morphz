@@ -9,9 +9,9 @@ use crate::event::Event;
 use crate::memory::{
     ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
     ApprovalStatus, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    NewApprovalRequest, NewCapabilityLease, NewExecutionJob,
+    CapabilityLeaseRecord, CapabilityLeaseRestriction, CapabilityLeaseScope, CapabilityLeaseStatus,
+    CapabilityLeaseStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, NewApprovalRequest, NewCapabilityLease, NewExecutionJob,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -79,6 +79,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             revision BIGINT NOT NULL DEFAULT 1 CHECK(revision >= 1),
             principal_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'session')),
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
             target_id TEXT NOT NULL REFERENCES execution_targets(id),
             capabilities_json JSONB NOT NULL,
@@ -92,8 +94,21 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             revoked_at TEXT,
             revoke_reason TEXT
         )"#,
+        r#"ALTER TABLE capability_leases
+           ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'thread'"#,
+        r#"ALTER TABLE capability_leases
+           ADD COLUMN IF NOT EXISTS session_id TEXT"#,
+        r#"UPDATE capability_leases AS lease
+           SET session_id = thread.session_id
+           FROM threads AS thread
+           WHERE thread.id = lease.thread_id
+             AND (lease.session_id IS NULL OR lease.session_id = '')"#,
+        r#"ALTER TABLE capability_leases
+           ALTER COLUMN session_id SET NOT NULL"#,
         r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_scope
             ON capability_leases(principal_id, agent_id, thread_id, target_id, status, expires_at)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_session_scope
+            ON capability_leases(principal_id, agent_id, session_id, target_id, status, expires_at)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_approval
             ON capability_leases(issued_by_approval_id)"#,
     ] {
@@ -151,6 +166,9 @@ fn capability_lease_from_row(row: &PgRow) -> Result<CapabilityLeaseRecord, Store
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
         principal_id: row.get("principal_id"),
         agent_id: row.get("agent_id"),
+        scope: CapabilityLeaseScope::parse(&row.get::<String, _>("scope"))
+            .ok_or("unknown Capability Lease scope")?,
+        session_id: row.get("session_id"),
         thread_id: row.get("thread_id"),
         target_id: row.get("target_id"),
         capabilities: serde_json::from_value(row.get("capabilities_json"))?,
@@ -715,6 +733,7 @@ impl CapabilityLeaseStore for PostgresStore {
             ("id", lease.id.as_str()),
             ("principal_id", lease.principal_id.as_str()),
             ("agent_id", lease.agent_id.as_str()),
+            ("session_id", lease.session_id.as_str()),
             ("thread_id", lease.thread_id.as_str()),
             ("target_id", lease.target_id.as_str()),
             ("policy_digest", lease.policy_digest.as_str()),
@@ -738,15 +757,17 @@ impl CapabilityLeaseStore for PostgresStore {
         let now_text = now_text();
         let inserted = sqlx::query(
             r#"INSERT INTO capability_leases
-               (id, revision, principal_id, agent_id, thread_id, target_id,
+               (id, revision, principal_id, agent_id, scope, session_id, thread_id, target_id,
                 capabilities_json, requested_json, policy_digest, status,
                 issued_by_approval_id, issued_at, expires_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $10)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11, $12, $13, $12)
                ON CONFLICT(id) DO NOTHING"#,
         )
         .bind(&lease.id)
         .bind(&lease.principal_id)
         .bind(&lease.agent_id)
+        .bind(lease.scope.as_str())
+        .bind(&lease.session_id)
         .bind(&lease.thread_id)
         .bind(&lease.target_id)
         .bind(serde_json::to_value(&lease.capabilities)?)
@@ -767,6 +788,8 @@ impl CapabilityLeaseStore for PostgresStore {
             .ok_or("Capability Lease insert 后不可见")?;
         let exact = current.principal_id == lease.principal_id
             && current.agent_id == lease.agent_id
+            && current.scope == lease.scope
+            && current.session_id == lease.session_id
             && current.thread_id == lease.thread_id
             && current.target_id == lease.target_id
             && current.capabilities == lease.capabilities
@@ -810,6 +833,12 @@ impl CapabilityLeaseStore for PostgresStore {
         }
         if let Some(value) = filter.agent_id {
             query.push(" AND agent_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.scope {
+            query.push(" AND scope = ").push_bind(value.as_str());
+        }
+        if let Some(value) = filter.session_id {
+            query.push(" AND session_id = ").push_bind(value);
         }
         if let Some(value) = filter.thread_id {
             query.push(" AND thread_id = ").push_bind(value);
@@ -875,6 +904,70 @@ impl CapabilityLeaseStore for PostgresStore {
             .get_capability_lease(id)
             .await?
             .ok_or("Capability Lease revoke 后不可见")?;
+        if result.rows_affected() == 1 {
+            Ok(CapabilityLeaseMutation::Updated(updated))
+        } else {
+            Ok(CapabilityLeaseMutation::Conflict { current: updated })
+        }
+    }
+
+    async fn restrict_capability_lease(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        restriction: CapabilityLeaseRestriction,
+    ) -> Result<CapabilityLeaseMutation, StoreError> {
+        let Some(current) = self.get_capability_lease(id).await? else {
+            return Ok(CapabilityLeaseMutation::NotFound);
+        };
+        if current.status != CapabilityLeaseStatus::Active {
+            return Ok(CapabilityLeaseMutation::Conflict { current });
+        }
+        if current.requested == restriction.requested
+            && current.expires_at == restriction.expires_at
+        {
+            return Ok(CapabilityLeaseMutation::Existing(current));
+        }
+        if current.revision != expected_revision {
+            return Ok(CapabilityLeaseMutation::Conflict { current });
+        }
+        let current_delta: crate::approval::CapabilityDelta =
+            serde_json::from_value(current.requested.clone())?;
+        let restricted_delta: crate::approval::CapabilityDelta =
+            serde_json::from_value(restriction.requested.clone())?;
+        if restricted_delta.is_empty() {
+            return Err("Capability Lease restriction cannot remove every permission; revoke the rule instead".into());
+        }
+        if !restricted_delta.is_subset_of(&current_delta) {
+            return Err("Capability Lease adjustment cannot expand its permission boundary".into());
+        }
+        let now = Utc::now();
+        if restriction.expires_at <= now || restriction.expires_at > current.expires_at {
+            return Err(
+                "Capability Lease adjustment may only shorten a still-future expiry".into(),
+            );
+        }
+        let now_text = now_text();
+        let result = sqlx::query(
+            r#"UPDATE capability_leases
+               SET revision = revision + 1, requested_json = $1, expires_at = $2, updated_at = $3
+               WHERE id = $4 AND revision = $5 AND status = 'active'"#,
+        )
+        .bind(&restriction.requested)
+        .bind(
+            restriction
+                .expires_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(&now_text)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let updated = self
+            .get_capability_lease(id)
+            .await?
+            .ok_or("Capability Lease adjustment was not visible")?;
         if result.rows_affected() == 1 {
             Ok(CapabilityLeaseMutation::Updated(updated))
         } else {

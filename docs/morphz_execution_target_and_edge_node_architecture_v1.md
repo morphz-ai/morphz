@@ -417,7 +417,7 @@ Agent action
 
 对于面向用户本机的商业产品，Edge Node Backend 比 SSH 更合适：它能在远端执行与本机相同的 Morphz 沙箱、审批、任务监管和审计协议，而普通 SSH 只能提供传输，不能天然保证远端沙箱同构。
 
-## 10. 审批频率：Target 级 Thread Capability Lease
+## 10. 审批频率：Target 级 Thread / Session Capability Lease
 
 远程执行不能为每条命令调用一次审批模型。建议把审批从一次性命令许可扩展为受限能力租约：
 
@@ -425,6 +425,8 @@ Agent action
 CapabilityLease
   principal_id
   agent_id
+  scope = thread | session
+  session_id
   thread_id
   target_id
   capabilities
@@ -437,10 +439,12 @@ CapabilityLease
 规则是：
 
 - 沙箱基础能力内无需审批；
-- 同一 Thread 在某个 Target 上第一次扩张能力时审批；
+- 某个 Thread 在 Target 上第一次扩张能力时审批；人工用户可明确选择只在本轮任务内复用，或在当前 Session 内复用；
 - 后续请求是已批准能力的子集时直接执行；
+- Session 规则仍绑定相同 Principal、Agent、Target、能力类型与策略摘要，不等于完全访问；
 - 切换 Target、增加路径、网络目的地、秘密或副作用等级时重新审批；
-- Thread 完成、用户撤销、Target 策略改变或租约过期时失效；
+- Thread 规则在 Thread 完成时失效；Session 规则在用户撤销、策略改变或租约过期时失效；
+- 用户只能收窄现有规则或缩短有效期；扩大边界必须产生新的审批；
 - 高风险能力可以被本地策略固定为每次人工确认；
 - 云端租约和本地租约都必须满足，任何一侧拒绝都不能执行。
 
@@ -576,7 +580,7 @@ HTTP 使用 `/api/execution-targets`、`/api/execution-target-authorizations`、
 
 **状态：安全控制面已完成；商业策略待产品部署。** 云端与 Provider-local 双层租约、撤销、设备密钥轮换和审计数据已经落地；用量计费与套餐配额不属于单机 Runtime 的默认策略。
 
-- Target + Thread scoped Capability Lease；
+- Target + Thread / Session scoped Capability Lease；
 - Web 与本地双审批通道；
 - 用户可撤销、设备丢失、密钥轮换；
 - 用量、配额、审计和商业化策略。

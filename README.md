@@ -67,7 +67,14 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    `0600` 的用户级明文 Morphz secrets 文件，或引用既有环境变量；本地无认证服务不需要 Key。
    工作目录中的 `.env` 不会被隐式加载，防止不可信项目把宿主凭证重定向到项目指定端点。
 
-   默认 `workspace_root = "."`、数据库和 Agent 产物都会落在独立运行目录。Runtime 会把
+   默认工作区按入口语义解析：`serve`、`dashboard`、`edge run` 等持久服务只使用
+   `~/.morphz/workspace`；交互式 TUI、`exec` 和其他前台命令以启动目录（或 `--cwd`）为主工作区，
+   并同时把 `~/.morphz/workspace` 作为额外可读写工作区。显式
+   `permissions.workspace_root` / `MORPHZ_WORKSPACE_ROOT` 优先于这些默认值。用户可重复传入
+   `--add-dir=/path/to/project`，或在 `[permissions].write_roots` 中持久保存额外可读写工作区；
+   每个目录独立授权，不会把权限模式升级为完全访问。
+
+   默认权限允许工作区读写、工作区外只读和网络访问；工作区外写入仍需审批。Runtime 会把
    实际加载的 `MORPHZ_CONFIG_PATH`、当前可执行文件、SQLite 主库及 `-wal/-shm` 强制
    加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
    `.env`、`.git`、`.ssh` 同样默认受保护。
@@ -111,9 +118,10 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
    Runtime 会执行 `ssh -G`、按当前 Principal 动态注册稳定 Target。`full_access` 模式下，
    Runtime-local Managed SSH 不再额外触发审批；受限模式在当前 Thread 第一次使用该 Target
-   能力时走现有自动审批，策略要求时回退到人工审批。批准 Capability Lease 后，后续命令只要
-   仍属于相同 Principal + Agent + Thread + Target 和能力边界，就直接执行，不再逐命令创建
-   Approval。Agent 不会读取 `~/.ssh/config`、私钥或认证材料，也不能通过本地 `exec` 绕过
+   能力时走现有自动审批，策略要求时回退到人工审批。人工审批可选择仅批准一次、在本轮任务
+   内复用，或在当前 Session 内复用；可复用规则仍严格绑定相同 Principal + Agent + Target、
+   能力类型和权限边界，不会启用 `full_access`。后续请求只有属于已批准边界的子集时才直接执行，
+   用户可在 Dashboard 的“授权规则”中收窄、缩短或撤销规则。Agent 不会读取 `~/.ssh/config`、私钥或认证材料，也不能通过本地 `exec` 绕过
    Runtime 直接运行 `ssh`、`scp` 或 `sftp`。
 
    实际连接由 Runtime 的 OpenSSH 客户端完成，沿用宿主的 `Host`、`User`、`Port`、
@@ -305,7 +313,7 @@ npm run build
 
 ## 安全边界
 
-`list_files/search/read/edit/write/exec` 共享同一个 `PermissionProfile` 和 `PermissionBroker`。默认 `auto_review` 模式允许工作区读写、禁止网络，越界能力由独立 AI Reviewer 审查；Reviewer 无法判断时会进入可等待的人工审批通道。`permissions.auto_review_model` 可以指定一个独立的 Model Route（例如成本更低、延迟更小的审核模型）；未配置时才为向后兼容复用主模型。Dashboard 的“身份与模型”页面可从已启用路由中选择审核模型，保存后立即热切换并持久化，不改变对话模型。CLI 可直接批准或拒绝，Web 使用 `GET /api/approvals` 与 `POST /api/approvals/:id`。`edit/write` 另外使用 SHA-256 乐观并发校验及同目录原子替换。
+`list_files/search/read/edit/write/exec` 共享同一个 `PermissionProfile` 和 `PermissionBroker`。默认 `auto_review` 模式允许工作区读写、工作区外只读和网络访问；额外写权限等越界能力由独立 AI Reviewer 审查，protected paths 不能通过审批覆盖。Reviewer 无法判断时会进入可等待的人工审批通道。`permissions.auto_review_model` 可以指定一个独立的 Model Route（例如成本更低、延迟更小的审核模型）；未配置时才为向后兼容复用主模型。Dashboard 的“身份与模型”页面可从已启用路由中选择审核模型，保存后立即热切换并持久化，不改变对话模型。CLI 可直接批准或拒绝，Web 使用 `GET /api/approvals` 与 `POST /api/approvals/:id`。`edit/write` 另外使用 SHA-256 乐观并发校验及同目录原子替换。
 
 每条消息都支持三种持久化调度语义：`interrupt` 会替换尚未跨越 Execution 边界的在途 DialogueTurn，并按 Event Sequence 合并尚未回复的输入；`parallel` 会立即建立独立 DialogueTurn 并与前一轮并发求值；`follow_up` 会等待前一轮完成且结果交付后再求值。Dashboard 中 Enter 使用配置默认值，Option/Alt+Enter 并发发送，Ctrl/Command+Enter 跟进发送，也可从发送按钮菜单显式选择。`orchestrator.interrupt_dialogue_on_new_message = true` 时默认使用 `interrupt`，设为 `false` 时默认使用 `follow_up`；对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`。独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
 

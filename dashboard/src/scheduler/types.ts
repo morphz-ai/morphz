@@ -101,6 +101,8 @@ export interface ApprovalRecord {
   cancelled_at?: string
 }
 
+export type ApprovalDecision = 'allow_once' | 'allow_lease' | 'allow_session' | 'deny'
+
 export interface ExecutionJobRecord {
   id: string
   revision: number
@@ -109,6 +111,7 @@ export interface ExecutionJobRecord {
   agent_id: string
   context_id: string
   session_id: string
+  initiating_principal_id?: string
   target_id: string
   tool_call_id: string
   tool_name: string

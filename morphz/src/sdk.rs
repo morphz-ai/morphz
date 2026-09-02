@@ -28,9 +28,10 @@ use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
 pub use crate::memory::MessageDispatchMode;
 use crate::memory::{
     is_transient_storage_contention, AgentProviderBindingSet, ArtifactTransferExecutionRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    ContextCapabilityBindingRecord, ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk,
-    EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord,
+    CapabilityLeaseRestriction, CognitiveContextRecord, ContextCapabilityBindingRecord,
+    ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
@@ -2829,6 +2830,97 @@ impl MorphzSdk {
             CapabilityLeaseMutation::Created(_) => Err(SdkError::new(
                 SdkErrorCode::Internal,
                 "revoking a Capability Lease returned an invalid created state",
+            )),
+        }
+    }
+
+    pub async fn restrict_capability_lease(
+        &self,
+        principal_id: &str,
+        lease_id: &str,
+        expected_revision: u64,
+        restriction: CapabilityLeaseRestriction,
+    ) -> SdkResult<CapabilityLeaseRecord> {
+        let current = self
+            .runtime
+            .list_capability_leases(CapabilityLeaseFilter {
+                principal_id: Some(principal_id.to_string()),
+                limit: Some(1_000),
+                ..Default::default()
+            })
+            .await
+            .map_err(SdkError::internal)?
+            .into_iter()
+            .find(|lease| lease.id == lease_id)
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Capability Lease '{lease_id}' does not exist"),
+                )
+            })?;
+        if current.revision != expected_revision {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                format!(
+                    "Capability Lease '{lease_id}' revision conflict; current revision is {}",
+                    current.revision
+                ),
+            ));
+        }
+        let current_delta =
+            serde_json::from_value::<crate::approval::CapabilityDelta>(current.requested.clone())
+                .map_err(SdkError::internal)?;
+        let restricted_delta = serde_json::from_value::<crate::approval::CapabilityDelta>(
+            restriction.requested.clone(),
+        )
+        .map_err(|error| {
+            SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                format!("Invalid Capability Lease permission boundary: {error}"),
+            )
+        })?;
+        if restricted_delta.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "An empty authorization rule must be revoked instead of adjusted",
+            ));
+        }
+        if !restricted_delta.is_subset_of(&current_delta) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "An authorization rule adjustment cannot expand its permission boundary",
+            ));
+        }
+        let now = chrono::Utc::now();
+        if restriction.expires_at <= now || restriction.expires_at > current.expires_at {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "An authorization rule adjustment may only shorten a still-future expiry",
+            ));
+        }
+        match self
+            .runtime
+            .restrict_capability_lease(lease_id, expected_revision, restriction)
+            .await
+            .map_err(SdkError::internal)?
+        {
+            CapabilityLeaseMutation::Updated(lease) | CapabilityLeaseMutation::Existing(lease) => {
+                Ok(lease)
+            }
+            CapabilityLeaseMutation::Conflict { current } => Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                format!(
+                    "Capability Lease '{}' revision conflict; current revision is {}",
+                    current.id, current.revision
+                ),
+            )),
+            CapabilityLeaseMutation::NotFound => Err(SdkError::new(
+                SdkErrorCode::NotFound,
+                format!("Capability Lease '{lease_id}' does not exist"),
+            )),
+            CapabilityLeaseMutation::Created(_) => Err(SdkError::new(
+                SdkErrorCode::Internal,
+                "restricting a Capability Lease returned an invalid created state",
             )),
         }
     }

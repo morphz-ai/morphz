@@ -2,7 +2,7 @@
 
 > 英文名称：Unified Sandbox Execution and Pluggable Approval Architecture
 > 状态：统一 Permission Profile/Broker、macOS Seatbelt、Linux Bubblewrap、Windows Codex 原生沙箱以及 AI/人工审批闭环已实现；三平台原生攻击 CI 是发布门禁
-> 更新时间：2026-08-31
+> 更新时间：2026-09-02
 > 适用范围：当前实现聚焦本地 Shell；接口未来可覆盖文件、网络、浏览器、MCP 及其他现实副作用工具
 > 相关文档：[`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md) 定义 Runtime 对现实约束的责任；[`morphz_sandbox_design.md`](morphz_sandbox_design.md) 和 [`sandbox_and_serverless_deep_dive.md`](sandbox_and_serverless_deep_dive.md) 保留早期 WASM、容器与远程沙箱研究。本文重新定义统一执行与审批边界，作为后续实现基线。
 
@@ -23,7 +23,7 @@ Morphz 的 Agent 会读取文件、修改代码、执行命令、访问网络，
 
 Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间取得平衡；但自动审批只是默认的 `Approval Provider`，不是默认放行，也不会替代操作系统沙箱、确定性策略和人工审批。
 
-### 1.1 当前实现边界（2026-08-31）
+### 1.1 当前实现边界（2026-09-02）
 
 已经进入代码并完成本机验证的部分：
 
@@ -35,7 +35,7 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 - Linux `Bubblewrap` 后端：只读宿主根、显式 read/write rebind、HOME/临时目录遮蔽、user/PID/IPC/network namespace 和 capability drop；缺少或不能运行 `bwrap` 时 fail-closed；
 - Windows 后端直接复用固定 OpenAI Codex revision 的 Restricted Token、ACL/Capability SID、WFP、私有桌面与 Job Object 实现；Morphz 发布包同时携带 sandbox runner、command runner 和 setup helper，缺少任一 helper 时 fail-closed；
 - Unix process group 与 Windows runner/Job Object 共享同一 durable execution owner、取消和后台终态链路；Windows 通过私有 stdin 向可信 runner 传递完整策略与启动请求，避免把策略 JSON 复制进外层命令行；真正的 `cmd.exe` 命令仍受 Windows 自身命令行长度上限约束；
-- `exec` 默认进入原生沙箱，网络默认关闭，写入限于工作区和显式额外目录；
+- `exec` 默认进入原生沙箱，网络默认开启，读取覆盖当前文件系统，写入限于工作区和显式额外目录；
 - `require_escalated` 只申请本次命令所需的网络、只读目录和可写目录差量；
 - 可替换的 `ApprovalProvider`，默认主程序接入无工具权限的独立 AI Auto-review 调用；
 - Reviewer 允许后只扩张本次命令的策略；拒绝时不启动目标进程；
@@ -50,7 +50,7 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 - 可复用前缀规则、完整的结构化命令规范化、域名级网络授权、资源限制和跨重启 Grant；
 - 将同一 Permission Broker 扩展到网络、浏览器、MCP 等其余现实副作用工具。
 
-macOS 与 Linux 为了让编译器和动态链接器可运行，会保留系统公共路径的只读可见性，同时默认遮蔽用户 HOME 与临时数据目录，再显式放行工作区、Cargo/Rustup 和配置的 read roots。Linux/Windows 的 glob protected path 会在每次命令启动时解析已有匹配项；命令在其 writable root 中新建的、此前不存在的同名文件不包含启动前秘密，并会在下一次命令启动时进入保护快照。能力报告和后续评测必须如实保留这些边界，不能描述成“除 read roots 外任何字节都不可读”。
+默认产品策略把工作区外文件系统作为只读根挂载，工作区和显式额外目录作为可写根；`protected_paths` 在只读根内仍不可访问。Linux/Windows 的 glob protected path 会在每次命令启动时解析已有匹配项；命令在其 writable root 中新建的、此前不存在的同名文件不包含启动前秘密，并会在下一次命令启动时进入保护快照。能力报告和后续评测必须如实保留这些边界，不能把“只读可见”描述成“不可见”，也不能把额外工作区描述成完全访问。
 
 Windows 安装不是单个 `morphz.exe`：`morphz.exe`、`morphz-edge.exe`、`morphz-windows-sandbox-runner.exe`、`morphz-windows-command-runner.exe` 与 `morphz-windows-sandbox-setup.exe` 构成一个版本一致的发布单元。公开 helper、隔离账户/组、命名管道、私有桌面与 WFP/防火墙对象都使用 Morphz 产品命名；实现源自固定 OpenAI Codex revision 的事实只在第三方许可证、来源记录和架构说明中署名，不能把 Morphz 的运行行为呈现成 Codex 组件。首次受限执行可能触发系统提权以建立隔离账户、ACL 与 WFP 规则；日常命令随后使用已配置的受限身份。`morphz doctor` 会在 helper 缺失时明确报告 `missing`，而不是静默退回无沙箱执行。
 
@@ -338,6 +338,17 @@ Agent 可以请求类似 `require_escalated` 的语义，并说明理由，但 R
 ```
 
 这既减少 Token 和延迟，也让明确的物理边界保持确定性。
+
+### 7.3 默认工作区与额外可写根
+
+工作区选择按入口语义确定，而不是通过 TTY 或父进程猜测：
+
+- `serve`、`dashboard`、`edge run` 等持久服务默认以 `~/.morphz/workspace` 为主工作区；
+- TUI、`exec` 和其他前台命令默认以启动目录（含 `--cwd`）为主工作区，并额外挂载 `~/.morphz/workspace`；
+- 显式 `permissions.workspace_root` / `MORPHZ_WORKSPACE_ROOT` 覆盖默认主工作区；
+- 重复的 `--add-dir` 或 `[permissions].write_roots` 增加独立可读写根，不改变 Sandbox 或审批模式。
+
+持久服务不能因为 systemd、launchd、SSH 或容器给出的偶然启动目录而获得额外写权限；前台命令则应自然地对用户正在进入的项目目录工作。额外根必须先存在并可规范化，符号链接逃逸仍由 canonical 路径判断阻止。
 
 ## 8. 可插拔审批接口
 

@@ -4,6 +4,15 @@ import test from 'node:test'
 
 const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const threadCausalCardSource = readFileSync(
+  new URL('../src/pages/ThreadCausalCard.tsx', import.meta.url),
+  'utf8',
+)
+const schedulerTypesSource = readFileSync(
+  new URL('../src/scheduler/types.ts', import.meta.url),
+  'utf8',
+)
+const zhCatalog = readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8')
 const optimisticMessagesSource = readFileSync(
   new URL('../src/app/optimisticMessages.ts', import.meta.url),
   'utf8',
@@ -14,6 +23,10 @@ const runtimeOverviewSource = readFileSync(
 )
 const runtimeMonitorSource = readFileSync(
   new URL('../src/pages/RuntimeMonitor.tsx', import.meta.url),
+  'utf8',
+)
+const runtimePageSource = readFileSync(
+  new URL('../src/pages/RuntimePage.tsx', import.meta.url),
   'utf8',
 )
 const credentialsSource = readFileSync(
@@ -47,6 +60,42 @@ test('Session WebSocket errors close the failed transport and enter the reconnec
     /nextSocket\.onclose\s*=\s*\(\)\s*=>\s*\{[\s\S]*?socket = undefined[\s\S]*?reconnectTimer = window\.setTimeout\(connect, 2500\)/s,
     'the failed Session transport must be replaced through one deterministic reconnect path',
   )
+})
+
+test('human approval surfaces expose one-shot plus Thread and Session scoped rules', () => {
+  assert.match(
+    schedulerTypesSource,
+    /ApprovalDecision = 'allow_once' \| 'allow_lease' \| 'allow_session' \| 'deny'/,
+    'the Dashboard transport must preserve every supported authority scope',
+  )
+  for (const source of [appSource, threadCausalCardSource]) {
+    assert.match(source, /decideApproval|onApproval/)
+    assert.match(source, /'allow_once'/)
+    assert.match(source, /'allow_lease'/)
+    assert.match(source, /'allow_session'/)
+  }
+  assert.match(zhCatalog, /仅允许这一次/)
+  assert.match(zhCatalog, /本轮任务内始终允许/)
+  assert.match(zhCatalog, /本会话内始终允许/)
+  assert.match(
+    appSource,
+    /decision === 'allow_session'[\s\S]*?requestConfirmation/,
+    'a Session-scoped capability rule must require a distinct confirmation',
+  )
+  assert.doesNotMatch(
+    zhCatalog,
+    /为本会话启用完全访问并批准当前能力申请/,
+    'approving one rule must never be described as changing the Session Permission Profile',
+  )
+  assert.match(appSource, /restrictCapabilityLease/)
+  assert.match(appSource, /\/api\/capability-leases\/\$\{encodeURIComponent\(leaseId\)\}[\s\S]*?'PATCH'/)
+  assert.match(runtimePageSource, /lease\.scope === 'session'/)
+  assert.match(runtimePageSource, /onRestrict\(/)
+  assert.match(runtimePageSource, /requested: CapabilityDeltaSummary/)
+  assert.match(runtimePageSource, /onRevoke\(lease\.id, lease\.revision\)/)
+  assert.match(zhCatalog, /"capabilityLeases": "授权规则"/)
+  assert.match(zhCatalog, /只能取消已有权限或缩短有效期/)
+  assert.match(zhCatalog, /完全访问只能从输入框的权限预设启用/)
 })
 
 test('managed credentials preserve multiline secret values', () => {

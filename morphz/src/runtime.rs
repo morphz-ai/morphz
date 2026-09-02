@@ -2,6 +2,7 @@ use crate::approval::{
     capability_lease_policy_digest, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
     ApprovalRequest, CapabilityLeaseOffer, EscalatingApprovalProvider, HumanApprovalHub,
     HumanApprovalProvider, PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG,
 };
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
@@ -35,11 +36,12 @@ use crate::memory::{
     AgentBootstrapRecord, AgentProviderBindingRecord, AgentProviderBindingSet,
     AgentProviderBindingStore, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextTokenBudgetMutation,
-    ContextUpdate, DelegationFilter, DelegationRecord, DelegationStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord,
+    CapabilityLeaseRestriction, CognitiveContextRecord, ContextCapabilityBindingMutation,
+    ContextCapabilityBindingRecord, ContextTokenBudgetMutation, ContextUpdate, DelegationFilter,
+    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
     ExecutionJobMonitorRecord, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
     ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
     ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
@@ -5711,6 +5713,18 @@ impl MorphzRuntime {
             .await
     }
 
+    pub async fn restrict_capability_lease(
+        &self,
+        lease_id: &str,
+        expected_revision: u64,
+        restriction: CapabilityLeaseRestriction,
+    ) -> Result<CapabilityLeaseMutation, RuntimeError> {
+        self.inner
+            .store
+            .restrict_capability_lease(lease_id, expected_revision, restriction)
+            .await
+    }
+
     pub async fn create_session(&self, session: NewSession) -> Result<SessionRecord, RuntimeError> {
         let principal = self
             .ensure_principal(PrincipalAssertion {
@@ -6586,6 +6600,7 @@ impl MorphzRuntime {
                         Some(CapabilityLeaseOffer {
                             principal_id: principal_id.clone(),
                             agent_id: job.agent_id.clone(),
+                            session_id: job.session_id.clone(),
                             thread_id: job.thread_id.clone(),
                             target_id: job.target_id.clone(),
                             capability: action.lease_capability(),
@@ -6747,6 +6762,62 @@ impl MorphzRuntime {
             tracing::warn!(event_code = "runtime.approval.waiter_closed", approval_id, %error, "Approval was persisted after its in-process waiter had closed");
         }
         Ok(())
+    }
+
+    /// Approve the displayed capability boundary for reuse inside the owning
+    /// Session. This never changes the Session Permission Profile: future
+    /// operations are covered only when their Principal, Agent, Target,
+    /// capability family, policy digest and requested delta match this rule.
+    pub async fn allow_approval_session_capability(
+        &self,
+        approval_id: &str,
+        rationale: String,
+    ) -> Result<(), String> {
+        let approval = self
+            .inner
+            .store
+            .get_approval(approval_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Approval request '{approval_id}' does not exist"))?;
+        let exact_session_replay = approval.status == crate::memory::ApprovalStatus::Allowed
+            && approval
+                .risk_tags
+                .iter()
+                .any(|tag| tag == CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG);
+        if !approval.status.is_pending() && !exact_session_replay {
+            return Err(format!(
+                "Approval '{}' is already {} and cannot authorize a Session capability rule",
+                approval.id,
+                approval.status.as_str()
+            ));
+        }
+        if !exact_session_replay {
+            let offered = self
+                .pending_approvals()
+                .await
+                .into_iter()
+                .find(|pending| pending.request.approval_id == approval.id)
+                .and_then(|pending| pending.request.lease_offer)
+                .is_some();
+            if !offered {
+                return Err(format!(
+                    "Approval '{}' has no reusable capability boundary for this Session",
+                    approval.id
+                ));
+            }
+        }
+        self.decide_approval(
+            approval_id,
+            ApprovalDecision::AllowLease {
+                rationale,
+                risk_tags: vec![
+                    "human-approved".to_string(),
+                    CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG.to_string(),
+                ],
+            },
+        )
+        .await
     }
 
     pub fn cancel_session(&self, session_id: &str) -> bool {
@@ -11173,6 +11244,12 @@ mod tests {
         observed_tool_schemas: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
     }
 
+    struct RepeatedApprovalReadClient {
+        calls: AtomicU64,
+        completed_turns: AtomicU64,
+        path: String,
+    }
+
     struct PreflightRejectedExecClient {
         calls: AtomicU64,
         protected_path: String,
@@ -13457,6 +13534,46 @@ mod tests {
                 }
                 _ => Err("交互式审批工具产生了冗余 Delivery 模型求值".into()),
             }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for RepeatedApprovalReadClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call >= 6 {
+                return Err("Session capability rule test produced an extra evaluation".into());
+            }
+            if call % 2 == 0 {
+                return Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: format!("approval-read-{}", call / 2 + 1),
+                        r#type: "function".to_string(),
+                        func_name: "read".to_string(),
+                        arguments: json!({ "path": self.path }).to_string(),
+                    }],
+                });
+            }
+            let tool_text = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "tool")
+                .map(|message| message.content.as_str())
+                .unwrap_or_default();
+            if !tool_text.contains("durable-session-rule-fixture") {
+                return Err(
+                    format!("Session rule did not authorize the exact read: {tool_text}").into(),
+                );
+            }
+            let completed = self.completed_turns.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(text_response(format!(
+                "session-rule-work-complete-{completed}"
+            )))
         }
     }
 
@@ -16256,6 +16373,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::AutoReview;
+        config.permissions.read_only_outside_workspace = false;
         // The approval delay must be outside this physical tool timeout.
         config.orchestrator.tool_timeout_secs = 1;
         let runtime = MorphzRuntime::builder(config, client.clone())
@@ -16616,6 +16734,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::User;
+        config.permissions.read_only_outside_workspace = false;
         // The former whole-Attempt watchdog fired after
         // `model_timeout * (protocol_retries + 1) + 1`, i.e. four seconds for
         // this fixture.  Human authority must not inherit that model deadline.
@@ -16751,7 +16870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_request_approval_overrides_full_access_during_durable_preflight() {
+    async fn session_approval_creates_a_restricted_rule_without_enabling_full_access() {
         let database = NamedTempFile::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
@@ -16765,6 +16884,7 @@ mod tests {
         });
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::FullAccess;
+        config.permissions.read_only_outside_workspace = false;
         let runtime = MorphzRuntime::builder(config, Arc::clone(&client) as Arc<dyn Client>)
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -16847,15 +16967,21 @@ mod tests {
         assert!(!observed_result.load(Ordering::SeqCst));
 
         runtime
-            .decide_approval(
+            .allow_approval_session_capability(
                 &approval_id,
-                ApprovalDecision::AllowOnce {
-                    rationale: "human approved the switched Session".to_string(),
-                    risk_tags: vec!["session-policy-switch".to_string()],
-                },
+                "human approved this capability boundary for the owning Session".to_string(),
             )
             .await
             .unwrap();
+        assert_eq!(
+            runtime
+                .get_session(&session.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .permission_mode,
+            Some(PermissionMode::RequestApproval)
+        );
         let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
             .await
             .unwrap()
@@ -16874,7 +17000,231 @@ mod tests {
             .unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+        let leases = runtime
+            .list_capability_leases(crate::memory::CapabilityLeaseFilter {
+                session_id: Some(session.id.clone()),
+                active_at: Some(chrono::Utc::now()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(leases.len(), 1);
+        assert_eq!(
+            leases[0].scope,
+            crate::memory::CapabilityLeaseScope::Session
+        );
+        let granted: crate::approval::CapabilityDelta =
+            serde_json::from_value(leases[0].requested.clone()).unwrap();
+        assert_eq!(
+            granted.read_roots,
+            vec![std::fs::canonicalize(fixture.path()).unwrap()]
+        );
+        assert!(!granted.network);
+        assert!(granted.write_roots.is_empty());
+        assert!(granted.secret_env.is_empty());
+        let shortened_expiry = chrono::Utc::now() + chrono::Duration::minutes(30);
+        let restricted = runtime
+            .restrict_capability_lease(
+                &leases[0].id,
+                leases[0].revision,
+                crate::memory::CapabilityLeaseRestriction {
+                    requested: leases[0].requested.clone(),
+                    expires_at: shortened_expiry,
+                },
+            )
+            .await
+            .unwrap();
+        let restricted = match restricted {
+            crate::memory::CapabilityLeaseMutation::Updated(lease) => lease,
+            other => panic!("expected a narrowed rule update, got {other:?}"),
+        };
+        assert_eq!(restricted.expires_at, shortened_expiry);
+        let mut expansion = granted.clone();
+        expansion.network = true;
+        let expansion_error = runtime
+            .restrict_capability_lease(
+                &restricted.id,
+                restricted.revision,
+                crate::memory::CapabilityLeaseRestriction {
+                    requested: serde_json::to_value(expansion).unwrap(),
+                    expires_at: restricted.expires_at,
+                },
+            )
+            .await
+            .expect_err("an adjustment must never expand a persisted permission boundary");
+        assert!(expansion_error
+            .to_string()
+            .contains("cannot expand its permission boundary"));
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn session_capability_rule_covers_new_threads_only_in_its_owning_session() {
+        let database = NamedTempFile::new().unwrap();
+        let fixture = NamedTempFile::new().unwrap();
+        std::fs::write(fixture.path(), "durable-session-rule-fixture").unwrap();
+        let client = Arc::new(RepeatedApprovalReadClient {
+            calls: AtomicU64::new(0),
+            completed_turns: AtomicU64::new(0),
+            path: fixture.path().to_string_lossy().into_owned(),
+        });
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::FullAccess;
+        config.permissions.read_only_outside_workspace = false;
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let create_session = |id: &str, title: &str| NewSession {
+            id: id.to_string(),
+            agent_id: runtime.identity().agent_id.clone(),
+            context_id: runtime.identity().context_id.clone(),
+            parent_session_id: None,
+            title: title.to_string(),
+            mount_kind: crate::memory::SessionMountKind::ExistingContext,
+        };
+        let session = runtime
+            .ensure_session(create_session(
+                "session-restricted-rule-owner",
+                "Restricted rule owner",
+            ))
+            .await
+            .unwrap();
+        runtime
+            .update_session(
+                session.id(),
+                SessionUpdate {
+                    permission_mode: Some(Some(PermissionMode::RequestApproval)),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut requests = runtime.subscribe("runtime/approval_requested", 8);
+        let mut replies = runtime.subscribe("chat/reply", 8);
+
+        session
+            .send(
+                "approve the exact fixture read for this Session",
+                "User-Test",
+                Some("client-session-rule-first".to_string()),
+            )
+            .await
+            .unwrap();
+        let first_request =
+            tokio::time::timeout(std::time::Duration::from_secs(3), requests.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        let first_approval_id = first_request.payload["approval_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        runtime
+            .allow_approval_session_capability(
+                &first_approval_id,
+                "approve only this exact boundary in the owning Session".to_string(),
+            )
+            .await
+            .unwrap();
+        let first_reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_reply.payload["text"], "session-rule-work-complete-1");
+
+        session
+            .send(
+                "read the same fixture from a new Thread",
+                "User-Test",
+                Some("client-session-rule-second".to_string()),
+            )
+            .await
+            .unwrap();
+        let second_reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .expect("the exact Session rule should avoid a second approval wait")
+            .unwrap();
+        assert_eq!(second_reply.payload["text"], "session-rule-work-complete-2");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), requests.recv())
+                .await
+                .is_err()
+        );
+
+        let other_session = runtime
+            .ensure_session(create_session(
+                "session-restricted-rule-isolated",
+                "Restricted rule isolation",
+            ))
+            .await
+            .unwrap();
+        runtime
+            .update_session(
+                other_session.id(),
+                SessionUpdate {
+                    permission_mode: Some(Some(PermissionMode::RequestApproval)),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        other_session
+            .send(
+                "the same path in another Session still requires approval",
+                "User-Test",
+                Some("client-session-rule-isolated".to_string()),
+            )
+            .await
+            .unwrap();
+        let isolated_request =
+            tokio::time::timeout(std::time::Duration::from_secs(3), requests.recv())
+                .await
+                .expect("a Session rule must not authorize a different Session")
+                .unwrap();
+        assert_eq!(
+            isolated_request.payload["session_id"],
+            json!(other_session.id())
+        );
+        runtime
+            .decide_approval(
+                isolated_request.payload["approval_id"].as_str().unwrap(),
+                ApprovalDecision::AllowOnce {
+                    rationale: "finish the isolation test without creating a rule".to_string(),
+                    risk_tags: vec!["human-approved".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+        let isolated_reply =
+            tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            isolated_reply.payload["text"],
+            "session-rule-work-complete-3"
+        );
+        assert_eq!(client.completed_turns.load(Ordering::SeqCst), 3);
+        let leases = runtime
+            .list_capability_leases(crate::memory::CapabilityLeaseFilter {
+                active_at: Some(chrono::Utc::now()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].session_id, session.id());
+        assert_eq!(
+            leases[0].scope,
+            crate::memory::CapabilityLeaseScope::Session
+        );
     }
 
     #[tokio::test]
@@ -16892,6 +17242,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::User;
+        config.permissions.read_only_outside_workspace = false;
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {

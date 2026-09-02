@@ -144,7 +144,7 @@ Event（不可变原因）
 | `action_groups` | 同一模型响应中多个 sibling tool actions 的 join | 每个并行工具批次一行 | **保留** |
 | `action_group_members` | tool call 成员及其 Job/result Event | 每个 action 一行 | **保留** |
 | `approval_requests` | 审批请求、决策与一次性 grant 消费 | 安全审计历史 | **保留** |
-| `capability_leases` | Principal/Agent/Thread/Target 范围内的短期能力授权 | 安全审计与当前 lease | **保留** |
+| `capability_leases` | Principal/Agent/Thread 或 Session/Target 范围内的短期能力授权 | 安全审计与当前 lease | **保留** |
 | `execution_targets` | 可选择的逻辑执行目标 | 设备/路由规模 | **保留** |
 | `execution_target_authorizations` | Target 对 agent/context/thread 的授权范围 | 授权规模 | **保留** |
 

@@ -51,6 +51,7 @@ import {
   Search,
   Send,
   Server,
+  ShieldCheck,
   Square,
   Sun,
   Trash2,
@@ -106,6 +107,7 @@ import {
   type SessionReferenceCandidate,
 } from './app/sessionReferences'
 import type {
+  ApprovalDecision,
   ApprovalRecord,
   ScheduleRecord,
   SchedulerSnapshot,
@@ -135,6 +137,7 @@ import {
   type RuntimeOverviewThread,
 } from './pages/RuntimeOverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
+import type { CapabilityDeltaSummary, CapabilityLeaseSummary } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
 import { DASHBOARD_API, getDashboardToken } from './api/runtime'
@@ -1067,16 +1070,6 @@ interface ExecutionNodeSummary {
   protocol_version: number
   capabilities: string[]
   last_seen_at?: string
-}
-
-interface CapabilityLeaseSummary {
-  id: string
-  revision: number
-  thread_id: string
-  target_id: string
-  capabilities: string[]
-  status: string
-  expires_at: string
 }
 
 interface ExecutionJobSummary {
@@ -3587,6 +3580,14 @@ export default function App() {
   }, [loadCatalog])
 
   const revokeCapabilityLease = useCallback(async (leaseId: string, revision: number) => {
+    const confirmed = await requestConfirmation({
+      title: t('dialog.revokeAuthorizationRuleTitle'),
+      description: t('dialog.revokeAuthorizationRule'),
+      confirmLabel: t('runtime.deleteRule'),
+      cancelLabel: t('dialog.actions.cancel'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
     try {
       await DASHBOARD_API.command(`/api/capability-leases/${encodeURIComponent(leaseId)}`, 'DELETE', {
         expected_revision: revision,
@@ -3595,6 +3596,27 @@ export default function App() {
       await loadCatalog()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [loadCatalog, requestConfirmation, t])
+
+  const restrictCapabilityLease = useCallback(async (
+    leaseId: string,
+    revision: number,
+    requested: CapabilityDeltaSummary,
+    expiresAt: string,
+  ) => {
+    try {
+      await DASHBOARD_API.command(`/api/capability-leases/${encodeURIComponent(leaseId)}`, 'PATCH', {
+        expected_revision: revision,
+        requested,
+        expires_at: expiresAt,
+      })
+      await loadCatalog()
+      setError('')
+      return true
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return false
     }
   }, [loadCatalog])
 
@@ -5537,6 +5559,11 @@ export default function App() {
   const schedules = currentSchedulerSchedules(schedulerSnapshot)
   const actionableJobRows = actionableSchedulerJobs(schedulerSnapshot)
   const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
+  const pendingApprovalJobs = new Map(
+    actionableJobRows.flatMap(snapshot => snapshot.approval?.status === 'pending_human'
+      ? [[snapshot.approval.id, snapshot.job] as const]
+      : []),
+  )
   const approvalAnomalies = schedulerApprovalAnomalies(schedulerSnapshot)
     .filter(snapshot => !acknowledgedAttentionKeys.has(attentionJobKey('approval_anomaly', snapshot)))
   const failedSchedulerJobs = schedulerAttentionJobs(schedulerSnapshot)
@@ -5592,9 +5619,10 @@ export default function App() {
     .map(item => item.activation)
     .filter(activation => activation.status === 'queued' || activation.status === 'running')
   const composerJobs = actionableJobRows.filter(item => item.job.session_id === selectedSessionId)
-  const composerPendingApprovals = composerJobs
+  const composerPendingApprovalJobs = composerJobs
+    .filter(item => item.approval?.status === 'pending_human')
+  const composerPendingApprovals = composerPendingApprovalJobs
     .flatMap(item => item.approval ? [item.approval] : [])
-    .filter(approval => approval.status === 'pending_human')
   const composerDialogueCount = composerThreads.reduce((count, item) => {
     if (item.phase === 'idle' || item.thread.lifecycle !== 'open' || item.thread.kind !== 'dialogue_turn') return count
     return count + item.activations.filter(activation => (
@@ -6886,7 +6914,7 @@ export default function App() {
     }
   }
 
-  const decideApproval = async (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => {
+  const decideApproval = async (approval: ApprovalRecord, decision: ApprovalDecision) => {
     if (decision === 'deny') {
       const confirmed = await requestConfirmation({
         title: t('dialog.denyApprovalTitle'),
@@ -6894,6 +6922,16 @@ export default function App() {
         confirmLabel: t('dialog.actions.deny'),
         cancelLabel: t('dialog.actions.cancel'),
         tone: 'danger',
+      })
+      if (!confirmed) return
+    }
+    if (decision === 'allow_session') {
+      const confirmed = await requestConfirmation({
+        title: t('dialog.allowSessionApprovalTitle'),
+        description: t('dialog.allowSessionApproval'),
+        confirmLabel: t('work.approvals.allowSession'),
+        cancelLabel: t('dialog.actions.cancel'),
+        tone: 'default',
       })
       if (!confirmed) return
     }
@@ -8507,6 +8545,10 @@ export default function App() {
                         {approval.risk_tags.length > 0 && <small>{approval.risk_tags.join(' · ')}</small>}
                         <div className="approval-actions">
                           <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
+                          {pendingApprovalJobs.get(approval.id)?.initiating_principal_id && <>
+                            <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_lease')}><ShieldCheck size={13} /> {t('work.approvals.allowTask')}</button>
+                            <button disabled={decidingApprovalId === approval.id} className="session-rule" type="button" onClick={() => void decideApproval(approval, 'allow_session')}><KeyRound size={13} /> {t('work.approvals.allowSession')}</button>
+                          </>}
                           <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => void decideApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
                         </div>
                       </article>
@@ -8871,6 +8913,7 @@ export default function App() {
               onSetTargetStatus={(targetId, revision, nextStatus) => void setExecutionTargetStatus(targetId, revision, nextStatus)}
               onRevokeNode={(nodeId, revision) => void revokeExecutionNode(nodeId, revision)}
               onRevokeLease={(leaseId, revision) => void revokeCapabilityLease(leaseId, revision)}
+              onRestrictLease={(leaseId, revision, requested, expiresAt) => restrictCapabilityLease(leaseId, revision, requested, expiresAt)}
               onCancelJob={(jobId, revision) => void cancelExecutionJob(jobId, revision)}
             />
           )}
@@ -9256,6 +9299,25 @@ export default function App() {
                 >
                   <Check size={12} /> {t('work.approvals.allowOnce')}
                 </button>
+                {composerPendingApprovalJobs[0]?.job.initiating_principal_id && (
+                  <>
+                    <button
+                      disabled={Boolean(decidingApprovalId)}
+                      type="button"
+                      onClick={() => void decideApproval(composerPendingApprovals[0], 'allow_lease')}
+                    >
+                      <ShieldCheck size={12} /> {t('work.approvals.allowTask')}
+                    </button>
+                    <button
+                      className="session-rule"
+                      disabled={Boolean(decidingApprovalId)}
+                      type="button"
+                      onClick={() => void decideApproval(composerPendingApprovals[0], 'allow_session')}
+                    >
+                      <KeyRound size={12} /> {t('work.approvals.allowSession')}
+                    </button>
+                  </>
+                )}
                 <button type="button" onClick={() => setView('scheduler')}>
                   {t('work.approvals.viewAll', { count: composerPendingApprovals.length })}
                 </button>

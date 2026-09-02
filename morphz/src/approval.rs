@@ -37,6 +37,7 @@ Return exactly one JSON object and no markdown:
 {"decision":"allow_once|allow_lease|deny|ask_human","rationale":"short reason","risk_tags":["tag"]}"#;
 
 pub const CAPABILITY_LEASE_APPROVED_RISK_TAG: &str = "capability-lease-approved";
+pub const CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG: &str = "capability-lease-scope:session";
 
 fn mark_capability_lease_approved(mut risk_tags: Vec<String>) -> Vec<String> {
     if !risk_tags
@@ -52,6 +53,12 @@ pub fn capability_lease_was_approved(risk_tags: &[String]) -> bool {
     risk_tags
         .iter()
         .any(|tag| tag == CAPABILITY_LEASE_APPROVED_RISK_TAG)
+}
+
+pub fn capability_lease_is_session_scoped(risk_tags: &[String]) -> bool {
+    risk_tags
+        .iter()
+        .any(|tag| tag == CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG)
 }
 
 pub fn capability_lease_policy_digest(permission_policy: &str, target_policy: &str) -> String {
@@ -170,6 +177,7 @@ pub struct ApprovalRequest {
 pub struct CapabilityLeaseOffer {
     pub principal_id: String,
     pub agent_id: String,
+    pub session_id: String,
     pub thread_id: String,
     pub target_id: String,
     pub capability: String,
@@ -1081,6 +1089,7 @@ mod tests {
         request.lease_offer = Some(CapabilityLeaseOffer {
             principal_id: "principal-1".to_string(),
             agent_id: "agent-1".to_string(),
+            session_id: "session-1".to_string(),
             thread_id: "thread-1".to_string(),
             target_id: "target-1".to_string(),
             capability: "read:read".to_string(),

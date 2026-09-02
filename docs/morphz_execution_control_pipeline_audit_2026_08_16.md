@@ -37,7 +37,7 @@ Dashboard quality gates must pass. A finding alone is not a deliverable.
 | --- | --- | --- |
 | Target authorization | Owner check, scoped grants, execution-boundary revalidation | Exact scope lookup, revocation during waits, large grant sets |
 | Approval | Stable request/policy digests, atomic grant consumption | concurrent decision/claim/cancel and policy-change cases |
-| Capability Lease | Principal/Agent/Thread/Target/policy/TTL binding | large active lease sets and terminal-Thread revocation |
+| Capability Lease | Principal/Agent/Thread-or-Session/Target/policy/TTL binding | large active lease sets, terminal-Thread revocation and Session isolation |
 | Execution Job | revision + claim-token fencing, durable result Event | retry matrix, cancellation causation, late result and startup wake |
 | Action Group | atomic member + final settled Event | Job/result-to-member crash window and startup convergence |
 | Physical backends | frozen Target route and backend-specific validation | local/SSH/Edge equivalence, cancellation and wait behavior |

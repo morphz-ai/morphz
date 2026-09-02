@@ -9,10 +9,10 @@ use crate::execution_target::EdgeArtifactDataDirection;
 use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
-    ContextUpdate, DelegationFilter, DelegationStatus, ExecutionTargetRegistration,
-    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind,
-    SessionStatus, SessionUpdate, ThreadControlAction, ThreadMutation,
+    CapabilityLeaseRestriction, ContextUpdate, DelegationFilter, DelegationStatus,
+    ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, QueryFilter, ScheduleMutation,
+    SessionMountKind, SessionStatus, SessionUpdate, ThreadControlAction, ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::provider::auth::{
@@ -527,6 +527,13 @@ struct CapabilityLeaseQuery {
 struct RevokeCapabilityLeaseRequest {
     expected_revision: u64,
     reason: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RestrictCapabilityLeaseRequest {
+    expected_revision: u64,
+    requested: serde_json::Value,
+    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1126,7 +1133,7 @@ impl Server {
             .route("/api/capability-leases", get(handle_list_capability_leases))
             .route(
                 "/api/capability-leases/:lease_id",
-                delete(handle_revoke_capability_lease),
+                patch(handle_restrict_capability_lease).delete(handle_revoke_capability_lease),
             )
             .route(
                 "/api/edge/pairing-codes",
@@ -3369,7 +3376,29 @@ async fn handle_decide_approval(
     let rationale = request
         .rationale
         .unwrap_or_else(|| "the user decided through the Morphz approval channel".to_string());
-    let decision = match request.decision.trim().to_ascii_lowercase().as_str() {
+    let normalized_decision = request.decision.trim().to_ascii_lowercase();
+    if normalized_decision == "allow_session" {
+        return match state
+            .runtime
+            .allow_approval_session_capability(&approval_id, rationale)
+            .await
+        {
+            Ok(()) => Json(json!({
+                "approval_id": approval_id,
+                "accepted": true,
+                "scope": "session_capability",
+            }))
+            .into_response(),
+            Err(error) => error_response(StatusCode::CONFLICT, error),
+        };
+    }
+    if matches!(normalized_decision.as_str(), "allow_all" | "full_access") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "An approval decision cannot enable Full Access; update the Session permission preset explicitly instead",
+        );
+    }
+    let decision = match normalized_decision.as_str() {
         "allow" | "allow_once" | "approve" => ApprovalDecision::AllowOnce {
             rationale,
             risk_tags: vec!["human-approved".to_string()],
@@ -3385,7 +3414,7 @@ async fn handle_decide_approval(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "decision supports only allow_once, allow_lease, or deny",
+                "decision supports only allow_once, allow_lease, allow_session, or deny",
             )
         }
     };
@@ -4271,6 +4300,38 @@ async fn handle_revoke_capability_lease(
             &lease_id,
             request.expected_revision,
             reason,
+        )
+        .await
+    {
+        Ok(lease) => Json(lease).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_restrict_capability_lease(
+    State(state): State<Arc<AppState>>,
+    Path(lease_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<RestrictCapabilityLeaseRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .restrict_capability_lease(
+            &principal.principal_id,
+            &lease_id,
+            request.expected_revision,
+            CapabilityLeaseRestriction {
+                requested: request.requested,
+                expires_at: request.expires_at,
+            },
         )
         .await
     {

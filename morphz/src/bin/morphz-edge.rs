@@ -156,17 +156,27 @@ async fn main() -> Result<(), AppError> {
     let explicit_config = matches.get_one::<String>("config").map(PathBuf::from);
     let profile = matches.get_one::<String>("profile").map(String::as_str);
     let resolved = config::resolve_config(&cwd, explicit_config.as_deref(), profile)?;
+    let workspace_is_default =
+        resolved.source_for("permissions.workspace_root") == "built-in-default";
     let protected_paths = resolved
         .loaded_paths()
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
     let mut source_config = resolved.config;
-    if let Some(workspace) = matches.get_one::<String>("workspace") {
-        source_config
-            .permissions
-            .workspace_root
-            .clone_from(workspace);
-    }
+    let explicit_workspace = matches.get_one::<String>("workspace").map(String::as_str);
+    let persistent_workspace =
+        if command == "run" && workspace_is_default && explicit_workspace.is_none() {
+            Some(config::ensure_morphz_workspace_dir()?)
+        } else {
+            None
+        };
+    apply_edge_workspace_policy(
+        command,
+        explicit_workspace,
+        workspace_is_default,
+        persistent_workspace.as_deref(),
+        &mut source_config,
+    );
     if !source_config
         .permissions
         .protected_paths
@@ -242,6 +252,22 @@ async fn main() -> Result<(), AppError> {
     Ok(())
 }
 
+fn apply_edge_workspace_policy(
+    command: &str,
+    explicit_workspace: Option<&str>,
+    workspace_is_default: bool,
+    persistent_workspace: Option<&Path>,
+    config: &mut config::AppConfig,
+) {
+    if let Some(workspace) = explicit_workspace {
+        config.permissions.workspace_root = workspace.to_string();
+    } else if command == "run" && workspace_is_default {
+        if let Some(workspace) = persistent_workspace {
+            config.permissions.workspace_root = workspace.to_string_lossy().into_owned();
+        }
+    }
+}
+
 fn print_status(credential_path: &Path) -> Result<(), AppError> {
     let status = edge_node_status(credential_path)?;
     println!(
@@ -301,6 +327,42 @@ fn init_logging(log_level: Option<&str>) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_run_uses_persistent_workspace_without_overriding_explicit_choices() {
+        let mut default = config::AppConfig::default();
+        apply_edge_workspace_policy(
+            "run",
+            None,
+            true,
+            Some(Path::new("/home/person/.morphz/workspace")),
+            &mut default,
+        );
+        assert_eq!(
+            default.permissions.workspace_root,
+            "/home/person/.morphz/workspace"
+        );
+
+        let mut configured = config::AppConfig::default();
+        configured.permissions.workspace_root = "/configured/edge".to_string();
+        apply_edge_workspace_policy(
+            "run",
+            None,
+            false,
+            Some(Path::new("/home/person/.morphz/workspace")),
+            &mut configured,
+        );
+        assert_eq!(configured.permissions.workspace_root, "/configured/edge");
+
+        apply_edge_workspace_policy(
+            "run",
+            Some("/cli/edge"),
+            true,
+            Some(Path::new("/home/person/.morphz/workspace")),
+            &mut configured,
+        );
+        assert_eq!(configured.permissions.workspace_root, "/cli/edge");
+    }
 
     #[test]
     fn standalone_binary_exposes_only_execution_node_commands() {

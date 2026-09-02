@@ -15,8 +15,8 @@ use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, AgentProviderBindingStore, ApprovalMutation, ApprovalResolution,
     ApprovalStatus, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseStatus, CapabilityLeaseStore, CognitiveClockStore,
-    ContextActivationCausalitySnapshot, ContextExecutionResourcesSnapshot,
+    CapabilityLeaseRestriction, CapabilityLeaseScope, CapabilityLeaseStatus, CapabilityLeaseStore,
+    CognitiveClockStore, ContextActivationCausalitySnapshot, ContextExecutionResourcesSnapshot,
     ContextRuntimeDirectoryRequest, ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionFilter,
     DelegationFilter, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
     DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
@@ -7450,6 +7450,8 @@ where
         id: "lease-conformance".to_string(),
         principal_id: "principal:conformance".to_string(),
         agent_id: "conformance-agent".to_string(),
+        scope: CapabilityLeaseScope::Thread,
+        session_id: "conformance-session".to_string(),
         thread_id: "conformance-thread".to_string(),
         target_id: "conformance-edge-target".to_string(),
         capabilities: vec!["exec".to_string()],
@@ -7468,6 +7470,8 @@ where
         mutation => panic!("unexpected Capability Lease create mutation: {mutation:?}"),
     };
     assert_eq!(created.status, CapabilityLeaseStatus::Active);
+    assert_eq!(created.scope, CapabilityLeaseScope::Thread);
+    assert_eq!(created.session_id, "conformance-session");
     assert!(matches!(
         store.ensure_capability_lease(lease).await.unwrap(),
         CapabilityLeaseMutation::Existing(_)
@@ -7476,6 +7480,8 @@ where
         store
             .list_capability_leases(CapabilityLeaseFilter {
                 principal_id: Some("principal:conformance".to_string()),
+                scope: Some(CapabilityLeaseScope::Thread),
+                session_id: Some("conformance-session".to_string()),
                 thread_id: Some("conformance-thread".to_string()),
                 target_id: Some("conformance-edge-target".to_string()),
                 capability: Some("exec".to_string()),
@@ -7499,8 +7505,51 @@ where
         .await
         .unwrap()
         .is_empty());
+    let shortened_expiry = chrono::Utc::now() + chrono::Duration::minutes(5);
+    let restricted_requested = json!({
+        "network": false,
+        "read_roots": ["/tmp/conformance"],
+        "write_roots": [],
+        "secret_env": []
+    });
+    let restricted = match store
+        .restrict_capability_lease(
+            &created.id,
+            created.revision,
+            CapabilityLeaseRestriction {
+                requested: restricted_requested.clone(),
+                expires_at: shortened_expiry,
+            },
+        )
+        .await
+        .unwrap()
+    {
+        CapabilityLeaseMutation::Updated(lease) => lease,
+        mutation => panic!("unexpected Capability Lease restriction mutation: {mutation:?}"),
+    };
+    assert_eq!(restricted.requested, restricted_requested);
+    assert_eq!(restricted.expires_at, shortened_expiry);
+    let expansion_error = store
+        .restrict_capability_lease(
+            &restricted.id,
+            restricted.revision,
+            CapabilityLeaseRestriction {
+                requested: json!({
+                    "network": true,
+                    "read_roots": ["/tmp/conformance"],
+                    "write_roots": ["/tmp/conformance"],
+                    "secret_env": []
+                }),
+                expires_at: restricted.expires_at,
+            },
+        )
+        .await
+        .expect_err("Capability Lease restriction must reject authority expansion");
+    assert!(expansion_error
+        .to_string()
+        .contains("cannot expand its permission boundary"));
     let revoked = match store
-        .revoke_capability_lease(&created.id, created.revision, "conformance revoke")
+        .revoke_capability_lease(&restricted.id, restricted.revision, "conformance revoke")
         .await
         .unwrap()
     {

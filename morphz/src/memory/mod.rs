@@ -4121,6 +4121,30 @@ pub enum CapabilityLeaseStatus {
     Revoked,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityLeaseScope {
+    Thread,
+    Session,
+}
+
+impl CapabilityLeaseScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Thread => "thread",
+            Self::Session => "session",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "thread" => Some(Self::Thread),
+            "session" => Some(Self::Session),
+            _ => None,
+        }
+    }
+}
+
 impl CapabilityLeaseStatus {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -4144,6 +4168,10 @@ pub struct CapabilityLeaseRecord {
     pub revision: u64,
     pub principal_id: String,
     pub agent_id: String,
+    pub scope: CapabilityLeaseScope,
+    pub session_id: String,
+    /// Origin Thread retained for audit. Thread-scoped rules match this exact
+    /// value; Session-scoped rules match `session_id` instead.
     pub thread_id: String,
     pub target_id: String,
     pub capabilities: Vec<String>,
@@ -4163,6 +4191,8 @@ pub struct NewCapabilityLease {
     pub id: String,
     pub principal_id: String,
     pub agent_id: String,
+    pub scope: CapabilityLeaseScope,
+    pub session_id: String,
     pub thread_id: String,
     pub target_id: String,
     pub capabilities: Vec<String>,
@@ -4172,10 +4202,18 @@ pub struct NewCapabilityLease {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CapabilityLeaseRestriction {
+    pub requested: serde_json::Value,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityLeaseFilter {
     pub principal_id: Option<String>,
     pub agent_id: Option<String>,
+    pub scope: Option<CapabilityLeaseScope>,
+    pub session_id: Option<String>,
     pub thread_id: Option<String>,
     pub target_id: Option<String>,
     /// Require an exact capability element rather than scanning unrelated
@@ -5937,7 +5975,7 @@ pub trait ApprovalStore: Send + Sync {
 /// Reusable but narrowly scoped physical authority. A lease never replaces
 /// the immutable per-Job Approval audit: it only lets Runtime derive an exact
 /// one-use Job grant without invoking another reviewer when the requested
-/// boundary is a subset of the active Thread + Target scope.
+/// boundary is a subset of the active Thread or Session + Target scope.
 #[async_trait::async_trait]
 pub trait CapabilityLeaseStore: Send + Sync {
     async fn ensure_capability_lease(
@@ -5957,6 +5995,15 @@ pub trait CapabilityLeaseStore: Send + Sync {
         id: &str,
         expected_revision: u64,
         reason: &str,
+    ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Revision-fenced adjustment that can only reduce an active rule's
+    /// permission delta and/or shorten its expiry. Expanding authority always
+    /// requires a new human approval.
+    async fn restrict_capability_lease(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        restriction: CapabilityLeaseRestriction,
     ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 

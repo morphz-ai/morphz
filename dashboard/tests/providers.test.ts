@@ -217,7 +217,7 @@ test('composer permission presets persist the complete Session policy immediatel
   assert.match(appSource, /<option value="full_access">\{t\('permission\.fullAccess'\)\}<\/option>/)
   assert.match(appSource, /sandbox_mode === 'workspace-write'[\s\S]*?status\?\.reviewer === 'auto_review'[\s\S]*?'request_approval'/)
   assert.match(zhCatalog, /"autoApproval": "自动审批"/)
-  assert.match(zhCatalog, /"requestApproval": "请求人工审批"/)
+  assert.match(zhCatalog, /"requestApproval": "请求审批"/)
 })
 
 test('automatic review model is selected from configured routes and hot-saved independently', () => {

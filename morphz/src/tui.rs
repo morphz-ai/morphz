@@ -1147,8 +1147,8 @@ impl UiState {
                     "使用原生工作区沙箱，并自动评审超出边界的能力请求。",
                 ),
                 PermissionMode::RequestApproval => (
-                    "Permissions · Request Human Approval",
-                    "权限 · 请求人工审批",
+                    "Permissions · Request Approval",
+                    "权限 · 请求审批",
                     "Use the native Workspace sandbox and ask you before granting capabilities outside it.",
                     "使用原生工作区沙箱，并在授予超出边界的能力前请求人工审批。",
                 ),
@@ -4107,7 +4107,7 @@ impl UiState {
                     match self.permission_mode {
                         PermissionMode::AutoReview => self.tr("Auto Approval", "自动审批"),
                         PermissionMode::RequestApproval => {
-                            self.tr("Request Human Approval", "请求人工审批")
+                            self.tr("Request Approval", "请求审批")
                         }
                         PermissionMode::FullAccess => self.tr("Full Access", "完全访问"),
                         PermissionMode::Custom => self.tr("Custom Permissions", "自定义权限"),

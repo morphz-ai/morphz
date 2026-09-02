@@ -1918,6 +1918,7 @@ impl EdgeNodeWorker {
                 lease_offer: Some(CapabilityLeaseOffer {
                     principal_id: scope.principal_id.clone(),
                     agent_id: scope.agent_id.clone(),
+                    session_id: scope.session_id.clone(),
                     thread_id: scope.thread_id.clone(),
                     target_id: command.target_id.clone(),
                     capability: capability.clone(),

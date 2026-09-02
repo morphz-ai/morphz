@@ -198,6 +198,38 @@ pub fn morphz_home_dir() -> Option<PathBuf> {
     )
 }
 
+/// Host-owned scratch Workspace used when Morphz runs as a persistent service
+/// and as an always-available additional writable root for foreground runs.
+/// Runtime configuration and credentials remain sibling control-plane files;
+/// they are never treated as part of this Workspace.
+pub fn morphz_workspace_dir() -> Option<PathBuf> {
+    morphz_home_dir().map(|home| home.join("workspace"))
+}
+
+pub fn ensure_morphz_workspace_dir() -> Result<PathBuf, String> {
+    let workspace = morphz_workspace_dir()
+        .ok_or_else(|| "cannot determine the Morphz user Workspace directory".to_string())?;
+    std::fs::create_dir_all(&workspace).map_err(|error| {
+        format!(
+            "failed to create Morphz user Workspace '{}': {error}",
+            workspace.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| {
+                format!(
+                    "failed to protect Morphz user Workspace '{}': {error}",
+                    workspace.display()
+                )
+            },
+        )?;
+    }
+    Ok(workspace)
+}
+
 fn morphz_home_dir_from(
     explicit: Option<std::ffi::OsString>,
     xdg_config_home: Option<std::ffi::OsString>,
@@ -1281,11 +1313,12 @@ pub struct EdgeExecutionConfig {
     pub reconcile_interval: HumanDuration,
     pub node_stale_after: HumanDuration,
     pub default_command_lease: HumanDuration,
-    /// Offer a reusable Principal + Agent + Thread + Target authority scope
-    /// to reviewers. `allow_once` still remains strictly one Job.
+    /// Offer a reusable Principal + Agent + Thread/Session + Target authority
+    /// scope to reviewers. `allow_once` still remains strictly one Job.
     pub capability_leases_enabled: bool,
-    /// Safety backstop for a Thread-scoped lease. Thread termination, Target
-    /// policy changes and explicit revocation invalidate it earlier.
+    /// Safety backstop for capability rules. Thread-scoped rules also end with
+    /// their Thread; every rule is invalidated by Target policy changes or
+    /// explicit revocation.
     pub capability_lease_ttl: HumanDuration,
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_targets_per_node: usize,

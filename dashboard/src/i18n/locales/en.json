@@ -562,11 +562,27 @@
     "executionTargets": "Execution Targets",
     "executionNodes": "Execution Nodes",
     "executionJobs": "Execution Jobs",
-    "capabilityLeases": "Capability Leases",
+    "capabilityLeases": "Authorization Rules",
     "noExecutionTargets": "No Execution Targets are available",
     "noExecutionNodes": "No Execution Nodes are paired for this Principal",
     "noExecutionJobs": "No Execution Jobs",
-    "noCapabilityLeases": "No active Capability Leases",
+    "noCapabilityLeases": "No reusable authorization rules are active",
+    "authorizationRulesHint": "Only restricted rules created by an explicit approval appear here. Full Access can only be enabled from the composer permission preset.",
+    "authorizationScope": {
+      "thread": "Current task",
+      "session": "This Session"
+    },
+    "authorizationNetwork": "Network access",
+    "authorizationRead": "Read {{path}}",
+    "authorizationWrite": "Write {{path}}",
+    "authorizationSecret": "Use credential {{name}}",
+    "authorizationExpires": "Expires {{value}}",
+    "authorizationExpiry": "Expiry",
+    "authorizationAdjustHint": "You may only remove existing permissions or shorten expiry. Expanding a boundary requires a new approval request.",
+    "authorizationEmptyHint": "Delete this rule to remove every permission.",
+    "adjustRule": "Adjust rule",
+    "saveRule": "Save changes",
+    "deleteRule": "Delete rule",
     "enable": "Enable",
     "disable": "Disable",
     "revoke": "Revoke",
@@ -809,7 +825,7 @@
     "label": "Permission preset",
     "title": "Immediately changes this Session's Sandbox and approval policy for subsequently started tool work; already-running processes and other Sessions are unchanged",
     "autoApproval": "Auto Approval",
-    "requestApproval": "Request Human Approval",
+    "requestApproval": "Request Approval",
     "fullAccess": "Full Access",
     "customDefault": "Custom (service default)"
   },
@@ -1124,6 +1140,8 @@
       "quickActions": "Quick actions for the current approval request",
       "viewAll": "View approvals ({{count}})",
       "allowOnce": "Allow once",
+      "allowTask": "Always allow in this task",
+      "allowSession": "Always allow in this Session",
       "deny": "Deny"
     },
     "admission": {
@@ -1560,6 +1578,8 @@
     "attentionAcknowledged": "User reviewed and acknowledged this exact issue revision; audit history is retained",
     "approval": {
       "allow_once": "User allowed this capability request once via Dashboard",
+      "allow_lease": "User allowed this capability boundary for subsequent operations in the current task via Dashboard",
+      "allow_session": "User allowed this exact capability boundary for subsequent operations in the owning Session via Dashboard",
       "deny": "User denied the capability request via Dashboard"
     }
   },
@@ -1584,6 +1604,10 @@
     "cancelDelegationBody": "{{task}}\n\nRuntime will cancel this Delegation and all of its non-terminal descendants. Completed external side effects and audit history remain intact.",
     "denyApprovalTitle": "Deny capability request?",
     "denyApproval": "Denying prevents this Execution Job from using the requested capability. Continue?",
+    "allowSessionApprovalTitle": "Always allow this permission in this Session?",
+    "allowSessionApproval": "This approves the current request and creates a restricted rule for the same Principal, Agent, Target, capability and permission boundary in this Session. It does not enable Full Access, and other Sessions are unchanged.",
+    "revokeAuthorizationRuleTitle": "Delete this authorization rule?",
+    "revokeAuthorizationRule": "Future requests will no longer reuse this rule. Its audit record will be retained.",
     "cancelScheduleTitle": "Cancel this Schedule?",
     "cancelSchedule": "This Schedule will not fire again after cancellation. Continue?",
     "rescheduleAt": "New trigger time (ISO or local date-time)",

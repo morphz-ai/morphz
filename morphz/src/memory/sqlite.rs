@@ -13,16 +13,16 @@ use crate::memory::{
     ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextActivationCausalitySnapshot,
-    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
-    ContextCapabilityBindingStore, ContextCognitiveClock, ContextEncodingProjectionSnapshot,
-    ContextExecutionResourcesSnapshot, ContextRuntimeDirectoryRequest,
-    ContextRuntimeDirectorySnapshot, ContextRuntimeSchedulerSnapshot,
-    ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore, ContextSessionCount,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
-    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
-    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseRestriction,
+    CapabilityLeaseScope, CapabilityLeaseStatus, CapabilityLeaseStore, CognitiveClockStore,
+    CognitiveContextRecord, ContextActivationCausalitySnapshot, ContextCapabilityBindingMutation,
+    ContextCapabilityBindingRecord, ContextCapabilityBindingStore, ContextCognitiveClock,
+    ContextEncodingProjectionSnapshot, ContextExecutionResourcesSnapshot,
+    ContextRuntimeDirectoryRequest, ContextRuntimeDirectorySnapshot,
+    ContextRuntimeSchedulerSnapshot, ContextRuntimeSessionExclusions, ContextRuntimeSnapshotStore,
+    ContextSessionCount, ContextTokenBudgetMutation, ContextUpdate, DelegationFilter,
+    DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
+    DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
     EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
     EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
     ExecutionApprovalStore, ExecutionJobContextCounts, ExecutionJobFilter,
@@ -1237,6 +1237,8 @@ impl SqliteStore {
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             principal_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'session')),
+            session_id TEXT NOT NULL,
             thread_id TEXT NOT NULL,
             target_id TEXT NOT NULL,
             capabilities_json TEXT NOT NULL,
@@ -1249,6 +1251,7 @@ impl SqliteStore {
             updated_at TEXT NOT NULL,
             revoked_at TEXT,
             revoke_reason TEXT,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
             FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
             FOREIGN KEY(target_id) REFERENCES execution_targets(id),
             FOREIGN KEY(issued_by_approval_id) REFERENCES approval_requests(id)
@@ -1419,6 +1422,50 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        let capability_lease_columns = sqlx::query("PRAGMA table_info(capability_leases)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !capability_lease_columns.contains("scope") {
+            sqlx::query(
+                "ALTER TABLE capability_leases ADD COLUMN scope TEXT NOT NULL DEFAULT 'thread'",
+            )
+            .execute(&pool)
+            .await?;
+        }
+        if !capability_lease_columns.contains("session_id") {
+            sqlx::query("ALTER TABLE capability_leases ADD COLUMN session_id TEXT")
+                .execute(&pool)
+                .await?;
+        }
+        sqlx::query(
+            r#"UPDATE capability_leases
+               SET session_id = (
+                   SELECT session_id FROM threads WHERE threads.id = capability_leases.thread_id
+               )
+               WHERE session_id IS NULL OR session_id = ''"#,
+        )
+        .execute(&pool)
+        .await?;
+        let missing_lease_sessions = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM capability_leases WHERE session_id IS NULL OR session_id = ''",
+        )
+        .fetch_one(&pool)
+        .await?;
+        if missing_lease_sessions > 0 {
+            return Err(format!(
+                "{missing_lease_sessions} Capability Lease rows cannot be mapped to an owning Session"
+            )
+            .into());
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_session_scope
+               ON capability_leases(principal_id, agent_id, session_id, target_id, status, expires_at)"#,
+        )
+        .execute(&pool)
+        .await?;
         let context_columns = sqlx::query("PRAGMA table_info(cognitive_contexts)")
             .fetch_all(&pool)
             .await?
@@ -6614,6 +6661,9 @@ fn capability_lease_from_row(
         revision: sqlite_u64(row, "revision")?,
         principal_id: row.get("principal_id"),
         agent_id: row.get("agent_id"),
+        scope: CapabilityLeaseScope::parse(&row.get::<String, _>("scope"))
+            .ok_or("unknown Capability Lease scope")?,
+        session_id: row.get("session_id"),
         thread_id: row.get("thread_id"),
         target_id: row.get("target_id"),
         capabilities: serde_json::from_str(&row.get::<String, _>("capabilities_json"))?,
@@ -22911,7 +22961,14 @@ impl ApprovalStore for SqliteStore {
         let risk_tags = decision.risk_tags().to_vec();
         let risk_tags_json = serde_json::to_string(&risk_tags)?;
         let target_status = decision.status();
-        let mut tx = self.pool.begin().await?;
+        // A human decision can be committed by the HTTP control plane while
+        // the owning Activation is still waiting in another task. Both sides
+        // then replay this same atomic authority boundary. A deferred read
+        // transaction can observe the decision and subsequently fail its
+        // idempotent Event INSERT with SQLITE_BUSY_SNAPSHOT if another writer
+        // commits between those statements. Acquire SQLite's writer slot
+        // before the first read so the replay observes one serial history.
+        let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -23032,7 +23089,9 @@ impl ApprovalStore for SqliteStore {
             return Err("Approval cancel reason 不能为空".into());
         }
         let reason = reason.chars().take(100_000).collect::<String>();
-        let mut tx = self.pool.begin().await?;
+        // Cancellation repair and a live owner can race at the same
+        // read-to-write boundary. Serialize it before the first read too.
+        let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -23142,6 +23201,7 @@ impl CapabilityLeaseStore for SqliteStore {
             ("id", lease.id.as_str()),
             ("principal_id", lease.principal_id.as_str()),
             ("agent_id", lease.agent_id.as_str()),
+            ("session_id", lease.session_id.as_str()),
             ("thread_id", lease.thread_id.as_str()),
             ("target_id", lease.target_id.as_str()),
             ("policy_digest", lease.policy_digest.as_str()),
@@ -23167,14 +23227,16 @@ impl CapabilityLeaseStore for SqliteStore {
         let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let inserted = sqlx::query(
             r#"INSERT OR IGNORE INTO capability_leases
-               (id, revision, principal_id, agent_id, thread_id, target_id,
+               (id, revision, principal_id, agent_id, scope, session_id, thread_id, target_id,
                 capabilities_json, requested_json, policy_digest, status,
                 issued_by_approval_id, issued_at, expires_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)"#,
         )
         .bind(&lease.id)
         .bind(&lease.principal_id)
         .bind(&lease.agent_id)
+        .bind(lease.scope.as_str())
+        .bind(&lease.session_id)
         .bind(&lease.thread_id)
         .bind(&lease.target_id)
         .bind(&capabilities_json)
@@ -23196,6 +23258,8 @@ impl CapabilityLeaseStore for SqliteStore {
             .ok_or("Capability Lease insert 后不可见")?;
         let exact = current.principal_id == lease.principal_id
             && current.agent_id == lease.agent_id
+            && current.scope == lease.scope
+            && current.session_id == lease.session_id
             && current.thread_id == lease.thread_id
             && current.target_id == lease.target_id
             && current.capabilities == lease.capabilities
@@ -23240,6 +23304,12 @@ impl CapabilityLeaseStore for SqliteStore {
         }
         if let Some(value) = filter.agent_id {
             query.push(" AND agent_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.scope {
+            query.push(" AND scope = ").push_bind(value.as_str());
+        }
+        if let Some(value) = filter.session_id {
+            query.push(" AND session_id = ").push_bind(value);
         }
         if let Some(value) = filter.thread_id {
             query.push(" AND thread_id = ").push_bind(value);
@@ -23306,6 +23376,71 @@ impl CapabilityLeaseStore for SqliteStore {
             .get_capability_lease(id)
             .await?
             .ok_or("Capability Lease revoke 后不可见")?;
+        if result.rows_affected() == 1 {
+            Ok(CapabilityLeaseMutation::Updated(updated))
+        } else {
+            Ok(CapabilityLeaseMutation::Conflict { current: updated })
+        }
+    }
+
+    async fn restrict_capability_lease(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        restriction: CapabilityLeaseRestriction,
+    ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.get_capability_lease(id).await? else {
+            return Ok(CapabilityLeaseMutation::NotFound);
+        };
+        if current.status != CapabilityLeaseStatus::Active {
+            return Ok(CapabilityLeaseMutation::Conflict { current });
+        }
+        if current.requested == restriction.requested
+            && current.expires_at == restriction.expires_at
+        {
+            return Ok(CapabilityLeaseMutation::Existing(current));
+        }
+        if current.revision != expected_revision {
+            return Ok(CapabilityLeaseMutation::Conflict { current });
+        }
+        let current_delta: crate::approval::CapabilityDelta =
+            serde_json::from_value(current.requested.clone())?;
+        let restricted_delta: crate::approval::CapabilityDelta =
+            serde_json::from_value(restriction.requested.clone())?;
+        if restricted_delta.is_empty() {
+            return Err("Capability Lease restriction cannot remove every permission; revoke the rule instead".into());
+        }
+        if !restricted_delta.is_subset_of(&current_delta) {
+            return Err("Capability Lease adjustment cannot expand its permission boundary".into());
+        }
+        let now = Utc::now();
+        if restriction.expires_at <= now || restriction.expires_at > current.expires_at {
+            return Err(
+                "Capability Lease adjustment may only shorten a still-future expiry".into(),
+            );
+        }
+        let requested_json = serde_json::to_string(&restriction.requested)?;
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE capability_leases
+               SET revision = revision + 1, requested_json = ?, expires_at = ?, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'active'"#,
+        )
+        .bind(requested_json)
+        .bind(
+            restriction
+                .expires_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let updated = self
+            .get_capability_lease(id)
+            .await?
+            .ok_or("Capability Lease adjustment was not visible")?;
         if result.rows_affected() == 1 {
             Ok(CapabilityLeaseMutation::Updated(updated))
         } else {
@@ -29044,6 +29179,187 @@ mod tests {
                 .mutation,
             ApprovalMutation::Existing(record) if record == denied
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn approval_exact_replay_waits_for_writer_instead_of_failing_snapshot_upgrade() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_path_buf();
+        let store = Arc::new(
+            SqliteStore::new(path.to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let job = seed_execution_job(
+            store.as_ref(),
+            "approval-replay-writer-contention",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let pending = match store
+            .ensure_approval_request(new_approval_request(&job, ApprovalStatus::PendingHuman))
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let resolution = ApprovalResolution::Allow {
+            rationale: "human approved while Activation was waiting".to_string(),
+            risk_tags: vec!["human-approved".to_string()],
+        };
+        let allowed = match store
+            .commit_approval_decision(&pending.id, pending.revision, resolution.clone())
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected approval decision: {other:?}"),
+        };
+
+        // Model the projection writer which starts immediately after the HTTP
+        // decision is persisted. The waiting Activation concurrently replays
+        // the same decision. A deferred replay transaction reads the allowed
+        // row and then fails its INSERT OR IGNORE snapshot upgrade; an
+        // immediate transaction waits before taking that stale read snapshot.
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let mut writer = SqliteConnection::connect_with(&options).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+
+        let replay_store = Arc::clone(&store);
+        let approval_id = pending.id.clone();
+        let mut replay = tokio::spawn(async move {
+            replay_store
+                .commit_approval_decision(&approval_id, pending.revision, resolution)
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), &mut replay)
+                .await
+                .is_err(),
+            "the exact replay must retain its intent while another writer owns SQLite"
+        );
+        writer.execute("COMMIT").await.unwrap();
+
+        let replayed = tokio::time::timeout(Duration::from_secs(2), replay)
+            .await
+            .expect("the replay must resume after the writer commits")
+            .unwrap()
+            .unwrap();
+        assert!(!replayed.event_created);
+        assert!(matches!(
+            replayed.mutation,
+            ApprovalMutation::Existing(record) if record == allowed
+        ));
+    }
+
+    #[tokio::test]
+    async fn capability_lease_scope_migration_backfills_the_owning_session_before_indexing() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_path_buf();
+        let store = SqliteStore::new(path.to_string_lossy().as_ref())
+            .await
+            .unwrap();
+        let job = seed_execution_job(
+            &store,
+            "capability-lease-scope-migration",
+            false,
+            ExecutionRetrySafety::Idempotent,
+        )
+        .await;
+        let lease = NewCapabilityLease {
+            id: "legacy-capability-lease".to_string(),
+            principal_id: "principal:legacy-lease".to_string(),
+            agent_id: job.agent_id.clone(),
+            scope: CapabilityLeaseScope::Thread,
+            session_id: job.session_id.clone(),
+            thread_id: job.thread_id.clone(),
+            target_id: job.target_id.clone(),
+            capabilities: vec!["exec".to_string()],
+            requested: serde_json::json!({
+                "network": false,
+                "read_roots": ["/tmp/legacy-lease"],
+                "write_roots": [],
+                "secret_env": []
+            }),
+            policy_digest: "policy:legacy-lease".to_string(),
+            issued_by_approval_id: None,
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+        };
+        store.ensure_capability_lease(lease.clone()).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            ALTER TABLE capability_leases RENAME TO capability_leases_with_scope;
+            CREATE TABLE capability_leases (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                principal_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL,
+                requested_json TEXT NOT NULL,
+                policy_digest TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+                issued_by_approval_id TEXT,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                revoked_at TEXT,
+                revoke_reason TEXT,
+                FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+                FOREIGN KEY(target_id) REFERENCES execution_targets(id),
+                FOREIGN KEY(issued_by_approval_id) REFERENCES approval_requests(id)
+            );
+            INSERT INTO capability_leases
+                (id, revision, principal_id, agent_id, thread_id, target_id,
+                 capabilities_json, requested_json, policy_digest, status,
+                 issued_by_approval_id, issued_at, expires_at, updated_at,
+                 revoked_at, revoke_reason)
+            SELECT id, revision, principal_id, agent_id, thread_id, target_id,
+                   capabilities_json, requested_json, policy_digest, status,
+                   issued_by_approval_id, issued_at, expires_at, updated_at,
+                   revoked_at, revoke_reason
+            FROM capability_leases_with_scope;
+            DROP TABLE capability_leases_with_scope;
+            "#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        drop(store);
+
+        let migrated = SqliteStore::new(path.to_string_lossy().as_ref())
+            .await
+            .expect("legacy Capability Lease schema must migrate before session index creation");
+        let migrated_lease = migrated
+            .get_capability_lease(&lease.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated_lease.scope, CapabilityLeaseScope::Thread);
+        assert_eq!(migrated_lease.session_id, job.session_id);
+        let columns = sqlx::query("PRAGMA table_info(capability_leases)")
+            .fetch_all(&migrated.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(columns.contains("scope"));
+        assert!(columns.contains("session_id"));
+        let session_index = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_capability_leases_session_scope'",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert_eq!(session_index, 1);
     }
 
     #[tokio::test]
