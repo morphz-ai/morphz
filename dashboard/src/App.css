@@ -450,6 +450,7 @@
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   margin: 0;
   overflow: hidden;
   border: 0;
@@ -3883,7 +3884,7 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .event-history-event > summary { grid-template-columns: 42px minmax(0, 1fr) auto 14px; }
   .event-history-event > summary > em { display: none; }
   .event-history-event > div { grid-template-columns: 1fr; padding-left: 14px; }
-  .composer-area { padding: 0 14px 8px; }
+  .composer-area { padding: 0 14px 5px; }
   .composer-control-strip.has-approval { grid-template-columns: minmax(0, 1fr) auto; }
   .composer-control-strip.has-approval .composer-approval-actions { grid-column: 1 / -1; }
   .composer-control-strip { grid-template-columns: minmax(0, 1fr); gap: 7px; }
@@ -3899,9 +3900,13 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .composer-policy-controls > * { flex: 0 0 auto; }
   .composer-model-control { width: min(190px, 44vw); min-width: 132px; }
   .composer-task-status em { display: none; }
-  .composer-footer-row { justify-content: flex-end; gap: 0; }
-  .composer-telemetry { gap: 7px; }
-  .shortcut-row { display: none; }
+  /* The desktop footer is one semantic row: shortcuts on the left and
+     telemetry on the right. Hiding only the shortcuts left its parent row in
+     the mobile grid, producing an empty-looking band above iOS browser chrome
+     and shrinking the usable dialogue viewport. The same health details stay
+     available on the Runtime page, so remove the whole desktop-only row
+     instead of retaining its layout box. */
+  .composer-footer-row { display: none; }
   .send-button span { display: none; }
   .workspace-heading p { max-width: 520px; }
 }

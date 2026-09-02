@@ -609,6 +609,16 @@ test('composer separates stable policy controls from read-only telemetry', () =>
     /\.composer-footer-row\s*\{[^}]*justify-content:\s*space-between[^}]*\}[\s\S]*?\.composer-telemetry\s*\{[^}]*flex:\s*0 0 auto[^}]*justify-content:\s*flex-end[^}]*\}/s,
     'shortcuts stay left while read-only token and connection status share the right edge on the same row',
   )
+  assert.match(
+    appCss,
+    /@media \(max-width:\s*820px\)[\s\S]*?\.composer-footer-row\s*\{\s*display:\s*none;\s*\}/s,
+    'phone layouts remove the complete desktop footer row instead of hiding shortcuts while retaining an empty layout track',
+  )
+  assert.match(
+    appCss,
+    /\.morphz-shell\s*\{[\s\S]*?height:\s*100vh;\s*height:\s*100dvh;/s,
+    'the shell uses the dynamic mobile viewport while retaining a legacy fallback',
+  )
 })
 
 test('composer activity dots cannot collapse under long task text', () => {
