@@ -26,7 +26,9 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 
-use crate::approval::{ApprovalAction, CapabilityDelta};
+use crate::approval::{
+    ApprovalAction, ApprovalScope, CapabilityDelta, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
+};
 use crate::config::ManagedSshTargetConfig;
 use crate::llm::ToolDefinition;
 use crate::memory::{
@@ -1193,6 +1195,8 @@ pub struct EdgeExecutionScope {
     pub context_id: String,
     pub session_id: String,
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_id: Option<String>,
 }
 
 /// Immutable one-hop Route selected before an Execution Job becomes
@@ -1384,6 +1388,11 @@ pub fn edge_command_route_from_job(
                 context_id: job.context_id.clone(),
                 session_id: job.session_id.clone(),
                 thread_id: job.thread_id.clone(),
+                objective_id: job
+                    .request
+                    .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
             })?,
         );
     Ok(value)
@@ -1413,6 +1422,11 @@ pub fn edge_artifact_transfer_route_from_job(
                 context_id: job.context_id.clone(),
                 session_id: job.session_id.clone(),
                 thread_id: job.thread_id.clone(),
+                objective_id: job
+                    .request
+                    .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
             })?,
         );
     Ok(value)
@@ -1706,6 +1720,12 @@ pub fn remote_target_approval_requirement(
     let object = value
         .as_object()
         .ok_or("Remote physical-tool arguments must be a JSON object")?;
+    let requested_scope = object
+        .get("approval_scope")
+        .cloned()
+        .map(serde_json::from_value::<ApprovalScope>)
+        .transpose()?
+        .unwrap_or_default();
     let path = object
         .get("path")
         .or_else(|| object.get("cwd"))
@@ -1781,6 +1801,7 @@ pub fn remote_target_approval_requirement(
             "the current Thread is using physical capability '{tool_name}' on non-local Execution Target '{}' ({}) for the first time; {execution_location} will execute through the frozen Route and still requires existing automatic or human approval",
             target.id, target.name
         ),
+        requested_scope,
     })
 }
 
@@ -1819,6 +1840,7 @@ pub fn remote_artifact_transfer_approval_requirement(
             request.destination.path,
             destination.id,
         ),
+        requested_scope: ApprovalScope::Once,
     }))
 }
 

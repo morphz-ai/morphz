@@ -4357,6 +4357,7 @@ pub enum CapabilityLeaseStatus {
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityLeaseScope {
     Thread,
+    Objective,
     Session,
 }
 
@@ -4364,6 +4365,7 @@ impl CapabilityLeaseScope {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Thread => "thread",
+            Self::Objective => "objective",
             Self::Session => "session",
         }
     }
@@ -4371,6 +4373,7 @@ impl CapabilityLeaseScope {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "thread" => Some(Self::Thread),
+            "objective" => Some(Self::Objective),
             "session" => Some(Self::Session),
             _ => None,
         }
@@ -4405,6 +4408,10 @@ pub struct CapabilityLeaseRecord {
     /// Origin Thread retained for audit. Thread-scoped rules match this exact
     /// value; Session-scoped rules match `session_id` instead.
     pub thread_id: String,
+    /// Stable scheduler identity selected by `scope`: Thread ID, Objective
+    /// ID, or Session ID. Origin Thread/Session remain separately available
+    /// for audit and cascading cleanup.
+    pub scope_id: String,
     pub target_id: String,
     pub capabilities: Vec<String>,
     pub requested: serde_json::Value,
@@ -4426,6 +4433,7 @@ pub struct NewCapabilityLease {
     pub scope: CapabilityLeaseScope,
     pub session_id: String,
     pub thread_id: String,
+    pub scope_id: String,
     pub target_id: String,
     pub capabilities: Vec<String>,
     pub requested: serde_json::Value,
@@ -4447,6 +4455,7 @@ pub struct CapabilityLeaseFilter {
     pub scope: Option<CapabilityLeaseScope>,
     pub session_id: Option<String>,
     pub thread_id: Option<String>,
+    pub scope_id: Option<String>,
     pub target_id: Option<String>,
     /// Require an exact capability element rather than scanning unrelated
     /// leases in the same execution scope.

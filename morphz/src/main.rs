@@ -6,9 +6,9 @@ use morphz::harness_package::HarnessPackage;
 use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
-    ExecutionTargetAuthorizationScope, ExecutionTargetStatus, NewAgent, NewCognitiveContext,
-    NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter, SessionMountKind, SessionRecord,
-    SessionStatus, ThreadControlAction, ThreadMutation,
+    CapabilityLeaseScope, ExecutionTargetAuthorizationScope, ExecutionTargetStatus, NewAgent,
+    NewCognitiveContext, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
+    SessionMountKind, SessionRecord, SessionStatus, ThreadControlAction, ThreadMutation,
 };
 use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
@@ -4845,8 +4845,11 @@ async fn prompt_for_human_approval<R: BufRead, W: Write>(
     writeln!(output, "\n[需要审批]\n{text}")
         .map_err(|error| format!("无法显示审批请求: {error}"))?;
     loop {
-        write!(output, "允许本次操作？[y/n] ")
-            .map_err(|error| format!("无法显示审批提示: {error}"))?;
+        write!(
+            output,
+            "选择授权范围：[1] 仅一次 [t] 线程 [o] 目标 [s] 会话 [n] 拒绝 "
+        )
+        .map_err(|error| format!("无法显示审批提示: {error}"))?;
         output
             .flush()
             .map_err(|error| format!("无法刷新审批提示: {error}"))?;
@@ -4858,34 +4861,90 @@ async fn prompt_for_human_approval<R: BufRead, W: Write>(
         {
             return Err("审批输入通道已关闭".to_string());
         }
-        let decision = match parse_terminal_approval_input(&line) {
-            Ok(Some(decision)) => decision,
+        let choice = match parse_terminal_approval_input(&line) {
+            Ok(Some(choice)) => choice,
             Ok(None) => {
-                writeln!(output, "审批仍在等待；请明确输入 y/yes 或 n/no。")
+                writeln!(output, "审批仍在等待；请输入 1、t、o、s 或 n。")
                     .map_err(|error| format!("无法显示审批提示: {error}"))?;
                 continue;
             }
             Err(()) => {
-                writeln!(output, "请输入 y/yes 或 n/no。")
+                writeln!(output, "请输入 1、t、o、s 或 n。")
                     .map_err(|error| format!("无法显示审批提示: {error}"))?;
                 continue;
             }
         };
-        return runtime.decide_approval(approval_id, decision).await;
+        return match choice {
+            TerminalApprovalChoice::Once => {
+                runtime
+                    .decide_approval(
+                        approval_id,
+                        ApprovalDecision::AllowOnce {
+                            rationale: "用户通过本地终端仅允许本次操作".to_string(),
+                            risk_tags: vec!["human-approved".to_string()],
+                        },
+                    )
+                    .await
+            }
+            TerminalApprovalChoice::Thread => {
+                runtime
+                    .allow_approval_capability_scope(
+                        approval_id,
+                        CapabilityLeaseScope::Thread,
+                        "用户通过本地终端允许当前线程复用这项能力".to_string(),
+                    )
+                    .await
+            }
+            TerminalApprovalChoice::Objective => {
+                runtime
+                    .allow_approval_capability_scope(
+                        approval_id,
+                        CapabilityLeaseScope::Objective,
+                        "用户通过本地终端允许当前目标复用这项能力".to_string(),
+                    )
+                    .await
+            }
+            TerminalApprovalChoice::Session => {
+                runtime
+                    .allow_approval_capability_scope(
+                        approval_id,
+                        CapabilityLeaseScope::Session,
+                        "用户通过本地终端允许当前会话复用这项能力".to_string(),
+                    )
+                    .await
+            }
+            TerminalApprovalChoice::Deny => {
+                runtime
+                    .decide_approval(
+                        approval_id,
+                        ApprovalDecision::Deny {
+                            rationale: "用户通过本地终端拒绝本次操作".to_string(),
+                            risk_tags: vec!["human-denied".to_string()],
+                        },
+                    )
+                    .await
+            }
+        };
     }
 }
 
-fn parse_terminal_approval_input(input: &str) -> Result<Option<ApprovalDecision>, ()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalApprovalChoice {
+    Once,
+    Thread,
+    Objective,
+    Session,
+    Deny,
+}
+
+fn parse_terminal_approval_input(input: &str) -> Result<Option<TerminalApprovalChoice>, ()> {
     match input.trim().to_ascii_lowercase().as_str() {
         "" => Ok(None),
-        "y" | "yes" | "allow" | "approve" => Ok(Some(ApprovalDecision::AllowOnce {
-            rationale: "用户通过本地终端允许本次操作".to_string(),
-            risk_tags: vec!["human-approved".to_string()],
-        })),
-        "n" | "no" | "deny" | "reject" => Ok(Some(ApprovalDecision::Deny {
-            rationale: "用户通过本地终端拒绝本次操作".to_string(),
-            risk_tags: vec!["human-denied".to_string()],
-        })),
+        "1" | "y" | "yes" | "once" | "allow" | "approve" => Ok(Some(TerminalApprovalChoice::Once)),
+        "t" | "thread" => Ok(Some(TerminalApprovalChoice::Thread)),
+        "o" | "objective" => Ok(Some(TerminalApprovalChoice::Objective)),
+        "s" | "session" => Ok(Some(TerminalApprovalChoice::Session)),
+        "n" | "no" | "deny" | "reject" => Ok(Some(TerminalApprovalChoice::Deny)),
         _ => Err(()),
     }
 }
@@ -5203,9 +5262,8 @@ mod tests {
         runtime_control_plane_paths, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
         validate_coding_eval_storage_isolation, wait_for_session_reply, ConsoleInput,
-        ConsoleMessageKind, OfflineClient,
+        ConsoleMessageKind, OfflineClient, TerminalApprovalChoice,
     };
-    use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::{AppConfig, ResolvedConfig, TuiTheme};
     use morphz::event::Event;
@@ -5678,12 +5736,24 @@ mod tests {
         assert!(matches!(parse_terminal_approval_input("\n"), Ok(None)));
         assert!(matches!(
             parse_terminal_approval_input("yes"),
-            Ok(Some(ApprovalDecision::AllowOnce { .. }))
+            Ok(Some(TerminalApprovalChoice::Once))
         ));
         assert!(matches!(
             parse_terminal_approval_input("no"),
-            Ok(Some(ApprovalDecision::Deny { .. }))
+            Ok(Some(TerminalApprovalChoice::Deny))
         ));
+        assert_eq!(
+            parse_terminal_approval_input("thread"),
+            Ok(Some(TerminalApprovalChoice::Thread))
+        );
+        assert_eq!(
+            parse_terminal_approval_input("objective"),
+            Ok(Some(TerminalApprovalChoice::Objective))
+        );
+        assert_eq!(
+            parse_terminal_approval_input("session"),
+            Ok(Some(TerminalApprovalChoice::Session))
+        );
         assert!(parse_terminal_approval_input("maybe").is_err());
     }
 

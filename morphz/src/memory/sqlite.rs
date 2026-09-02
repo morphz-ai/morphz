@@ -1260,9 +1260,10 @@ impl SqliteStore {
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             principal_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
-            scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'session')),
+            scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'objective', 'session')),
             session_id TEXT NOT NULL,
             thread_id TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
             target_id TEXT NOT NULL,
             capabilities_json TEXT NOT NULL,
             requested_json TEXT NOT NULL,
@@ -1279,8 +1280,6 @@ impl SqliteStore {
             FOREIGN KEY(target_id) REFERENCES execution_targets(id),
             FOREIGN KEY(issued_by_approval_id) REFERENCES approval_requests(id)
         );
-        CREATE INDEX IF NOT EXISTS idx_capability_leases_scope
-            ON capability_leases(principal_id, agent_id, thread_id, target_id, status, expires_at);
         CREATE INDEX IF NOT EXISTS idx_capability_leases_approval
             ON capability_leases(issued_by_approval_id);
 
@@ -1483,9 +1482,83 @@ impl SqliteStore {
             )
             .into());
         }
+        let capability_lease_table_sql = sqlx::query_scalar::<_, String>(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'capability_leases'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        if !capability_lease_columns.contains("scope_id")
+            || !capability_lease_table_sql.contains("'objective'")
+        {
+            let mut tx = pool.begin().await?;
+            sqlx::query("ALTER TABLE capability_leases RENAME TO capability_leases_legacy_scope")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                r#"CREATE TABLE capability_leases (
+                    id TEXT PRIMARY KEY,
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                    principal_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'objective', 'session')),
+                    session_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    capabilities_json TEXT NOT NULL,
+                    requested_json TEXT NOT NULL,
+                    policy_digest TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+                    issued_by_approval_id TEXT,
+                    issued_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    revoke_reason TEXT,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+                    FOREIGN KEY(target_id) REFERENCES execution_targets(id),
+                    FOREIGN KEY(issued_by_approval_id) REFERENCES approval_requests(id)
+                )"#,
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"INSERT INTO capability_leases
+                   (id, revision, principal_id, agent_id, scope, session_id, thread_id, scope_id,
+                    target_id, capabilities_json, requested_json, policy_digest, status,
+                    issued_by_approval_id, issued_at, expires_at, updated_at, revoked_at, revoke_reason)
+                   SELECT id, revision, principal_id, agent_id, scope, session_id, thread_id,
+                          CASE WHEN scope = 'session' THEN session_id ELSE thread_id END,
+                          target_id, capabilities_json, requested_json, policy_digest, status,
+                          issued_by_approval_id, issued_at, expires_at, updated_at, revoked_at, revoke_reason
+                   FROM capability_leases_legacy_scope"#,
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DROP TABLE capability_leases_legacy_scope")
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_scope
+               ON capability_leases(principal_id, scope, scope_id, target_id, status, expires_at)"#,
+        )
+        .execute(&pool)
+        .await?;
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_session_scope
                ON capability_leases(principal_id, agent_id, session_id, target_id, status, expires_at)"#,
+        )
+        .execute(&pool)
+        .await?;
+        // Recreate this after a legacy table rebuild. SQLite carries the old
+        // index across RENAME and drops it with the legacy table, so the
+        // earlier monolithic DDL cannot guarantee it still exists here.
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_approval
+               ON capability_leases(issued_by_approval_id)"#,
         )
         .execute(&pool)
         .await?;
@@ -7416,6 +7489,7 @@ fn capability_lease_from_row(
             .ok_or("unknown Capability Lease scope")?,
         session_id: row.get("session_id"),
         thread_id: row.get("thread_id"),
+        scope_id: row.get("scope_id"),
         target_id: row.get("target_id"),
         capabilities: serde_json::from_str(&row.get::<String, _>("capabilities_json"))?,
         requested: serde_json::from_str(&row.get::<String, _>("requested_json"))?,
@@ -24701,6 +24775,7 @@ impl CapabilityLeaseStore for SqliteStore {
             ("agent_id", lease.agent_id.as_str()),
             ("session_id", lease.session_id.as_str()),
             ("thread_id", lease.thread_id.as_str()),
+            ("scope_id", lease.scope_id.as_str()),
             ("target_id", lease.target_id.as_str()),
             ("policy_digest", lease.policy_digest.as_str()),
         ] {
@@ -24725,10 +24800,10 @@ impl CapabilityLeaseStore for SqliteStore {
         let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let inserted = sqlx::query(
             r#"INSERT OR IGNORE INTO capability_leases
-               (id, revision, principal_id, agent_id, scope, session_id, thread_id, target_id,
+               (id, revision, principal_id, agent_id, scope, session_id, thread_id, scope_id, target_id,
                 capabilities_json, requested_json, policy_digest, status,
                 issued_by_approval_id, issued_at, expires_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)"#,
         )
         .bind(&lease.id)
         .bind(&lease.principal_id)
@@ -24736,6 +24811,7 @@ impl CapabilityLeaseStore for SqliteStore {
         .bind(lease.scope.as_str())
         .bind(&lease.session_id)
         .bind(&lease.thread_id)
+        .bind(&lease.scope_id)
         .bind(&lease.target_id)
         .bind(&capabilities_json)
         .bind(&requested_json)
@@ -24759,6 +24835,7 @@ impl CapabilityLeaseStore for SqliteStore {
             && current.scope == lease.scope
             && current.session_id == lease.session_id
             && current.thread_id == lease.thread_id
+            && current.scope_id == lease.scope_id
             && current.target_id == lease.target_id
             && current.capabilities == lease.capabilities
             && current.requested == lease.requested
@@ -24811,6 +24888,9 @@ impl CapabilityLeaseStore for SqliteStore {
         }
         if let Some(value) = filter.thread_id {
             query.push(" AND thread_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.scope_id {
+            query.push(" AND scope_id = ").push_bind(value);
         }
         if let Some(value) = filter.target_id {
             query.push(" AND target_id = ").push_bind(value);
@@ -31133,6 +31213,7 @@ mod tests {
             scope: CapabilityLeaseScope::Thread,
             session_id: job.session_id.clone(),
             thread_id: job.thread_id.clone(),
+            scope_id: job.thread_id.clone(),
             target_id: job.target_id.clone(),
             capabilities: vec!["exec".to_string()],
             requested: serde_json::json!({
@@ -31198,6 +31279,7 @@ mod tests {
             .unwrap();
         assert_eq!(migrated_lease.scope, CapabilityLeaseScope::Thread);
         assert_eq!(migrated_lease.session_id, job.session_id);
+        assert_eq!(migrated_lease.scope_id, job.thread_id);
         let columns = sqlx::query("PRAGMA table_info(capability_leases)")
             .fetch_all(&migrated.pool)
             .await
@@ -31207,13 +31289,20 @@ mod tests {
             .collect::<std::collections::HashSet<_>>();
         assert!(columns.contains("scope"));
         assert!(columns.contains("session_id"));
-        let session_index = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_capability_leases_session_scope'",
+        let scope_index = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_capability_leases_scope'",
         )
         .fetch_one(&migrated.pool)
         .await
         .unwrap();
-        assert_eq!(session_index, 1);
+        assert_eq!(scope_index, 1);
+        let approval_index = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_capability_leases_approval'",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert_eq!(approval_index, 1);
     }
 
     #[tokio::test]

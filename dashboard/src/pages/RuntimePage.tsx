@@ -18,9 +18,10 @@ export interface CapabilityLeaseSummary {
   revision: number
   principal_id: string
   agent_id: string
-  scope: 'thread' | 'session'
+  scope: 'thread' | 'objective' | 'session'
   session_id: string
   thread_id: string
+  scope_id: string
   target_id: string
   capabilities: string[]
   requested: CapabilityDeltaSummary
@@ -191,7 +192,7 @@ function AuthorizationRule({
         <strong>{lease.capabilities.join(', ') || '—'}</strong>
         <span>{t(`runtime.authorizationScope.${lease.scope}`)}</span>
       </header>
-      <small title={lease.id}>{lease.target_id} · {lease.scope === 'session' ? lease.session_id : lease.thread_id}</small>
+      <small title={lease.id}>{lease.target_id} · {lease.scope_id}</small>
       <div className="authorization-rule-permissions">
         {permissions.map(permission => <code key={permission}>{permission}</code>)}
       </div>

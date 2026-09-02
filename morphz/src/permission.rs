@@ -1,5 +1,6 @@
 use crate::approval::{
-    ApprovalAction, ApprovalDecision, ApprovalProvider, ApprovalRequest, CapabilityDelta,
+    bind_capability_lease_scope_risk_tags, ApprovalAction, ApprovalDecision, ApprovalProvider,
+    ApprovalRequest, ApprovalScope, CapabilityDelta,
 };
 use crate::memory::ApprovalStatus;
 use crate::sandbox::SandboxPathPattern;
@@ -25,6 +26,7 @@ pub struct ApprovalRequirement {
     pub action: ApprovalAction,
     pub requested: CapabilityDelta,
     pub justification: String,
+    pub requested_scope: ApprovalScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -739,7 +741,14 @@ impl PermissionBroker {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, PermissionError> {
-        self.automatic_approval.review(request).await
+        let mut decision = self.automatic_approval.review(request).await?;
+        if let (ApprovalDecision::AllowLease { risk_tags, .. }, Some(offer)) =
+            (&mut decision, request.lease_offer.as_ref())
+        {
+            *risk_tags =
+                bind_capability_lease_scope_risk_tags(std::mem::take(risk_tags), offer.scope);
+        }
+        Ok(decision)
     }
 
     pub async fn review_human(
@@ -794,6 +803,7 @@ impl PermissionBroker {
                             access.as_str(),
                             candidate.display(),
                         ),
+                        requested_scope: ApprovalScope::Thread,
                     }),
                 ))
             }
@@ -819,6 +829,7 @@ impl PermissionBroker {
             action,
             requested,
             justification,
+            requested_scope: ApprovalScope::Thread,
         }))
     }
 
@@ -1001,7 +1012,11 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::approval::DenyAllApprovalProvider;
+    use crate::approval::{
+        capability_lease_scope, CapabilityLeaseOffer, DenyAllApprovalProvider,
+        CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG,
+    };
+    use crate::memory::CapabilityLeaseScope;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
@@ -1024,6 +1039,18 @@ mod tests {
         }
     }
 
+    struct FixedApprovalProvider(ApprovalDecision);
+
+    #[async_trait::async_trait]
+    impl ApprovalProvider for FixedApprovalProvider {
+        async fn review(
+            &self,
+            _request: &ApprovalRequest,
+        ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(self.0.clone())
+        }
+    }
+
     fn profile(root: &Path) -> PermissionProfile {
         let config = PermissionConfig {
             workspace_root: root.to_string_lossy().into_owned(),
@@ -1032,6 +1059,66 @@ mod tests {
             ..PermissionConfig::default()
         };
         PermissionProfile::from_config(&config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn automatic_reviewer_cannot_widen_the_runtime_offered_scope() {
+        let root = TempDir::new().unwrap();
+        let broker = PermissionBroker::new(
+            Arc::new(profile(root.path())),
+            Arc::new(FixedApprovalProvider(ApprovalDecision::AllowLease {
+                rationale: "allow the requested directory".to_string(),
+                risk_tags: vec![CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG.to_string()],
+            })),
+        );
+        let request = ApprovalRequest {
+            approval_id: "approval-scope-boundary".to_string(),
+            context_id: "context-a".to_string(),
+            session_id: "session-a".to_string(),
+            attempt_id: "attempt-a".to_string(),
+            thread_id: "thread-a".to_string(),
+            root_turn_id: "turn-a".to_string(),
+            trigger_event_id: "event-a".to_string(),
+            trigger_sequence: 1,
+            model_alias: None,
+            action: ApprovalAction::ToolOperation {
+                tool: "write".to_string(),
+                operation: "write file".to_string(),
+                target: None,
+            },
+            requested: CapabilityDelta {
+                write_roots: vec![root.path().join("project")],
+                ..CapabilityDelta::default()
+            },
+            justification: "create a project".to_string(),
+            lease_offer: Some(CapabilityLeaseOffer {
+                principal_id: "principal-default".to_string(),
+                agent_id: "agent-default".to_string(),
+                session_id: "session-a".to_string(),
+                thread_id: "thread-a".to_string(),
+                scope: CapabilityLeaseScope::Thread,
+                scope_id: "thread-a".to_string(),
+                target_id: "local".to_string(),
+                capability: "filesystem.write".to_string(),
+                capabilities: vec![
+                    "filesystem.read".to_string(),
+                    "filesystem.write".to_string(),
+                ],
+                requested: CapabilityDelta {
+                    write_roots: vec![root.path().join("project")],
+                    ..CapabilityDelta::default()
+                },
+                policy_digest: "policy-a".to_string(),
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            }),
+        };
+
+        let decision = broker.review_automatic(&request).await.unwrap();
+        assert!(matches!(decision, ApprovalDecision::AllowLease { .. }));
+        assert_eq!(
+            capability_lease_scope(decision.risk_tags(), CapabilityLeaseScope::Session),
+            CapabilityLeaseScope::Thread
+        );
     }
 
     #[test]

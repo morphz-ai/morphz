@@ -3419,16 +3419,24 @@ async fn handle_decide_approval(
         .rationale
         .unwrap_or_else(|| "the user decided through the Morphz approval channel".to_string());
     let normalized_decision = request.decision.trim().to_ascii_lowercase();
-    if normalized_decision == "allow_session" {
+    let reusable_scope = match normalized_decision.as_str() {
+        "allow_lease" | "approve_lease" | "allow_thread" => {
+            Some(crate::memory::CapabilityLeaseScope::Thread)
+        }
+        "allow_objective" => Some(crate::memory::CapabilityLeaseScope::Objective),
+        "allow_session" => Some(crate::memory::CapabilityLeaseScope::Session),
+        _ => None,
+    };
+    if let Some(scope) = reusable_scope {
         return match state
             .runtime
-            .allow_approval_session_capability(&approval_id, rationale)
+            .allow_approval_capability_scope(&approval_id, scope, rationale)
             .await
         {
             Ok(()) => Json(json!({
                 "approval_id": approval_id,
                 "accepted": true,
-                "scope": "session_capability",
+                "scope": scope.as_str(),
             }))
             .into_response(),
             Err(error) => error_response(StatusCode::CONFLICT, error),
@@ -3445,10 +3453,6 @@ async fn handle_decide_approval(
             rationale,
             risk_tags: vec!["human-approved".to_string()],
         },
-        "allow_lease" | "approve_lease" => ApprovalDecision::AllowLease {
-            rationale,
-            risk_tags: vec!["human-approved".to_string()],
-        },
         "deny" | "reject" => ApprovalDecision::Deny {
             rationale,
             risk_tags: vec!["human-denied".to_string()],
@@ -3456,7 +3460,7 @@ async fn handle_decide_approval(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "decision supports only allow_once, allow_lease, allow_session, or deny",
+                "decision supports only allow_once, allow_thread, allow_objective, allow_session, or deny",
             )
         }
     };

@@ -1,6 +1,6 @@
 use crate::event::TYPE_USER_MESSAGE;
 use crate::llm::{Client, Message, ModelRequestContext};
-use crate::memory::{ApprovalStatus, ApprovalStore, EventStore, QueryFilter};
+use crate::memory::{ApprovalStatus, ApprovalStore, CapabilityLeaseScope, EventStore, QueryFilter};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -29,7 +29,7 @@ Policy:
 
 Lease semantics:
 - `allow_once` authorizes only this exact Job request.
-- `allow_lease` is available only when `lease_offer` is present. It additionally authorizes the explicitly shown reusable Principal + Agent + Thread + Target capability boundary until its stated expiry. Never infer or widen a lease.
+- `allow_lease` is available only when `lease_offer` is present. It additionally authorizes the explicitly shown reusable Principal + causal scope + Target capability boundary until its stated expiry. The scope is exactly one of Thread, Objective, or Session. Never infer or widen a lease.
 - Prefer `allow_once` when the exact action is acceptable but repeating the whole offered capability without another review would be too broad.
 - Never return `allow_lease` when `lease_offer` is absent.
 
@@ -37,6 +37,9 @@ Return exactly one JSON object and no markdown:
 {"decision":"allow_once|allow_lease|deny|ask_human","rationale":"short reason","risk_tags":["tag"]}"#;
 
 pub const CAPABILITY_LEASE_APPROVED_RISK_TAG: &str = "capability-lease-approved";
+pub const CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY: &str = "_morphz_capability_lease_objective_id";
+pub const CAPABILITY_LEASE_THREAD_SCOPE_RISK_TAG: &str = "capability-lease-scope:thread";
+pub const CAPABILITY_LEASE_OBJECTIVE_SCOPE_RISK_TAG: &str = "capability-lease-scope:objective";
 pub const CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG: &str = "capability-lease-scope:session";
 
 fn mark_capability_lease_approved(mut risk_tags: Vec<String>) -> Vec<String> {
@@ -59,6 +62,54 @@ pub fn capability_lease_is_session_scoped(risk_tags: &[String]) -> bool {
     risk_tags
         .iter()
         .any(|tag| tag == CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG)
+}
+
+pub fn capability_lease_scope(
+    risk_tags: &[String],
+    offered: CapabilityLeaseScope,
+) -> CapabilityLeaseScope {
+    if risk_tags
+        .iter()
+        .any(|tag| tag == CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG)
+    {
+        CapabilityLeaseScope::Session
+    } else if risk_tags
+        .iter()
+        .any(|tag| tag == CAPABILITY_LEASE_OBJECTIVE_SCOPE_RISK_TAG)
+    {
+        CapabilityLeaseScope::Objective
+    } else if risk_tags
+        .iter()
+        .any(|tag| tag == CAPABILITY_LEASE_THREAD_SCOPE_RISK_TAG)
+    {
+        CapabilityLeaseScope::Thread
+    } else {
+        offered
+    }
+}
+
+pub fn capability_lease_scope_risk_tag(scope: CapabilityLeaseScope) -> &'static str {
+    match scope {
+        CapabilityLeaseScope::Thread => CAPABILITY_LEASE_THREAD_SCOPE_RISK_TAG,
+        CapabilityLeaseScope::Objective => CAPABILITY_LEASE_OBJECTIVE_SCOPE_RISK_TAG,
+        CapabilityLeaseScope::Session => CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG,
+    }
+}
+
+/// Bind an automatic review result to the scope Runtime actually offered.
+/// Reviewer-provided risk tags are explanatory text, not authority to widen a
+/// Thread request into an Objective or Session lease.
+pub fn bind_capability_lease_scope_risk_tags(
+    mut risk_tags: Vec<String>,
+    scope: CapabilityLeaseScope,
+) -> Vec<String> {
+    risk_tags.retain(|tag| {
+        tag != CAPABILITY_LEASE_THREAD_SCOPE_RISK_TAG
+            && tag != CAPABILITY_LEASE_OBJECTIVE_SCOPE_RISK_TAG
+            && tag != CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG
+    });
+    risk_tags.push(capability_lease_scope_risk_tag(scope).to_string());
+    risk_tags
 }
 
 pub fn capability_lease_policy_digest(permission_policy: &str, target_policy: &str) -> String {
@@ -126,6 +177,39 @@ impl CapabilityDelta {
     }
 }
 
+/// Causal lifetime requested for one approval. `Once` never creates a
+/// reusable Capability Lease; the other variants map to durable scheduler
+/// identities instead of UI concepts such as a mutable "current task".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalScope {
+    Once,
+    #[default]
+    Thread,
+    Objective,
+    Session,
+}
+
+impl ApprovalScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Thread => "thread",
+            Self::Objective => "objective",
+            Self::Session => "session",
+        }
+    }
+
+    pub fn lease_scope(self) -> Option<CapabilityLeaseScope> {
+        match self {
+            Self::Once => None,
+            Self::Thread => Some(CapabilityLeaseScope::Thread),
+            Self::Objective => Some(CapabilityLeaseScope::Objective),
+            Self::Session => Some(CapabilityLeaseScope::Session),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ApprovalAction {
@@ -152,6 +236,36 @@ impl ApprovalAction {
             } => format!("{tool}:{operation}"),
         }
     }
+}
+
+/// Tool-independent physical capability families carried by a reusable
+/// lease. A write grant also implies read for the same roots, matching
+/// `CapabilityDelta::is_subset_of`; this lets an approval obtained through
+/// `exec` cover a later structured `write`, `edit`, or `read` invocation.
+pub fn reusable_capabilities(action: &ApprovalAction, requested: &CapabilityDelta) -> Vec<String> {
+    let mut capabilities = Vec::new();
+    if requested.network {
+        capabilities.push("network".to_string());
+    }
+    if !requested.read_roots.is_empty() || !requested.write_roots.is_empty() {
+        capabilities.push("filesystem.read".to_string());
+    }
+    if !requested.write_roots.is_empty() {
+        capabilities.push("filesystem.write".to_string());
+    }
+    if !requested.secret_env.is_empty() {
+        capabilities.push("secret_env".to_string());
+    }
+    if capabilities.is_empty() {
+        capabilities.push(action.lease_capability());
+    }
+    capabilities
+}
+
+pub fn reusable_capabilities_cover(granted: &[String], required: &[String]) -> bool {
+    required
+        .iter()
+        .all(|capability| granted.iter().any(|candidate| candidate == capability))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,11 +299,27 @@ pub struct CapabilityLeaseOffer {
     pub agent_id: String,
     pub session_id: String,
     pub thread_id: String,
+    pub scope: CapabilityLeaseScope,
+    pub scope_id: String,
     pub target_id: String,
+    /// Legacy display/action family retained for wire compatibility. New
+    /// authorization decisions use `capabilities` below.
     pub capability: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub requested: CapabilityDelta,
     pub policy_digest: String,
     pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl CapabilityLeaseOffer {
+    pub fn effective_capabilities(&self) -> Vec<String> {
+        if self.capabilities.is_empty() {
+            vec![self.capability.clone()]
+        } else {
+            self.capabilities.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1037,6 +1167,100 @@ mod tests {
     }
 
     #[test]
+    fn approval_scope_is_explicit_and_defaults_to_thread() {
+        assert_eq!(ApprovalScope::default(), ApprovalScope::Thread);
+        for (wire, expected) in [
+            ("\"once\"", ApprovalScope::Once),
+            ("\"thread\"", ApprovalScope::Thread),
+            ("\"objective\"", ApprovalScope::Objective),
+            ("\"session\"", ApprovalScope::Session),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<ApprovalScope>(wire).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(ApprovalScope::Once.lease_scope(), None);
+        assert_eq!(
+            ApprovalScope::Objective.lease_scope(),
+            Some(CapabilityLeaseScope::Objective)
+        );
+        let rebound = bind_capability_lease_scope_risk_tags(
+            vec![
+                "reviewed".to_string(),
+                CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG.to_string(),
+            ],
+            CapabilityLeaseScope::Thread,
+        );
+        assert_eq!(
+            capability_lease_scope(&rebound, CapabilityLeaseScope::Session),
+            CapabilityLeaseScope::Thread,
+            "reviewer-authored tags cannot widen Runtime's offered scope"
+        );
+    }
+
+    #[test]
+    fn filesystem_write_lease_is_reusable_across_exec_write_edit_and_read() {
+        let project_root = PathBuf::from("/projects/new-app");
+        let granted = CapabilityDelta {
+            write_roots: vec![project_root.clone()],
+            ..CapabilityDelta::default()
+        };
+        let shell = ApprovalAction::Shell {
+            command: "mkdir -p /projects/new-app/src".to_string(),
+            cwd: PathBuf::from("/projects"),
+        };
+        let structured_write = ApprovalAction::ToolOperation {
+            tool: "write".to_string(),
+            operation: "create".to_string(),
+            target: Some(project_root.join("src/main.rs")),
+        };
+        let structured_edit = ApprovalAction::ToolOperation {
+            tool: "edit".to_string(),
+            operation: "edit".to_string(),
+            target: Some(project_root.join("Cargo.toml")),
+        };
+        let structured_read = ApprovalAction::ToolOperation {
+            tool: "read".to_string(),
+            operation: "read".to_string(),
+            target: Some(project_root.join("README.md")),
+        };
+
+        let granted_capabilities = reusable_capabilities(&shell, &granted);
+        assert_eq!(
+            granted_capabilities,
+            vec![
+                "filesystem.read".to_string(),
+                "filesystem.write".to_string()
+            ]
+        );
+        for action in [&structured_write, &structured_edit, &structured_read] {
+            let requested = if action == &structured_read {
+                CapabilityDelta {
+                    read_roots: vec![project_root.join("README.md")],
+                    ..CapabilityDelta::default()
+                }
+            } else {
+                CapabilityDelta {
+                    write_roots: vec![project_root.join("src")],
+                    ..CapabilityDelta::default()
+                }
+            };
+            assert!(reusable_capabilities_cover(
+                &granted_capabilities,
+                &reusable_capabilities(action, &requested)
+            ));
+            assert!(requested.is_subset_of(&granted));
+        }
+
+        let sibling_project = CapabilityDelta {
+            write_roots: vec![PathBuf::from("/projects/other-app")],
+            ..CapabilityDelta::default()
+        };
+        assert!(!sibling_project.is_subset_of(&granted));
+    }
+
+    #[test]
     fn approval_request_preserves_source_text_and_secret_capability_names() {
         let request = ApprovalRequest {
             approval_id: "a-redact".to_string(),
@@ -1157,8 +1381,11 @@ mod tests {
             agent_id: "agent-1".to_string(),
             session_id: "session-1".to_string(),
             thread_id: "thread-1".to_string(),
+            scope: CapabilityLeaseScope::Thread,
+            scope_id: "thread-1".to_string(),
             target_id: "target-1".to_string(),
             capability: "read:read".to_string(),
+            capabilities: vec!["filesystem.read".to_string()],
             requested: request.requested.clone(),
             policy_digest: "policy-1".to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),

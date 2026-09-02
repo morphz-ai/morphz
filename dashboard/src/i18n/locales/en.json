@@ -570,7 +570,8 @@
     "noCapabilityLeases": "No reusable authorization rules are active",
     "authorizationRulesHint": "Only restricted rules created by an explicit approval appear here. Full Access can only be enabled from the composer permission preset.",
     "authorizationScope": {
-      "thread": "Current task",
+      "thread": "Current Thread",
+      "objective": "Current Objective",
       "session": "This Session"
     },
     "authorizationNetwork": "Network access",
@@ -1151,7 +1152,8 @@
       "quickActions": "Quick actions for the current approval request",
       "viewAll": "View approvals ({{count}})",
       "allowOnce": "Allow once",
-      "allowTask": "Always allow in this task",
+      "allowThread": "Always allow in this Thread",
+      "allowObjective": "Always allow in this Objective",
       "allowSession": "Always allow in this Session",
       "deny": "Deny"
     },
@@ -1597,7 +1599,8 @@
     "attentionAcknowledged": "User reviewed and acknowledged this exact issue revision; audit history is retained",
     "approval": {
       "allow_once": "User allowed this capability request once via Dashboard",
-      "allow_lease": "User allowed this capability boundary for subsequent operations in the current task via Dashboard",
+      "allow_thread": "User allowed this exact capability boundary for subsequent operations in the current Thread via Dashboard",
+      "allow_objective": "User allowed this exact capability boundary for work supervised by the current Objective via Dashboard",
       "allow_session": "User allowed this exact capability boundary for subsequent operations in the owning Session via Dashboard",
       "deny": "User denied the capability request via Dashboard"
     }
@@ -1624,7 +1627,9 @@
     "denyApprovalTitle": "Deny capability request?",
     "denyApproval": "Denying prevents this Execution Job from using the requested capability. Continue?",
     "allowSessionApprovalTitle": "Always allow this permission in this Session?",
-    "allowSessionApproval": "This approves the current request and creates a restricted rule for the same Principal, Agent, Target, capability and permission boundary in this Session. It does not enable Full Access, and other Sessions are unchanged.",
+    "allowSessionApproval": "This approves the current request and creates a restricted rule for the same Principal, Target, capability and permission boundary in this Session. It does not enable Full Access, and other Sessions are unchanged.",
+    "allowObjectiveApprovalTitle": "Always allow this permission in this Objective?",
+    "allowObjectiveApproval": "This approves the current request and lets later Threads supervised by this Objective reuse the same restricted capability boundary. Other Objectives and Sessions are unchanged.",
     "revokeAuthorizationRuleTitle": "Delete this authorization rule?",
     "revokeAuthorizationRule": "Future requests will no longer reuse this rule. Its audit record will be retained.",
     "cancelScheduleTitle": "Cancel this Schedule?",

@@ -1,4 +1,6 @@
-use crate::approval::{ApprovalAction, ApprovalProvider, CapabilityDelta, DenyAllApprovalProvider};
+use crate::approval::{
+    ApprovalAction, ApprovalProvider, ApprovalScope, CapabilityDelta, DenyAllApprovalProvider,
+};
 use crate::config::BackgroundTaskConfig;
 use crate::event::{
     Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE, TYPE_SESSION_SIGNAL,
@@ -6200,6 +6202,8 @@ struct WriteFileArgs {
     content: String,
     mode: String,
     expected_sha256: Option<String>,
+    #[serde(default)]
+    approval_scope: ApprovalScope,
 }
 
 #[async_trait::async_trait]
@@ -6228,6 +6232,12 @@ impl Tool for WriteFileTool {
                 "expected_sha256": {
                     "type": "string",
                     "description": "Required for overwrite and must equal the SHA-256 from the latest read; mismatch rejects the write"
+                },
+                "approval_scope": {
+                    "type": "string",
+                    "enum": ["once", "thread", "objective", "session"],
+                    "default": "thread",
+                    "description": "Requested lifetime only if this write crosses the permission boundary: once, this Thread, its supervising Objective, or this Session. The reviewer may still grant only once."
                 }
             },
             "required": ["path", "content", "mode"]
@@ -6245,7 +6255,7 @@ impl Tool for WriteFileTool {
         arguments: &str,
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: WriteFileArgs = serde_json::from_str(arguments)?;
-        Ok(self
+        let mut requirement = self
             .permissions
             .approval_requirement_for_path(
                 &args.path,
@@ -6253,7 +6263,11 @@ impl Tool for WriteFileTool {
                 self.name(),
                 &args.mode,
             )?
-            .1)
+            .1;
+        if let Some(requirement) = requirement.as_mut() {
+            requirement.requested_scope = args.approval_scope;
+        }
+        Ok(requirement)
     }
 
     async fn execute(
@@ -6415,6 +6429,8 @@ struct ReadFileArgs {
     query: Option<String>,
     context_lines: Option<usize>,
     max_matches: Option<usize>,
+    #[serde(default)]
+    approval_scope: ApprovalScope,
 }
 
 #[async_trait::async_trait]
@@ -6464,6 +6480,12 @@ impl Tool for ReadFileTool {
                     "minimum": 1,
                     "maximum": 100,
                     "description": "Maximum query matches to show; default 20"
+                },
+                "approval_scope": {
+                    "type": "string",
+                    "enum": ["once", "thread", "objective", "session"],
+                    "default": "thread",
+                    "description": "Requested lifetime only if this read crosses the configured permission boundary."
                 }
             },
             "required": ["path"]
@@ -6482,10 +6504,14 @@ impl Tool for ReadFileTool {
         arguments: &str,
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
-        Ok(self
+        let mut requirement = self
             .permissions
             .approval_requirement_for_path(&args.path, FilesystemAccess::Read, self.name(), "read")?
-            .1)
+            .1;
+        if let Some(requirement) = requirement.as_mut() {
+            requirement.requested_scope = args.approval_scope;
+        }
+        Ok(requirement)
     }
 
     async fn execute(
@@ -6768,6 +6794,8 @@ struct EditFileArgs {
     path: String,
     expected_sha256: String,
     edits: Vec<ExactEdit>,
+    #[serde(default)]
+    approval_scope: ApprovalScope,
 }
 
 struct PlannedReplacement {
@@ -6804,6 +6832,12 @@ impl Tool for EditFileTool {
                             },
                             "required": ["old_text", "new_text"]
                         }
+                    },
+                    "approval_scope": {
+                        "type": "string",
+                        "enum": ["once", "thread", "objective", "session"],
+                        "default": "thread",
+                        "description": "Requested lifetime only if this edit crosses the permission boundary."
                     }
                 },
                 "required": ["path", "expected_sha256", "edits"]
@@ -6816,7 +6850,7 @@ impl Tool for EditFileTool {
         arguments: &str,
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: EditFileArgs = serde_json::from_str(arguments)?;
-        Ok(self
+        let mut requirement = self
             .permissions
             .approval_requirement_for_path(
                 &args.path,
@@ -6824,7 +6858,11 @@ impl Tool for EditFileTool {
                 self.name(),
                 "edit",
             )?
-            .1)
+            .1;
+        if let Some(requirement) = requirement.as_mut() {
+            requirement.requested_scope = args.approval_scope;
+        }
+        Ok(requirement)
     }
 
     async fn execute(
@@ -6985,6 +7023,8 @@ struct ListFilesArgs {
     include_hidden: bool,
     #[serde(default)]
     include_directories: bool,
+    #[serde(default)]
+    approval_scope: ApprovalScope,
 }
 
 fn default_dot() -> String {
@@ -7064,7 +7104,13 @@ impl Tool for ListFilesTool {
                     "glob": { "type": "string", "default": "**/*", "description": "Glob relative to path, for example **/*.rs" },
                     "max_results": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 500 },
                     "include_hidden": { "type": "boolean", "default": false },
-                    "include_directories": { "type": "boolean", "default": false }
+                    "include_directories": { "type": "boolean", "default": false },
+                    "approval_scope": {
+                        "type": "string",
+                        "enum": ["once", "thread", "objective", "session"],
+                        "default": "thread",
+                        "description": "Requested lifetime only if discovery crosses the configured permission boundary."
+                    }
                 }
             }),
         }
@@ -7075,10 +7121,14 @@ impl Tool for ListFilesTool {
         arguments: &str,
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: ListFilesArgs = serde_json::from_str(arguments)?;
-        Ok(self
+        let mut requirement = self
             .permissions
             .approval_requirement_for_path(&args.path, FilesystemAccess::Read, self.name(), "list")?
-            .1)
+            .1;
+        if let Some(requirement) = requirement.as_mut() {
+            requirement.requested_scope = args.approval_scope;
+        }
+        Ok(requirement)
     }
 
     async fn execute(
@@ -7173,6 +7223,8 @@ struct SearchArgs {
     case_sensitive: bool,
     #[serde(default)]
     include_hidden: bool,
+    #[serde(default)]
+    approval_scope: ApprovalScope,
 }
 
 fn default_search_limit() -> usize {
@@ -7206,7 +7258,13 @@ impl Tool for SearchTool {
                     "max_matches": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 },
                     "context_lines": { "type": "integer", "minimum": 0, "maximum": 20, "default": 2 },
                     "case_sensitive": { "type": "boolean", "default": false },
-                    "include_hidden": { "type": "boolean", "default": false }
+                    "include_hidden": { "type": "boolean", "default": false },
+                    "approval_scope": {
+                        "type": "string",
+                        "enum": ["once", "thread", "objective", "session"],
+                        "default": "thread",
+                        "description": "Requested lifetime only if search crosses the configured permission boundary."
+                    }
                 },
                 "required": ["query", "paths"]
             }),
@@ -7248,7 +7306,7 @@ impl Tool for SearchTool {
                 }
             }
         }
-        self.permissions.approval_requirement_for_delta(
+        let mut requirement = self.permissions.approval_requirement_for_delta(
             ApprovalAction::ToolOperation {
                 tool: self.name().to_string(),
                 operation: "search".to_string(),
@@ -7263,7 +7321,11 @@ impl Tool for SearchTool {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        )
+        )?;
+        if let Some(requirement) = requirement.as_mut() {
+            requirement.requested_scope = args.approval_scope;
+        }
+        Ok(requirement)
     }
 
     async fn execute(
@@ -8026,6 +8088,8 @@ struct ExecuteCommandArgs {
     #[serde(default)]
     requested_permissions: RequestedExecPermissions,
     justification: Option<String>,
+    #[serde(default)]
+    approval_scope: ApprovalScope,
 }
 
 fn boundary_remediation(permission_request_available: bool, network_enabled: bool) -> String {
@@ -8079,7 +8143,7 @@ impl Tool for ExecuteCommandTool {
                 },
                 "requested_permissions": {
                     "type": "object",
-                    "description": "Minimal additional capabilities requested with require_escalated. Approval applies only to this exact command and cannot disable the sandbox.",
+                    "description": "Minimal additional capabilities requested with require_escalated. approval_scope controls whether the exact capability boundary may be reused; approval never disables the sandbox.",
                     "properties": {
                         "network": {
                             "type": "boolean",
@@ -8106,6 +8170,12 @@ impl Tool for ExecuteCommandTool {
                 "justification": {
                     "type": "string",
                     "description": "Required with require_escalated: explain the direct relationship between the additional capability and the current user task."
+                },
+                "approval_scope": {
+                    "type": "string",
+                    "enum": ["once", "thread", "objective", "session"],
+                    "default": "thread",
+                    "description": "Requested authorization lifetime for this exact capability boundary. once applies only to this Job; thread applies to the current execution Thread; objective applies to all work supervised by the current Objective; session applies to subsequent work in this Session. A reviewer may always narrow the decision to once."
                 }
             },
             "required": ["command"]
@@ -8183,14 +8253,18 @@ impl Tool for ExecuteCommandTool {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .ok_or("require_escalated requires a non-empty justification")?;
-                self.permissions.approval_requirement_for_delta(
+                let mut requirement = self.permissions.approval_requirement_for_delta(
                     ApprovalAction::Shell {
                         command: command.to_string(),
                         cwd: exec_cwd,
                     },
                     requested,
                     justification.to_string(),
-                )
+                )?;
+                if let Some(requirement) = requirement.as_mut() {
+                    requirement.requested_scope = args.approval_scope;
+                }
+                Ok(requirement)
             }
             SandboxPermissionMode::RequireEscalated | SandboxPermissionMode::UseDefault => Ok(None),
         }

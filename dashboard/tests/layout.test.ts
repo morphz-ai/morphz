@@ -62,25 +62,28 @@ test('Session WebSocket errors close the failed transport and enter the reconnec
   )
 })
 
-test('human approval surfaces expose one-shot plus Thread and Session scoped rules', () => {
+test('human approval surfaces expose one-shot plus Thread, Objective, and Session scoped rules', () => {
   assert.match(
     schedulerTypesSource,
-    /ApprovalDecision = 'allow_once' \| 'allow_lease' \| 'allow_session' \| 'deny'/,
+    /ApprovalDecision = 'allow_once' \| 'allow_thread' \| 'allow_objective' \| 'allow_session' \| 'deny'/,
     'the Dashboard transport must preserve every supported authority scope',
   )
   for (const source of [appSource, threadCausalCardSource]) {
     assert.match(source, /decideApproval|onApproval/)
     assert.match(source, /'allow_once'/)
-    assert.match(source, /'allow_lease'/)
+    assert.match(source, /'allow_thread'/)
+    assert.match(source, /'allow_objective'/)
     assert.match(source, /'allow_session'/)
+    assert.match(source, /approval_scope[^\n]*!== 'once'/)
   }
   assert.match(zhCatalog, /仅允许这一次/)
-  assert.match(zhCatalog, /本轮任务内始终允许/)
+  assert.match(zhCatalog, /本线程内始终允许/)
+  assert.match(zhCatalog, /本目标内始终允许/)
   assert.match(zhCatalog, /本会话内始终允许/)
   assert.match(
     appSource,
-    /decision === 'allow_session'[\s\S]*?requestConfirmation/,
-    'a Session-scoped capability rule must require a distinct confirmation',
+    /decision === 'allow_objective' \|\| decision === 'allow_session'[\s\S]*?requestConfirmation/,
+    'Objective- and Session-scoped capability rules must require a distinct confirmation',
   )
   assert.doesNotMatch(
     zhCatalog,
@@ -89,7 +92,8 @@ test('human approval surfaces expose one-shot plus Thread and Session scoped rul
   )
   assert.match(appSource, /restrictCapabilityLease/)
   assert.match(appSource, /\/api\/capability-leases\/\$\{encodeURIComponent\(leaseId\)\}[\s\S]*?'PATCH'/)
-  assert.match(runtimePageSource, /lease\.scope === 'session'/)
+  assert.match(runtimePageSource, /'thread' \| 'objective' \| 'session'/)
+  assert.match(runtimePageSource, /lease\.scope_id/)
   assert.match(runtimePageSource, /onRestrict\(/)
   assert.match(runtimePageSource, /requested: CapabilityDeltaSummary/)
   assert.match(runtimePageSource, /onRevoke\(lease\.id, lease\.revision\)/)

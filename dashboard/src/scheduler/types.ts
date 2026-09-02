@@ -101,7 +101,7 @@ export interface ApprovalRecord {
   cancelled_at?: string
 }
 
-export type ApprovalDecision = 'allow_once' | 'allow_lease' | 'allow_session' | 'deny'
+export type ApprovalDecision = 'allow_once' | 'allow_thread' | 'allow_objective' | 'allow_session' | 'deny'
 
 export interface ExecutionJobRecord {
   id: string

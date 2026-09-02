@@ -51,7 +51,6 @@ import {
   Search,
   Send,
   Server,
-  ShieldCheck,
   Square,
   Sun,
   Trash2,
@@ -167,6 +166,7 @@ import {
   type ObjectiveLineageIndex,
   type TintDimension,
 } from './app/objectiveLineage'
+
 import {
   assistantToolCalls,
   compactTokens,
@@ -192,6 +192,16 @@ import {
   type ToolTimelineItem,
 } from './app/executionTools'
 import { prettyPrintSExpression } from './app/sexpr'
+
+function executionJobHasObjectiveApprovalScope(job: { request: unknown } | undefined) {
+  if (!job?.request || typeof job.request !== 'object' || Array.isArray(job.request)) return false
+  return typeof (job.request as Record<string, unknown>)._morphz_capability_lease_objective_id === 'string'
+}
+
+function executionJobAllowsReusableApproval(job: { request: unknown } | undefined) {
+  if (!job?.request || typeof job.request !== 'object' || Array.isArray(job.request)) return true
+  return (job.request as Record<string, unknown>).approval_scope !== 'once'
+}
 
 /**
  * Resolves the colour for one causal id. Slots are allocated per live entity
@@ -7176,11 +7186,12 @@ export default function App() {
       })
       if (!confirmed) return
     }
-    if (decision === 'allow_session') {
+    if (decision === 'allow_objective' || decision === 'allow_session') {
+      const objective = decision === 'allow_objective'
       const confirmed = await requestConfirmation({
-        title: t('dialog.allowSessionApprovalTitle'),
-        description: t('dialog.allowSessionApproval'),
-        confirmLabel: t('work.approvals.allowSession'),
+        title: t(objective ? 'dialog.allowObjectiveApprovalTitle' : 'dialog.allowSessionApprovalTitle'),
+        description: t(objective ? 'dialog.allowObjectiveApproval' : 'dialog.allowSessionApproval'),
+        confirmLabel: t(objective ? 'work.approvals.allowObjective' : 'work.approvals.allowSession'),
         cancelLabel: t('dialog.actions.cancel'),
         tone: 'default',
       })
@@ -8814,8 +8825,9 @@ export default function App() {
                         {approval.risk_tags.length > 0 && <small>{approval.risk_tags.join(' · ')}</small>}
                         <div className="approval-actions">
                           <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
-                          {pendingApprovalJobs.get(approval.id)?.initiating_principal_id && <>
-                            <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_lease')}><ShieldCheck size={13} /> {t('work.approvals.allowTask')}</button>
+                          {pendingApprovalJobs.get(approval.id)?.initiating_principal_id && executionJobAllowsReusableApproval(pendingApprovalJobs.get(approval.id)) && <>
+                            <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_thread')}><GitBranch size={13} /> {t('work.approvals.allowThread')}</button>
+                            {executionJobHasObjectiveApprovalScope(pendingApprovalJobs.get(approval.id)) && <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_objective')}><Layers3 size={13} /> {t('work.approvals.allowObjective')}</button>}
                             <button disabled={decidingApprovalId === approval.id} className="session-rule" type="button" onClick={() => void decideApproval(approval, 'allow_session')}><KeyRound size={13} /> {t('work.approvals.allowSession')}</button>
                           </>}
                           <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => void decideApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
@@ -9568,15 +9580,22 @@ export default function App() {
                 >
                   <Check size={12} /> {t('work.approvals.allowOnce')}
                 </button>
-                {composerPendingApprovalJobs[0]?.job.initiating_principal_id && (
+                {composerPendingApprovalJobs[0]?.job.initiating_principal_id && executionJobAllowsReusableApproval(composerPendingApprovalJobs[0]?.job) && (
                   <>
                     <button
                       disabled={Boolean(decidingApprovalId)}
                       type="button"
-                      onClick={() => void decideApproval(composerPendingApprovals[0], 'allow_lease')}
+                      onClick={() => void decideApproval(composerPendingApprovals[0], 'allow_thread')}
                     >
-                      <ShieldCheck size={12} /> {t('work.approvals.allowTask')}
+                      <GitBranch size={12} /> {t('work.approvals.allowThread')}
                     </button>
+                    {executionJobHasObjectiveApprovalScope(composerPendingApprovalJobs[0]?.job) && <button
+                      disabled={Boolean(decidingApprovalId)}
+                      type="button"
+                      onClick={() => void decideApproval(composerPendingApprovals[0], 'allow_objective')}
+                    >
+                      <Layers3 size={12} /> {t('work.approvals.allowObjective')}
+                    </button>}
                     <button
                       className="session-rule"
                       disabled={Boolean(decidingApprovalId)}

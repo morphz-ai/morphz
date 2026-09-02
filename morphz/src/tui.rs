@@ -13,8 +13,8 @@ use crate::event::Event as RuntimeEvent;
 use crate::i18n::Locale;
 use crate::llm::{ModelStreamEvent, ReasoningEffort};
 use crate::memory::{
-    DelegationRecord, DelegationStatus, MessageDispatchMode, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveWaitCondition, SessionRecord, SessionStatus, SessionUpdate,
+    CapabilityLeaseScope, DelegationRecord, DelegationStatus, MessageDispatchMode, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveWaitCondition, SessionRecord, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::ContextView;
 use crate::permission::{PermissionMode, SandboxMode};
@@ -701,6 +701,7 @@ impl Composer {
 struct PendingApproval {
     id: String,
     text: String,
+    requested_scope: String,
 }
 
 #[derive(Debug)]
@@ -1808,7 +1809,17 @@ impl UiState {
                         )
                     })
                     .to_string();
-                self.pending_approval = Some(PendingApproval { id, text });
+                let requested_scope = event
+                    .payload
+                    .get("approval_scope")
+                    .and_then(Value::as_str)
+                    .unwrap_or("thread")
+                    .to_string();
+                self.pending_approval = Some(PendingApproval {
+                    id,
+                    text,
+                    requested_scope,
+                });
                 self.status = self.tr("approval required", "等待审批").to_string();
             }
             _ => {}
@@ -4691,10 +4702,21 @@ impl UiState {
             return;
         };
         frame.render_widget(Clear, area);
+        let requested_scope = match approval.requested_scope.as_str() {
+            "once" => self.tr("Once", "一次"),
+            "objective" => self.tr("Objective", "目标"),
+            "session" => self.tr("Session", "会话"),
+            _ => self.tr("Thread", "线程"),
+        };
         let body = format!(
-            "{}\n\n{}",
+            "{}\n{}: {}\n\n{}",
             approval.text,
-            self.tr("[y] Allow once    [n] Deny", "[y] 允许一次    [n] 拒绝")
+            self.tr("Requested scope", "申请范围"),
+            requested_scope,
+            self.tr(
+                "[1] Once  [t] Thread  [o] Objective  [s] Session  [n] Deny",
+                "[1] 一次  [t] 线程  [o] 目标  [s] 会话  [n] 拒绝",
+            )
         );
         let dialog = Paragraph::new(body)
             .wrap(Wrap { trim: false })
@@ -4810,7 +4832,16 @@ enum UiAction {
     OpenControl,
     ExecuteControl(ControlAction),
     SwitchSession(String),
-    Approve(bool),
+    Approve(TuiApprovalChoice),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TuiApprovalChoice {
+    Once,
+    Thread,
+    Objective,
+    Session,
+    Deny,
 }
 
 enum ControlEffect {
@@ -4982,31 +5013,58 @@ pub async fn run(
                         }
                         match key_action(&mut state, key) {
                             UiAction::None => {}
-                            UiAction::Approve(allow) => {
-                                if let Some(approval) = state.pending_approval.take() {
-                                    let decision = if allow {
-                                        ApprovalDecision::AllowOnce {
-                                            rationale: state.tr(
-                                                "The user approved in the Morphz terminal interface",
-                                                "用户已在 Morphz 终端界面中批准",
-                                            ).to_string(),
-                                            risk_tags: vec!["human-approved".to_string()],
-                                        }
-                                    } else {
-                                        ApprovalDecision::Deny {
-                                            rationale: state.tr(
-                                                "The user denied in the Morphz terminal interface",
-                                                "用户已在 Morphz 终端界面中拒绝",
-                                            ).to_string(),
-                                            risk_tags: vec!["human-denied".to_string()],
-                                        }
+                            UiAction::Approve(choice) => {
+                                if let Some(approval) = state.pending_approval.as_ref() {
+                                    let approval_id = approval.id.clone();
+                                    let result = match choice {
+                                        TuiApprovalChoice::Once => runtime.decide_approval(
+                                            &approval_id,
+                                            ApprovalDecision::AllowOnce {
+                                                rationale: state.tr(
+                                                    "The user allowed this request once in the Morphz terminal interface",
+                                                    "用户已在 Morphz 终端界面中仅批准本次请求",
+                                                ).to_string(),
+                                                risk_tags: vec!["human-approved".to_string()],
+                                            },
+                                        ).await,
+                                        TuiApprovalChoice::Thread => runtime.allow_approval_capability_scope(
+                                            &approval_id,
+                                            CapabilityLeaseScope::Thread,
+                                            state.tr("The user allowed this capability in the current Thread", "用户允许当前线程复用这项能力").to_string(),
+                                        ).await,
+                                        TuiApprovalChoice::Objective => runtime.allow_approval_capability_scope(
+                                            &approval_id,
+                                            CapabilityLeaseScope::Objective,
+                                            state.tr("The user allowed this capability in the current Objective", "用户允许当前目标复用这项能力").to_string(),
+                                        ).await,
+                                        TuiApprovalChoice::Session => runtime.allow_approval_capability_scope(
+                                            &approval_id,
+                                            CapabilityLeaseScope::Session,
+                                            state.tr("The user allowed this capability in the current Session", "用户允许当前会话复用这项能力").to_string(),
+                                        ).await,
+                                        TuiApprovalChoice::Deny => runtime.decide_approval(
+                                            &approval_id,
+                                            ApprovalDecision::Deny {
+                                                rationale: state.tr(
+                                                    "The user denied in the Morphz terminal interface",
+                                                    "用户已在 Morphz 终端界面中拒绝",
+                                                ).to_string(),
+                                                risk_tags: vec!["human-denied".to_string()],
+                                            },
+                                        ).await,
                                     };
-                                    match runtime.decide_approval(&approval.id, decision).await {
-                                        Ok(()) => state.push(EntryKind::System, if allow {
-                                            state.tr("Permission approved once.", "权限请求已批准一次。")
-                                        } else {
-                                            state.tr("Permission request denied.", "权限请求已拒绝。")
-                                        }),
+                                    match result {
+                                        Ok(()) => {
+                                            state.pending_approval = None;
+                                            let message = match choice {
+                                                TuiApprovalChoice::Once => state.tr("Permission approved once.", "权限请求已批准一次。"),
+                                                TuiApprovalChoice::Thread => state.tr("Permission approved for this Thread.", "已为当前线程批准这项权限。"),
+                                                TuiApprovalChoice::Objective => state.tr("Permission approved for this Objective.", "已为当前目标批准这项权限。"),
+                                                TuiApprovalChoice::Session => state.tr("Permission approved for this Session.", "已为当前会话批准这项权限。"),
+                                                TuiApprovalChoice::Deny => state.tr("Permission request denied.", "权限请求已拒绝。"),
+                                            };
+                                            state.push(EntryKind::System, message);
+                                        }
                                         Err(error) => state.push(EntryKind::Error, error),
                                     }
                                 }
@@ -5708,8 +5766,17 @@ async fn submit_prompt(
 fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     if state.pending_approval.is_some() {
         return match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => UiAction::Approve(true),
-            KeyCode::Char('n') | KeyCode::Char('N') => UiAction::Approve(false),
+            KeyCode::Char('1') | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                UiAction::Approve(TuiApprovalChoice::Once)
+            }
+            KeyCode::Char('t') | KeyCode::Char('T') => UiAction::Approve(TuiApprovalChoice::Thread),
+            KeyCode::Char('o') | KeyCode::Char('O') => {
+                UiAction::Approve(TuiApprovalChoice::Objective)
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                UiAction::Approve(TuiApprovalChoice::Session)
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => UiAction::Approve(TuiApprovalChoice::Deny),
             _ => UiAction::None,
         };
     }

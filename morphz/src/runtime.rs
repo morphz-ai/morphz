@@ -1,8 +1,8 @@
 use crate::approval::{
-    capability_lease_policy_digest, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
-    ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider,
-    PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
-    CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG,
+    capability_lease_policy_digest, capability_lease_scope_risk_tag, reusable_capabilities,
+    AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, ApprovalRequest, ApprovalScope,
+    CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
+    CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
@@ -37,27 +37,28 @@ use crate::memory::{
     AgentProviderBindingStore, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
     ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord,
-    CapabilityLeaseRestriction, CognitiveContextRecord, ContextCapabilityBindingMutation,
-    ContextCapabilityBindingRecord, ContextStateSummary, ContextTokenBudgetMutation, ContextUpdate,
-    DelegationFilter, DelegationRecord, DelegationStatus, DialogueTurnRetryMutation,
-    DialogueTurnRetryRequest, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMonitorRecord, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
-    MessageDispatchMode, NewAgent, NewArtifactTransferExecution, NewCognitiveContext,
-    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
-    NewObjective, NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
-    ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
-    SessionRecord, SessionStatus, SessionStore, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    CapabilityLeaseRestriction, CapabilityLeaseScope, CognitiveContextRecord,
+    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextStateSummary,
+    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
+    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
+    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetStore, MessageClaim, MessageDispatchMode, NewAgent,
+    NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
+    NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
+    RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
+    SessionContextSharing, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
+    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -6714,6 +6715,17 @@ impl MorphzRuntime {
                 tracing::error!(event_code = "runtime.approval.capability_delta_decode_failed", approval_id = %record.id, "Failed to decode the pending approval capability delta");
                 continue;
             };
+            let requested_scope = job
+                .request
+                .get("approval_scope")
+                .cloned()
+                .map(serde_json::from_value::<ApprovalScope>)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    tracing::error!(event_code = "runtime.approval.scope_decode_failed", approval_id = %record.id, %error, "Failed to decode the pending approval scope");
+                    None
+                })
+                .unwrap_or_default();
             let lease_offer = if self.inner.config.edge_execution.capability_leases_enabled
                 && self
                     .inner
@@ -6729,15 +6741,31 @@ impl MorphzRuntime {
                     self.inner.store.get_execution_target(&job.target_id).await,
                 ) {
                     (Some(principal_id), Ok(Some(thread)), Ok(Some(target)))
-                        if thread.lifecycle == crate::memory::ThreadLifecycle::Open =>
+                        if thread.lifecycle == crate::memory::ThreadLifecycle::Open
+                            && requested_scope.lease_scope().is_some() =>
                     {
-                        Some(CapabilityLeaseOffer {
+                        let scope = requested_scope
+                            .lease_scope()
+                            .expect("lease scope was checked above");
+                        let scope_id = match scope {
+                            CapabilityLeaseScope::Thread => Some(job.thread_id.clone()),
+                            CapabilityLeaseScope::Objective => job
+                                .request
+                                .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            CapabilityLeaseScope::Session => Some(job.session_id.clone()),
+                        };
+                        scope_id.map(|scope_id| CapabilityLeaseOffer {
                             principal_id: principal_id.clone(),
                             agent_id: job.agent_id.clone(),
                             session_id: job.session_id.clone(),
                             thread_id: job.thread_id.clone(),
+                            scope,
+                            scope_id,
                             target_id: job.target_id.clone(),
                             capability: action.lease_capability(),
+                            capabilities: reusable_capabilities(&action, &requested),
                             requested: requested.clone(),
                             policy_digest: capability_lease_policy_digest(
                                 &self.inner.permissions.policy_digest(),
@@ -6899,13 +6927,14 @@ impl MorphzRuntime {
         Ok(())
     }
 
-    /// Approve the displayed capability boundary for reuse inside the owning
-    /// Session. This never changes the Session Permission Profile: future
-    /// operations are covered only when their Principal, Agent, Target,
-    /// capability family, policy digest and requested delta match this rule.
-    pub async fn allow_approval_session_capability(
+    /// Approve the displayed capability boundary for one explicit causal
+    /// scope. This never changes the Permission Profile: future operations are
+    /// covered only when Principal, causal scope, Target, policy digest,
+    /// physical capability family and requested delta all match.
+    pub async fn allow_approval_capability_scope(
         &self,
         approval_id: &str,
+        scope: CapabilityLeaseScope,
         rationale: String,
     ) -> Result<(), String> {
         let approval = self
@@ -6915,44 +6944,70 @@ impl MorphzRuntime {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("Approval request '{approval_id}' does not exist"))?;
-        let exact_session_replay = approval.status == crate::memory::ApprovalStatus::Allowed
-            && approval
-                .risk_tags
-                .iter()
-                .any(|tag| tag == CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG);
-        if !approval.status.is_pending() && !exact_session_replay {
+        let scope_tag = capability_lease_scope_risk_tag(scope);
+        let exact_scope_replay = approval.status == crate::memory::ApprovalStatus::Allowed
+            && approval.risk_tags.iter().any(|tag| tag == scope_tag);
+        if !approval.status.is_pending() && !exact_scope_replay {
             return Err(format!(
-                "Approval '{}' is already {} and cannot authorize a Session capability rule",
+                "Approval '{}' is already {} and cannot authorize a {} capability rule",
                 approval.id,
-                approval.status.as_str()
+                approval.status.as_str(),
+                scope.as_str(),
             ));
         }
-        if !exact_session_replay {
-            let offered = self
+        if !exact_scope_replay {
+            let pending = self
                 .pending_approvals()
                 .await
                 .into_iter()
                 .find(|pending| pending.request.approval_id == approval.id)
-                .and_then(|pending| pending.request.lease_offer)
-                .is_some();
-            if !offered {
+                .ok_or_else(|| format!("Approval '{}' is not pending", approval.id))?;
+            if pending.request.lease_offer.is_none() {
                 return Err(format!(
-                    "Approval '{}' has no reusable capability boundary for this Session",
+                    "Approval '{}' has no reusable capability boundary",
                     approval.id
                 ));
+            }
+            if scope == CapabilityLeaseScope::Objective {
+                let job = self
+                    .inner
+                    .store
+                    .get_execution_job(&approval.job_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!("Approval '{}' is missing an Execution Job", approval.id)
+                    })?;
+                if job
+                    .request
+                    .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    .is_none()
+                {
+                    return Err(format!(
+                        "Approval '{}' is not causally supervised by an Objective",
+                        approval.id
+                    ));
+                }
             }
         }
         self.decide_approval(
             approval_id,
             ApprovalDecision::AllowLease {
                 rationale,
-                risk_tags: vec![
-                    "human-approved".to_string(),
-                    CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG.to_string(),
-                ],
+                risk_tags: vec!["human-approved".to_string(), scope_tag.to_string()],
             },
         )
         .await
+    }
+
+    pub async fn allow_approval_session_capability(
+        &self,
+        approval_id: &str,
+        rationale: String,
+    ) -> Result<(), String> {
+        self.allow_approval_capability_scope(approval_id, CapabilityLeaseScope::Session, rationale)
+            .await
     }
 
     pub fn cancel_session(&self, session_id: &str) -> bool {
@@ -18112,6 +18167,7 @@ mod tests {
             leases[0].scope,
             crate::memory::CapabilityLeaseScope::Session
         );
+        assert_eq!(leases[0].scope_id, session.id());
         let granted: crate::approval::CapabilityDelta =
             serde_json::from_value(leases[0].requested.clone()).unwrap();
         assert_eq!(

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::approval::{ApprovalAction, CapabilityDelta};
+use crate::approval::{ApprovalAction, ApprovalScope, CapabilityDelta};
 use crate::llm::ToolDefinition;
 use crate::permission::{ApprovalRequirement, FilesystemAccess, PathDecision, PermissionBroker};
 use crate::tool::{Tool, ToolExecutionClass, ToolExecutionRouting, CURRENT_EXECUTION_JOB};
@@ -648,14 +648,22 @@ impl Tool for TransferTool {
         let request = self.request(arguments)?;
         let (_, destination, requested) =
             local_transfer_paths_and_delta(&self.permissions, &request)?;
-        self.permissions.approval_requirement_for_delta(
+        let mut requirement = self.permissions.approval_requirement_for_delta(
             artifact_transfer_approval_action(&destination),
             requested,
             format!(
                 "Artifact Transfer requires reading '{}' and writing '{}'",
                 request.source.path, request.destination.path
             ),
-        )
+        )?;
+        if let Some(requirement) = requirement.as_mut() {
+            // Artifact Transfer currently has a two-Target authority boundary
+            // and deliberately does not issue a reusable lease. Keep the
+            // request explicit so future support cannot accidentally inherit
+            // a broader default.
+            requirement.requested_scope = ApprovalScope::Once;
+        }
+        Ok(requirement)
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, ArtifactTransferError> {

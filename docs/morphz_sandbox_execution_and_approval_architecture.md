@@ -665,7 +665,7 @@ custom            分别配置 sandbox_mode、approval_policy、reviewer 和环�
 `MORPHZ_AUTO_REVIEW_MODEL` 可在部署时覆盖。该 Route 只接收冻结在审批因果边界内的
 用户意图、精确能力差量与动作描述，不取得主 Agent 的工具能力，也不会替换主推理模型。
 
-人工审批没有 Runtime 超时。CLI 在当前任务中显示准确动作、能力差量和理由，并读取一次 `y/N`；Web 客户端可查询 `GET /api/approvals`，再提交：
+人工审批没有 Runtime 超时。客户端显示准确动作、能力差量、请求的因果作用域和理由；Web 客户端可查询 `GET /api/approvals`，再提交一次性决定：
 
 ```json
 {
@@ -674,7 +674,7 @@ custom            分别配置 sandbox_mode、approval_policy、reviewer 和环�
 }
 ```
 
-到 `POST /api/approvals/:approval_id`。决定只恢复对应的一次执行，不形成持久授权。
+到 `POST /api/approvals/:approval_id`。也可显式提交 `allow_thread`、`allow_objective` 或 `allow_session`，为完全相同的 Principal、Execution Target、策略摘要和能力差量创建受限 Capability Lease。目录写入规则覆盖该目录的后代路径，并可由 `exec`、`write`、`edit`、`read` 等不同工具复用；它不会变成 Full Access。`objective` 只有在请求 Thread 具有可验证的非终态 Objective 监督链时才可选择。规则可在 Runtime 页查看、收窄、缩短有效期或撤销。
 
 不建议用含义模糊的“自动批准所有操作”作为普通产品模式。如果确实提供完全不受限的宿主执行，它必须是显式的高级危险配置，并与默认自动审批在名称和界面上清楚区分。
 

@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, KeyRound, LoaderCircle, Pause, Play, Radio, ShieldCheck, Square, X } from 'lucide-react'
+import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, GitBranch, KeyRound, Layers3, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
 import type {
@@ -15,6 +15,22 @@ import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } 
 
 function modelAttemptActivationId(event: ThreadDetailResponse['model_attempt_events'][number]) {
   return typeof event.payload.activation_id === 'string' ? event.payload.activation_id : ''
+}
+
+function executionJobHasObjectiveApprovalScope(request: unknown) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return false
+  return typeof (request as Record<string, unknown>)._morphz_capability_lease_objective_id === 'string'
+}
+
+function executionJobRequestedApprovalScope(request: unknown) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return 'thread'
+  const scope = (request as Record<string, unknown>).approval_scope
+  return scope === 'once' || scope === 'objective' || scope === 'session' ? scope : 'thread'
+}
+
+function executionJobAllowsReusableApproval(request: unknown) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return true
+  return (request as Record<string, unknown>).approval_scope !== 'once'
 }
 
 function ModelAttemptList({
@@ -108,13 +124,14 @@ function ExecutionJobRow({
           <section className={`inline-approval ${approval.status}`}>
             <header><span>{t('work.approvals.title')}</span><b>{statusLabel(approval.status, t)}</b></header>
             <p>{approval.justification}</p>
-            <details><summary>{t('work.approvals.capability')}</summary><pre>{JSON.stringify({ action: approval.action, requested: approval.requested }, null, 2)}</pre></details>
+            <details><summary>{t('work.approvals.capability')}</summary><pre>{JSON.stringify({ action: approval.action, requested: approval.requested, approval_scope: executionJobRequestedApprovalScope(job.request) }, null, 2)}</pre></details>
             {approval.risk_tags.length > 0 && <small>{approval.risk_tags.join(' · ')}</small>}
             {approval.status === 'pending_human' && (
               <div className="approval-actions">
                 <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
-                {job.initiating_principal_id && <>
-                  <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_lease')}><ShieldCheck size={13} /> {t('work.approvals.allowTask')}</button>
+                {job.initiating_principal_id && executionJobAllowsReusableApproval(job.request) && <>
+                  <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_thread')}><GitBranch size={13} /> {t('work.approvals.allowThread')}</button>
+                  {executionJobHasObjectiveApprovalScope(job.request) && <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_objective')}><Layers3 size={13} /> {t('work.approvals.allowObjective')}</button>}
                   <button disabled={decidingApprovalId === approval.id} className="session-rule" type="button" onClick={() => onApproval(approval, 'allow_session')}><KeyRound size={13} /> {t('work.approvals.allowSession')}</button>
                 </>}
                 <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => onApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>

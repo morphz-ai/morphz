@@ -7627,6 +7627,7 @@ where
         scope: CapabilityLeaseScope::Thread,
         session_id: "conformance-session".to_string(),
         thread_id: "conformance-thread".to_string(),
+        scope_id: "conformance-thread".to_string(),
         target_id: "conformance-edge-target".to_string(),
         capabilities: vec!["exec".to_string()],
         requested: json!({
@@ -7646,6 +7647,7 @@ where
     assert_eq!(created.status, CapabilityLeaseStatus::Active);
     assert_eq!(created.scope, CapabilityLeaseScope::Thread);
     assert_eq!(created.session_id, "conformance-session");
+    assert_eq!(created.scope_id, "conformance-thread");
     assert!(matches!(
         store.ensure_capability_lease(lease).await.unwrap(),
         CapabilityLeaseMutation::Existing(_)
@@ -7657,6 +7659,7 @@ where
                 scope: Some(CapabilityLeaseScope::Thread),
                 session_id: Some("conformance-session".to_string()),
                 thread_id: Some("conformance-thread".to_string()),
+                scope_id: Some("conformance-thread".to_string()),
                 target_id: Some("conformance-edge-target".to_string()),
                 capability: Some("exec".to_string()),
                 active_at: Some(chrono::Utc::now()),

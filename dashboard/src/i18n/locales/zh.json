@@ -570,7 +570,8 @@
     "noCapabilityLeases": "当前没有可复用的授权规则",
     "authorizationRulesHint": "这里仅管理人工批准后形成的受限规则。完全访问只能从输入框的权限预设启用。",
     "authorizationScope": {
-      "thread": "本轮任务",
+      "thread": "当前线程",
+      "objective": "当前目标",
       "session": "本会话"
     },
     "authorizationNetwork": "允许网络访问",
@@ -1150,7 +1151,8 @@
       "quickActions": "当前待审批请求的快捷操作",
       "viewAll": "查看审批（{{count}}）",
       "allowOnce": "仅允许这一次",
-      "allowTask": "本轮任务内始终允许",
+      "allowThread": "本线程内始终允许",
+      "allowObjective": "本目标内始终允许",
       "allowSession": "本会话内始终允许",
       "deny": "拒绝"
     },
@@ -1602,7 +1604,8 @@
     "attentionAcknowledged": "用户已查看该精确版本的问题并确认已知；保留审计历史",
     "approval": {
       "allow_once": "用户通过控制台仅批准这一次能力申请",
-      "allow_lease": "用户通过控制台允许当前任务后续使用这项能力边界",
+      "allow_thread": "用户通过控制台允许当前线程后续复用这项精确能力边界",
+      "allow_objective": "用户通过控制台允许当前目标监督的工作复用这项精确能力边界",
       "allow_session": "用户通过控制台允许本会话后续操作复用当前精确能力边界",
       "deny": "用户通过控制台拒绝能力申请"
     }
@@ -1629,7 +1632,9 @@
     "denyApprovalTitle": "拒绝能力申请？",
     "denyApproval": "拒绝后该执行作业将无法使用申请的能力。确定拒绝？",
     "allowSessionApprovalTitle": "本会话内始终允许这项权限？",
-    "allowSessionApproval": "这会批准当前请求，并为本会话建立仅匹配同一身份、Agent、执行目标、能力类型及权限边界的受限规则；不会启用完全访问，也不会影响其他会话。",
+    "allowSessionApproval": "这会批准当前请求，并为本会话建立仅匹配同一身份、执行目标、能力类型及权限边界的受限规则；不会启用完全访问，也不会影响其他会话。",
+    "allowObjectiveApprovalTitle": "本目标内始终允许这项权限？",
+    "allowObjectiveApproval": "这会批准当前请求，并让该目标监督的后续线程复用同一受限能力边界；不会扩展到其他目标或会话。",
     "revokeAuthorizationRuleTitle": "删除这条授权规则？",
     "revokeAuthorizationRule": "后续请求将不能再复用这条规则；审计记录仍会保留。",
     "cancelScheduleTitle": "取消调度计划？",

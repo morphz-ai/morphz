@@ -19,7 +19,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::approval::{
-    capability_lease_policy_digest, ApprovalDecision, ApprovalRequest, CapabilityDelta,
+    capability_lease_policy_digest, capability_lease_scope, reusable_capabilities,
+    reusable_capabilities_cover, ApprovalDecision, ApprovalRequest, CapabilityDelta,
     CapabilityLeaseOffer,
 };
 use crate::artifact::{
@@ -36,8 +37,8 @@ use crate::execution_target::{
     DEFAULT_EXECUTION_TARGET_ID, EDGE_EXECUTION_SCOPE_KEY,
 };
 use crate::memory::{
-    EdgeCommandRecord, EdgeCommandStatus, ExecutionJobRecord, ExecutionNodeRecord,
-    ExecutionTargetKind, ExecutionTargetRegistration,
+    CapabilityLeaseScope, EdgeCommandRecord, EdgeCommandStatus, ExecutionJobRecord,
+    ExecutionNodeRecord, ExecutionTargetKind, ExecutionTargetRegistration,
 };
 use crate::runtime::MorphzRuntime;
 use crate::sdk::{
@@ -56,9 +57,17 @@ pub struct EdgeLocalCapabilityLease {
     pub id: String,
     pub principal_id: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub session_id: String,
     pub thread_id: String,
+    #[serde(default = "default_edge_lease_scope")]
+    pub scope: CapabilityLeaseScope,
+    #[serde(default)]
+    pub scope_id: String,
     pub target_id: String,
     pub capability: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     pub requested: CapabilityDelta,
     pub policy_digest: String,
     pub issued_at: DateTime<Utc>,
@@ -66,9 +75,29 @@ pub struct EdgeLocalCapabilityLease {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+fn default_edge_lease_scope() -> CapabilityLeaseScope {
+    CapabilityLeaseScope::Thread
+}
+
 impl EdgeLocalCapabilityLease {
     fn active_at(&self, now: DateTime<Utc>) -> bool {
         self.revoked_at.is_none() && self.expires_at > now
+    }
+
+    fn effective_scope_id(&self) -> &str {
+        if self.scope_id.is_empty() {
+            &self.thread_id
+        } else {
+            &self.scope_id
+        }
+    }
+
+    fn effective_capabilities(&self) -> Vec<String> {
+        if self.capabilities.is_empty() {
+            vec![self.capability.clone()]
+        } else {
+            self.capabilities.clone()
+        }
     }
 }
 
@@ -128,7 +157,8 @@ impl EdgeLocalCapabilityLeaseStore {
         &self,
         scope: &EdgeExecutionScope,
         target_id: &str,
-        capability: &str,
+        legacy_capability: &str,
+        capabilities: &[String],
         requested: &CapabilityDelta,
         policy_digest: &str,
     ) -> bool {
@@ -140,10 +170,21 @@ impl EdgeLocalCapabilityLeaseStore {
             .any(|lease| {
                 lease.active_at(now)
                     && lease.principal_id == scope.principal_id
-                    && lease.agent_id == scope.agent_id
-                    && lease.thread_id == scope.thread_id
                     && lease.target_id == target_id
-                    && lease.capability == capability
+                    && (reusable_capabilities_cover(&lease.effective_capabilities(), capabilities)
+                        || lease.capability == legacy_capability)
+                    && match lease.scope {
+                        CapabilityLeaseScope::Thread => {
+                            lease.effective_scope_id() == scope.thread_id
+                        }
+                        CapabilityLeaseScope::Objective => scope
+                            .objective_id
+                            .as_deref()
+                            .is_some_and(|objective_id| lease.effective_scope_id() == objective_id),
+                        CapabilityLeaseScope::Session => {
+                            lease.effective_scope_id() == scope.session_id
+                        }
+                    }
                     && lease.policy_digest == policy_digest
                     && requested.is_subset_of(&lease.requested)
             })
@@ -1868,6 +1909,7 @@ impl EdgeNodeWorker {
         let scope = edge_execution_scope_from_route(&command.route)?;
         let route: ExecutionRouteSnapshot = serde_json::from_value(command.route.clone())?;
         let capability = requirement.action.lease_capability();
+        let capabilities = reusable_capabilities(&requirement.action, &requirement.requested);
         let policy_digest = capability_lease_policy_digest(
             &self.runtime.execution_policy_digest(),
             &route.policy_digest,
@@ -1876,6 +1918,7 @@ impl EdgeNodeWorker {
             &scope,
             &command.target_id,
             &capability,
+            &capabilities,
             &requirement.requested,
             &policy_digest,
         ) {
@@ -1895,6 +1938,33 @@ impl EdgeNodeWorker {
             "edge-local-approval:{}:{}",
             command.job_id, command.revision
         );
+        let lease_scope = requirement.requested_scope.lease_scope();
+        let scope_id =
+            match lease_scope {
+                Some(CapabilityLeaseScope::Thread) => Some(scope.thread_id.clone()),
+                Some(CapabilityLeaseScope::Objective) => Some(scope.objective_id.clone().ok_or(
+                    "approval_scope=objective requires an Objective-supervised Edge Command",
+                )?),
+                Some(CapabilityLeaseScope::Session) => Some(scope.session_id.clone()),
+                None => None,
+            };
+        let lease_offer =
+            lease_scope
+                .zip(scope_id)
+                .map(|(lease_scope, scope_id)| CapabilityLeaseOffer {
+                    principal_id: scope.principal_id.clone(),
+                    agent_id: scope.agent_id.clone(),
+                    session_id: scope.session_id.clone(),
+                    thread_id: scope.thread_id.clone(),
+                    scope: lease_scope,
+                    scope_id,
+                    target_id: command.target_id.clone(),
+                    capability: capability.clone(),
+                    capabilities: capabilities.clone(),
+                    requested: requirement.requested.clone(),
+                    policy_digest: policy_digest.clone(),
+                    expires_at,
+                });
         let decision = self
             .runtime
             .review_edge_tool_permission(&ApprovalRequest {
@@ -1916,17 +1986,7 @@ impl EdgeNodeWorker {
                     command.target_id,
                     requirement.justification
                 ),
-                lease_offer: Some(CapabilityLeaseOffer {
-                    principal_id: scope.principal_id.clone(),
-                    agent_id: scope.agent_id.clone(),
-                    session_id: scope.session_id.clone(),
-                    thread_id: scope.thread_id.clone(),
-                    target_id: command.target_id.clone(),
-                    capability: capability.clone(),
-                    requested: requirement.requested.clone(),
-                    policy_digest: policy_digest.clone(),
-                    expires_at,
-                }),
+                lease_offer: lease_offer.clone(),
             })
             .await?;
         match decision {
@@ -1934,14 +1994,29 @@ impl EdgeNodeWorker {
                 tracing::info!(event_code = "edge.approval.allow_once", %rationale, target_id = %command.target_id, "Edge-local approval allowed one execution");
                 Ok(true)
             }
-            ApprovalDecision::AllowLease { rationale, .. } => {
+            ApprovalDecision::AllowLease {
+                rationale,
+                risk_tags,
+            } => {
+                let offer = lease_offer.ok_or(
+                    "Edge-local Reviewer approved a Capability Lease when approval_scope=once",
+                )?;
+                let lease_scope = capability_lease_scope(&risk_tags, offer.scope);
+                let scope_id = match lease_scope {
+                    CapabilityLeaseScope::Thread => scope.thread_id.clone(),
+                    CapabilityLeaseScope::Objective => scope
+                        .objective_id
+                        .clone()
+                        .ok_or("Objective-scoped Edge lease has no Objective identity")?,
+                    CapabilityLeaseScope::Session => scope.session_id.clone(),
+                };
                 let id_material = format!(
                     "{}\0{}\0{}\0{}\0{}",
                     scope.principal_id,
-                    scope.agent_id,
-                    scope.thread_id,
+                    lease_scope.as_str(),
+                    scope_id,
                     command.target_id,
-                    capability
+                    capabilities.join(",")
                 );
                 let lease = EdgeLocalCapabilityLease {
                     id: format!(
@@ -1950,9 +2025,13 @@ impl EdgeNodeWorker {
                     ),
                     principal_id: scope.principal_id,
                     agent_id: scope.agent_id,
+                    session_id: scope.session_id,
                     thread_id: scope.thread_id,
+                    scope: lease_scope,
+                    scope_id,
                     target_id: command.target_id.clone(),
                     capability,
+                    capabilities,
                     requested: requirement.requested,
                     policy_digest,
                     issued_at: Utc::now(),
@@ -2540,6 +2619,7 @@ mod tests {
             context_id: "context-a".to_string(),
             session_id: "session-a".to_string(),
             thread_id: "thread-a".to_string(),
+            objective_id: None,
         }
     }
 
@@ -3056,14 +3136,19 @@ mod tests {
             read_roots: vec![PathBuf::from("/workspace")],
             ..CapabilityDelta::default()
         };
+        let capabilities = vec!["network".to_string(), "filesystem.read".to_string()];
         store
             .grant(EdgeLocalCapabilityLease {
                 id: "lease-a".to_string(),
                 principal_id: "principal-a".to_string(),
                 agent_id: "agent-a".to_string(),
+                session_id: "session-a".to_string(),
                 thread_id: "thread-a".to_string(),
+                scope: CapabilityLeaseScope::Thread,
+                scope_id: "thread-a".to_string(),
                 target_id: "target-a".to_string(),
                 capability: "exec".to_string(),
+                capabilities: capabilities.clone(),
                 requested: requested.clone(),
                 policy_digest: "policy-a".to_string(),
                 issued_at: Utc::now(),
@@ -3071,14 +3156,149 @@ mod tests {
                 revoked_at: None,
             })
             .unwrap();
-        assert!(store.covers(&scope(), "target-a", "exec", &requested, "policy-a"));
+        assert!(store.covers(
+            &scope(),
+            "target-a",
+            "exec",
+            &capabilities,
+            &requested,
+            "policy-a"
+        ));
         let mut other_thread = scope();
         other_thread.thread_id = "thread-b".to_string();
-        assert!(!store.covers(&other_thread, "target-a", "exec", &requested, "policy-a"));
-        assert!(!store.covers(&scope(), "target-b", "exec", &requested, "policy-a"));
-        assert!(!store.covers(&scope(), "target-a", "exec", &requested, "policy-b"));
+        assert!(!store.covers(
+            &other_thread,
+            "target-a",
+            "exec",
+            &capabilities,
+            &requested,
+            "policy-a"
+        ));
+        assert!(!store.covers(
+            &scope(),
+            "target-b",
+            "exec",
+            &capabilities,
+            &requested,
+            "policy-a"
+        ));
+        assert!(!store.covers(
+            &scope(),
+            "target-a",
+            "exec",
+            &capabilities,
+            &requested,
+            "policy-b"
+        ));
         assert!(store.revoke("lease-a").unwrap());
-        assert!(!store.covers(&scope(), "target-a", "exec", &requested, "policy-a"));
+        assert!(!store.covers(
+            &scope(),
+            "target-a",
+            "exec",
+            &capabilities,
+            &requested,
+            "policy-a"
+        ));
+    }
+
+    #[test]
+    fn provider_local_scoped_directory_lease_reuses_across_tools_without_crossing_scope() {
+        let store = EdgeLocalCapabilityLeaseStore {
+            path: None,
+            leases: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let project_root = PathBuf::from("/workspace/projects/new-app");
+        let granted = CapabilityDelta {
+            write_roots: vec![project_root.clone()],
+            ..CapabilityDelta::default()
+        };
+        let capabilities = vec![
+            "filesystem.read".to_string(),
+            "filesystem.write".to_string(),
+        ];
+        let now = Utc::now();
+        store
+            .grant(EdgeLocalCapabilityLease {
+                id: "lease-session-directory".to_string(),
+                principal_id: "principal-a".to_string(),
+                agent_id: "originating-agent".to_string(),
+                session_id: "session-a".to_string(),
+                thread_id: "originating-thread".to_string(),
+                scope: CapabilityLeaseScope::Session,
+                scope_id: "session-a".to_string(),
+                target_id: "target-a".to_string(),
+                capability: "exec".to_string(),
+                capabilities: capabilities.clone(),
+                requested: granted.clone(),
+                policy_digest: "policy-a".to_string(),
+                issued_at: now,
+                expires_at: now + chrono::Duration::minutes(5),
+                revoked_at: None,
+            })
+            .unwrap();
+        let requested_write = CapabilityDelta {
+            write_roots: vec![project_root.join("src")],
+            ..CapabilityDelta::default()
+        };
+        let mut same_session = scope();
+        same_session.agent_id = "delegated-agent".to_string();
+        same_session.thread_id = "later-thread".to_string();
+        assert!(store.covers(
+            &same_session,
+            "target-a",
+            "write:create",
+            &capabilities,
+            &requested_write,
+            "policy-a"
+        ));
+        let mut other_session = same_session.clone();
+        other_session.session_id = "session-b".to_string();
+        assert!(!store.covers(
+            &other_session,
+            "target-a",
+            "edit:edit",
+            &capabilities,
+            &requested_write,
+            "policy-a"
+        ));
+
+        store
+            .grant(EdgeLocalCapabilityLease {
+                id: "lease-objective-directory".to_string(),
+                principal_id: "principal-a".to_string(),
+                agent_id: "originating-agent".to_string(),
+                session_id: "session-a".to_string(),
+                thread_id: "originating-thread".to_string(),
+                scope: CapabilityLeaseScope::Objective,
+                scope_id: "objective-a".to_string(),
+                target_id: "target-a".to_string(),
+                capability: "exec".to_string(),
+                capabilities: capabilities.clone(),
+                requested: granted,
+                policy_digest: "policy-a".to_string(),
+                issued_at: now,
+                expires_at: now + chrono::Duration::minutes(5),
+                revoked_at: None,
+            })
+            .unwrap();
+        other_session.objective_id = Some("objective-a".to_string());
+        assert!(store.covers(
+            &other_session,
+            "target-a",
+            "edit:edit",
+            &capabilities,
+            &requested_write,
+            "policy-a"
+        ));
+        other_session.objective_id = Some("objective-b".to_string());
+        assert!(!store.covers(
+            &other_session,
+            "target-a",
+            "edit:edit",
+            &capabilities,
+            &requested_write,
+            "policy-a"
+        ));
     }
 
     #[test]

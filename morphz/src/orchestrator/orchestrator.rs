@@ -4,9 +4,10 @@ use crate::activation_admission::{
 };
 use crate::admission::{AdmissionClass, AdmissionKey};
 use crate::approval::{
-    capability_lease_is_session_scoped, capability_lease_policy_digest,
-    capability_lease_was_approved, stable_capability_lease_id, ApprovalDecision, ApprovalRequest,
-    CapabilityLeaseOffer, HumanApprovalHub, CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    capability_lease_policy_digest, capability_lease_scope, capability_lease_was_approved,
+    reusable_capabilities, reusable_capabilities_cover, stable_capability_lease_id,
+    ApprovalDecision, ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub,
+    CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
@@ -582,7 +583,7 @@ Important rules:
 11. kernel.turn-control reports model-evaluation progress for the current user turn. phase=soft-checkpoint is a periodic review, not an Attempt limit. Normal tools remain available. Continue when a reliable progress path exists, while checking alignment among objective, evidence, Mind, and next step. Parallel calls in one model response count as one Attempt.
 12. kernel.wake explains why this evaluation ran. A successful standalone context_tx produces context-transaction-result cooldown: unless pressure remains critical, context_tx is temporarily unavailable and the Runtime will reject another call even though its stable schema remains visible; you must reply, call no_reply, or perform necessary physical work.
 13. For code tasks, prefer list_files/search to discover, read for content and sha256, and edit for version-guarded local changes. write is mainly for mode=create; do not bypass existing-file or expected_sha256 protections. Use exec for testing, compiling, and formatting rather than replacing constrained file tools with shell operations. file_change is auditable evidence of committed changes. Parallelize independent reads in one response and do not reread Inbox content whose sha256 has not changed. Modify and verify after locating enough evidence instead of repeatedly scanning.
-14. execution, process_status, exit_code, task_status, background_source, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait, wait_secs=...). Choose a finite interval appropriate to the work; omitting wait_secs uses 60 seconds. Completion wakes the Runtime earlier and cancels the remaining interval. A wait_timeout task was requested as foreground work and merely crossed exec.wait_ms; inspect it when awakened and wait again only if continued execution is intentional. Explicitly backgrounded services remain completion-driven unless you request a real deadline or stall checkpoint with check_task_after. Process terminal success/failed/cancelled/timeout rather than waiting again. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or persisted Events. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
+14. execution, process_status, exit_code, task_status, background_source, and effective_boundary in an exec receipt are physical Runtime facts. Do not replace them with command intent or expectations. If a nonzero result explicitly proves missing network, out-of-bound path access, or secret environment access and that capability is necessary, retry the same necessary command once with sandbox_permissions=require_escalated, request only minimal permissions, and explain the need in justification. Do not infer permission failure from an ordinary command error or override protected_paths, an explicit denial, or permission_request_available=false. For a necessary repeated capability, request the narrowest causal approval_scope: once for this Job only, thread for this execution Thread, objective for work supervised by the current Objective, or session for later work in this Session. A scope never widens the requested paths, network, secrets, Principal, Target, policy, or expiry, and the Reviewer may grant only once. If exec becomes a nonterminal background task, ordinary waiting uses no_reply(mode=wait, wait_secs=...). Choose a finite interval appropriate to the work; omitting wait_secs uses 60 seconds. Completion wakes the Runtime earlier and cancels the remaining interval. A wait_timeout task was requested as foreground work and merely crossed exec.wait_ms; inspect it when awakened and wait again only if continued execution is intentional. Explicitly backgrounded services remain completion-driven unless you request a real deadline or stall checkpoint with check_task_after. Process terminal success/failed/cancelled/timeout rather than waiting again. Never poll with sleep, ps, or repeated empty-log reads. Never place literal tokens or keys in commands, process arguments, Mind, or persisted Events. Credentials belong in named Secret Store entries. Use list_secrets when aliases are unknown and request only alias names in requested_permissions.secret_env; never request, read, or echo values. Runtime Managed SSH passwords are Target-owned credentials: bind the alias with resolve_target.password_secret and an explicit auth_mode, then call physical tools on that Target without requesting the password alias again through exec.
 15. kernel.objectives and evaluate.objective-context expose physical Objective state, but visibility is not binding. Only evaluate.objective-binding makes this an Objective Evaluation that may advance the Objective through the current Execution Thread. With binding=none, use Objective state only for understanding or progress replies and never act for it. When a bound Objective still has work and is not waiting, report current progress normally; the Supervisor continues or restores its main Execution Thread. Register exact waits with objective_update(status=active, wait_condition=...). Use blocked only when neither an automatic wait nor a reliable path exists. Submit completed only after auditing every part of the stated objective against persisted Event evidence. A completed receipt opens a final-delivery Attempt in the same Activation; produce a complete ordinary report rather than a terse tool acknowledgement. The final reply and Objective, Activation, and Thread terminal states commit atomically.
 16. Use objective_create to upgrade work that genuinely must span multiple Evaluations, asynchronous waits, or Runtime restart recovery. It is not a normal todo or a way to think longer. Do not create one for work this Evaluation can reliably finish. Preserve the user's full scope and completion criteria and explain why persistence is needed. The Runtime creates the ID and binds current Agent/Context/Session. Do not duplicate an existing or newly created Objective. parent_objective_id, when given, must be the Objective currently being evaluated. Continue after creation; ordinary text or no_reply ends only the adopted Evaluation while the Supervisor continues an unfinished Objective.
 17. You own scheduling decisions; the Runtime provides concurrency and timing mechanisms. Consecutive physical actions in the current Thread call tools directly and return to the same mailbox. Use schedule_tx.spawn for parallel work and schedule_tx.enqueue/after for work that waits on the current or named Thread. Inspect existing schedule state first and use only its latest revision for pause/resume/reschedule/cancel. A conflict means facts changed and must be re-observed. Multiple independent physical tool calls do not imply new Threads. Do not mix schedule_tx with context_tx or physical tools. A due schedule is a new observation, not a precomputed conclusion; decide from then-current Context.
@@ -1579,8 +1580,8 @@ async fn covering_capability_lease_grant(
     services: &DurableApprovalServices,
     requirement: &crate::permission::ApprovalRequirement,
     principal_id: &str,
-    agent_id: &str,
     thread: &ThreadRecord,
+    objective_scope_id: Option<&str>,
     target: &crate::memory::ExecutionTargetRecord,
 ) -> Result<Option<DurableApprovalGrant>, DynError> {
     if !services.capability_leases_enabled
@@ -1592,32 +1593,48 @@ async fn covering_capability_lease_grant(
     let permission_policy_digest = services.broker.policy_digest();
     let lease_policy_digest =
         capability_lease_policy_digest(&permission_policy_digest, &target.policy_digest);
-    let capability = requirement.action.lease_capability();
-    let leases = services
-        .capability_leases
-        .list_capability_leases(CapabilityLeaseFilter {
-            principal_id: Some(principal_id.to_string()),
-            agent_id: Some(agent_id.to_string()),
-            session_id: Some(thread.session_id.clone()),
-            target_id: Some(target.id.clone()),
-            capability: Some(capability.clone()),
-            active_at: Some(Utc::now()),
-            // Every row already belongs to this exact indexed execution
-            // scope. Authorization correctness must not depend on a recent
-            // row window.
-            limit: None,
-            ..CapabilityLeaseFilter::default()
-        })
-        .await?;
+    let legacy_capability = requirement.action.lease_capability();
+    let required_capabilities = reusable_capabilities(&requirement.action, &requirement.requested);
+    let now = Utc::now();
+    let mut causal_scopes = vec![
+        (CapabilityLeaseScope::Thread, thread.id.clone()),
+        (CapabilityLeaseScope::Session, thread.session_id.clone()),
+    ];
+    if let Some(objective_id) = objective_scope_id {
+        causal_scopes.push((CapabilityLeaseScope::Objective, objective_id.to_string()));
+    }
+    let mut leases = Vec::new();
+    for (scope, scope_id) in causal_scopes {
+        leases.extend(
+            services
+                .capability_leases
+                .list_capability_leases(CapabilityLeaseFilter {
+                    principal_id: Some(principal_id.to_string()),
+                    scope: Some(scope),
+                    scope_id: Some(scope_id),
+                    target_id: Some(target.id.clone()),
+                    active_at: Some(now),
+                    // Authorization correctness must not depend on a recent
+                    // row window inside this exact indexed causal scope.
+                    limit: None,
+                    ..CapabilityLeaseFilter::default()
+                })
+                .await?,
+        );
+    }
     Ok(leases.into_iter().find_map(|lease| {
         if lease.policy_digest != lease_policy_digest
-            || !lease
-                .capabilities
-                .iter()
-                .any(|candidate| candidate == &capability)
+            || !(reusable_capabilities_cover(&lease.capabilities, &required_capabilities)
+                || lease
+                    .capabilities
+                    .iter()
+                    .any(|candidate| candidate == &legacy_capability))
             || match lease.scope {
-                CapabilityLeaseScope::Thread => lease.thread_id != thread.id,
-                CapabilityLeaseScope::Session => lease.session_id != thread.session_id,
+                CapabilityLeaseScope::Thread => lease.scope_id != thread.id,
+                CapabilityLeaseScope::Objective => {
+                    objective_scope_id != Some(lease.scope_id.as_str())
+                }
+                CapabilityLeaseScope::Session => lease.scope_id != thread.session_id,
             }
         {
             return None;
@@ -1639,6 +1656,53 @@ async fn covering_capability_lease_grant(
             requested: granted,
         })
     }))
+}
+
+/// Resolve the durable Objective which supervises a Thread, following only
+/// persisted parent links. Attached child Threads therefore share an
+/// Objective lease without relying on process-local Evaluation state.
+async fn active_objective_scope_id(
+    store: Option<&dyn crate::memory::RuntimeStore>,
+    thread: &ThreadRecord,
+) -> Result<Option<String>, DynError> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let mut current = thread.clone();
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current.id.clone()) {
+            return Err(format!(
+                "Thread supervision cycle detected while resolving approval scope from '{}'",
+                thread.id
+            )
+            .into());
+        }
+        if current.supervision.supervisor_kind == ThreadSupervisorKind::Objective {
+            let objective_id = current
+                .supervision
+                .supervisor_id
+                .as_deref()
+                .ok_or("Objective-supervised Thread is missing supervisor_id")?;
+            let Some(objective) = store.get_objective(objective_id).await? else {
+                return Err(format!(
+                    "Thread '{}' references nonexistent supervising Objective '{}'",
+                    current.id, objective_id
+                )
+                .into());
+            };
+            return Ok((!objective.status.is_terminal()).then_some(objective.id));
+        }
+        let Some(parent_thread_id) = current.supervision.parent_thread_id.clone() else {
+            return Ok(None);
+        };
+        current = store.get_thread(&parent_thread_id).await?.ok_or_else(|| {
+            format!(
+                "Thread '{}' references nonexistent parent Thread '{}'",
+                current.id, parent_thread_id
+            )
+        })?;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -15572,6 +15636,15 @@ impl Orchestrator {
                 },
             )?;
             attach_execution_join_route(&mut request, None, false)?;
+            if let Some(objective_id) = plan.objective_id.as_deref() {
+                request
+                    .as_object_mut()
+                    .ok_or("Yao Plan Execution Job request must be a JSON object")?
+                    .insert(
+                        CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY.to_string(),
+                        json!(objective_id),
+                    );
+            }
             let full_access = self.durable_approvals.as_ref().is_some_and(|services| {
                 services
                     .broker
@@ -15679,6 +15752,15 @@ impl Orchestrator {
             &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
         )?;
         attach_execution_join_route(&mut request, None, false)?;
+        if let Some(objective_id) = plan.objective_id.as_deref() {
+            request
+                .as_object_mut()
+                .ok_or("Yao Plan Execution Job request must be a JSON object")?
+                .insert(
+                    CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY.to_string(),
+                    json!(objective_id),
+                );
+        }
         let requirement = if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
             tool.approval_requirement(&invocation.tool_arguments)?
         } else if self.durable_approvals.as_ref().is_some_and(|services| {
@@ -16331,6 +16413,8 @@ impl Orchestrator {
             .get_thread(thread_id)
             .await?
             .ok_or_else(|| format!("Physical Execution Thread '{thread_id}' does not exist"))?;
+        let objective_scope_id =
+            active_objective_scope_id(self.plan_store.as_deref(), &thread).await?;
         let deterministic_job_id =
             crate::execution::deterministic_job_id(&route.activation_id, &call.id)?;
         let artifact_transfer =
@@ -16553,6 +16637,15 @@ impl Orchestrator {
             )?;
         }
         attach_execution_join_route(&mut request, action_group_id, standalone_signal)?;
+        if let Some(objective_id) = objective_scope_id.as_deref() {
+            request
+                .as_object_mut()
+                .ok_or("Execution Job request must be a JSON object")?
+                .insert(
+                    CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY.to_string(),
+                    json!(objective_id),
+                );
+        }
         let full_access = self.durable_approvals.as_ref().is_some_and(|services| {
             services
                 .broker
@@ -16602,6 +16695,26 @@ impl Orchestrator {
                 return Ok(PreparedPhysicalExecution::Rejected(output));
             }
         };
+        if requirement.as_ref().is_some_and(|requirement| {
+            requirement.requested_scope == crate::approval::ApprovalScope::Objective
+                && objective_scope_id.is_none()
+        }) {
+            let rejection = std::io::Error::other(
+                "approval_scope=objective requires the current Thread to be supervised by a non-terminal Objective; use thread, session, or once for this request",
+            );
+            let mut output = physical_execution_preflight_rejected_tool_output(
+                output_id,
+                context_id,
+                session_id,
+                attempt_id,
+                call,
+                route,
+                action_group_id,
+                &rejection,
+            );
+            self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+            return Ok(PreparedPhysicalExecution::Rejected(output));
+        }
         let mut lease_grant = None;
         if artifact_transfer.is_none() {
             if let (Some(current_requirement), Some(services), Some(principal_id)) = (
@@ -16613,8 +16726,8 @@ impl Orchestrator {
                     services,
                     current_requirement,
                     principal_id,
-                    agent_id,
                     &thread,
+                    objective_scope_id.as_deref(),
                     &target,
                 )
                 .await?;
@@ -16698,21 +16811,41 @@ impl Orchestrator {
                             && services.capability_leases_enabled
                             && services.capability_lease_ttl_secs > 0
                             && thread.lifecycle == ThreadLifecycle::Open
+                            && requirement.requested_scope.lease_scope().is_some()
                     })
-                    .map(|principal_id| CapabilityLeaseOffer {
-                        principal_id: principal_id.clone(),
-                        agent_id: agent_id.to_string(),
-                        session_id: thread.session_id.clone(),
-                        thread_id: thread.id.clone(),
-                        target_id: new_job.target_id.clone(),
-                        capability: requirement.action.lease_capability(),
-                        requested: requirement.requested.clone(),
-                        policy_digest: lease_policy_digest.clone(),
-                        expires_at: Utc::now()
-                            + chrono::Duration::seconds(
-                                i64::try_from(services.capability_lease_ttl_secs)
-                                    .unwrap_or(i64::MAX),
+                    .map(|principal_id| {
+                        let scope = requirement
+                            .requested_scope
+                            .lease_scope()
+                            .expect("lease scope was filtered above");
+                        let scope_id = match scope {
+                            CapabilityLeaseScope::Thread => thread.id.clone(),
+                            CapabilityLeaseScope::Objective => objective_scope_id
+                                .clone()
+                                .expect("Objective scope was validated above"),
+                            CapabilityLeaseScope::Session => thread.session_id.clone(),
+                        };
+                        CapabilityLeaseOffer {
+                            principal_id: principal_id.clone(),
+                            agent_id: agent_id.to_string(),
+                            session_id: thread.session_id.clone(),
+                            thread_id: thread.id.clone(),
+                            scope,
+                            scope_id,
+                            target_id: new_job.target_id.clone(),
+                            capability: requirement.action.lease_capability(),
+                            capabilities: reusable_capabilities(
+                                &requirement.action,
+                                &requirement.requested,
                             ),
+                            requested: requirement.requested.clone(),
+                            policy_digest: lease_policy_digest.clone(),
+                            expires_at: Utc::now()
+                                + chrono::Duration::seconds(
+                                    i64::try_from(services.capability_lease_ttl_secs)
+                                        .unwrap_or(i64::MAX),
+                                ),
+                        }
                     });
                 let identity = stable_approval_identity(
                     &new_job.id,
@@ -16916,15 +17049,18 @@ impl Orchestrator {
                         id: stable_capability_lease_id(&approval.id),
                         principal_id: offer.principal_id.clone(),
                         agent_id: offer.agent_id.clone(),
-                        scope: if capability_lease_is_session_scoped(&approval.risk_tags) {
-                            CapabilityLeaseScope::Session
-                        } else {
-                            CapabilityLeaseScope::Thread
-                        },
+                        scope: capability_lease_scope(&approval.risk_tags, offer.scope),
                         session_id: offer.session_id.clone(),
                         thread_id: offer.thread_id.clone(),
+                        scope_id: match capability_lease_scope(&approval.risk_tags, offer.scope) {
+                            CapabilityLeaseScope::Thread => offer.thread_id.clone(),
+                            CapabilityLeaseScope::Objective => objective_scope_id.clone().ok_or(
+                                "Objective-scoped Capability Lease has no supervising Objective",
+                            )?,
+                            CapabilityLeaseScope::Session => offer.session_id.clone(),
+                        },
                         target_id: offer.target_id.clone(),
-                        capabilities: vec![offer.capability.clone()],
+                        capabilities: offer.effective_capabilities(),
                         requested: serde_json::to_value(&offer.requested)?,
                         policy_digest: offer.policy_digest.clone(),
                         issued_by_approval_id: Some(approval.id.clone()),
@@ -20452,6 +20588,11 @@ fn approval_request_event(
     attempt_id: &str,
     route: &ActivationRoute,
 ) -> Event {
+    let approval_scope = job
+        .request
+        .get("approval_scope")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("thread");
     let mut payload = serde_json::Map::from_iter([
         ("approval_id".to_string(), json!(approval.id)),
         ("job_id".to_string(), json!(job.id)),
@@ -20467,6 +20608,7 @@ fn approval_request_event(
         ("target_id".to_string(), json!(job.target_id)),
         ("action".to_string(), approval.action.clone()),
         ("requested".to_string(), approval.requested.clone()),
+        ("approval_scope".to_string(), json!(approval_scope)),
         ("justification".to_string(), json!(approval.justification)),
         ("root_turn_id".to_string(), json!(route.root_turn_id)),
         (
@@ -21604,14 +21746,14 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        action_group_reconcile_id, activation_admission_class, active_prompt_cache_seed_deltas,
-        apply_prompt_estimate_delta, attached_delegation_return_route, baseline_system_prompt,
-        classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        completed_objective_update_call, compose_context_encoding,
-        compose_segmented_context_message, continuation_messages_for_projection,
-        critical_maintenance_transaction_available, decide_provider_circuit_admission,
-        derived_thread_kind, durable_activation_revocation_reason,
-        durable_activation_revocation_reason_for_record,
+        action_group_reconcile_id, activation_admission_class, active_objective_scope_id,
+        active_prompt_cache_seed_deltas, apply_prompt_estimate_delta,
+        attached_delegation_return_route, baseline_system_prompt, classify_terminal_response,
+        cognitive_sexpr_vm_system_prompt, completed_objective_update_call,
+        compose_context_encoding, compose_segmented_context_message,
+        continuation_messages_for_projection, critical_maintenance_transaction_available,
+        decide_provider_circuit_admission, derived_thread_kind,
+        durable_activation_revocation_reason, durable_activation_revocation_reason_for_record,
         durable_reasoning_continuation_state_from_events, extend_exec_output_facts,
         harness_entry_callable_tools, infer_tool_status, legacy_plan_effect_sequence,
         model_binding_completion_error, model_harness_tool_scope,
@@ -21682,6 +21824,115 @@ mod tests {
         let runtime =
             model_binding_completion_error(ModelAttemptBindingError::runtime("store unavailable"));
         assert_eq!(runtime.origin, ModelCompletionErrorOrigin::RuntimeInternal);
+    }
+
+    #[tokio::test]
+    async fn objective_approval_scope_follows_only_durable_supervision_lineage() {
+        let tmp = TempDir::new().unwrap();
+        let store = SqliteStore::new(tmp.path().join("approval-objective.db").to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-approval-objective".to_string(),
+                    title: "Approval Objective Agent".to_string(),
+                    root_context_id: "context-approval-objective".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-approval-objective".to_string(),
+                    agent_id: "agent-approval-objective".to_string(),
+                    title: "Approval Objective Context".to_string(),
+                },
+                NewSession {
+                    id: "session-approval-objective".to_string(),
+                    agent_id: "agent-approval-objective".to_string(),
+                    context_id: "context-approval-objective".to_string(),
+                    parent_session_id: None,
+                    title: "Approval Objective Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: "objective-approval-scope".to_string(),
+                agent_id: "agent-approval-objective".to_string(),
+                context_id: "context-approval-objective".to_string(),
+                coordinator_session_id: "session-approval-objective".to_string(),
+                delivery_session_id: "session-approval-objective".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-approval-objective".to_string(),
+                initiating_principal_id: Some("principal-approval-objective".to_string()),
+                stated_objective: "exercise objective-scoped approval".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let new_thread = |id: &str, supervision| NewThread {
+            id: id.to_string(),
+            agent_id: "agent-approval-objective".to_string(),
+            context_id: "context-approval-objective".to_string(),
+            session_id: "session-approval-objective".to_string(),
+            initiating_principal_id: Some("principal-approval-objective".to_string()),
+            root_turn_id: format!("root-{id}"),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision,
+        };
+        let primary = store
+            .ensure_thread(new_thread(
+                "thread-objective-primary",
+                crate::memory::ThreadSupervision::objective_primary_execution(
+                    "objective-approval-scope",
+                    1,
+                ),
+            ))
+            .await
+            .unwrap();
+        let child = store
+            .ensure_thread(new_thread(
+                "thread-objective-child",
+                crate::memory::ThreadSupervision::attached(
+                    primary.id.clone(),
+                    primary.generation,
+                    "evaluation-objective-child",
+                ),
+            ))
+            .await
+            .unwrap();
+        let unrelated = store
+            .ensure_thread(new_thread(
+                "thread-unrelated",
+                crate::memory::ThreadSupervision::legacy(),
+            ))
+            .await
+            .unwrap();
+
+        let runtime_store = &store as &dyn crate::memory::RuntimeStore;
+        assert_eq!(
+            active_objective_scope_id(Some(runtime_store), &primary)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("objective-approval-scope")
+        );
+        assert_eq!(
+            active_objective_scope_id(Some(runtime_store), &child)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("objective-approval-scope")
+        );
+        assert_eq!(
+            active_objective_scope_id(Some(runtime_store), &unrelated)
+                .await
+                .unwrap(),
+            None
+        );
     }
     use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};

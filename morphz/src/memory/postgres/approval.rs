@@ -79,9 +79,10 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             revision BIGINT NOT NULL DEFAULT 1 CHECK(revision >= 1),
             principal_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
-            scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'session')),
+            scope TEXT NOT NULL DEFAULT 'thread' CHECK(scope IN ('thread', 'objective', 'session')),
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+            scope_id TEXT NOT NULL,
             target_id TEXT NOT NULL REFERENCES execution_targets(id),
             capabilities_json JSONB NOT NULL,
             requested_json JSONB NOT NULL,
@@ -98,6 +99,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'thread'"#,
         r#"ALTER TABLE capability_leases
            ADD COLUMN IF NOT EXISTS session_id TEXT"#,
+        r#"ALTER TABLE capability_leases
+           ADD COLUMN IF NOT EXISTS scope_id TEXT"#,
         r#"UPDATE capability_leases AS lease
            SET session_id = thread.session_id
            FROM threads AS thread
@@ -105,8 +108,17 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
              AND (lease.session_id IS NULL OR lease.session_id = '')"#,
         r#"ALTER TABLE capability_leases
            ALTER COLUMN session_id SET NOT NULL"#,
-        r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_scope
-            ON capability_leases(principal_id, agent_id, thread_id, target_id, status, expires_at)"#,
+        r#"UPDATE capability_leases
+           SET scope_id = CASE WHEN scope = 'session' THEN session_id ELSE thread_id END
+           WHERE scope_id IS NULL OR scope_id = ''"#,
+        r#"ALTER TABLE capability_leases
+           ALTER COLUMN scope_id SET NOT NULL"#,
+        r#"ALTER TABLE capability_leases
+           DROP CONSTRAINT IF EXISTS capability_leases_scope_check"#,
+        r#"ALTER TABLE capability_leases
+           ADD CONSTRAINT capability_leases_scope_check CHECK(scope IN ('thread', 'objective', 'session'))"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_causal_scope
+            ON capability_leases(principal_id, scope, scope_id, target_id, status, expires_at)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_session_scope
             ON capability_leases(principal_id, agent_id, session_id, target_id, status, expires_at)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_capability_leases_approval
@@ -170,6 +182,7 @@ fn capability_lease_from_row(row: &PgRow) -> Result<CapabilityLeaseRecord, Store
             .ok_or("unknown Capability Lease scope")?,
         session_id: row.get("session_id"),
         thread_id: row.get("thread_id"),
+        scope_id: row.get("scope_id"),
         target_id: row.get("target_id"),
         capabilities: serde_json::from_value(row.get("capabilities_json"))?,
         requested: row.get("requested_json"),
@@ -832,6 +845,7 @@ impl CapabilityLeaseStore for PostgresStore {
             ("agent_id", lease.agent_id.as_str()),
             ("session_id", lease.session_id.as_str()),
             ("thread_id", lease.thread_id.as_str()),
+            ("scope_id", lease.scope_id.as_str()),
             ("target_id", lease.target_id.as_str()),
             ("policy_digest", lease.policy_digest.as_str()),
         ] {
@@ -854,10 +868,10 @@ impl CapabilityLeaseStore for PostgresStore {
         let now_text = now_text();
         let inserted = sqlx::query(
             r#"INSERT INTO capability_leases
-               (id, revision, principal_id, agent_id, scope, session_id, thread_id, target_id,
+               (id, revision, principal_id, agent_id, scope, session_id, thread_id, scope_id, target_id,
                 capabilities_json, requested_json, policy_digest, status,
                 issued_by_approval_id, issued_at, expires_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11, $12, $13, $12)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $12, $13, $14, $13)
                ON CONFLICT(id) DO NOTHING"#,
         )
         .bind(&lease.id)
@@ -866,6 +880,7 @@ impl CapabilityLeaseStore for PostgresStore {
         .bind(lease.scope.as_str())
         .bind(&lease.session_id)
         .bind(&lease.thread_id)
+        .bind(&lease.scope_id)
         .bind(&lease.target_id)
         .bind(serde_json::to_value(&lease.capabilities)?)
         .bind(&lease.requested)
@@ -888,6 +903,7 @@ impl CapabilityLeaseStore for PostgresStore {
             && current.scope == lease.scope
             && current.session_id == lease.session_id
             && current.thread_id == lease.thread_id
+            && current.scope_id == lease.scope_id
             && current.target_id == lease.target_id
             && current.capabilities == lease.capabilities
             && current.requested == lease.requested
@@ -939,6 +955,9 @@ impl CapabilityLeaseStore for PostgresStore {
         }
         if let Some(value) = filter.thread_id {
             query.push(" AND thread_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.scope_id {
+            query.push(" AND scope_id = ").push_bind(value);
         }
         if let Some(value) = filter.target_id {
             query.push(" AND target_id = ").push_bind(value);
