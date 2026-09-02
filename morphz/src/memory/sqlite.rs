@@ -13201,6 +13201,73 @@ impl ActivationStore for SqliteStore {
                 reason: "只有 Runtime 失败回复可以原位重试".to_string(),
             });
         }
+        let result_event = result_event.expect("Runtime failure result was checked above");
+        let target_recovery_failure = result_event
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(JsonValue::as_str)
+            == Some("execution_target_required")
+            && result_event
+                .payload
+                .get("physical_action_started")
+                .and_then(JsonValue::as_bool)
+                == Some(false);
+        let recovery_target_id = request.recovery_target_id.as_deref();
+        if target_recovery_failure && recovery_target_id.is_none() {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "连接并选择在线 Execution Target 后才能继续此任务".to_string(),
+            });
+        }
+        if !target_recovery_failure && recovery_target_id.is_some() {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "只有尚未开始物理动作的 Execution Target 预检失败可以更换 Target"
+                    .to_string(),
+            });
+        }
+        if let Some(target_id) = recovery_target_id {
+            if current.target_id.as_deref().is_some_and(|bound| {
+                bound != target_id && bound != crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+            }) {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: "已在其他 Execution Target 上开始过的 Thread 不能改绑".to_string(),
+                });
+            }
+            let target = sqlx::query(
+                "SELECT owner_principal_id, status FROM execution_targets WHERE id = ?",
+            )
+            .bind(target_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(target) = target else {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: format!("Execution Target '{target_id}' 不存在"),
+                });
+            };
+            let owner: Option<String> = target.try_get("owner_principal_id")?;
+            let status: String = target.try_get("status")?;
+            if owner.as_deref().is_some_and(|owner| owner != principal_id) {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: format!("Principal '{principal_id}' 无权使用 Target '{target_id}'"),
+                });
+            }
+            if status != "online" {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: format!("Execution Target '{target_id}' 当前不在线"),
+                });
+            }
+        }
         // A runtime-failure reply is already the authoritative terminal
         // outcome for this generation.  Current writers terminalize the
         // Activation in that same commit.  Keep this bounded update only as a
@@ -13225,10 +13292,12 @@ impl ActivationStore for SqliteStore {
                SET revision = revision + 1, generation = ?, status = 'open',
                    result_text = NULL, result_event_id = NULL,
                    delivery_status = 'none', delivery_event_id = NULL,
+                   target_id = ?,
                    updated_at = ?
                WHERE id = ? AND revision = ?"#,
         )
         .bind(generation_i64)
+        .bind(recovery_target_id.or(current.target_id.as_deref()))
         .bind(&now)
         .bind(&current.id)
         .bind(expected_revision)
@@ -32150,6 +32219,7 @@ mod tests {
         let request = DialogueTurnRetryRequest {
             expected_thread_revision: failed_thread.revision,
             expected_result_event_id: failure.id.clone(),
+            recovery_target_id: None,
             event: retry_event.clone(),
         };
         assert_eq!(
@@ -32331,6 +32401,175 @@ mod tests {
             1,
             "a late old-generation tool Signal must be acknowledged, never claimed",
         );
+    }
+
+    #[tokio::test]
+    async fn target_preflight_retry_atomically_adopts_selected_online_target() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: "target-retry-context".to_string(),
+                agent_id: "target-retry-agent".to_string(),
+                title: "Target Retry Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "target-retry-session".to_string(),
+                agent_id: "target-retry-agent".to_string(),
+                context_id: "target-retry-context".to_string(),
+                parent_session_id: None,
+                title: "Target Retry Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        bind_message_test_principal(&store, "target-retry-session", "target-retry-principal").await;
+        store
+            .register_execution_target(ExecutionTargetRegistration {
+                id: "target-retry-edge".to_string(),
+                owner_principal_id: Some("target-retry-principal".to_string()),
+                provider_node_id: Some("target-retry-node".to_string()),
+                kind: ExecutionTargetKind::EdgeNode,
+                name: "Target Retry Edge".to_string(),
+                status: ExecutionTargetStatus::Online,
+                platform: Some("linux".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: serde_json::json!({}),
+                policy_digest: "target-retry-policy".to_string(),
+                last_seen_at: Some(Utc::now()),
+            })
+            .await
+            .unwrap();
+        let root = Event::new(
+            "target-retry-root".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "target-retry-context",
+                "session_id": "target-retry-session",
+                "text": "run this on my computer"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(root.clone()).await.unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "target-retry-thread".to_string(),
+                agent_id: "target-retry-agent".to_string(),
+                context_id: "target-retry-context".to_string(),
+                session_id: "target-retry-session".to_string(),
+                initiating_principal_id: Some("target-retry-principal".to_string()),
+                root_turn_id: root.id.clone(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                // Covers rows produced by the pre-fix Runtime, which bound
+                // the disabled local fallback before target validation.
+                target_id: Some(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string()),
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let failure = Event::new(
+            "target-retry-failure".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "assistant_message".to_string(),
+            "chat/reply".to_string(),
+            serde_json::json!({
+                "context_id": "target-retry-context",
+                "session_id": "target-retry-session",
+                "root_turn_id": root.id,
+                "thread_id": thread.id,
+                "text": "connect a computer",
+                "runtime_failure_kind": "execution_target_required",
+                "runtime_failure_stage": "execution_target_preflight",
+                "recovery_action": "connect_execution_target",
+                "physical_action_started": false
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(failure.clone()).await.unwrap();
+        sqlx::query(
+            "UPDATE threads SET revision = revision + 1, status = 'failed', result_text = ?, result_event_id = ? WHERE id = ?",
+        )
+        .bind("connect a computer")
+        .bind(&failure.id)
+        .bind(&thread.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let failed = store.get_thread(&thread.id).await.unwrap().unwrap();
+        let retry_event = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "Runtime-DialogueRetry".to_string(),
+                crate::event::TYPE_INFER_REQUEST.to_string(),
+                "chat/dialogue_retry".to_string(),
+                serde_json::json!({
+                    "context_id": "target-retry-context",
+                    "session_id": "target-retry-session",
+                    "principal_id": "target-retry-principal",
+                    "root_turn_id": "target-retry-root",
+                    "thread_id": "target-retry-thread",
+                    "runtime_force_evaluation": true
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+        };
+        assert!(matches!(
+            store
+                .restart_dialogue_turn(DialogueTurnRetryRequest {
+                    expected_thread_revision: failed.revision,
+                    expected_result_event_id: failure.id.clone(),
+                    recovery_target_id: None,
+                    event: retry_event("target-retry-without-device"),
+                })
+                .await
+                .unwrap(),
+            DialogueTurnRetryMutation::Rejected { .. }
+        ));
+        let request = DialogueTurnRetryRequest {
+            expected_thread_revision: failed.revision,
+            expected_result_event_id: failure.id,
+            recovery_target_id: Some("target-retry-edge".to_string()),
+            event: retry_event("target-retry-with-device"),
+        };
+        assert_eq!(
+            store.restart_dialogue_turn(request.clone()).await.unwrap(),
+            DialogueTurnRetryMutation::Accepted {
+                thread_id: "target-retry-thread".to_string(),
+                generation: 2,
+            }
+        );
+        assert_eq!(
+            store.restart_dialogue_turn(request).await.unwrap(),
+            DialogueTurnRetryMutation::Existing {
+                thread_id: "target-retry-thread".to_string(),
+                generation: 2,
+            }
+        );
+        let recovered = store
+            .get_thread("target-retry-thread")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.lifecycle, ThreadLifecycle::Open);
+        assert_eq!(recovered.generation, 2);
+        assert_eq!(recovered.target_id.as_deref(), Some("target-retry-edge"));
+        assert!(recovered.result_event_id.is_none());
     }
 
     #[tokio::test]

@@ -3890,6 +3890,73 @@ impl ActivationStore for PostgresStore {
                 reason: "只有 Runtime 失败回复可以原位重试".to_string(),
             });
         }
+        let result_event = result_event.expect("Runtime failure result was checked above");
+        let target_recovery_failure = result_event
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(JsonValue::as_str)
+            == Some("execution_target_required")
+            && result_event
+                .payload
+                .get("physical_action_started")
+                .and_then(JsonValue::as_bool)
+                == Some(false);
+        let recovery_target_id = request.recovery_target_id.as_deref();
+        if target_recovery_failure && recovery_target_id.is_none() {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "连接并选择在线 Execution Target 后才能继续此任务".to_string(),
+            });
+        }
+        if !target_recovery_failure && recovery_target_id.is_some() {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "只有尚未开始物理动作的 Execution Target 预检失败可以更换 Target"
+                    .to_string(),
+            });
+        }
+        if let Some(target_id) = recovery_target_id {
+            if current.target_id.as_deref().is_some_and(|bound| {
+                bound != target_id && bound != crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+            }) {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: "已在其他 Execution Target 上开始过的 Thread 不能改绑".to_string(),
+                });
+            }
+            let target = sqlx::query(
+                "SELECT owner_principal_id, status FROM execution_targets WHERE id = $1",
+            )
+            .bind(target_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(target) = target else {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: format!("Execution Target '{target_id}' 不存在"),
+                });
+            };
+            let owner: Option<String> = target.try_get("owner_principal_id")?;
+            let status: String = target.try_get("status")?;
+            if owner.as_deref().is_some_and(|owner| owner != principal_id) {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: format!("Principal '{principal_id}' 无权使用 Target '{target_id}'"),
+                });
+            }
+            if status != "online" {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::Rejected {
+                    current,
+                    reason: format!("Execution Target '{target_id}' 当前不在线"),
+                });
+            }
+        }
         // The failure outcome and Thread terminal state are committed
         // atomically, while Activation cleanup is deliberately a separate
         // projection update.  A crash in between must not make an otherwise
@@ -3912,10 +3979,11 @@ impl ActivationStore for PostgresStore {
                SET revision = revision + 1, generation = $1, status = 'open',
                    result_text = NULL, result_event_id = NULL,
                    delivery_status = 'none', delivery_event_id = NULL,
-                   updated_at = $2
-               WHERE id = $3 AND revision = $4"#,
+                   target_id = $2, updated_at = $3
+               WHERE id = $4 AND revision = $5"#,
         )
         .bind(i64::try_from(generation)?)
+        .bind(recovery_target_id.or(current.target_id.as_deref()))
         .bind(&now)
         .bind(&current.id)
         .bind(expected_revision)

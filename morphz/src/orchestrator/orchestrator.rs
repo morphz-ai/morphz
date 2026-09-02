@@ -7846,12 +7846,11 @@ impl Orchestrator {
                 "Thread Activation evaluation failed"
             );
             if self.activation_route(&activation.id).is_some() {
-                let storage_contention = is_transient_storage_contention(error.as_ref());
                 if let Err(outcome_error) = self
                     .publish_activation_evaluation_failure(
                         &session_id,
                         &activation.id,
-                        storage_contention,
+                        error.as_ref(),
                     )
                     .await
                 {
@@ -7931,33 +7930,58 @@ impl Orchestrator {
         &self,
         session_id: &str,
         activation_id: &str,
-        storage_contention: bool,
+        error: &(dyn std::error::Error + Send + Sync + 'static),
     ) -> Result<(), DynError> {
-        let failure_kind = if storage_contention {
+        let execution_target_required = error
+            .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+            .is_some();
+        let storage_contention = is_transient_storage_contention(error);
+        let failure_kind = if execution_target_required {
+            "execution_target_required"
+        } else if storage_contention {
             "storage_contention"
         } else {
             "runtime_internal"
         };
-        let message = if storage_contention {
+        let message = if execution_target_required {
+            "This task needs a connected computer before it can run physical tools. Connect morphz-edge, select that computer for this Session, and continue this same task; no physical action was started."
+        } else if storage_contention {
             "Runtime storage remained busy, so this request could not begin. The turn has been closed and was not left running; please send the message again."
         } else {
             "Runtime encountered an internal error while processing this request. The turn has been closed and was not left running; please retry or inspect the service logs."
         };
+        let failure_stage = if execution_target_required {
+            "execution_target_preflight"
+        } else {
+            "activation_evaluation"
+        };
+        let mut attributes = vec![
+            ("runtime_failure_kind".to_string(), json!(failure_kind)),
+            ("runtime_failure_stage".to_string(), json!(failure_stage)),
+            ("terminal_kind".to_string(), json!("failed")),
+            ("unresolved_failures".to_string(), json!([failure_kind])),
+        ];
+        if execution_target_required {
+            attributes.extend([
+                ("recoverable".to_string(), json!(true)),
+                (
+                    "recovery_action".to_string(),
+                    json!("connect_execution_target"),
+                ),
+                ("physical_action_started".to_string(), json!(false)),
+                (
+                    "rejection_code".to_string(),
+                    json!("EXECUTION_TARGET_REQUIRED"),
+                ),
+            ]);
+        }
         self.publish_reply_with_attributes(
             session_id,
             activation_id,
             None,
             message.to_string(),
             None,
-            vec![
-                ("runtime_failure_kind".to_string(), json!(failure_kind)),
-                (
-                    "runtime_failure_stage".to_string(),
-                    json!("activation_evaluation"),
-                ),
-                ("terminal_kind".to_string(), json!("failed")),
-                ("unresolved_failures".to_string(), json!([failure_kind])),
-            ],
+            attributes,
         )
         .await
     }
@@ -15558,7 +15582,22 @@ impl Orchestrator {
                 )
                 .into());
             }
-        } else {
+        }
+        let target = self
+            .execution_targets
+            .as_ref()
+            .ok_or("Yao Plan Physical Execution is missing ExecutionTargetDispatcher")?
+            .validate_for_tool(
+                &effective_target_id,
+                tool.name(),
+                &invocation.tool_arguments,
+                plan.initiating_principal_id.as_deref(),
+                &plan.agent_id,
+                &plan.context_id,
+                &plan.thread_id,
+            )
+            .await?;
+        if thread.target_id.is_none() {
             match session_store
                 .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
                 .await?
@@ -15584,20 +15623,6 @@ impl Orchestrator {
                 }
             }
         }
-        let target = self
-            .execution_targets
-            .as_ref()
-            .ok_or("Yao Plan Physical Execution is missing ExecutionTargetDispatcher")?
-            .validate_for_tool(
-                &effective_target_id,
-                tool.name(),
-                &invocation.tool_arguments,
-                plan.initiating_principal_id.as_deref(),
-                &plan.agent_id,
-                &plan.context_id,
-                &plan.thread_id,
-            )
-            .await?;
         let mut request = serde_json::from_str(&invocation.tool_arguments).unwrap_or_else(|_| {
             json!({
                 "raw_arguments": invocation.tool_arguments,
@@ -16344,49 +16369,6 @@ impl Orchestrator {
                     self.stamp_objective_activation_route(attempt_id, &mut output.payload);
                     return Ok(PreparedPhysicalExecution::Rejected(output));
                 }
-            } else {
-                match session_store
-                    .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
-                    .await?
-                {
-                    ThreadMutation::Updated(_) => {}
-                    ThreadMutation::Conflict { current }
-                        if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
-                    ThreadMutation::Conflict { current } => {
-                        let reason = format!(
-                            "Thread '{}' has a concurrent Execution Target binding conflict: current='{}', requested='{}'. Reschedule using the latest Thread state",
-                            current.id,
-                            current.target_id.as_deref().unwrap_or("unbound"),
-                            effective_target_id
-                        );
-                        let rejection = std::io::Error::other(reason);
-                        let mut output = physical_execution_preflight_rejected_tool_output(
-                            output_id,
-                            context_id,
-                            session_id,
-                            attempt_id,
-                            call,
-                            route,
-                            action_group_id,
-                            &rejection,
-                        );
-                        output
-                            .payload
-                            .insert("target_id".to_string(), json!(effective_target_id));
-                        output
-                            .payload
-                            .insert("bound_target_id".to_string(), json!(current.target_id));
-                        self.stamp_objective_activation_route(attempt_id, &mut output.payload);
-                        return Ok(PreparedPhysicalExecution::Rejected(output));
-                    }
-                    ThreadMutation::NotFound => {
-                        return Err(format!(
-                            "Physical Execution Thread '{}' disappeared while binding its Target",
-                            thread.id
-                        )
-                        .into());
-                    }
-                }
             }
         }
         if let Some(existing) = manager
@@ -16431,6 +16413,16 @@ impl Orchestrator {
         let (target, source_target) = match validated_targets {
             Ok(targets) => targets,
             Err(error) => {
+                if error
+                    .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+                    .is_some()
+                {
+                    // This is a deployment dependency, not model feedback.
+                    // No Job or side effect exists yet. Bubble it to the
+                    // Activation boundary so clients receive a typed,
+                    // retryable terminal and can connect a Target first.
+                    return Err(error);
+                }
                 let mut output = physical_execution_preflight_rejected_tool_output(
                     output_id,
                     context_id,
@@ -16448,6 +16440,50 @@ impl Orchestrator {
                 return Ok(PreparedPhysicalExecution::Rejected(output));
             }
         };
+        if artifact_transfer.is_none() && thread.target_id.is_none() {
+            match session_store
+                .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
+                .await?
+            {
+                ThreadMutation::Updated(_) => {}
+                ThreadMutation::Conflict { current }
+                    if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
+                ThreadMutation::Conflict { current } => {
+                    let reason = format!(
+                        "Thread '{}' has a concurrent Execution Target binding conflict: current='{}', requested='{}'. Reschedule using the latest Thread state",
+                        current.id,
+                        current.target_id.as_deref().unwrap_or("unbound"),
+                        effective_target_id
+                    );
+                    let rejection = std::io::Error::other(reason);
+                    let mut output = physical_execution_preflight_rejected_tool_output(
+                        output_id,
+                        context_id,
+                        session_id,
+                        attempt_id,
+                        call,
+                        route,
+                        action_group_id,
+                        &rejection,
+                    );
+                    output
+                        .payload
+                        .insert("target_id".to_string(), json!(effective_target_id));
+                    output
+                        .payload
+                        .insert("bound_target_id".to_string(), json!(current.target_id));
+                    self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                    return Ok(PreparedPhysicalExecution::Rejected(output));
+                }
+                ThreadMutation::NotFound => {
+                    return Err(format!(
+                        "Physical Execution Thread '{}' disappeared while binding its Target",
+                        thread.id
+                    )
+                    .into());
+                }
+            }
+        }
         let mut request = serde_json::from_str(&invocation.tool_arguments).unwrap_or_else(|_| {
             json!({
                 "raw_arguments": invocation.tool_arguments,

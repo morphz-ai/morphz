@@ -10329,28 +10329,113 @@ impl SessionHandle {
         );
         let event_id = format!("dialogue_retry_{digest:x}");
         let event_id = event_id[..48].to_string();
+        let existing_retry_event = self
+            .runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(event_id.clone()),
+                context_id: Some(session.context_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .find(|stored| stored.id == event_id);
+        let recovery_target_id = if let Some(existing) = existing_retry_event.as_ref() {
+            existing
+                .payload
+                .get("recovery_target_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        } else {
+            let result_event = self
+                .runtime
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(expected_result_event_id.clone()),
+                    context_id: Some(session.context_id.clone()),
+                    ..QueryFilter::default()
+                })
+                .await?
+                .into_iter()
+                .find(|stored| stored.id == expected_result_event_id);
+            let target_recovery_required = result_event.as_ref().is_some_and(|event| {
+                event.topic == "chat/reply"
+                    && event
+                        .payload
+                        .get("runtime_failure_kind")
+                        .and_then(Value::as_str)
+                        == Some("execution_target_required")
+                    && event
+                        .payload
+                        .get("physical_action_started")
+                        .and_then(Value::as_bool)
+                        == Some(false)
+            });
+            if target_recovery_required {
+                let target_id = session.default_target_id.clone().ok_or(
+                    "connect and select an online Execution Target before continuing this task",
+                )?;
+                let target = self
+                    .runtime
+                    .inner
+                    .store
+                    .get_execution_target(&target_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!("selected Execution Target '{target_id}' does not exist")
+                    })?;
+                if target.owner_principal_id.is_some()
+                    && target.owner_principal_id.as_deref() != Some(principal_id.as_str())
+                {
+                    return Err(format!(
+                        "Principal '{}' cannot recover this task on Execution Target '{}'",
+                        principal_id, target_id
+                    )
+                    .into());
+                }
+                if !target.status.accepts_jobs() {
+                    return Err(
+                        format!("selected Execution Target '{}' is not online", target_id).into(),
+                    );
+                }
+                Some(target_id)
+            } else {
+                None
+            }
+        };
+        let mut retry_payload = serde_json::Map::from_iter([
+            ("context_id".to_string(), json!(session.context_id)),
+            ("session_id".to_string(), json!(self.id)),
+            ("principal_id".to_string(), json!(principal_id)),
+            ("root_turn_id".to_string(), json!(root_turn_id)),
+            ("thread_id".to_string(), json!(thread.id)),
+            ("retry_request_id".to_string(), json!(retry_request_id)),
+            (
+                "previous_result_event_id".to_string(),
+                json!(expected_result_event_id),
+            ),
+            ("runtime_force_evaluation".to_string(), json!(true)),
+        ]);
+        if let Some(target_id) = recovery_target_id.as_ref() {
+            retry_payload.insert("recovery_target_id".to_string(), json!(target_id));
+            retry_payload.insert(
+                "recovery_action".to_string(),
+                json!("connect_execution_target"),
+            );
+        }
         let event = Event::new(
             event_id.clone(),
             "Runtime-DialogueRetry".to_string(),
             TYPE_INFER_REQUEST.to_string(),
             "chat/dialogue_retry".to_string(),
-            serde_json::Map::from_iter([
-                ("context_id".to_string(), json!(session.context_id)),
-                ("session_id".to_string(), json!(self.id)),
-                ("principal_id".to_string(), json!(principal_id)),
-                ("root_turn_id".to_string(), json!(root_turn_id)),
-                ("thread_id".to_string(), json!(thread.id)),
-                ("retry_request_id".to_string(), json!(retry_request_id)),
-                (
-                    "previous_result_event_id".to_string(),
-                    json!(expected_result_event_id),
-                ),
-                ("runtime_force_evaluation".to_string(), json!(true)),
-            ]),
+            retry_payload,
         );
         let restart_request = DialogueTurnRetryRequest {
             expected_thread_revision,
             expected_result_event_id,
+            recovery_target_id,
             event: event.clone(),
         };
         let mutation = match self
@@ -11396,6 +11481,28 @@ mod tests {
         calls: AtomicU64,
         protected_path: String,
         observed_result: Arc<AtomicBool>,
+    }
+
+    struct MissingTargetExecClient;
+
+    #[async_trait::async_trait]
+    impl Client for MissingTargetExecClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            assert!(tools.iter().any(|tool| tool.name == "exec"));
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "missing-target-exec".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "exec".to_string(),
+                    arguments: json!({ "command": "pwd" }).to_string(),
+                }],
+            })
+        }
     }
 
     struct TwoManagedSshExecClient {
@@ -12844,6 +12951,120 @@ mod tests {
         assert!(error
             .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn cloud_physical_preflight_terminalizes_without_binding_the_missing_local_target() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.execution_targets.local_enabled = false;
+        config.permissions.mode = PermissionMode::FullAccess;
+        let runtime = MorphzRuntime::builder(config, Arc::new(MissingTargetExecClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-cloud-target-preflight".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Cloud target preflight".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        let receipt = session
+            .send(
+                "inspect my computer",
+                "User-Test",
+                Some("client-cloud-target-preflight".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("missing target must close the turn instead of looping")
+            .unwrap();
+        assert_eq!(
+            reply.payload["runtime_failure_kind"],
+            "execution_target_required"
+        );
+        assert_eq!(reply.payload["recovery_action"], "connect_execution_target");
+        assert_eq!(reply.payload["physical_action_started"], false);
+        assert_eq!(reply.payload["terminal_kind"], "failed");
+        let thread = runtime
+            .inner
+            .store
+            .get_thread_by_root(&receipt.event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(thread.lifecycle, crate::memory::ThreadLifecycle::Failed);
+        assert!(
+            thread.target_id.is_none(),
+            "a failed preflight must not bind the disabled local fallback"
+        );
+        assert_eq!(thread.result_event_id.as_deref(), Some(reply.id.as_str()));
+
+        let edge_target_id = "edge-cloud-target-preflight";
+        runtime
+            .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                id: edge_target_id.to_string(),
+                owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                provider_node_id: Some("edge-cloud-node".to_string()),
+                kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                name: "User computer".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("linux".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: json!({}),
+                policy_digest: "edge-cloud-target-policy".to_string(),
+                last_seen_at: Some(chrono::Utc::now()),
+            })
+            .await
+            .unwrap();
+        runtime
+            .update_session(
+                &session.id,
+                SessionUpdate {
+                    default_target_id: Some(Some(edge_target_id.to_string())),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        let retry = session
+            .retry_dialogue_turn(
+                &receipt.event_id,
+                thread.revision,
+                &reply.id,
+                "retry-cloud-target-preflight",
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.generation, 2);
+        let recovered = runtime
+            .inner
+            .store
+            .get_thread(&thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.target_id.as_deref(), Some(edge_target_id));
+        assert_eq!(recovered.generation, 2);
+        runtime
+            .cancel_session_durable(&session.id, "target recovery test complete")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

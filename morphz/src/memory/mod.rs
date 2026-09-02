@@ -1737,6 +1737,12 @@ fn completion_check_value_passed(value: &JsonValue) -> bool {
 pub struct DialogueTurnRetryRequest {
     pub expected_thread_revision: u64,
     pub expected_result_event_id: String,
+    /// Optional physical route adopted by the next generation. This is only
+    /// valid when the authoritative result is the recoverable
+    /// `execution_target_required` preflight failure and no physical action
+    /// started. The Store validates that boundary and changes the route in the
+    /// same transaction that advances the Thread generation.
+    pub recovery_target_id: Option<String>,
     pub event: crate::event::Event,
 }
 

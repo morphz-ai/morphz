@@ -52,12 +52,12 @@ Dashboard 不是 C 端产品的原型，C 端 Gateway 也不能重新发明 Runt
 | 消息幂等与权威终态 | 已具备 `client_message_id`、Event Ledger 与终态 Projection | 展示 Event、Thread、Attempt 与原始错误 | 已按 root/attempt 归并流式状态 | 所有客户端只消费同一终态，不以 HTTP 返回猜完成 |
 | 模型与推理策略 | 已具备 Session 持久默认与 one-shot override | 可直接切换并查看实际路由 | 默认由服务管理，按产品需要渐进开放 | C 端配置必须走 Principal-scoped API，不复制 Provider 管理面 |
 | Sandbox / Permission | 已具备 scoped policy、人工审批、自动审批、完全访问 | 展示精确路径、网络、规则与审计 | 尚未形成消费级权限流程 | C 端只包装当前用户相关请求，规则权威仍在 Runtime |
-| 消息附件持久化 | 已具备 Principal+Session+草稿消息隔离的持久 staging、断点续传、过期回收、SDK/API、内容校验、不可变 Event 绑定与 Workspace 物化；保留内联 Base64 兼容 | 尚未从内联 Base64 迁移到 staging | 尚未从内联 Base64 迁移到 staging | 两端改用 staging ID；Runtime 不内置文档语义解析，Agent 自行选择工具 |
-| 未发送草稿 | 缺失；不应进入 Ledger | 刷新会丢失文本和附件选择 | 刷新会丢失文本和附件选择 | 独立 Draft Store 按 Principal+Session 持久；文本与暂存附件可恢复，发送提交后清除 |
-| 发送失败恢复 | Runtime 对已接收失败 turn 有 retry；浏览器上传前/中失败无持久恢复 | 部分具备 runtime_error 重试 | 部分具备 runtime_error 重试 | 区分“未接收”“已接收可重试”“等待外部能力”；同一幂等 ID 不重复创建 turn |
-| Execution Target 目录与 Session 默认 | 已具备本机默认、Session 持久选择、可见性/在线校验与结构化缺失错误 | 已有 Target 选择器和接入入口 | 缺失 | Gateway 暴露受限 Target catalog；C 端默认显示“这台电脑/已连接电脑”，隐藏内部 ID |
-| Edge 配对与设备接入 | 已具备 `morphz-edge`、一次性配对、租约、撤销和执行协议 | 展示 Node/Target/状态/诊断 | 缺失 | C 端把它表达为“连接你的电脑”，配对凭据和 Target 归属仍由 Runtime 管理 |
-| 缺少 Target 后续接原任务 | 只有工具前置检查错误；没有消费级等待/恢复闭环 | 能看见错误并手动选 Target 重试 | 缺失 | 在首次物理副作用前形成 typed recoverable state；连接后安全重放原 turn，禁止重复副作用 |
+| 消息附件持久化 | 已具备 Principal+Session+草稿消息隔离的持久 staging、断点续传、过期回收、SDK/API、内容校验、不可变 Event 绑定与 Workspace 物化；保留内联 Base64 兼容 | 已迁移到 staging ID，刷新后从 Runtime 对账 staged attachment | 已通过 Gateway 二进制流式上传并迁移到 staging ID | Runtime 不内置文档语义解析，Agent 通过 Workspace 路径自行选择工具 |
+| 未发送草稿 | 不进入 Ledger；附件草稿由 Runtime staging 保持权威 | 已按 Session 在本机持久文本和 staging 引用，接受后清除 | 已按稳定 Session 在浏览器持久文本和 staging 引用，接受后清除 | 文本草稿属于客户端私有状态；已上传字节及归属由 Runtime 保持权威 |
+| 发送失败恢复 | 已具备稳定 `client_message_id`、staging offset/状态与已接收 Runtime failure retry | 已区分未接收草稿、丢失 HTTP receipt 和已接收失败轮次 | 已区分未接收草稿、丢失 HTTP receipt 和已接收失败轮次 | 同一幂等 ID 不重复创建 turn；只有权威接受后才清空草稿 |
+| Execution Target 目录与 Session 默认 | 已具备本机默认、Session 持久选择、Principal 可见性/在线校验与结构化可用性 | 已有 Target 选择器和接入入口 | Gateway 已提供脱敏设备目录，主站可选择 Session 默认电脑 | C 端只显示设备名称、平台与在线状态，隐藏 Principal、Workspace、租约和内部元数据 |
+| Edge 配对与设备接入 | 已具备 `morphz-edge`、一次性配对、租约、撤销和执行协议 | 展示 Node/Target/状态/诊断 | 已表达为“连接你的电脑”，生成短期配对码、展示安装/运行步骤并轮询在线状态 | 配对权限和 Target 归属始终由 Runtime 管理；Gateway 不持有设备私钥 |
+| 缺少 Target 后续接原任务 | 已在物理副作用前形成 `execution_target_required` 失败，标记 `physical_action_started=false`；retry 与 Target 改绑在 Store 同一事务提交 | 可审计 failure、Thread generation、Target route | 主站识别失败、连接/选择电脑后用原 root/failure token 继续 | 已开始物理副作用的失败不可走该改绑路径；重复 retry 保持幂等 |
 | 后台任务与产物 | 已具备 Thread/Job、受管后台、Artifact Transfer 与终态 | 展示完整 Job、Target、进度和产物引用 | 主要仍是对话流 | C 端映射为任务卡和结果，不暴露 lease/fencing 等内核细节 |
 | 主动联系与通知 | Runtime 有 outbound 事件；渠道由外层授权 | 展示原始事件与配置 | 已有站内授权和渠道绑定基础，系统通知缺失 | 通知偏好在产品层，发送事实和因果来源可审计 |
 | 数据导出与删除 | Ledger 与身份生命周期已有边界；通用用户导出缺失 | 管理查询较完整 | 账号删除已明确，用户导出缺失 | Runtime 提供 Principal-scoped 导出；产品层提供可理解包与隐私说明 |
