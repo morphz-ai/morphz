@@ -11,9 +11,9 @@ export interface OptimisticMessageIdentity {
 export interface OptimisticMessageRequestSource extends OptimisticMessageIdentity {
   text: string
   attachments: Array<{
+    stageId: string
     name: string
     mediaType: string
-    dataBase64: string
   }>
   references: Array<{
     sessionId: string
@@ -26,11 +26,7 @@ export function buildOptimisticMessageRequest(message: OptimisticMessageRequestS
   return {
     text: message.text,
     client_message_id: message.clientMessageId,
-    attachments: message.attachments.map(attachment => ({
-      name: attachment.name,
-      media_type: attachment.mediaType,
-      data_base64: attachment.dataBase64,
-    })),
+    staged_attachment_ids: message.attachments.map(attachment => attachment.stageId),
     references: message.references.map(reference => ({
       kind: 'session' as const,
       session_id: reference.sessionId,

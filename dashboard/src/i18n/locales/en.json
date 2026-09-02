@@ -1415,7 +1415,15 @@
       "previewUnavailable": "Preview unavailable",
       "tooMany": "A message can contain at most {{count}} attachments",
       "fileTooLarge": "Each attachment must be {{size}} or smaller",
-      "totalTooLarge": "Attachments in one message must total {{size}} or less"
+      "totalTooLarge": "Attachments in one message must total {{size}} or less",
+      "sessionRequired": "Create or select a Session before adding files",
+      "notReady": "Wait for every attachment upload to finish before sending",
+      "expired": "One or more saved attachment drafts expired; select the files again",
+      "status": {
+        "uploading": "uploading",
+        "ready": "saved",
+        "consumed": "sent"
+      }
     },
     "sessionReferences": {
       "menu": "Reference an existing Session",

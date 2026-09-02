@@ -86,6 +86,32 @@ test('DashboardApiClient accepts an empty successful command response', async ()
   assert.equal(await client.command<void>('/api/cancel', 'POST'), undefined)
 })
 
+test('DashboardApiClient uploads raw bytes with an explicit resume offset', async () => {
+  let captured: { url: string, init?: RequestInit } | undefined
+  const client = new DashboardApiClient({
+    baseUrl: 'http://runtime.test',
+    token: 'secret',
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      captured = { url: String(url), init }
+      return Response.json({ stage_id: 'stage-1', offset: 3, status: 'ready' })
+    }) as typeof fetch,
+  })
+  const bytes = new Uint8Array([1, 2, 3])
+
+  const stage = await client.upload<{ stage_id: string, offset: number }>(
+    '/api/sessions/session-1/attachment-stages/stage-1/content',
+    bytes,
+    0,
+  )
+
+  assert.equal(stage.offset, 3)
+  assert.equal(captured?.init?.body, bytes)
+  const headers = captured?.init?.headers as Record<string, string>
+  assert.equal(headers.Authorization, 'Bearer secret')
+  assert.equal(headers['Content-Type'], 'application/octet-stream')
+  assert.equal(headers['X-Morphz-Upload-Offset'], '0')
+})
+
 test('DashboardApiClient can replace its credential without rebuilding the client', async () => {
   const authorizations: Array<string | undefined> = []
   const client = new DashboardApiClient({

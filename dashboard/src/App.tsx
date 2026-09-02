@@ -91,6 +91,14 @@ import { findTurnSettlement } from './turnSettlement'
 import { resolveSelectedModelOption } from './app/modelSelection'
 import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
 import {
+  clearSessionDraft,
+  createDraftClientMessageId,
+  readSessionDraft,
+  writeSessionDraft,
+  type DraftAttachmentStatus,
+  type PersistedDraftAttachment,
+} from './app/sessionDraft'
+import {
   accentThemes,
   initialAccentTheme,
   initialAppearanceMode,
@@ -140,6 +148,7 @@ import { RuntimePage } from './pages/RuntimePage'
 import type { CapabilityDeltaSummary, CapabilityLeaseSummary } from './pages/RuntimePage'
 import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
+import { DashboardApiError } from './api/client'
 import { DASHBOARD_API, getDashboardToken } from './api/runtime'
 import {
   invalidatedQueriesForTopic,
@@ -1161,13 +1170,20 @@ interface QuoteItem {
   badgeLeft: number
 }
 
-interface ComposerAttachment {
-  id: string
-  name: string
-  mediaType: string
-  size: number
-  dataBase64: string
+interface ComposerAttachment extends PersistedDraftAttachment {
   previewUrl?: string
+}
+
+interface MessageAttachmentStageRecord {
+  stage_id: string
+  client_message_id: string
+  name: string
+  media_type: string
+  size_bytes: number
+  offset: number
+  status: DraftAttachmentStatus
+  sha256?: string
+  consumed_event_id?: string
 }
 
 interface ComposerSessionReference {
@@ -2637,10 +2653,95 @@ const OptimisticMessageCard = memo(function OptimisticMessageCard({
   )
 })
 
+const ATTACHMENT_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+
+function dashboardDraftStorage(): Storage | undefined {
+  try {
+    return window.localStorage
+  } catch {
+    return undefined
+  }
+}
+
+function composerAttachmentFromStage(
+  stage: MessageAttachmentStageRecord,
+  previous?: ComposerAttachment,
+): ComposerAttachment {
+  return {
+    id: stage.stage_id,
+    stageId: stage.stage_id,
+    name: stage.name,
+    mediaType: stage.media_type,
+    size: stage.size_bytes,
+    offset: stage.offset,
+    status: stage.status,
+    sha256: stage.sha256,
+    previewUrl: previous?.previewUrl,
+  }
+}
+
+async function stageComposerFile(
+  sessionId: string,
+  clientMessageId: string,
+  file: File,
+  onStage: (attachment: ComposerAttachment) => void,
+): Promise<ComposerAttachment> {
+  const stageId = `dashboard-stage-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const collectionPath = `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages`
+  let stage: MessageAttachmentStageRecord
+  try {
+    stage = await DASHBOARD_API.command<MessageAttachmentStageRecord>(collectionPath, 'POST', {
+        stage_id: stageId,
+        client_message_id: clientMessageId,
+        name: file.name,
+        media_type: file.type || 'application/octet-stream',
+        size_bytes: file.size,
+    })
+  } catch (reason) {
+    const recovered = await DASHBOARD_API.tryGet<MessageAttachmentStageRecord>(
+      `${collectionPath}/${encodeURIComponent(stageId)}`,
+    )
+    if (!recovered) throw reason
+    stage = recovered
+  }
+  let attachment = composerAttachmentFromStage(stage)
+  attachment.previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
+  onStage(attachment)
+
+  while (attachment.status === 'uploading') {
+    const offset = attachment.offset
+    const end = Math.min(file.size, offset + ATTACHMENT_UPLOAD_CHUNK_BYTES)
+    try {
+      const updated = await DASHBOARD_API.upload<MessageAttachmentStageRecord>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages/${encodeURIComponent(stageId)}/content`,
+        file.slice(offset, end),
+        offset,
+      )
+      attachment = composerAttachmentFromStage(updated, attachment)
+    } catch (reason) {
+      // The response may have been lost after Runtime durably accepted the
+      // chunk. Inspect the authoritative offset before deciding it failed.
+      const recovered = await DASHBOARD_API.tryGet<MessageAttachmentStageRecord>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages/${encodeURIComponent(stageId)}`,
+      )
+      if (!recovered || (recovered.offset === offset && recovered.status === 'uploading')) {
+        throw reason
+      }
+      attachment = composerAttachmentFromStage(recovered, attachment)
+    }
+    onStage(attachment)
+    if (attachment.status === 'uploading' && attachment.offset <= offset) {
+      throw new Error('Attachment upload made no durable progress')
+    }
+  }
+  return attachment
+}
+
 // Keep draft input state below App. A keystroke should only reconcile the
 // composer, not the full event history and every dashboard view.
 const Composer = memo(function Composer({
   inputRef,
+  principalId,
   selectedSessionId,
   sending,
   readOnly,
@@ -2658,6 +2759,7 @@ const Composer = memo(function Composer({
   currentContextId,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
+  principalId: string
   selectedSessionId: string
   sending: boolean
   readOnly: boolean
@@ -2672,6 +2774,7 @@ const Composer = memo(function Composer({
     attachments: ComposerAttachment[],
     references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
+    clientMessageId?: string,
   ) => Promise<boolean>
   onError: (message: string) => void
   modelInputPolicy?: RuntimeStatus['model_input']
@@ -2679,20 +2782,105 @@ const Composer = memo(function Composer({
   currentAgentId: string
   currentContextId: string
 }) {
-  const [message, setMessage] = useState('')
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
-  const [sessionReferences, setSessionReferences] = useState<ComposerSessionReference[]>([])
+  const [initialDraft] = useState(() => readSessionDraft(
+    dashboardDraftStorage(),
+    principalId,
+    selectedSessionId,
+  ))
+  const [draftClientMessageId, setDraftClientMessageId] = useState(
+    initialDraft?.clientMessageId ?? createDraftClientMessageId(),
+  )
+  const [message, setMessage] = useState(initialDraft?.text ?? '')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(
+    initialDraft?.attachments.map(attachment => ({ ...attachment })) ?? [],
+  )
+  const [sessionReferences, setSessionReferences] = useState<ComposerSessionReference[]>(
+    initialDraft?.references.map(reference => ({ ...reference })) ?? [],
+  )
   const [mentionRange, setMentionRange] = useState<SessionMentionRange | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [draggingFiles, setDraggingFiles] = useState(false)
   const [sendMenuOpen, setSendMenuOpen] = useState(false)
   const composingInput = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const attachmentPreviewRef = useRef<ComposerAttachment[]>(attachments)
+
+  useEffect(() => {
+    attachmentPreviewRef.current = attachments
+  }, [attachments])
+
+  useEffect(() => () => {
+    attachmentPreviewRef.current.forEach(attachment => {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+    })
+  }, [])
+
+  useEffect(() => {
+    writeSessionDraft(dashboardDraftStorage(), {
+      version: 1,
+      principalId,
+      sessionId: selectedSessionId,
+      clientMessageId: draftClientMessageId,
+      text: message,
+      attachments: attachments.map(attachment => ({
+        id: attachment.id,
+        stageId: attachment.stageId,
+        name: attachment.name,
+        mediaType: attachment.mediaType,
+        size: attachment.size,
+        offset: attachment.offset,
+        status: attachment.status,
+        sha256: attachment.sha256,
+        error: attachment.error,
+      })),
+      references: sessionReferences,
+      updatedAt: new Date().toISOString(),
+    })
+  }, [attachments, draftClientMessageId, message, principalId, selectedSessionId, sessionReferences])
+
+  useEffect(() => {
+    if (!selectedSessionId || attachments.length === 0) return
+    let active = true
+    const stageIds = attachments.map(attachment => attachment.stageId)
+    void Promise.allSettled(stageIds.map(stageId => DASHBOARD_API.get<MessageAttachmentStageRecord>(
+      `/api/sessions/${encodeURIComponent(selectedSessionId)}/attachment-stages/${encodeURIComponent(stageId)}`,
+    ))).then(results => {
+      if (!active) return
+      const unavailable = results.find(result => result.status === 'rejected'
+        && !(result.reason instanceof DashboardApiError && result.reason.status === 404))
+      if (unavailable?.status === 'rejected') throw unavailable.reason
+      const available = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+      if (available.length === stageIds.length && available.every(record => record.status === 'consumed')) {
+        clearSessionDraft(dashboardDraftStorage(), principalId, selectedSessionId)
+        setMessage('')
+        setSessionReferences([])
+        setAttachments([])
+        setDraftClientMessageId(createDraftClientMessageId())
+        return
+      }
+      const byId = new Map(available.map(record => [record.stage_id, record]))
+      setAttachments(current => current
+        .filter(attachment => byId.has(attachment.stageId))
+        .map(attachment => composerAttachmentFromStage(byId.get(attachment.stageId)!, attachment)))
+      if (available.length !== stageIds.length) onError(t('composer.attachments.expired'))
+    }).catch(reason => {
+      if (active) onError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => { active = false }
+    // Reconcile once when this keyed Composer mounts. Attachment progress
+    // updates below are already authoritative responses from the same API.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [principalId, selectedSessionId])
 
   const submit = useCallback(async (dispatchMode?: MessageDispatchMode) => {
     if (readOnly) return
     setSendMenuOpen(false)
-    if (await onSend(message, attachments, sessionReferences, dispatchMode)) {
+    if (attachments.some(attachment => attachment.status !== 'ready')) {
+      onError(t('composer.attachments.notReady'))
+      return
+    }
+    if (await onSend(message, attachments, sessionReferences, dispatchMode, draftClientMessageId)) {
+      clearSessionDraft(dashboardDraftStorage(), principalId, selectedSessionId)
       setMessage('')
       setSessionReferences([])
       setMentionRange(null)
@@ -2700,8 +2888,9 @@ const Composer = memo(function Composer({
         current.forEach(attachment => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl))
         return []
       })
+      setDraftClientMessageId(createDraftClientMessageId())
     }
-  }, [attachments, message, onSend, readOnly, sessionReferences])
+  }, [attachments, draftClientMessageId, message, onError, onSend, principalId, readOnly, selectedSessionId, sessionReferences, t])
 
   const mentionCandidates = useMemo(() => {
     if (!mentionRange) return []
@@ -2735,6 +2924,10 @@ const Composer = memo(function Composer({
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     if (readOnly) return
+    if (!selectedSessionId) {
+      onError(t('composer.attachments.sessionRequired'))
+      return
+    }
     const incoming = Array.from(files)
     if (!incoming.length) return
     if (modelInputPolicy
@@ -2759,28 +2952,42 @@ const Composer = memo(function Composer({
       }))
       return
     }
-    try {
-      const added = await Promise.all(incoming.map(async file => {
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'))
-          reader.onload = () => resolve(String(reader.result ?? ''))
-          reader.readAsDataURL(file)
+    for (const file of incoming) {
+      let stagedId = ''
+      try {
+        await stageComposerFile(selectedSessionId, draftClientMessageId, file, attachment => {
+          stagedId = attachment.stageId
+          setAttachments(current => {
+            const existing = current.findIndex(item => item.stageId === attachment.stageId)
+            if (existing < 0) return [...current, attachment]
+            const next = [...current]
+            next[existing] = attachment
+            return next
+          })
         })
-        return {
-          id: `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          name: file.name,
-          mediaType: file.type || 'application/octet-stream',
-          size: file.size,
-          dataBase64: dataUrl.split(',', 2)[1] ?? '',
-          previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-        } satisfies ComposerAttachment
-      }))
-      setAttachments(current => [...current, ...added])
-    } catch (reason) {
-      onError(reason instanceof Error ? reason.message : String(reason))
+      } catch (reason) {
+        const detail = reason instanceof Error ? reason.message : String(reason)
+        if (stagedId) {
+          setAttachments(current => current.map(attachment => attachment.stageId === stagedId
+            ? { ...attachment, error: detail }
+            : attachment))
+        }
+        onError(detail)
+      }
     }
-  }, [attachments, modelInputPolicy, onError, readOnly, t])
+  }, [attachments, draftClientMessageId, modelInputPolicy, onError, readOnly, selectedSessionId, t])
+
+  const removeComposerAttachment = useCallback((attachment: ComposerAttachment) => {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+    setAttachments(current => current.filter(item => item.stageId !== attachment.stageId))
+    if (!selectedSessionId) return
+    void DASHBOARD_API.command<void>(
+      `/api/sessions/${encodeURIComponent(selectedSessionId)}/attachment-stages/${encodeURIComponent(attachment.stageId)}`,
+      'DELETE',
+    ).catch(reason => onError(reason instanceof Error ? reason.message : String(reason)))
+  }, [onError, selectedSessionId])
+
+  const attachmentsReady = attachments.every(attachment => attachment.status === 'ready')
 
   return (
     <div
@@ -2836,16 +3043,17 @@ const Composer = memo(function Composer({
                     {(attachment.size < 1024 * 1024 ? attachment.size / 1024 : attachment.size / 1024 / 1024)
                       .toFixed(attachment.size < 1024 * 1024 ? 0 : 1)}
                     {' '}{attachment.size < 1024 * 1024 ? 'KB' : 'MB'}
+                    {' · '}{t(`composer.attachments.status.${attachment.status}`)}
+                    {attachment.status === 'uploading' && attachment.size > 0
+                      ? ` ${Math.min(100, Math.round(attachment.offset / attachment.size * 100))}%`
+                      : ''}
                   </small>
+                  {attachment.error && <small className="composer-attachment-error">{attachment.error}</small>}
                 </span>
                 <button
                   type="button"
                   title={t('composer.attachments.remove')}
-                  onClick={() => setAttachments(current => {
-                    const removed = current.find(item => item.id === attachment.id)
-                    if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
-                    return current.filter(item => item.id !== attachment.id)
-                  })}
+                  onClick={() => removeComposerAttachment(attachment)}
                 >
                   <X size={12} />
                 </button>
@@ -3036,7 +3244,7 @@ const Composer = memo(function Composer({
           className="send-button"
           aria-label={t('composer.send')}
           title={t('composer.modes.defaultHint')}
-          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0 && sessionReferences.length === 0) || sending || readOnly}
+          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0 && sessionReferences.length === 0) || !attachmentsReady || sending || readOnly}
           type="button"
           onClick={() => void submit()}
         >
@@ -3046,7 +3254,7 @@ const Composer = memo(function Composer({
           className="send-mode-button"
           aria-label={t('composer.modes.menu')}
           title={t('composer.modes.menu')}
-          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0 && sessionReferences.length === 0) || sending || readOnly}
+          disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0 && sessionReferences.length === 0) || !attachmentsReady || sending || readOnly}
           type="button"
           aria-expanded={sendMenuOpen}
           onClick={() => setSendMenuOpen(open => !open)}
@@ -6222,7 +6430,7 @@ export default function App() {
     setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, comment } : q))
   }, [])
 
-  const deliverOptimisticMessage = useCallback(async (message: OptimisticMessage): Promise<void> => {
+  const deliverOptimisticMessage = useCallback(async (message: OptimisticMessage): Promise<boolean> => {
     const startedAt = Date.now()
     setOptimisticMessages(current => current.map(item => item.id === message.id
       ? { ...item, status: 'sending', error: undefined }
@@ -6244,6 +6452,7 @@ export default function App() {
         : current)
       setError('')
       window.setTimeout(() => void loadSession(message.sessionId, message.contextId), 120)
+      return true
     } catch (reason) {
       const detail = reason instanceof Error ? reason.message : String(reason)
       setOptimisticMessages(current => current.map(item => item.id === message.id
@@ -6251,6 +6460,7 @@ export default function App() {
         : item))
       setPendingTurn(current => current?.startedAt === startedAt ? null : current)
       setError(detail)
+      return false
     } finally {
       setSending(false)
     }
@@ -6261,6 +6471,7 @@ export default function App() {
     attachments: ComposerAttachment[],
     references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
+    clientMessageId?: string,
   ): Promise<boolean> => {
     const hasQuotes = quotes.length > 0
     const text = draftMessage.trim()
@@ -6297,7 +6508,7 @@ export default function App() {
       }
       const optimisticMessage: OptimisticMessage = {
         id: `optimistic-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        clientMessageId: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        clientMessageId: clientMessageId ?? createDraftClientMessageId(),
         sessionId: targetSession.id,
         contextId: targetSession.context_id,
         text: composedText,
@@ -6308,10 +6519,10 @@ export default function App() {
         status: 'sending',
       }
       setOptimisticMessages(current => [...current, optimisticMessage])
-      setQuotes([])
       setError('')
-      void deliverOptimisticMessage(optimisticMessage)
-      return true
+      const accepted = await deliverOptimisticMessage(optimisticMessage)
+      if (accepted) setQuotes([])
+      return accepted
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setSending(false)
@@ -9591,7 +9802,9 @@ export default function App() {
             </div>
           </div>
           <Composer
+            key={`${status?.principal_id ?? 'principal'}:${selectedSessionId || 'unbound'}`}
             inputRef={composerInputRef}
+            principalId={status?.principal_id ?? ''}
             selectedSessionId={selectedSessionId}
             sending={sending}
             readOnly={observingForeignPrincipal}

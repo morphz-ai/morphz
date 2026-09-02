@@ -10,7 +10,7 @@ test('a retry reuses the exact idempotent request identity and body', () => {
   const optimistic = {
     clientMessageId: 'client-1',
     text: 'hello',
-    attachments: [{ name: 'note.txt', mediaType: 'text/plain', dataBase64: 'aGVsbG8=' }],
+    attachments: [{ stageId: 'stage-1', name: 'note.txt', mediaType: 'text/plain' }],
     references: [{ sessionId: 'session-2' }],
     dispatchMode: 'parallel' as const,
   }
@@ -21,6 +21,7 @@ test('a retry reuses the exact idempotent request identity and body', () => {
   assert.deepEqual(retry, initial)
   assert.equal(retry.client_message_id, 'client-1')
   assert.equal(retry.dispatch_mode, 'parallel')
+  assert.deepEqual(retry.staged_attachment_ids, ['stage-1'])
 })
 
 test('reconciles an optimistic message by client message id before the receipt arrives', () => {

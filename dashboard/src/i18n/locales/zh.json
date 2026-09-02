@@ -1415,7 +1415,15 @@
       "previewUnavailable": "无法加载预览",
       "tooMany": "单条消息最多添加 {{count}} 个附件",
       "fileTooLarge": "单个附件不能超过 {{size}}",
-      "totalTooLarge": "单条消息的附件总大小不能超过 {{size}}"
+      "totalTooLarge": "单条消息的附件总大小不能超过 {{size}}",
+      "sessionRequired": "请先创建或选择会话，再添加文件",
+      "notReady": "请等待所有附件上传完成后再发送",
+      "expired": "部分已保存的附件草稿已过期，请重新选择文件",
+      "status": {
+        "uploading": "上传中",
+        "ready": "已暂存",
+        "consumed": "已发送"
+      }
     },
     "sessionReferences": {
       "menu": "引用已有会话",

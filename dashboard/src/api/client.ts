@@ -95,6 +95,18 @@ export class DashboardApiClient {
     return this.readJson<T>(path, response, true)
   }
 
+  async upload<T>(path: string, body: BodyInit, offset: number): Promise<T> {
+    const response = await this.response(path, {
+      method: 'PUT',
+      body,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Morphz-Upload-Offset': String(offset),
+      },
+    })
+    return this.readJson<T>(path, response)
+  }
+
   private async readJson<T>(path: string, response: Response, allowEmpty = false): Promise<T> {
     if (response.ok) {
       if (allowEmpty && (response.status === 204 || response.headers.get('content-length') === '0')) {
