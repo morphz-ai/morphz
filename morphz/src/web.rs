@@ -288,6 +288,9 @@ struct UpdateSessionRequest {
     reasoning_effort: Option<String>,
     permission_mode: Option<crate::permission::PermissionMode>,
     sandbox_mode: Option<crate::permission::SandboxMode>,
+    /// Empty string restores Runtime inheritance; a concrete id becomes the
+    /// destination for subsequently-created Dialogue Threads only.
+    default_target_id: Option<String>,
     context_sharing: Option<crate::memory::SessionContextSharing>,
 }
 
@@ -1313,6 +1316,10 @@ impl Server {
             .route(
                 "/api/sessions/:session_id",
                 get(handle_get_session).patch(handle_update_session),
+            )
+            .route(
+                "/api/sessions/:session_id/execution-targets",
+                get(handle_get_session_execution_targets),
             )
             .route(
                 "/api/sessions/:session_id/messages",
@@ -4073,7 +4080,12 @@ async fn handle_list_execution_targets(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -6861,6 +6873,111 @@ async fn handle_get_session(
     }
 }
 
+/// Returns the Session selection together with deployment availability. This
+/// is intentionally richer than the global target directory so cloud clients
+/// can distinguish "choose one of your devices" from "install morphz-edge".
+async fn handle_get_session_execution_targets(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let session = match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    let targets = match state
+        .sdk
+        .list_execution_targets(&principal.principal_id)
+        .await
+    {
+        Ok(targets) => targets,
+        Err(error) => return sdk_error_response(error),
+    };
+
+    let local_enabled = state.runtime.config().execution_targets.local_enabled;
+    let selected_target_id = session.default_target_id.as_deref();
+    let selected_target = selected_target_id
+        .and_then(|target_id| targets.iter().find(|target| target.id == target_id));
+    let local_target = targets
+        .iter()
+        .find(|target| target.id == crate::execution_target::DEFAULT_EXECUTION_TARGET_ID);
+    let user_targets = targets
+        .iter()
+        .filter(|target| target.kind != crate::memory::ExecutionTargetKind::InProcessLocal)
+        .collect::<Vec<_>>();
+
+    let (effective_target_id, selection_source, ready, reason) =
+        if let Some(target_id) = selected_target_id {
+            match selected_target {
+                Some(target) if target.status.accepts_jobs() => {
+                    (Some(target_id), "session", true, "ready")
+                }
+                Some(_) => (Some(target_id), "session", false, "selected_target_offline"),
+                None => (
+                    Some(target_id),
+                    "session",
+                    false,
+                    "selected_target_unavailable",
+                ),
+            }
+        } else if local_enabled {
+            match local_target {
+                Some(target) if target.status.accepts_jobs() => (
+                    Some(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID),
+                    "runtime_local",
+                    true,
+                    "ready",
+                ),
+                _ => (
+                    Some(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID),
+                    "runtime_local",
+                    false,
+                    "local_target_unavailable",
+                ),
+            }
+        } else if user_targets.is_empty() {
+            (None, "none", false, "execution_target_required")
+        } else {
+            (None, "none", false, "target_selection_required")
+        };
+    let onboarding_required = reason == "execution_target_required";
+
+    Json(json!({
+        "session_id": session.id,
+        "selected_target_id": session.default_target_id,
+        "effective_target_id": effective_target_id,
+        "selection_source": selection_source,
+        "ready": ready,
+        "reason": reason,
+        "local_default_enabled": local_enabled,
+        "targets": targets,
+        "onboarding": {
+            "required": onboarding_required,
+            "client": "morphz-edge",
+            "pairing_endpoint": "/api/edge/pairing-codes",
+            "documentation": "docs/morphz_edge_cli.md"
+        }
+    }))
+    .into_response()
+}
+
 async fn handle_update_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -6880,6 +6997,11 @@ async fn handle_update_session(
     let context_sharing = request.context_sharing;
     let permission_mode = request.permission_mode;
     let sandbox_mode = request.sandbox_mode;
+    let default_target_id = match request.default_target_id {
+        None => None,
+        Some(value) if value.trim().is_empty() => Some(None),
+        Some(value) => Some(Some(value.trim().to_string())),
+    };
     if permission_mode == Some(crate::permission::PermissionMode::Custom) {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -6997,8 +7119,34 @@ async fn handle_update_session(
             || reasoning_effort.is_some()
             || permission_mode.is_some()
             || sandbox_mode.is_some()
+            || default_target_id.is_some()
             || context_sharing.is_some())
     {
+        if default_target_id.is_some() {
+            let principal = match request_read_principal(
+                &state,
+                &headers,
+                query.token.as_deref(),
+                query.principal_id.as_deref(),
+            ) {
+                Ok(principal) => principal,
+                Err(error) => return sdk_error_response(error),
+            };
+            if let Err(error) = state
+                .sdk
+                .update_session(
+                    &principal.principal_id,
+                    &session_id,
+                    SessionUpdate {
+                        default_target_id: default_target_id.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                return sdk_error_response(error);
+            }
+        }
         if model_alias.is_some() || reasoning_effort.is_some() {
             if let Err(error) = state
                 .sdk
@@ -7070,6 +7218,7 @@ async fn handle_update_session(
                 reasoning_effort,
                 permission_mode: permission_mode.map(Some),
                 sandbox_mode: sandbox_mode.map(Some),
+                default_target_id,
             },
         )
         .await
@@ -10182,6 +10331,7 @@ mod tests {
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -10237,6 +10387,7 @@ mod tests {
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: Some(crate::memory::SessionContextSharing::Isolated),
             }),
         )
@@ -10264,6 +10415,7 @@ mod tests {
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: Some(crate::memory::SessionContextSharing::Shared),
             }),
         )
@@ -10285,6 +10437,7 @@ mod tests {
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -12597,6 +12750,23 @@ account = "xai-account"
             })
             .await
             .unwrap();
+        runtime
+            .register_execution_target(ExecutionTargetRegistration {
+                id: "edge-dashboard-session".to_string(),
+                owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                provider_node_id: None,
+                kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                name: "Dashboard laptop".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("linux-x86_64".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: json!({"test": "session_default_target"}),
+                policy_digest: "dashboard-session-target-policy".to_string(),
+                last_seen_at: Some(chrono::Utc::now()),
+            })
+            .await
+            .unwrap();
 
         let selected = handle_update_session(
             State(Arc::clone(&state)),
@@ -12610,6 +12780,7 @@ account = "xai-account"
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -12640,6 +12811,7 @@ account = "xai-account"
                 reasoning_effort: Some("high".to_string()),
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -12669,6 +12841,7 @@ account = "xai-account"
                 reasoning_effort: None,
                 permission_mode: Some(crate::permission::PermissionMode::FullAccess),
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -12694,6 +12867,57 @@ account = "xai-account"
             None
         );
 
+        let target = handle_update_session(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateSessionRequest {
+                title: None,
+                status: None,
+                model_alias: None,
+                reasoning_effort: None,
+                permission_mode: None,
+                sandbox_mode: None,
+                default_target_id: Some("edge-dashboard-session".to_string()),
+                context_sharing: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(target.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_session(session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .default_target_id
+                .as_deref(),
+            Some("edge-dashboard-session")
+        );
+        let availability = handle_get_session_execution_targets(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(availability.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(availability.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let availability: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(availability["selected_target_id"], "edge-dashboard-session");
+        assert_eq!(
+            availability["effective_target_id"],
+            "edge-dashboard-session"
+        );
+        assert_eq!(availability["selection_source"], "session");
+        assert_eq!(availability["ready"], true);
+        assert_eq!(availability["onboarding"]["required"], false);
+
         let rejected = handle_update_session(
             State(Arc::clone(&state)),
             Path(session_id.to_string()),
@@ -12706,6 +12930,7 @@ account = "xai-account"
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -12735,6 +12960,7 @@ account = "xai-account"
                 reasoning_effort: Some("provider_default".to_string()),
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
                 context_sharing: None,
             }),
         )
@@ -12759,6 +12985,90 @@ account = "xai-account"
                 .reasoning_effort,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn cloud_session_target_api_distinguishes_edge_onboarding_from_device_selection() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+        let mut config = AppConfig::default();
+        config.llm.provider = Some("fixture-provider".to_string());
+        config.llm.model = "fixture-model".to_string();
+        config.llm.models.push("fixture-model".to_string());
+        config.providers.insert(
+            "fixture-provider".to_string(),
+            crate::config::ProviderConfig {
+                protocol: crate::config::ModelProtocol::OpenaiResponses,
+                base_url: "http://localhost:8317/v1".to_string(),
+                ..crate::config::ProviderConfig::default()
+            },
+        );
+        config.execution_targets.local_enabled = false;
+        let (state, runtime) =
+            test_state_at_with_config_auth_and_secrets(&path, true, config, None, None).await;
+        let session_id = "cloud-session-without-device";
+        runtime
+            .ensure_session(crate::memory::NewSession {
+                id: session_id.to_string(),
+                agent_id: "agent-test".to_string(),
+                context_id: "context-test".to_string(),
+                parent_session_id: None,
+                title: "Cloud target onboarding".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let availability = handle_get_session_execution_targets(
+            State(Arc::clone(&state)),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        let body = axum::body::to_bytes(availability.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let availability: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(availability["effective_target_id"], Value::Null);
+        assert_eq!(availability["ready"], false);
+        assert_eq!(availability["reason"], "execution_target_required");
+        assert_eq!(availability["onboarding"]["required"], true);
+        assert_eq!(availability["onboarding"]["client"], "morphz-edge");
+
+        runtime
+            .register_execution_target(ExecutionTargetRegistration {
+                id: "edge-cloud-laptop".to_string(),
+                owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                provider_node_id: None,
+                kind: crate::memory::ExecutionTargetKind::EdgeNode,
+                name: "Cloud user's laptop".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("macos-aarch64".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: json!({"test": "cloud_target_selection"}),
+                policy_digest: "cloud-laptop-policy".to_string(),
+                last_seen_at: Some(chrono::Utc::now()),
+            })
+            .await
+            .unwrap();
+        let availability = handle_get_session_execution_targets(
+            State(state),
+            Path(session_id.to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        let body = axum::body::to_bytes(availability.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let availability: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(availability["reason"], "target_selection_required");
+        assert_eq!(availability["onboarding"]["required"], false);
     }
 
     #[tokio::test]

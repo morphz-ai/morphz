@@ -1448,13 +1448,25 @@ impl MorphzRuntimeBuilder {
             .workspace_root
             .to_str()
             .map(str::to_string);
-        store
-            .register_execution_target(crate::execution_target::local_default_registration(
-                workspace_root,
-                registry.physical_tool_names(),
-                permissions.policy_digest(),
-            ))
-            .await?;
+        let mut local_target = crate::execution_target::local_default_registration(
+            workspace_root,
+            registry.physical_tool_names(),
+            permissions.policy_digest(),
+        );
+        if !self.config.execution_targets.local_enabled {
+            // Keep one durable disabled descriptor so a deployment changing
+            // roles cannot accidentally retain a previously-online local
+            // Target row. It is not an executable fallback and C-end clients
+            // can distinguish it from user-owned Edge Targets.
+            // Offline is deliberate here: Disabled is an administrative CAS
+            // state which provider registration must never undo. A service
+            // switching back from cloud to self-hosted mode must be able to
+            // restore its local target on the next clean startup.
+            local_target.status = crate::memory::ExecutionTargetStatus::Offline;
+            local_target.capabilities.clear();
+            local_target.metadata["availability"] = json!("disabled_by_configuration");
+        }
+        store.register_execution_target(local_target).await?;
         let mut runtime_managed_ssh_target_ids = HashSet::new();
         for target_config in &self.config.managed_ssh.targets {
             if !runtime_managed_ssh_target_ids.insert(target_config.id.trim().to_string()) {
@@ -9690,6 +9702,11 @@ impl SessionHandle {
         } else {
             None
         };
+        // A one-shot caller choice wins; otherwise resolve the Session's
+        // persisted default before the user Event and Thread are committed.
+        // The resulting target_id is therefore immutable for this root even
+        // if the user changes the selector while work is still running.
+        let target_id = target_id.or_else(|| session.default_target_id.clone());
         let target_id = if let Some(target_id) = target_id {
             let target_id = target_id.trim().to_string();
             if target_id.is_empty() {
@@ -10530,6 +10547,7 @@ mod tests {
             reasoning_effort: None,
             permission_mode: None,
             sandbox_mode: None,
+            default_target_id: None,
             context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,
             updated_at: now,
@@ -12536,7 +12554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_sessions_bind_new_dialogue_threads_to_distinct_requested_targets() {
+    async fn concurrent_sessions_freeze_distinct_persisted_default_targets_at_message_ingress() {
         let database = NamedTempFile::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
@@ -12588,6 +12606,26 @@ mod tests {
             .unwrap();
         runtime.bind_default_principal(&session_a.id).await.unwrap();
         runtime.bind_default_principal(&session_b.id).await.unwrap();
+        runtime
+            .update_session(
+                &session_a.id,
+                SessionUpdate {
+                    default_target_id: Some(Some("edge-session-a".to_string())),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        runtime
+            .update_session(
+                &session_b.id,
+                SessionUpdate {
+                    default_target_id: Some(Some("edge-session-b".to_string())),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
 
         let (receipt_a, receipt_b) = tokio::join!(
             session_a.send_as_principal_with_options(
@@ -12595,24 +12633,28 @@ mod tests {
                 "User-Test",
                 principal_id.clone(),
                 Some("client-target-a".to_string()),
-                SessionMessageOptions {
-                    target_id: Some("edge-session-a".to_string()),
-                    ..SessionMessageOptions::default()
-                },
+                SessionMessageOptions::default(),
             ),
             session_b.send_as_principal_with_options(
                 "work only on target B",
                 "User-Test",
                 principal_id.clone(),
                 Some("client-target-b".to_string()),
-                SessionMessageOptions {
-                    target_id: Some("edge-session-b".to_string()),
-                    ..SessionMessageOptions::default()
-                },
+                SessionMessageOptions::default(),
             )
         );
         let receipt_a = receipt_a.unwrap();
         let receipt_b = receipt_b.unwrap();
+        runtime
+            .update_session(
+                &session_a.id,
+                SessionUpdate {
+                    default_target_id: Some(Some("edge-session-b".to_string())),
+                    ..SessionUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
         let (thread_a, thread_b) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 let thread_a = runtime
@@ -12654,6 +12696,44 @@ mod tests {
                 .unwrap();
             assert_eq!(event.payload["target_id"], target_id);
         }
+    }
+
+    #[tokio::test]
+    async fn cloud_config_removes_local_execution_fallback_with_machine_readable_boundary() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.execution_targets.local_enabled = false;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let local = runtime
+            .get_execution_target(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(local.status, crate::memory::ExecutionTargetStatus::Offline);
+        assert!(local.capabilities.is_empty());
+        assert_eq!(local.metadata["availability"], "disabled_by_configuration");
+
+        let error = runtime
+            .inner
+            .execution_targets
+            .validate_for_tool(
+                crate::execution_target::DEFAULT_EXECUTION_TARGET_ID,
+                "exec",
+                r#"{"command":"pwd"}"#,
+                Some(&runtime.identity().principal_id),
+                &runtime.identity().agent_id,
+                &runtime.identity().context_id,
+                "thread-cloud-no-target",
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+            .is_some());
     }
 
     #[tokio::test]

@@ -3907,6 +3907,10 @@ impl MorphzSdk {
         update: SessionUpdate,
     ) -> SdkResult<SessionRecord> {
         self.authorize_session(principal_id, session_id).await?;
+        if let Some(Some(target_id)) = update.default_target_id.as_ref() {
+            self.inspect_execution_target(principal_id, target_id)
+                .await?;
+        }
         self.runtime
             .update_session(session_id, update)
             .await
@@ -3953,6 +3957,7 @@ impl MorphzSdk {
                     reasoning_effort,
                     permission_mode: None,
                     sandbox_mode: None,
+                    default_target_id: None,
                 },
             )
             .await
@@ -4568,6 +4573,7 @@ mod tests {
                 reasoning_effort: None,
                 permission_mode: None,
                 sandbox_mode: None,
+                default_target_id: None,
             },
         )
         .await

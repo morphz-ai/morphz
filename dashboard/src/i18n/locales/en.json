@@ -829,6 +829,16 @@
     "fullAccess": "Full Access",
     "customDefault": "Custom (service default)"
   },
+  "executionTarget": {
+    "label": "Execution device",
+    "title": "Choose where new work created by this Session's next message runs; active work is never migrated",
+    "localDefault": "This machine (default)",
+    "noDefault": "No execution device selected",
+    "missing": "Device unavailable ({{id}})",
+    "offline": "{{target}} (offline)",
+    "connect": "Connect device",
+    "connectHint": "Open Runtime for pairing information, then install and run morphz-edge on your computer"
+  },
   "reasoningSummary": {
     "toggle": "Reasoning summary",
     "toggleTitle": "Show or collapse the provider's reasoning summary; it is stored separately and never merged into reply text",

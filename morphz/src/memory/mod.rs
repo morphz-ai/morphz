@@ -1173,6 +1173,13 @@ pub struct SessionRecord {
     /// older clients; new control surfaces persist `permission_mode` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<crate::permission::SandboxMode>,
+    /// Optional physical destination selected for subsequently-created
+    /// Dialogue Threads in this Session. `None` inherits the Runtime-local
+    /// default when that capability is enabled. A concrete Target is resolved
+    /// and frozen at message ingress; changing this field never migrates work
+    /// which has already started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_target_id: Option<String>,
     /// Whether this Session's conversation history may enter another
     /// Session's automatic Context working set. The current Session always
     /// sees its own history; shared Mind and explicit Recall remain
@@ -1324,6 +1331,10 @@ pub struct SessionUpdate {
     /// `None` leaves the policy unchanged. `Some(None)` restores Runtime
     /// inheritance; `Some(Some(mode))` persists a Session-specific Sandbox.
     pub sandbox_mode: Option<Option<crate::permission::SandboxMode>>,
+    /// `None` leaves the destination unchanged. `Some(None)` restores Runtime
+    /// inheritance; `Some(Some(id))` selects one exact Execution Target for
+    /// future Dialogue Threads without redirecting already-running work.
+    pub default_target_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

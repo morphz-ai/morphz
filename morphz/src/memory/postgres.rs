@@ -166,6 +166,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260902_01_session_default_target",
+                    store.migrate_session_default_target(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260826_01_work_assignments",
                     store.migrate_work_assignments(),
                 )
@@ -533,6 +539,13 @@ impl PostgresStore {
         Ok(())
     }
 
+    async fn migrate_session_default_target(&self) -> Result<(), StoreError> {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS default_target_id TEXT")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn migrate_bounded_read_model(&self) -> Result<(), StoreError> {
         for statement in [
             r#"ALTER TABLE thread_activations
@@ -725,6 +738,7 @@ impl PostgresStore {
                 sandbox_mode TEXT
                     CONSTRAINT sessions_sandbox_mode_domain
                     CHECK(sandbox_mode IN ('workspace-write', 'danger-full-access')),
+                default_target_id TEXT,
                 context_sharing TEXT NOT NULL DEFAULT 'shared'
                     CONSTRAINT sessions_context_sharing_domain
                     CHECK(context_sharing IN ('shared', 'isolated')),
@@ -752,6 +766,7 @@ impl PostgresStore {
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reasoning_effort TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS permission_mode TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sandbox_mode TEXT"#,
+            r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS default_target_id TEXT"#,
             r#"ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_sharing TEXT NOT NULL DEFAULT 'shared'"#,
             r#"CREATE TABLE IF NOT EXISTS work_assignments (
                 id TEXT PRIMARY KEY,

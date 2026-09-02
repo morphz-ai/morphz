@@ -829,6 +829,16 @@
     "fullAccess": "完全访问",
     "customDefault": "自定义（服务默认）"
   },
+  "executionTarget": {
+    "label": "执行设备",
+    "title": "设置当前会话下一条消息创建的新任务在哪台设备执行；已经运行的任务不会迁移",
+    "localDefault": "本机（默认）",
+    "noDefault": "未选择执行设备",
+    "missing": "设备不可用（{{id}}）",
+    "offline": "{{target}}（离线）",
+    "connect": "连接设备",
+    "connectHint": "前往运行时页面获取配对信息，并在电脑上安装、运行 morphz-edge"
+  },
   "reasoningSummary": {
     "toggle": "推理摘要",
     "toggleTitle": "显示或收起模型服务商返回的推理摘要；摘要独立保存，绝不会混入回复正文",

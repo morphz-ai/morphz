@@ -7034,6 +7034,7 @@ impl Orchestrator {
                                 reasoning_effort: None,
                                 permission_mode: None,
                                 sandbox_mode: None,
+                                default_target_id: None,
                             },
                         )
                         .await?;
@@ -7275,6 +7276,7 @@ impl Orchestrator {
                     reasoning_effort: None,
                     permission_mode: Some(parent.permission_mode),
                     sandbox_mode: Some(parent.sandbox_mode),
+                    default_target_id: Some(parent.default_target_id),
                 },
             )
             .await?
@@ -20327,16 +20329,23 @@ fn physical_execution_preflight_rejected_tool_output(
     call: &crate::llm::ToolCallRepr,
     route: &ActivationRoute,
     action_group_id: Option<&str>,
-    error: &(dyn std::error::Error + Send + Sync),
+    error: &(dyn std::error::Error + Send + Sync + 'static),
 ) -> Event {
+    let execution_target_required = error
+        .downcast_ref::<crate::execution_target::ExecutionTargetRequired>()
+        .is_some();
     let error = error.to_string();
     let protected_path = error.contains("protected_paths");
-    let rejection_code = if protected_path {
+    let rejection_code = if execution_target_required {
+        "EXECUTION_TARGET_REQUIRED"
+    } else if protected_path {
         "PROTECTED_PATH"
     } else {
         "EXECUTION_PREFLIGHT_REJECTED"
     };
-    let guidance = if protected_path {
+    let guidance = if execution_target_required {
+        "Connect a computer with morphz-edge, select it as this Session's Execution Target, and then retry the physical action. Do not repeatedly call the unchanged tool while no Target is available."
+    } else if protected_path {
         "This path is protected by Runtime protected_paths and repeated require_escalated requests cannot override it. Use an approach that does not read the protected path, or tell the user that the Runtime permission configuration must change."
     } else {
         "Correct the tool arguments or permission request based on the preflight error; do not repeat the unchanged call."
@@ -20353,7 +20362,14 @@ fn physical_execution_preflight_rejected_tool_output(
         ("wake_policy".to_string(), json!("immediate")),
         ("output_empty".to_string(), json!(false)),
         ("rejection_code".to_string(), json!(rejection_code)),
-        ("preflight_stage".to_string(), json!("approval_requirement")),
+        (
+            "preflight_stage".to_string(),
+            json!(if execution_target_required {
+                "execution_target"
+            } else {
+                "approval_requirement"
+            }),
+        ),
         ("retryable_unchanged".to_string(), json!(false)),
         ("error".to_string(), json!(error)),
         ("guidance".to_string(), json!(guidance)),

@@ -174,6 +174,20 @@ test('conversation model selection is persisted on the Session instead of mutati
   assert.match(appSource, /model\.runtimeDefault/)
 })
 
+test('conversation execution target is a persistent Session policy with Edge onboarding', () => {
+  assert.match(appSource, /default_target_id\?: string \| null/)
+  assert.match(appSource, /const changeExecutionTarget = async/)
+  assert.match(
+    appSource,
+    /scopedSessionReadPath\([\s\S]*?`\/api\/sessions\/\$\{encodeURIComponent\(selectedSessionId\)\}`[\s\S]*?'PATCH'[\s\S]*?\{ default_target_id: value === '__runtime__' \? '' : value \}/,
+  )
+  assert.match(appSource, /value=\{selectedExecutionTargetId \?\? '__runtime__'\}/)
+  assert.match(appSource, /target\.id !== 'target-default'/)
+  assert.match(appSource, /target\.status !== 'online'/)
+  assert.match(appSource, /executionTargetNeedsOnboarding[\s\S]*?setView\('runtime'\)/)
+  assert.match(zhCatalog, /"connectHint": "[^"]*morphz-edge[^"]*"/)
+})
+
 test('global overview exposes and directly persists each Session model policy', () => {
   const overviewSource = readFileSync(
     new URL('../src/pages/RuntimeOverviewPage.tsx', import.meta.url),

@@ -616,6 +616,7 @@ impl SqliteStore {
             reasoning_effort TEXT,
             permission_mode TEXT CHECK(permission_mode IN ('request_approval', 'auto_review', 'full_access')),
             sandbox_mode TEXT CHECK(sandbox_mode IN ('workspace-write', 'danger-full-access')),
+            default_target_id TEXT,
             context_sharing TEXT NOT NULL DEFAULT 'shared'
                 CHECK(context_sharing IN ('shared', 'isolated')),
             created_at TEXT NOT NULL,
@@ -1738,6 +1739,11 @@ impl SqliteStore {
             .execute(&pool)
             .await?;
         }
+        if !session_columns.contains("default_target_id") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN default_target_id TEXT")
+                .execute(&pool)
+                .await?;
+        }
         if !session_columns.contains("context_sharing") {
             sqlx::query(
                 "ALTER TABLE sessions ADD COLUMN context_sharing TEXT NOT NULL DEFAULT 'shared' CHECK(context_sharing IN ('shared', 'isolated'))",
@@ -2224,6 +2230,7 @@ async fn migrate_directory_foreign_keys(
                 reasoning_effort TEXT,
                 permission_mode TEXT CHECK(permission_mode IN ('request_approval', 'auto_review', 'full_access')),
                 sandbox_mode TEXT CHECK(sandbox_mode IN ('workspace-write', 'danger-full-access')),
+                default_target_id TEXT,
                 context_sharing TEXT NOT NULL DEFAULT 'shared'
                     CHECK(context_sharing IN ('shared', 'isolated')),
                 created_at TEXT NOT NULL,
@@ -2239,7 +2246,7 @@ async fn migrate_directory_foreign_keys(
         sqlx::query(
             r#"INSERT INTO sessions_directory_fk_migration
                SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias,
-                      reasoning_effort, permission_mode, sandbox_mode, context_sharing,
+                      reasoning_effort, permission_mode, sandbox_mode, default_target_id, context_sharing,
                       created_at, updated_at, last_activity_at
                FROM sessions"#,
         )
@@ -4172,6 +4179,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    'status', s.status, 'model_alias', s.model_alias,
                    'reasoning_effort', s.reasoning_effort, 'permission_mode', s.permission_mode,
                    'sandbox_mode', s.sandbox_mode,
+                   'default_target_id', s.default_target_id,
                    'context_sharing', s.context_sharing, 'created_at', s.created_at,
                    'updated_at', s.updated_at, 'last_activity_at', s.last_activity_at,
                    'attention_state', s.mount_attention_state,
@@ -6027,6 +6035,7 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
             .map(crate::permission::SandboxMode::parse)
             .transpose()
             .expect("persisted Session sandbox_mode must satisfy its CHECK constraint"),
+        default_target_id: row.get("default_target_id"),
         context_sharing: parse_session_context_sharing(&row.get::<String, _>("context_sharing")),
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
@@ -8803,7 +8812,7 @@ impl SessionDirectoryStore for SqliteStore {
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
-                      s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+                      s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -9483,7 +9492,7 @@ impl SessionDirectoryStore for SqliteStore {
         id: &str,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -9502,7 +9511,7 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -9512,7 +9521,7 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -9532,7 +9541,7 @@ impl SessionDirectoryStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -9544,7 +9553,7 @@ impl SessionDirectoryStore for SqliteStore {
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                                       s.created_at, s.updated_at, s.last_activity_at,
                                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                                       sm.attention_changed_at, sm.attention_event_id
@@ -9573,7 +9582,7 @@ impl SessionDirectoryStore for SqliteStore {
             .map_err(|_| "Session 每 Context 查询上限超出 SQLite INTEGER 范围")?;
         let rows = sqlx::query(
             r#"WITH ranked AS (
-                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                         s.status, s.created_at, s.updated_at, s.last_activity_at,
                         sm.attention_state, sm.attention_revision, sm.attention_reason,
                         sm.attention_changed_at, sm.attention_event_id,
@@ -9621,7 +9630,7 @@ impl SessionDirectoryStore for SqliteStore {
                  WHERE s.context_id IN (SELECT value FROM json_each(?))
                    AND (? OR s.status = 'active')
                )
-               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias, reasoning_effort, permission_mode, sandbox_mode, context_sharing,
+               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias, reasoning_effort, permission_mode, sandbox_mode, default_target_id, context_sharing,
                       created_at, updated_at, last_activity_at, attention_state,
                       attention_revision, attention_reason, attention_changed_at,
                       attention_event_id
@@ -9689,6 +9698,7 @@ impl SessionDirectoryStore for SqliteStore {
             && update.reasoning_effort.is_none()
             && update.permission_mode.is_none()
             && update.sandbox_mode.is_none()
+            && update.default_target_id.is_none()
         {
             return self.get_session(id).await;
         }
@@ -9702,9 +9712,12 @@ impl SessionDirectoryStore for SqliteStore {
         let reasoning_effort = update.reasoning_effort.unwrap_or(existing.reasoning_effort);
         let permission_mode = update.permission_mode.unwrap_or(existing.permission_mode);
         let sandbox_mode = update.sandbox_mode.unwrap_or(existing.sandbox_mode);
+        let default_target_id = update
+            .default_target_id
+            .unwrap_or(existing.default_target_id);
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
-            "UPDATE sessions SET title = ?, status = ?, model_alias = ?, reasoning_effort = ?, permission_mode = ?, sandbox_mode = ?, updated_at = ? WHERE id = ?",
+            "UPDATE sessions SET title = ?, status = ?, model_alias = ?, reasoning_effort = ?, permission_mode = ?, sandbox_mode = ?, default_target_id = ?, updated_at = ? WHERE id = ?",
         )
             .bind(title)
             .bind(status.as_str())
@@ -9712,6 +9725,7 @@ impl SessionDirectoryStore for SqliteStore {
             .bind(reasoning_effort)
             .bind(permission_mode.map(|mode| mode.as_str()))
             .bind(sandbox_mode.map(|mode| mode.as_str()))
+            .bind(default_target_id)
             .bind(now)
             .bind(id)
             .execute(&self.pool)
@@ -16620,7 +16634,7 @@ impl DeliveryIngressStore for SqliteStore {
         let mut tx = begin_immediate_sqlite_transaction(&self.pool).await?;
         let session_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
-                      s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+                      s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id,
@@ -16982,7 +16996,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let target_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
-                      s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+                      s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -17400,7 +17414,7 @@ impl DeliveryIngressStore for SqliteStore {
         }
         let target_row = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
-                      s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+                      s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       sm.attention_state, sm.attention_revision, sm.attention_reason,
                       sm.attention_changed_at, sm.attention_event_id
@@ -26361,6 +26375,7 @@ mod tests {
                     model_alias: Some(Some("principal-route".to_string())),
                     reasoning_effort: Some(Some("high".to_string())),
                     permission_mode: Some(Some(crate::permission::PermissionMode::FullAccess)),
+                    default_target_id: Some(Some("edge-principal-route".to_string())),
                     ..Default::default()
                 },
             )
@@ -26408,6 +26423,10 @@ mod tests {
             Some(crate::permission::PermissionMode::FullAccess)
         );
         assert_eq!(listed_a1.sandbox_mode, None);
+        assert_eq!(
+            listed_a1.default_target_id.as_deref(),
+            Some("edge-principal-route")
+        );
         let mismatch = store
             .ensure_principal(NewPrincipal {
                 id: "principal:a".to_string(),
@@ -26442,6 +26461,10 @@ mod tests {
             Some(crate::permission::PermissionMode::FullAccess)
         );
         assert_eq!(listed_after_restart[0].sandbox_mode, None);
+        assert_eq!(
+            listed_after_restart[0].default_target_id.as_deref(),
+            Some("edge-principal-route")
+        );
         assert_eq!(
             restarted
                 .get_principal("principal:a")
@@ -35547,6 +35570,7 @@ mod tests {
                     reasoning_effort: None,
                     permission_mode: None,
                     sandbox_mode: None,
+                    default_target_id: None,
                 },
             )
             .await
@@ -35563,6 +35587,7 @@ mod tests {
                     reasoning_effort: None,
                     permission_mode: None,
                     sandbox_mode: None,
+                    default_target_id: None,
                 },
             )
             .await

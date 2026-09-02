@@ -15,7 +15,7 @@ const CONTEXT_COLUMNS: &str = "id, agent_id, title, status, created_at, updated_
 seed_context_id, seed_context_version, seed_snapshot_hash, seed_projection, \
 requested_hard_token_limit, token_budget_revision";
 const SESSION_COLUMNS: &str = "id, agent_id, context_id, parent_session_id, title, status, \
-model_alias, reasoning_effort, permission_mode, sandbox_mode, context_sharing, created_at, updated_at, last_activity_at, attention_state, attention_revision, \
+model_alias, reasoning_effort, permission_mode, sandbox_mode, default_target_id, context_sharing, created_at, updated_at, last_activity_at, attention_state, attention_revision, \
 attention_reason, attention_changed_at, attention_event_id";
 
 fn parse_status(value: &str) -> Result<SessionStatus, StoreError> {
@@ -96,6 +96,7 @@ fn session_from_row(row: &PgRow) -> Result<SessionRecord, StoreError> {
             .as_deref()
             .map(crate::permission::SandboxMode::parse)
             .transpose()?,
+        default_target_id: row.get("default_target_id"),
         context_sharing: parse_context_sharing(&row.get::<String, _>("context_sharing"))?,
         created_at: parse_time(&row.get::<String, _>("created_at"))?,
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
@@ -332,7 +333,7 @@ impl SessionDirectoryStore for PostgresStore {
     ) -> Result<Vec<SessionRecord>, StoreError> {
         let rows = sqlx::query(
             r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
-                      s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.context_sharing,
+                      s.status, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
                       s.created_at, s.updated_at, s.last_activity_at,
                       s.attention_state, s.attention_revision, s.attention_reason,
                       s.attention_changed_at, s.attention_event_id, s.mount_kind
@@ -1156,6 +1157,7 @@ impl SessionDirectoryStore for PostgresStore {
             && update.reasoning_effort.is_none()
             && update.permission_mode.is_none()
             && update.sandbox_mode.is_none()
+            && update.default_target_id.is_none()
         {
             return self.get_session(id).await;
         }
@@ -1168,8 +1170,11 @@ impl SessionDirectoryStore for PostgresStore {
         let reasoning_effort = update.reasoning_effort.unwrap_or(existing.reasoning_effort);
         let permission_mode = update.permission_mode.unwrap_or(existing.permission_mode);
         let sandbox_mode = update.sandbox_mode.unwrap_or(existing.sandbox_mode);
+        let default_target_id = update
+            .default_target_id
+            .unwrap_or(existing.default_target_id);
         sqlx::query(
-            "UPDATE sessions SET title = $1, status = $2, model_alias = $3, reasoning_effort = $4, permission_mode = $5, sandbox_mode = $6, updated_at = $7 WHERE id = $8",
+            "UPDATE sessions SET title = $1, status = $2, model_alias = $3, reasoning_effort = $4, permission_mode = $5, sandbox_mode = $6, default_target_id = $7, updated_at = $8 WHERE id = $9",
         )
             .bind(title)
             .bind(status.as_str())
@@ -1177,6 +1182,7 @@ impl SessionDirectoryStore for PostgresStore {
             .bind(reasoning_effort)
             .bind(permission_mode.map(|mode| mode.as_str()))
             .bind(sandbox_mode.map(|mode| mode.as_str()))
+            .bind(default_target_id)
             .bind(now_text())
             .bind(id)
             .execute(&self.pool)

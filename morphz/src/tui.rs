@@ -7749,6 +7749,7 @@ mod tests {
             reasoning_effort: None,
             permission_mode: None,
             sandbox_mode: None,
+            default_target_id: None,
             context_sharing: crate::memory::SessionContextSharing::Shared,
             created_at: now,
             updated_at: now,

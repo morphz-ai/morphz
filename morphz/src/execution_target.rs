@@ -42,6 +42,22 @@ use crate::tool::{
 
 pub type TargetExecutionError = Box<dyn Error + Send + Sync>;
 
+/// Machine-readable boundary used when a deployment intentionally has no
+/// local executor. Public API adapters can turn this into Morphz Edge
+/// onboarding instead of presenting a generic tool failure.
+#[derive(Debug)]
+pub struct ExecutionTargetRequired;
+
+impl std::fmt::Display for ExecutionTargetRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "No usable default Execution Target is connected; connect morphz-edge and select that device before running physical tools",
+        )
+    }
+}
+
+impl Error for ExecutionTargetRequired {}
+
 /// Single-machine compatibility target. Local callers may omit `target`; the
 /// Runtime resolves that omission to this explicit authority before it creates
 /// an Execution Job.
@@ -5210,7 +5226,13 @@ impl ExecutionTargetDispatcher {
             .targets
             .get_execution_target(target_id)
             .await?
-            .ok_or_else(|| format!("Execution Target '{target_id}' does not exist"))?;
+            .ok_or_else(|| -> TargetExecutionError {
+                if target_id == DEFAULT_EXECUTION_TARGET_ID {
+                    Box::new(ExecutionTargetRequired)
+                } else {
+                    format!("Execution Target '{target_id}' does not exist").into()
+                }
+            })?;
         self.ensure_target_authorized(&target, principal_id, agent_id, context_id, thread_id)
             .await?;
         let durable_offline_queue = target.status == ExecutionTargetStatus::Offline
@@ -5218,6 +5240,9 @@ impl ExecutionTargetDispatcher {
                 || (target.kind == ExecutionTargetKind::ManagedSsh
                     && target.provider_node_id.is_some()));
         if !target.status.accepts_jobs() && !durable_offline_queue {
+            if target.id == DEFAULT_EXECUTION_TARGET_ID {
+                return Err(Box::new(ExecutionTargetRequired));
+            }
             return Err(format!(
                 "Execution Target '{}' is currently {} and cannot execute a new action",
                 target.id,

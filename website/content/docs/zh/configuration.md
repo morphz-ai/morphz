@@ -51,6 +51,17 @@ NO_PROXY=.local,localhost,127.0.0.1,::1 morphz serve ...
 
 `MORPHZ_HTTP_PROXY_MODE=system|direct` 设置全局策略。`MORPHZ_PROVIDER_PROXY_MODE`、`MORPHZ_OAUTH_PROXY_MODE` 和 `MORPHZ_COORDINATION_PROXY_MODE` 可以分别覆盖对应流量；OAuth 未单独设置时继承模型服务策略。Morphz 不会因为一次网格探测失败，就静默改变模型服务的路由。
 
+## 默认执行设备
+
+本地、自托管和命令行部署默认把运行 Morphz 的机器作为 Execution Target，用户无需额外选择。云端 C 端服务不应让用户任务落到服务主机，可在可信宿主配置中关闭这个默认值：
+
+```toml
+[execution_targets]
+local_enabled = false
+```
+
+也可设置 `MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED=false`。此时 Session 未选择设备时仍可正常对话；第一次需要物理工具时，Runtime 会返回 `EXECUTION_TARGET_REQUIRED`。客户端可调用 `GET /api/sessions/:session_id/execution-targets`，据其 `reason` 区分“安装并配对 `morphz-edge`”与“从已有设备中选择”。Session 的选择只影响随后创建的新任务，已运行任务不会迁移。
+
 ## 容量覆盖
 
 模型服务的容量字段都是可选的：

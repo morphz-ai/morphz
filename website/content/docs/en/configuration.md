@@ -51,6 +51,17 @@ NO_PROXY=.local,localhost,127.0.0.1,::1 morphz serve ...
 
 `MORPHZ_HTTP_PROXY_MODE=system|direct` sets the global policy. `MORPHZ_PROVIDER_PROXY_MODE`, `MORPHZ_OAUTH_PROXY_MODE`, and `MORPHZ_COORDINATION_PROXY_MODE` override one traffic class. OAuth inherits the Provider override when its own override is absent. Morphz never silently changes Provider routing because a Mesh probe failed.
 
+## Default execution device
+
+Local, self-hosted, and CLI deployments use the machine running Morphz as the default Execution Target, so no selection is required. A consumer cloud service must not run user work on the service host and can disable that fallback in trusted host configuration:
+
+```toml
+[execution_targets]
+local_enabled = false
+```
+
+`MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED=false` is the equivalent environment override. A Session without a selected device can still converse; its first physical tool request returns `EXECUTION_TARGET_REQUIRED`. Clients can call `GET /api/sessions/:session_id/execution-targets` and use its `reason` to distinguish “install and pair `morphz-edge`” from “select one of the existing devices.” A Session selection affects only subsequently-created work and never migrates active work.
+
 ## Capacity overrides
 
 Provider capacity fields are optional:

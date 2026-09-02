@@ -1343,6 +1343,24 @@ impl Default for EdgeExecutionConfig {
     }
 }
 
+/// Runtime-owned Execution Target availability. A local/desktop deployment
+/// keeps the in-process Target enabled. A cloud C-end deployment disables it
+/// so user physical work cannot silently fall through to the service host;
+/// those Sessions instead wait for a user-owned `morphz-edge` Target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExecutionTargetsConfig {
+    pub local_enabled: bool,
+}
+
+impl Default for ExecutionTargetsConfig {
+    fn default() -> Self {
+        Self {
+            local_enabled: true,
+        }
+    }
+}
+
 /// Optional pinned Runtime-local Managed SSH destinations. Normal on-demand
 /// use resolves the host user's existing OpenSSH aliases and needs no Morphz
 /// target configuration; pinned descriptors keep connection details in
@@ -1574,6 +1592,7 @@ pub struct AppConfig {
     pub model_routes: BTreeMap<String, ModelRouteConfig>,
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
+    pub execution_targets: ExecutionTargetsConfig,
     pub edge_execution: EdgeExecutionConfig,
     pub managed_ssh: ManagedSshConfig,
     pub experimental: ExperimentalConfig,
@@ -3603,6 +3622,11 @@ impl AppConfig {
         if let Ok(value) = std::env::var("MORPHZ_EXEC_NETWORK") {
             self.permissions.network = parse_env_bool(&value)
                 .ok_or_else(|| format!("MORPHZ_EXEC_NETWORK is not a valid boolean: {value}"))?;
+        }
+        if let Ok(value) = std::env::var("MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED") {
+            self.execution_targets.local_enabled = parse_env_bool(&value).ok_or_else(|| {
+                format!("MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED is not a valid boolean: {value}")
+            })?;
         }
         if let Ok(value) = std::env::var("MORPHZ_PERMISSION_MODE") {
             self.permissions.mode = match value.trim().to_ascii_lowercase().as_str() {

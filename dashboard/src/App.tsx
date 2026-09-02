@@ -953,6 +953,7 @@ interface SessionRecord {
   reasoning_effort?: ReasoningEffortSetting | null
   permission_mode?: PermissionModeSetting | null
   sandbox_mode?: SandboxModeSetting | null
+  default_target_id?: string | null
   context_sharing?: 'shared' | 'isolated'
   attention_state?: string
   attention_revision?: number
@@ -3164,6 +3165,7 @@ export default function App() {
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [changingModel, setChangingModel] = useState(false)
   const [changingPermission, setChangingPermission] = useState(false)
+  const [changingExecutionTarget, setChangingExecutionTarget] = useState(false)
   const [contextTokenBudget, setContextTokenBudget] = useState<ContextTokenBudget | null>(null)
   const [contextTokenBudgetDraft, setContextTokenBudgetDraft] = useState('')
   const [contextTokenBudgetOpen, setContextTokenBudgetOpen] = useState(false)
@@ -3375,13 +3377,16 @@ export default function App() {
       const sessionsPath = observedPrincipalId
         ? `/api/operator/principals/${encodeURIComponent(observedPrincipalId)}/sessions?include_archived=true`
         : '/api/sessions?include_archived=true'
+      const executionTargetsPath = observedPrincipalId
+        ? `/api/execution-targets?principal_id=${encodeURIComponent(observedPrincipalId)}`
+        : '/api/execution-targets'
       const [nextStatus, agentsResult, contextsResult, sessionsResult, delegationsResult, targetsResult, nodesResult, leasesResult, jobsResult] = await Promise.all([
         DASHBOARD_API.get<RuntimeStatus>('/api/status'),
         DASHBOARD_API.tryGet<{ agents?: AgentRecord[] }>('/api/agents?include_archived=true'),
         DASHBOARD_API.tryGet<{ contexts?: ContextRecord[] }>('/api/contexts?include_archived=true'),
         DASHBOARD_API.tryGet<{ sessions?: SessionRecord[] }>(sessionsPath),
         DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations'),
-        DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>('/api/execution-targets'),
+        DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>(executionTargetsPath),
         DASHBOARD_API.tryGet<{ nodes?: ExecutionNodeSummary[] }>('/api/edge/nodes'),
         DASHBOARD_API.tryGet<{ leases?: CapabilityLeaseSummary[] }>('/api/capability-leases?active_only=true'),
         DASHBOARD_API.tryGet<{ jobs?: ExecutionJobSummary[] }>('/api/execution-jobs?include_terminal=true&newest_first=true&limit=100'),
@@ -5338,7 +5343,10 @@ export default function App() {
     const requestKey = `${principalScope?.principal.id ?? ''}:${missingTargetIds.join(',')}`
     if (executionTargetCatalogRequestRef.current === requestKey) return
     executionTargetCatalogRequestRef.current = requestKey
-    void DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>('/api/execution-targets')
+    const path = principalScope?.principal.id
+      ? `/api/execution-targets?principal_id=${encodeURIComponent(principalScope.principal.id)}`
+      : '/api/execution-targets'
+    void DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>(path)
       .then(result => {
         if (executionTargetCatalogRequestRef.current !== requestKey) return
         if (!result) {
@@ -6460,6 +6468,37 @@ export default function App() {
     }
   }
 
+  const changeExecutionTarget = async (value: string) => {
+    if (changingExecutionTarget || !selectedSessionId) return
+    setChangingExecutionTarget(true)
+    try {
+      const path = scopedSessionReadPath(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}`,
+        principalScope?.principal.id,
+      )
+      const updated = await DASHBOARD_API.command<SessionRecord>(
+        path,
+        'PATCH',
+        { default_target_id: value === '__runtime__' ? '' : value },
+      )
+      setSessions(current => current.map(session => session.id === updated.id ? updated : session))
+      setRuntimeOverview(current => current ? {
+        ...current,
+        contexts: current.contexts.map(context => ({
+          ...context,
+          sessions: context.sessions.map(session => (
+            session.session.id === updated.id ? { ...session, session: updated } : session
+          )),
+        })),
+      } : current)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setChangingExecutionTarget(false)
+    }
+  }
+
   const changeContextTokenBudget = async (requestedHardTokenLimit: number | null) => {
     if (!selectedContextId || !contextTokenBudget || changingContextTokenBudget) return
     if (requestedHardTokenLimit !== null
@@ -7266,6 +7305,24 @@ export default function App() {
       : isPermissionModeSetting(status?.permission_mode)
         ? status.permission_mode
         : 'custom'
+  const localExecutionTarget = executionTargets.find(target => target.id === 'target-default')
+  const selectedExecutionTargetId = selectedSession?.default_target_id === 'target-default'
+    ? null
+    : selectedSession?.default_target_id ?? null
+  const selectedExecutionTarget = selectedExecutionTargetId
+    ? executionTargets.find(target => target.id === selectedExecutionTargetId)
+    : undefined
+  const selectableExecutionTargets = executionTargets
+    .filter(target => target.id !== 'target-default')
+    .sort((left, right) => {
+      const statusDelta = Number(right.status === 'online') - Number(left.status === 'online')
+      return statusDelta || executionTargetLabel(left).localeCompare(executionTargetLabel(right))
+    })
+  const inheritedExecutionTargetReady = localExecutionTarget?.status === 'online'
+  const hasConnectedUserExecutionTarget = selectableExecutionTargets.some(target => target.status === 'online')
+  const executionTargetNeedsOnboarding = !selectedExecutionTargetId
+    && !inheritedExecutionTargetReady
+    && !hasConnectedUserExecutionTarget
   const contextBudgetModelLabel = resolveSelectedModelOption(
     modelOptions,
     contextTokenBudget?.model,
@@ -9351,6 +9408,46 @@ export default function App() {
                   <option value="full_access">{t('permission.fullAccess')}</option>
                 </select>
               </label>
+              <label
+                className={`composer-reasoning-control composer-target-control ${selectedExecutionTarget?.status === 'online' || (!selectedExecutionTargetId && inheritedExecutionTargetReady) ? 'is-ready' : 'is-unavailable'}`}
+                title={t('executionTarget.title')}
+              >
+                <Monitor size={11} />
+                <select
+                  aria-label={t('executionTarget.label')}
+                  disabled={changingExecutionTarget || !selectedSessionId}
+                  value={selectedExecutionTargetId ?? '__runtime__'}
+                  onChange={event => void changeExecutionTarget(event.target.value)}
+                >
+                  <option value="__runtime__">
+                    {inheritedExecutionTargetReady
+                      ? t('executionTarget.localDefault')
+                      : t('executionTarget.noDefault')}
+                  </option>
+                  {selectedExecutionTargetId && !selectedExecutionTarget && (
+                    <option value={selectedExecutionTargetId} disabled>
+                      {t('executionTarget.missing', { id: selectedExecutionTargetId })}
+                    </option>
+                  )}
+                  {selectableExecutionTargets.map(target => (
+                    <option key={target.id} value={target.id} disabled={target.status !== 'online'}>
+                      {target.status === 'online'
+                        ? executionTargetLabel(target)
+                        : t('executionTarget.offline', { target: executionTargetLabel(target) })}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {executionTargetNeedsOnboarding && (
+                <button
+                  className="composer-policy-control composer-target-onboarding"
+                  type="button"
+                  title={t('executionTarget.connectHint')}
+                  onClick={() => setView('runtime')}
+                >
+                  <Plus size={11} /> {t('executionTarget.connect')}
+                </button>
+              )}
               {modelOptions.length > 0 ? (
                 <label className={`composer-model-control ${selectedModelOption ? 'ok' : ''}`} title={t('model.sessionSelectorTitle')}>
                   <Bot size={11} />

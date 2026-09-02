@@ -1187,6 +1187,13 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 }
 .composer-reasoning-control select:disabled { cursor: wait; opacity: .55; }
 .composer-permission-control select { max-width: 136px; }
+.composer-target-control select { max-width: 164px; }
+.composer-target-control.is-ready > svg { color: var(--green); }
+.composer-target-control.is-unavailable {
+  border-color: color-mix(in srgb, var(--orange) 42%, var(--line));
+  color: var(--orange);
+}
+.composer-target-onboarding { cursor: pointer; color: var(--accent-strong); }
 .composer-permission-control.is-danger {
   border-color: color-mix(in srgb, var(--red) 46%, var(--line));
   background: var(--red-soft);
@@ -3863,7 +3870,16 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .composer-control-strip.has-approval { grid-template-columns: minmax(0, 1fr) auto; }
   .composer-control-strip.has-approval .composer-approval-actions { grid-column: 1 / -1; }
   .composer-control-strip { grid-template-columns: minmax(0, 1fr); gap: 7px; }
-  .composer-policy-controls { width: 100%; justify-self: stretch; justify-content: flex-end; }
+  .composer-policy-controls {
+    width: 100%;
+    justify-self: stretch;
+    justify-content: flex-start;
+    padding-bottom: 2px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+  .composer-policy-controls > * { flex: 0 0 auto; }
   .composer-model-control { width: min(190px, 44vw); min-width: 132px; }
   .composer-task-status em { display: none; }
   .composer-footer-row { justify-content: flex-end; gap: 0; }
