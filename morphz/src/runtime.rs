@@ -10337,6 +10337,12 @@ mod tests {
 
     struct ReplyClient;
 
+    #[cfg(feature = "experimental-context-db")]
+    struct ContextDbLearningClient {
+        calls: AtomicU64,
+        observed_committed_context: Arc<AtomicBool>,
+    }
+
     struct EmbeddedProbeTool;
 
     #[async_trait::async_trait]
@@ -11290,6 +11296,65 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             Ok(text_response("runtime-ok"))
+        }
+    }
+
+    #[cfg(feature = "experimental-context-db")]
+    #[async_trait::async_trait]
+    impl Client for ContextDbLearningClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(
+                        tools.iter().any(|tool| tool.name == "context_tx"),
+                        "the model-facing Runtime must expose context_tx while learning"
+                    );
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "contextdb-learning-tx".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "context_tx".to_string(),
+                            arguments: serde_json::json!({
+                                "transaction": concat!(
+                                    "(context-tx (base-version 0) (reason learned-from-evidence) ",
+                                    "(create scratch (hypothesis initial)) ",
+                                    "(derive learned (from contextdb-learning-evidence) ",
+                                    "(fact verified) (confidence high)) ",
+                                    "(revise scratch (hypothesis revised)) ",
+                                    "(retire contextdb-learning-evidence))"
+                                )
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let projected = messages
+                        .iter()
+                        .map(|message| message.content.as_str())
+                        .collect::<String>();
+                    let observed = projected.contains("(version 1)")
+                        && projected.contains("(id learned)")
+                        && projected.contains("(hypothesis revised)")
+                        && projected.contains("contextdb-learning-tx");
+                    self.observed_committed_context
+                        .store(observed, Ordering::SeqCst);
+                    assert!(
+                        observed,
+                        "the model must receive the committed authoritative Context before continuing"
+                    );
+                    Ok(text_response("learning-committed"))
+                }
+                call => Err(format!(
+                    "ContextDB learning fixture received unexpected model call {call}"
+                )
+                .into()),
+            }
         }
     }
 
@@ -14506,6 +14571,182 @@ mod tests {
             .unwrap()
                 >= 9
         );
+    }
+
+    #[cfg(feature = "experimental-context-db")]
+    #[tokio::test]
+    async fn gated_context_db_model_learning_survives_restart_and_remains_recallable() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config
+            .experimental
+            .enabled
+            .insert(crate::experimental::CONTEXT_DB.to_string());
+        let observed_committed_context = Arc::new(AtomicBool::new(false));
+        let runtime = MorphzRuntime::builder(
+            config.clone(),
+            Arc::new(ContextDbLearningClient {
+                calls: AtomicU64::new(0),
+                observed_committed_context: Arc::clone(&observed_committed_context),
+            }),
+        )
+        .database_path(database.path().to_string_lossy())
+        .tool_policy(RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        })
+        .build()
+        .await
+        .unwrap();
+        runtime.start().await.unwrap();
+        let session_id = "session-context-db-learning-e2e";
+        let session = runtime
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "ContextDB Learning E2E".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .append(Event::new(
+                "contextdb-learning-evidence".to_string(),
+                "Tool-Fixture".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                serde_json::json!({
+                    "agent_id": runtime.identity().agent_id,
+                    "context_id": runtime.identity().context_id,
+                    "session_id": session_id,
+                    "text": "CONTEXTDB-LEARNING-EVIDENCE verified durable fact"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        let receipt = session
+            .send(
+                "learn the supplied evidence and retain the result",
+                "User-Test",
+                Some("client-context-db-learning-e2e".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(!receipt.duplicate);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "learning-committed");
+        assert!(observed_committed_context.load(Ordering::SeqCst));
+
+        let view = session.inspect_context_view().await.unwrap();
+        assert_eq!(view.state.version, 1);
+        let learned = view
+            .state
+            .frames
+            .iter()
+            .find(|frame| frame.id == "learned")
+            .expect("the derived learned Frame must be resident");
+        assert!(learned.body.contains("(fact verified)"));
+        assert!(learned.body.contains("(confidence high)"));
+        assert_eq!(
+            learned.sources,
+            vec!["contextdb-learning-evidence".to_string()]
+        );
+        let scratch = view
+            .state
+            .frames
+            .iter()
+            .find(|frame| frame.id == "scratch")
+            .expect("the created and revised Frame must be resident");
+        assert!(scratch.body.contains("(hypothesis revised)"));
+        assert!(!scratch.body.contains("(hypothesis initial)"));
+        assert!(view.state.retired.contains("contextdb-learning-evidence"));
+        assert!(view
+            .observations
+            .iter()
+            .all(|observation| observation.id != "contextdb-learning-evidence"));
+
+        let trajectory = crate::trajectory::AgentTrajectoryExporter::export(
+            &runtime,
+            crate::trajectory::TrajectoryExportRequest {
+                context_id: runtime.identity().context_id.clone(),
+                objective_id: None,
+                activation_id: None,
+                start_time: None,
+                end_time: None,
+                max_events: 1_000,
+                profiles: vec!["AT-Core".to_string()],
+                include_payloads: true,
+                include_user_content: true,
+                rights: crate::trajectory::TrajectoryRights::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(trajectory
+            .nodes
+            .iter()
+            .any(|node| node.kind == "state_transaction"));
+        assert!(trajectory.verify().valid);
+
+        drop(replies);
+        drop(session);
+        drop(runtime);
+
+        let recovered = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        let recovered_view = recovered
+            .context_encoding(&recovered.identity().context_id, session_id)
+            .await
+            .unwrap();
+        assert_eq!(recovered_view.state, view.state);
+        recovered
+            .rebuild_recall_index(&recovered.identity().context_id)
+            .await
+            .unwrap();
+        let recalled = recovered
+            .search_recall(crate::orchestrator::context::RecallSearchRequest {
+                context_id: recovered.identity().context_id.clone(),
+                query: "CONTEXTDB-LEARNING-EVIDENCE".to_string(),
+                start_time: None,
+                end_time: None,
+                limit: 10,
+                cursor: None,
+                view_manifest: Some(
+                    crate::orchestrator::context::ContextViewManifest::from_view(
+                        &recovered_view,
+                        std::iter::empty(),
+                    ),
+                ),
+            })
+            .await
+            .unwrap();
+        let evidence = recalled
+            .matches
+            .iter()
+            .find(|entry| entry.document_id == "contextdb-learning-evidence")
+            .expect("the retired source evidence must remain recallable after restart");
+        assert!(evidence.retired);
     }
 
     #[tokio::test]
