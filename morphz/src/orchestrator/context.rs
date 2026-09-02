@@ -11140,15 +11140,31 @@ fn event_text(event: &Event) -> String {
         .get("references")
         .and_then(|value| value.as_array())
         .filter(|references| !references.is_empty());
+    let attachments = event
+        .payload
+        .get("attachments")
+        .and_then(|value| value.as_array())
+        .filter(|attachments| !attachments.is_empty());
+    let mut verified_blocks = Vec::new();
     if let Some(references) = references {
-        let reference_block = format!(
+        verified_blocks.push(format!(
             "[Runtime-verified Session references; identities only, no target transcript or Mind was imported]\n{}",
             serde_json::Value::Array(references.clone())
-        );
+        ));
+    }
+    if let Some(attachments) = attachments {
+        let references = crate::model_input::public_attachment_references(attachments, &event.id);
+        verified_blocks.push(format!(
+            "[Runtime-managed message attachments; workspace_path is an exact Agent-writable copy with the original filename. The immutable source remains in the Artifact Store. Use normal tools to inspect or transform the copy only when needed; no document content was pre-extracted.]\n{}",
+            serde_json::Value::Array(references)
+        ));
+    }
+    if !verified_blocks.is_empty() {
+        let verified = verified_blocks.join("\n\n");
         return if text.is_empty() {
-            reference_block
+            verified
         } else {
-            format!("{text}\n\n{reference_block}")
+            format!("{text}\n\n{verified}")
         };
     }
     if !text.is_empty() {
@@ -17840,5 +17856,37 @@ mod tests {
             Some("thread-b"),
         );
         assert_eq!(denied.authorization_mode, "scoped_denied");
+    }
+
+    #[test]
+    fn message_attachment_observation_exposes_only_the_agent_workspace_copy() {
+        let event = Event::new(
+            "message-with-docx".to_string(),
+            "User-API".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "text": "Please inspect this document.",
+                "attachments": [{
+                    "id": "attachment_digest",
+                    "name": "report.docx",
+                    "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "size_bytes": 42,
+                    "sha256": "digest",
+                    "storage_path": "/runtime-private/message-inputs-v2/events/digest",
+                    "workspace_path": "/workspace/.morphz/attachments/event/digest/report.docx"
+                }]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+
+        let rendered = event_text(&event);
+        assert!(rendered.contains("Please inspect this document."));
+        assert!(rendered.contains("report.docx"));
+        assert!(rendered.contains("/workspace/.morphz/attachments/event/digest/report.docx"));
+        assert!(rendered.contains("no document content was pre-extracted"));
+        assert!(!rendered.contains("/runtime-private/message-inputs-v2"));
     }
 }

@@ -37,6 +37,8 @@ pub struct PreparedMessageAttachments {
     scope_key: String,
     event_id: String,
     digests: Vec<String>,
+    workspace_root: Option<PathBuf>,
+    workspace_directory: Option<PathBuf>,
 }
 
 impl PreparedMessageAttachments {
@@ -59,6 +61,7 @@ impl PreparedMessageAttachments {
             &self.scope_key,
             &self.event_id,
             &self.digests,
+            self.workspace_directory.as_deref(),
         )
         .await
     }
@@ -78,6 +81,8 @@ struct PendingMessageAttachmentManifest {
     event_id: String,
     scope_key: String,
     digests: Vec<String>,
+    #[serde(default)]
+    workspace_materialized: bool,
 }
 
 impl ModelInputUsage {
@@ -232,6 +237,29 @@ pub async fn prepare_message_input_attachments(
     attachments: Vec<MessageAttachmentInput>,
     limits: ModelInputLimits,
 ) -> Result<PreparedMessageAttachments, ModelInputError> {
+    prepare_message_input_attachments_for_workspace(
+        configured_root,
+        None::<&Path>,
+        scope_id,
+        event_id,
+        attachments,
+        limits,
+    )
+    .await
+}
+
+/// Prepare immutable attachment storage and, when a Workspace is supplied,
+/// an independent Agent-owned copy with the original filename. The copy is
+/// deliberately not a hard link: Agent tools may transform it without
+/// mutating the Event-backed source or invalidating its digest.
+pub async fn prepare_message_input_attachments_for_workspace(
+    configured_root: impl AsRef<Path>,
+    workspace_root: Option<impl AsRef<Path>>,
+    scope_id: &str,
+    event_id: &str,
+    attachments: Vec<MessageAttachmentInput>,
+    limits: ModelInputLimits,
+) -> Result<PreparedMessageAttachments, ModelInputError> {
     safe_storage_segment(event_id, "Event id")?;
     let mut usage = ModelInputUsage::default();
     for attachment in &attachments {
@@ -241,6 +269,23 @@ pub async fn prepare_message_input_attachments(
 
     let root = absolute_root(configured_root.as_ref())?.join("message-inputs-v2");
     let scope_key = format!("{:x}", Sha256::digest(scope_id.as_bytes()));
+    let workspace_root = match workspace_root {
+        Some(workspace) => Some(
+            tokio::fs::canonicalize(absolute_root(workspace.as_ref())?)
+                .await
+                .map_err(|error| {
+                    format!("failed to resolve Agent Workspace for attachments: {error}")
+                })?,
+        ),
+        None => None,
+    };
+    let workspace_directory = workspace_root.as_ref().map(|workspace| {
+        workspace
+            .join(".morphz")
+            .join("attachments")
+            .join(&scope_key)
+            .join(event_id)
+    });
     let mut prepared = PreparedMessageAttachments {
         metadata: Vec::with_capacity(attachments.len()),
         root,
@@ -250,6 +295,8 @@ pub async fn prepare_message_input_attachments(
             .iter()
             .map(|attachment| format!("{:x}", Sha256::digest(&attachment.data)))
             .collect(),
+        workspace_root,
+        workspace_directory,
     };
     if attachments.is_empty() {
         return Ok(prepared);
@@ -263,6 +310,7 @@ pub async fn prepare_message_input_attachments(
             &prepared.scope_key,
             &prepared.event_id,
             &prepared.digests,
+            prepared.workspace_directory.as_deref(),
         )
         .await
         {
@@ -322,14 +370,93 @@ async fn prepare_message_attachment_files(
                 Err(error) => return Err(error.into()),
             }
         }
-        prepared.metadata.push(json!({
+        let workspace_path = if let Some(workspace_directory) = &prepared.workspace_directory {
+            let attachment_directory = workspace_directory.join(digest);
+            tokio::fs::create_dir_all(&attachment_directory).await?;
+            let attachment_directory = tokio::fs::canonicalize(attachment_directory).await?;
+            if !prepared
+                .workspace_root
+                .as_ref()
+                .is_some_and(|workspace| attachment_directory.starts_with(workspace))
+            {
+                return Err("workspace attachment directory escaped the Agent Workspace".into());
+            }
+            let workspace_path = attachment_directory.join(&name);
+            ensure_workspace_attachment_copy(
+                &workspace_path,
+                &attachment.data,
+                &prepared.event_id,
+                index,
+            )
+            .await?;
+            Some(workspace_path)
+        } else {
+            None
+        };
+        let mut item = json!({
             "id": format!("attachment_{digest}"),
             "name": name,
             "media_type": media_type,
             "size_bytes": attachment.data.len(),
             "sha256": digest,
             "storage_path": event_path.to_string_lossy(),
-        }));
+        });
+        if let Some(workspace_path) = workspace_path {
+            item["workspace_path"] = json!(workspace_path.to_string_lossy());
+        }
+        prepared.metadata.push(item);
+    }
+    Ok(())
+}
+
+async fn ensure_workspace_attachment_copy(
+    path: &Path,
+    data: &[u8],
+    event_id: &str,
+    index: usize,
+) -> Result<(), ModelInputError> {
+    if tokio::fs::try_exists(path).await? {
+        if tokio::fs::symlink_metadata(path)
+            .await?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(format!(
+                "workspace attachment '{}' is an unexpected symbolic link",
+                path.display()
+            )
+            .into());
+        }
+        let existing = tokio::fs::read(path).await?;
+        if existing == data {
+            return Ok(());
+        }
+        return Err(format!(
+            "workspace attachment '{}' already exists with different content",
+            path.display()
+        )
+        .into());
+    }
+    let temporary_path = path.with_extension(format!("morphz-{event_id}-{index}.partial"));
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary_path)
+        .await?;
+    if let Err(error) = file.write_all(data).await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    if let Err(error) = file.sync_data().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&temporary_path, path).await {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
     }
     Ok(())
 }
@@ -401,10 +528,11 @@ async fn create_pending_manifest(
     let marker = pending_manifest_path(&prepared.root, &prepared.event_id);
     let temporary = marker.with_extension("json.partial");
     let document = serde_json::to_vec(&PendingMessageAttachmentManifest {
-        version: 1,
+        version: 2,
         event_id: prepared.event_id.clone(),
         scope_key: prepared.scope_key.clone(),
         digests: prepared.digests.clone(),
+        workspace_materialized: prepared.workspace_directory.is_some(),
     })?;
     let mut file = tokio::fs::OpenOptions::new()
         .create_new(true)
@@ -436,6 +564,25 @@ async fn create_pending_manifest(
 pub async fn recover_pending_message_attachments<F, Fut>(
     configured_root: impl AsRef<Path>,
     grace: Duration,
+    event_exists: F,
+) -> Result<MessageAttachmentRecovery, ModelInputError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, ModelInputError>>,
+{
+    recover_pending_message_attachments_for_workspace(
+        configured_root,
+        None::<&Path>,
+        grace,
+        event_exists,
+    )
+    .await
+}
+
+pub async fn recover_pending_message_attachments_for_workspace<F, Fut>(
+    configured_root: impl AsRef<Path>,
+    workspace_root: Option<impl AsRef<Path>>,
+    grace: Duration,
     mut event_exists: F,
 ) -> Result<MessageAttachmentRecovery, ModelInputError>
 where
@@ -443,6 +590,10 @@ where
     Fut: std::future::Future<Output = Result<bool, ModelInputError>>,
 {
     let root = absolute_root(configured_root.as_ref())?.join("message-inputs-v2");
+    let workspace_root = match workspace_root {
+        Some(workspace) => Some(tokio::fs::canonicalize(absolute_root(workspace.as_ref())?).await?),
+        None => None,
+    };
     let pending_directory = root.join("pending");
     if !tokio::fs::try_exists(&pending_directory).await? {
         return Ok(MessageAttachmentRecovery::default());
@@ -491,11 +642,23 @@ where
             remove_file_if_exists(&path).await?;
             recovery.committed_manifests += 1;
         } else {
+            let workspace_directory = if manifest.workspace_materialized {
+                workspace_root.as_ref().map(|workspace| {
+                    workspace
+                        .join(".morphz")
+                        .join("attachments")
+                        .join(&manifest.scope_key)
+                        .join(&manifest.event_id)
+                })
+            } else {
+                None
+            };
             discard_prepared_message_attachments(
                 &root,
                 &manifest.scope_key,
                 &manifest.event_id,
                 &manifest.digests,
+                workspace_directory.as_deref(),
             )
             .await?;
             recovery.orphaned_imports += 1;
@@ -505,7 +668,8 @@ where
 }
 
 fn valid_pending_manifest(manifest: &PendingMessageAttachmentManifest) -> bool {
-    manifest.version == 1
+    matches!(manifest.version, 1 | 2)
+        && (!manifest.workspace_materialized || manifest.version >= 2)
         && safe_storage_segment(&manifest.event_id, "Event id").is_ok()
         && is_sha256_hex(&manifest.scope_key)
         && manifest.digests.iter().all(|digest| is_sha256_hex(digest))
@@ -520,7 +684,13 @@ async fn discard_prepared_message_attachments(
     scope_key: &str,
     event_id: &str,
     digests: &[String],
+    workspace_directory: Option<&Path>,
 ) -> Result<(), ModelInputError> {
+    if let Some(workspace_directory) = workspace_directory {
+        if tokio::fs::try_exists(workspace_directory).await? {
+            tokio::fs::remove_dir_all(workspace_directory).await?;
+        }
+    }
     let event_directory = root.join("events").join(scope_key).join(event_id);
     if tokio::fs::try_exists(&event_directory).await? {
         tokio::fs::remove_dir_all(&event_directory).await?;
@@ -701,14 +871,18 @@ pub fn public_attachment_references(items: &[Value], source_event_id: &str) -> V
     items
         .iter()
         .map(|item| {
-            json!({
+            let mut reference = json!({
                 "id": item.get("id"),
                 "name": item.get("name"),
                 "media_type": item.get("media_type"),
                 "size_bytes": item.get("size_bytes"),
                 "sha256": item.get("sha256"),
                 "source_event_id": source_event_id,
-            })
+            });
+            if let Some(workspace_path) = item.get("workspace_path") {
+                reference["workspace_path"] = workspace_path.clone();
+            }
+            reference
         })
         .collect()
 }
@@ -1089,5 +1263,80 @@ mod tests {
         )
         .await
         .unwrap());
+    }
+
+    #[tokio::test]
+    async fn workspace_materialization_preserves_original_and_reclaims_orphans() {
+        let store = tempfile::TempDir::new().unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let input = MessageAttachmentInput {
+            name: "../quarterly-report.docx".to_string(),
+            media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .to_string(),
+            data: b"immutable-docx-bytes".to_vec(),
+        };
+        let prepared = prepare_message_input_attachments_for_workspace(
+            store.path(),
+            Some(workspace.path()),
+            "session-workspace",
+            "event-workspace",
+            vec![input],
+            crate::config::ModelInputConfig::default().import_limits(),
+        )
+        .await
+        .unwrap();
+        let metadata = &prepared.metadata()[0];
+        let source_path = PathBuf::from(metadata["storage_path"].as_str().unwrap());
+        let workspace_path = PathBuf::from(metadata["workspace_path"].as_str().unwrap());
+        assert_eq!(workspace_path.file_name().unwrap(), "quarterly-report.docx");
+        assert!(
+            workspace_path.starts_with(tokio::fs::canonicalize(workspace.path()).await.unwrap())
+        );
+        assert_eq!(
+            tokio::fs::read(&workspace_path).await.unwrap(),
+            b"immutable-docx-bytes"
+        );
+
+        tokio::fs::write(&workspace_path, b"agent-transformed-copy")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(&source_path).await.unwrap(),
+            b"immutable-docx-bytes",
+            "the Agent-writable copy must not alias immutable Event storage"
+        );
+        prepared.discard().await.unwrap();
+        assert!(!tokio::fs::try_exists(&workspace_path).await.unwrap());
+        assert!(!tokio::fs::try_exists(&source_path).await.unwrap());
+
+        let orphan = prepare_message_input_attachments_for_workspace(
+            store.path(),
+            Some(workspace.path()),
+            "session-workspace",
+            "event-orphan-workspace",
+            vec![MessageAttachmentInput {
+                name: "manual.pdf".to_string(),
+                media_type: "application/pdf".to_string(),
+                data: b"orphan-pdf".to_vec(),
+            }],
+            crate::config::ModelInputConfig::default().import_limits(),
+        )
+        .await
+        .unwrap();
+        let orphan_source = PathBuf::from(orphan.metadata()[0]["storage_path"].as_str().unwrap());
+        let orphan_workspace =
+            PathBuf::from(orphan.metadata()[0]["workspace_path"].as_str().unwrap());
+        drop(orphan);
+        let recovery = recover_pending_message_attachments_for_workspace(
+            store.path(),
+            Some(workspace.path()),
+            Duration::ZERO,
+            |_event_id| async move { Ok(false) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(recovery.orphaned_imports, 1);
+        assert!(!tokio::fs::try_exists(orphan_source).await.unwrap());
+        assert!(!tokio::fs::try_exists(orphan_workspace).await.unwrap());
     }
 }

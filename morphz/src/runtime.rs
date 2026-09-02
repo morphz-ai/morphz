@@ -271,13 +271,15 @@ const SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD: usize = 32;
 
 async fn prepare_message_attachments(
     configured_root: &str,
+    workspace_root: Option<&std::path::Path>,
     model_input: &crate::config::ModelInputConfig,
     session_id: &str,
     event_id: &str,
     attachments: Vec<crate::sdk::MessageAttachmentInput>,
 ) -> Result<crate::model_input::PreparedMessageAttachments, RuntimeError> {
-    crate::model_input::prepare_message_input_attachments(
+    crate::model_input::prepare_message_input_attachments_for_workspace(
         configured_root,
+        workspace_root,
         session_id,
         event_id,
         attachments,
@@ -1926,8 +1928,9 @@ async fn reconcile_pending_message_attachments(
     inner: &RuntimeInner,
 ) -> Result<crate::model_input::MessageAttachmentRecovery, RuntimeError> {
     let attachment_store = Arc::clone(&inner.store);
-    crate::model_input::recover_pending_message_attachments(
+    crate::model_input::recover_pending_message_attachments_for_workspace(
         &inner.config.background_task.artifact_dir,
+        Some(inner.permissions.profile().workspace_root.as_path()),
         std::time::Duration::from_secs(inner.config.model_input.pending_import_grace.as_secs()),
         move |event_id| {
             let store = Arc::clone(&attachment_store);
@@ -9806,6 +9809,14 @@ impl SessionHandle {
         }
         let prepared_attachments = prepare_message_attachments(
             &self.runtime.inner.config.background_task.artifact_dir,
+            Some(
+                self.runtime
+                    .inner
+                    .permissions
+                    .profile()
+                    .workspace_root
+                    .as_path(),
+            ),
             &self.runtime.inner.config.model_input,
             &self.id,
             &event_id,
@@ -11011,6 +11022,7 @@ mod tests {
         };
         let prepared = prepare_message_attachments(
             artifact_root.path().to_str().unwrap(),
+            None,
             &AppConfig::default().model_input,
             "session-attachment-test",
             "event-attachment-test",
@@ -11045,6 +11057,7 @@ mod tests {
         config.model_input.pending_import_grace = crate::config::HumanDuration::from_secs(2);
         let prepared = prepare_message_attachments(
             &config.background_task.artifact_dir,
+            None,
             &config.model_input,
             "session-periodic-recovery",
             "event-periodic-orphan",
@@ -11179,6 +11192,7 @@ mod tests {
         first_entered: Arc<tokio::sync::Notify>,
         observed_combined_input: Arc<AtomicBool>,
         observed_interrupted_attachment: Arc<AtomicBool>,
+        observed_attachment_workspace_path: Arc<AtomicBool>,
     }
 
     struct PhysicalBatchClient {
@@ -12216,18 +12230,22 @@ mod tests {
     async fn new_message_interrupts_a_thinking_dialogue_and_replays_both_inputs() {
         let database = NamedTempFile::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
         let first_entered = Arc::new(tokio::sync::Notify::new());
         let observed_combined_input = Arc::new(AtomicBool::new(false));
         let observed_interrupted_attachment = Arc::new(AtomicBool::new(false));
+        let observed_attachment_workspace_path = Arc::new(AtomicBool::new(false));
         let client = Arc::new(InterruptibleDialogueClient {
             calls: AtomicU64::new(0),
             first_entered: first_entered.clone(),
             observed_combined_input: observed_combined_input.clone(),
             observed_interrupted_attachment: observed_interrupted_attachment.clone(),
+            observed_attachment_workspace_path: observed_attachment_workspace_path.clone(),
         });
         let mut config = AppConfig::default();
         config.orchestrator.interrupt_dialogue_on_new_message = true;
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -12290,6 +12308,29 @@ mod tests {
         assert_eq!(reply.payload["text"], "combined-dialogue-reply");
         assert!(observed_combined_input.load(Ordering::SeqCst));
         assert!(observed_interrupted_attachment.load(Ordering::SeqCst));
+        assert!(observed_attachment_workspace_path.load(Ordering::SeqCst));
+        let attachment_event = runtime
+            .query_events(QueryFilter {
+                event_id: Some(first.event_id.clone()),
+                top_k: Some(1),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let workspace_path = PathBuf::from(
+            attachment_event.payload["attachments"][0]["workspace_path"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(
+            workspace_path.starts_with(tokio::fs::canonicalize(workspace.path()).await.unwrap())
+        );
+        assert_eq!(
+            tokio::fs::read(workspace_path).await.unwrap(),
+            b"interrupted-image-bytes"
+        );
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
 
         let attempt_states = runtime
@@ -12965,6 +13006,12 @@ mod tests {
                     && prompt.contains("second clarifying message")
                     && prompt.find("first unfinished message")
                         < prompt.find("second clarifying message"),
+                Ordering::SeqCst,
+            );
+            self.observed_attachment_workspace_path.store(
+                prompt.contains("workspace_path")
+                    && prompt.contains(".morphz/attachments")
+                    && prompt.contains("interrupted-image.png"),
                 Ordering::SeqCst,
             );
             self.observed_interrupted_attachment.store(
