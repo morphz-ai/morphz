@@ -110,3 +110,65 @@ test("Session list unwraps the HTTP collection envelope", async () => {
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0].id, "session-a");
 });
+
+test("attachment staging keeps binary bytes out of JSON and preserves draft identity", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const stage = {
+    stage_id: "stage-1",
+    principal_id: "site-user-42",
+    session_id: "session-a",
+    client_message_id: "message-1",
+    name: "manual.pdf",
+    media_type: "application/pdf",
+    size_bytes: 3,
+    offset: 3,
+    sha256: "a".repeat(64),
+    status: "ready" as const,
+    created_at: "2026-09-02T00:00:00Z",
+    expires_at: "2026-09-09T00:00:00Z",
+  };
+  const client = new MorphzClient({
+    baseUrl: "https://runtime.example",
+    serviceToken: "service-secret",
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (String(url).includes("client_message_id="))
+        return Response.json({ stages: [stage] });
+      return Response.json(stage);
+    },
+  });
+  const principal = { id: "site-user-42" };
+
+  await client.createMessageAttachmentStage(principal, "session-a", {
+    stage_id: "stage-1",
+    client_message_id: "message-1",
+    name: "manual.pdf",
+    media_type: "application/pdf",
+    size_bytes: 3,
+  });
+  const bytes = new Uint8Array([1, 2, 3]);
+  await client.uploadMessageAttachmentStage(
+    principal,
+    "session-a",
+    "stage-1",
+    0,
+    bytes,
+  );
+  const listed = await client.listMessageAttachmentStages(
+    principal,
+    "session-a",
+    "message-1",
+  );
+  await client.cancelMessageAttachmentStage(principal, "session-a", "stage-1");
+
+  assert.equal(listed[0].client_message_id, "message-1");
+  const upload = calls[1];
+  const uploadHeaders = new Headers(upload.init?.headers);
+  assert.equal(upload.init?.method, "PUT");
+  assert.equal(uploadHeaders.get("content-type"), "application/octet-stream");
+  assert.equal(uploadHeaders.get("x-morphz-upload-offset"), "0");
+  assert.equal(upload.init?.body, bytes);
+  assert.equal(uploadHeaders.get("x-morphz-principal"), "site-user-42");
+  assert.match(calls[2].url, /client_message_id=message-1/);
+});

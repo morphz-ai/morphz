@@ -82,6 +82,7 @@ pub const SDK_CONTRACT_VERSION: &str = "1";
 #[serde(rename_all = "snake_case")]
 pub enum SdkErrorCode {
     InvalidArgument,
+    ResourceExhausted,
     Unauthorized,
     Forbidden,
     NotFound,
@@ -94,6 +95,7 @@ impl SdkErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidArgument => "invalid_argument",
+            Self::ResourceExhausted => "resource_exhausted",
             Self::Unauthorized => "unauthorized",
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
@@ -132,6 +134,21 @@ impl fmt::Display for SdkError {
 impl std::error::Error for SdkError {}
 
 pub type SdkResult<T> = Result<T, SdkError>;
+
+fn classify_message_attachment_stage_error(
+    error: crate::model_input::MessageAttachmentStageError,
+) -> SdkError {
+    use crate::model_input::MessageAttachmentStageErrorKind;
+    let code = match error.kind {
+        MessageAttachmentStageErrorKind::InvalidArgument => SdkErrorCode::InvalidArgument,
+        MessageAttachmentStageErrorKind::NotFound => SdkErrorCode::NotFound,
+        MessageAttachmentStageErrorKind::Forbidden => SdkErrorCode::Forbidden,
+        MessageAttachmentStageErrorKind::Conflict => SdkErrorCode::Conflict,
+        MessageAttachmentStageErrorKind::ResourceExhausted => SdkErrorCode::ResourceExhausted,
+        MessageAttachmentStageErrorKind::Internal => SdkErrorCode::Internal,
+    };
+    SdkError::new(code, error.message)
+}
 
 fn classify_node_pairing_store_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error.as_ref());
@@ -345,6 +362,10 @@ pub struct SendMessageCommand {
     pub client_message_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentInput>,
+    /// Durable message-input stages created before the message is submitted.
+    /// Each stage is fenced to this Principal, Session, and client_message_id.
+    #[serde(default)]
+    pub staged_attachment_ids: Vec<String>,
     /// Stable typed references selected by the caller. Referencing a Session
     /// neither reads its transcript nor activates it; the Agent may choose to
     /// call `session_signal` after interpreting the current message.
@@ -372,6 +393,17 @@ pub struct SendMessageCommand {
     /// every physical tool continuation stays on the same destination.
     #[serde(default)]
     pub target_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateMessageAttachmentStageCommand {
+    pub session_id: String,
+    pub stage_id: String,
+    pub client_message_id: String,
+    pub name: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub expected_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4001,6 +4033,112 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn create_message_attachment_stage(
+        &self,
+        principal: &PrincipalAssertion,
+        command: CreateMessageAttachmentStageCommand,
+    ) -> SdkResult<crate::model_input::MessageAttachmentStage> {
+        let session = self
+            .authorize_session(&principal.principal_id, &command.session_id)
+            .await?;
+        if session.status == crate::memory::SessionStatus::Archived {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                "an archived Session cannot accept attachment drafts",
+            ));
+        }
+        self.runtime
+            .message_attachment_stages()
+            .create(
+                crate::model_input::NewMessageAttachmentStage {
+                    stage_id: command.stage_id,
+                    principal_id: principal.principal_id.clone(),
+                    session_id: command.session_id,
+                    client_message_id: command.client_message_id,
+                    name: command.name,
+                    media_type: command.media_type,
+                    size_bytes: command.size_bytes,
+                    expected_sha256: command.expected_sha256,
+                },
+                self.runtime.config().model_input.import_limits(),
+            )
+            .await
+            .map_err(classify_message_attachment_stage_error)
+    }
+
+    pub async fn inspect_message_attachment_stage(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        stage_id: &str,
+    ) -> SdkResult<crate::model_input::MessageAttachmentStage> {
+        self.authorize_session(&principal.principal_id, session_id)
+            .await?;
+        self.runtime
+            .message_attachment_stages()
+            .inspect(&principal.principal_id, session_id, stage_id)
+            .await
+            .map_err(classify_message_attachment_stage_error)
+    }
+
+    pub async fn list_message_attachment_stages(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        client_message_id: Option<&str>,
+    ) -> SdkResult<Vec<crate::model_input::MessageAttachmentStage>> {
+        self.authorize_session(&principal.principal_id, session_id)
+            .await?;
+        self.runtime
+            .message_attachment_stages()
+            .list(&principal.principal_id, session_id, client_message_id)
+            .await
+            .map_err(classify_message_attachment_stage_error)
+    }
+
+    pub async fn upload_message_attachment_stage<S, B, E>(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        stage_id: &str,
+        offset: u64,
+        stream: S,
+    ) -> SdkResult<crate::model_input::MessageAttachmentStage>
+    where
+        S: futures_util::Stream<Item = Result<B, E>>,
+        B: AsRef<[u8]>,
+        E: std::fmt::Display,
+    {
+        self.authorize_session(&principal.principal_id, session_id)
+            .await?;
+        self.runtime
+            .message_attachment_stages()
+            .upload(
+                &principal.principal_id,
+                session_id,
+                stage_id,
+                offset,
+                stream,
+            )
+            .await
+            .map_err(classify_message_attachment_stage_error)
+    }
+
+    pub async fn cancel_message_attachment_stage(
+        &self,
+        principal: &PrincipalAssertion,
+        session_id: &str,
+        stage_id: &str,
+    ) -> SdkResult<()> {
+        self.authorize_session(&principal.principal_id, session_id)
+            .await?;
+        self.runtime
+            .message_attachment_stages()
+            .cancel(&principal.principal_id, session_id, stage_id)
+            .await
+            .map_err(classify_message_attachment_stage_error)
+    }
+
     pub async fn send_message(
         &self,
         principal: &PrincipalAssertion,
@@ -4021,6 +4159,7 @@ impl MorphzSdk {
                 SessionMessageOptions {
                     requested_harness: command.harness,
                     attachments: command.attachments,
+                    staged_attachment_ids: command.staged_attachment_ids,
                     references: command.references,
                     dispatch_mode: command.dispatch_mode,
                     model_alias: command.model_alias,
@@ -4034,6 +4173,9 @@ impl MorphzSdk {
                     .downcast_ref::<MessageIngressError>()
                     .map(|error| match error.kind {
                         MessageIngressErrorKind::InvalidArgument => SdkErrorCode::InvalidArgument,
+                        MessageIngressErrorKind::ResourceExhausted => {
+                            SdkErrorCode::ResourceExhausted
+                        }
                         MessageIngressErrorKind::Conflict => SdkErrorCode::Conflict,
                         MessageIngressErrorKind::Forbidden => SdkErrorCode::Forbidden,
                     })
@@ -4456,6 +4598,7 @@ mod tests {
                     actor: "User-API".to_string(),
                     client_message_id: Some("reference-message-1".to_string()),
                     attachments: Vec::new(),
+                    staged_attachment_ids: Vec::new(),
                     references: vec![MessageReferenceInput::Session {
                         session_id: "session-reference-b".to_string(),
                     }],
@@ -4519,6 +4662,7 @@ mod tests {
                     actor: "User-API".to_string(),
                     client_message_id: Some("reference-message-unbound-source".to_string()),
                     attachments: Vec::new(),
+                    staged_attachment_ids: Vec::new(),
                     references: Vec::new(),
                     harness: None,
                     dispatch_mode: None,
@@ -4549,6 +4693,7 @@ mod tests {
                     actor: "User-API".to_string(),
                     client_message_id: Some("reference-message-private".to_string()),
                     attachments: Vec::new(),
+                    staged_attachment_ids: Vec::new(),
                     references: vec![MessageReferenceInput::Session {
                         session_id: "session-reference-private".to_string(),
                     }],
@@ -4587,6 +4732,7 @@ mod tests {
                     actor: "User-API".to_string(),
                     client_message_id: Some("reference-message-archived".to_string()),
                     attachments: Vec::new(),
+                    staged_attachment_ids: Vec::new(),
                     references: vec![MessageReferenceInput::Session {
                         session_id: "session-reference-b".to_string(),
                     }],

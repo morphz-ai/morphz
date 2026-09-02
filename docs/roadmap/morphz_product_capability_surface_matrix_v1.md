@@ -52,7 +52,7 @@ Dashboard 不是 C 端产品的原型，C 端 Gateway 也不能重新发明 Runt
 | 消息幂等与权威终态 | 已具备 `client_message_id`、Event Ledger 与终态 Projection | 展示 Event、Thread、Attempt 与原始错误 | 已按 root/attempt 归并流式状态 | 所有客户端只消费同一终态，不以 HTTP 返回猜完成 |
 | 模型与推理策略 | 已具备 Session 持久默认与 one-shot override | 可直接切换并查看实际路由 | 默认由服务管理，按产品需要渐进开放 | C 端配置必须走 Principal-scoped API，不复制 Provider 管理面 |
 | Sandbox / Permission | 已具备 scoped policy、人工审批、自动审批、完全访问 | 展示精确路径、网络、规则与审计 | 尚未形成消费级权限流程 | C 端只包装当前用户相关请求，规则权威仍在 Runtime |
-| 消息附件持久化 | 部分具备；消息入口可导入二进制、内容寻址保存并物化到 Agent Workspace | 可选文件并随消息内联 Base64 发送 | 可选文件并随消息内联 Base64 发送 | 增加发送前持久 Artifact Staging；消息只引用 staging ID，绑定后进入不可变 Event |
+| 消息附件持久化 | 已具备 Principal+Session+草稿消息隔离的持久 staging、断点续传、过期回收、SDK/API、内容校验、不可变 Event 绑定与 Workspace 物化；保留内联 Base64 兼容 | 尚未从内联 Base64 迁移到 staging | 尚未从内联 Base64 迁移到 staging | 两端改用 staging ID；Runtime 不内置文档语义解析，Agent 自行选择工具 |
 | 未发送草稿 | 缺失；不应进入 Ledger | 刷新会丢失文本和附件选择 | 刷新会丢失文本和附件选择 | 独立 Draft Store 按 Principal+Session 持久；文本与暂存附件可恢复，发送提交后清除 |
 | 发送失败恢复 | Runtime 对已接收失败 turn 有 retry；浏览器上传前/中失败无持久恢复 | 部分具备 runtime_error 重试 | 部分具备 runtime_error 重试 | 区分“未接收”“已接收可重试”“等待外部能力”；同一幂等 ID 不重复创建 turn |
 | Execution Target 目录与 Session 默认 | 已具备本机默认、Session 持久选择、可见性/在线校验与结构化缺失错误 | 已有 Target 选择器和接入入口 | 缺失 | Gateway 暴露受限 Target catalog；C 端默认显示“这台电脑/已连接电脑”，隐藏内部 ID |

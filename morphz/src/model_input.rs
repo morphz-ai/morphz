@@ -4,13 +4,18 @@
 //! loaded, digest-checked, and converted to Provider-native content parts only
 //! while assembling a model request.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
+use chrono::{DateTime, Utc};
+use futures_util::{Stream, StreamExt as _};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt as _;
+use tokio::sync::Mutex;
 
 use crate::llm::{
     attachment_message, Message, ModelAttachment, ModelInputLimits, MODEL_ATTACHMENT_MESSAGE_NAME,
@@ -73,6 +78,761 @@ pub struct MessageAttachmentRecovery {
     pub orphaned_imports: usize,
     pub deferred_live_imports: usize,
     pub invalid_manifests: usize,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAttachmentStageStatus {
+    Uploading,
+    Ready,
+    Consumed,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MessageAttachmentStage {
+    pub stage_id: String,
+    pub principal_id: String,
+    pub session_id: String,
+    pub client_message_id: String,
+    pub name: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub offset: u64,
+    pub expected_sha256: Option<String>,
+    pub sha256: Option<String>,
+    pub status: MessageAttachmentStageStatus,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub consumed_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewMessageAttachmentStage {
+    pub stage_id: String,
+    pub principal_id: String,
+    pub session_id: String,
+    pub client_message_id: String,
+    pub name: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub expected_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StagedMessageAttachmentSource {
+    pub stage_id: String,
+    pub name: String,
+    pub media_type: String,
+    pub size_bytes: usize,
+    pub sha256: String,
+    pub path: PathBuf,
+}
+
+enum MessageAttachmentImportSource {
+    Inline(Vec<u8>),
+    Staged(PathBuf),
+}
+
+struct MessageAttachmentImport {
+    name: String,
+    media_type: String,
+    size_bytes: usize,
+    sha256: String,
+    source: MessageAttachmentImportSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageAttachmentStageErrorKind {
+    InvalidArgument,
+    NotFound,
+    Forbidden,
+    Conflict,
+    ResourceExhausted,
+    Internal,
+}
+
+#[derive(Debug)]
+pub struct MessageAttachmentStageError {
+    pub kind: MessageAttachmentStageErrorKind,
+    pub message: String,
+}
+
+impl MessageAttachmentStageError {
+    fn new(kind: MessageAttachmentStageErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    fn internal(error: impl std::fmt::Display) -> Self {
+        Self::new(MessageAttachmentStageErrorKind::Internal, error.to_string())
+    }
+}
+
+impl std::fmt::Display for MessageAttachmentStageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MessageAttachmentStageError {}
+
+pub type MessageAttachmentStageResult<T> = Result<T, MessageAttachmentStageError>;
+
+/// Durable, resumable message-input staging. Stages are deliberately outside
+/// the Event Ledger: they are drafts owned by one Principal, Session, and
+/// client_message_id until an immutable user Event claims them.
+#[derive(Clone)]
+pub struct MessageAttachmentStageStore {
+    root: PathBuf,
+    ttl: Duration,
+    locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+}
+
+impl MessageAttachmentStageStore {
+    pub fn new(configured_root: impl AsRef<Path>, ttl: Duration) -> Result<Self, ModelInputError> {
+        Ok(Self {
+            root: absolute_root(configured_root.as_ref())?
+                .join("message-inputs-v2")
+                .join("staging"),
+            ttl,
+            locks: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    pub async fn create(
+        &self,
+        stage: NewMessageAttachmentStage,
+        limits: ModelInputLimits,
+    ) -> MessageAttachmentStageResult<MessageAttachmentStage> {
+        validate_stage_identifier(&stage.stage_id, "attachment stage id")?;
+        validate_stage_identifier(&stage.client_message_id, "client_message_id")?;
+        if stage.principal_id.trim().is_empty() || stage.session_id.trim().is_empty() {
+            return Err(stage_invalid(
+                "attachment stage requires a Principal and Session",
+            ));
+        }
+        let name =
+            safe_attachment_name(&stage.name).map_err(|error| stage_invalid(error.to_string()))?;
+        let media_type = safe_media_type(&stage.media_type, &name)
+            .map_err(|error| stage_invalid(error.to_string()))?;
+        let size_bytes = usize::try_from(stage.size_bytes)
+            .map_err(|_| stage_exhausted("attachment size exceeds this platform"))?;
+        validate_model_input_usage(
+            ModelInputUsage {
+                attachment_count: 1,
+                total_bytes: size_bytes,
+                largest_attachment_bytes: size_bytes,
+            },
+            limits,
+            "this attachment stage",
+        )
+        .map_err(|error| stage_exhausted(error.to_string()))?;
+        let expected_sha256 = stage
+            .expected_sha256
+            .as_deref()
+            .map(normalize_sha256)
+            .transpose()?;
+        let lock = self.stage_lock(&stage.session_id, &stage.stage_id).await;
+        let _guard = lock.lock().await;
+        if let Some(existing) = self.read_record(&stage.session_id, &stage.stage_id).await? {
+            if existing.expires_at <= Utc::now() {
+                tokio::fs::remove_dir_all(
+                    self.stage_directory(&stage.session_id, &stage.stage_id)?,
+                )
+                .await
+                .map_err(MessageAttachmentStageError::internal)?;
+            } else {
+                if existing.principal_id == stage.principal_id
+                    && existing.client_message_id == stage.client_message_id
+                    && existing.name == name
+                    && existing.media_type == media_type
+                    && existing.size_bytes == stage.size_bytes
+                    && existing.expected_sha256 == expected_sha256
+                {
+                    return Ok(existing);
+                }
+                return Err(MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::Conflict,
+                    format!(
+                        "attachment stage '{}' already exists with a different declaration",
+                        stage.stage_id
+                    ),
+                ));
+            }
+        }
+        let directory = self.stage_directory(&stage.session_id, &stage.stage_id)?;
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        let created_at = Utc::now();
+        let expires_at = created_at
+            + chrono::Duration::from_std(self.ttl)
+                .map_err(MessageAttachmentStageError::internal)?;
+        let record = MessageAttachmentStage {
+            stage_id: stage.stage_id,
+            principal_id: stage.principal_id,
+            session_id: stage.session_id,
+            client_message_id: stage.client_message_id,
+            name,
+            media_type,
+            size_bytes: stage.size_bytes,
+            offset: 0,
+            expected_sha256,
+            sha256: None,
+            status: MessageAttachmentStageStatus::Uploading,
+            created_at,
+            expires_at,
+            consumed_event_id: None,
+        };
+        self.write_record(&record).await?;
+        Ok(record)
+    }
+
+    pub async fn inspect(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        stage_id: &str,
+    ) -> MessageAttachmentStageResult<MessageAttachmentStage> {
+        let lock = self.stage_lock(session_id, stage_id).await;
+        let _guard = lock.lock().await;
+        let record = self
+            .authorized_record(principal_id, session_id, stage_id)
+            .await?;
+        self.reject_expired(&record).await?;
+        Ok(record)
+    }
+
+    pub async fn list(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        client_message_id: Option<&str>,
+    ) -> MessageAttachmentStageResult<Vec<MessageAttachmentStage>> {
+        let session_directory = self.session_directory(session_id);
+        if !tokio::fs::try_exists(&session_directory)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            return Ok(Vec::new());
+        }
+        let mut entries = tokio::fs::read_dir(session_directory)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        let mut records = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            let Ok(bytes) = tokio::fs::read(entry.path().join("manifest.json")).await else {
+                continue;
+            };
+            let Ok(index_record) = serde_json::from_slice::<MessageAttachmentStage>(&bytes) else {
+                continue;
+            };
+            let stage_id = index_record.stage_id;
+            let lock = self.stage_lock(session_id, &stage_id).await;
+            let _guard = lock.lock().await;
+            let Ok(record) = self
+                .authorized_record(principal_id, session_id, &stage_id)
+                .await
+            else {
+                continue;
+            };
+            if record.expires_at <= Utc::now()
+                || client_message_id
+                    .is_some_and(|message_id| record.client_message_id != message_id)
+            {
+                continue;
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| record.created_at);
+        Ok(records)
+    }
+
+    pub async fn upload<S, B, E>(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        stage_id: &str,
+        requested_offset: u64,
+        stream: S,
+    ) -> MessageAttachmentStageResult<MessageAttachmentStage>
+    where
+        S: Stream<Item = Result<B, E>>,
+        B: AsRef<[u8]>,
+        E: std::fmt::Display,
+    {
+        futures_util::pin_mut!(stream);
+        let lock = self.stage_lock(session_id, stage_id).await;
+        let _guard = lock.lock().await;
+        let mut record = self
+            .authorized_record(principal_id, session_id, stage_id)
+            .await?;
+        self.reject_expired(&record).await?;
+        if matches!(
+            record.status,
+            MessageAttachmentStageStatus::Ready | MessageAttachmentStageStatus::Consumed
+        ) {
+            return Ok(record);
+        }
+        if requested_offset != record.offset {
+            return Err(MessageAttachmentStageError::new(
+                MessageAttachmentStageErrorKind::Conflict,
+                format!(
+                    "attachment upload offset conflict; expected {}",
+                    record.offset
+                ),
+            ));
+        }
+        let directory = self.stage_directory(session_id, stage_id)?;
+        let partial_path = directory.join("content.partial");
+        let final_path = directory.join("content");
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&partial_path)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| stage_invalid(error.to_string()))?;
+            let bytes = chunk.as_ref();
+            let next_offset = record.offset.saturating_add(bytes.len() as u64);
+            if next_offset > record.size_bytes {
+                return Err(stage_exhausted(
+                    "attachment upload exceeds the declared size",
+                ));
+            }
+            file.write_all(bytes)
+                .await
+                .map_err(MessageAttachmentStageError::internal)?;
+            record.offset = next_offset;
+        }
+        file.sync_data()
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        drop(file);
+        if record.offset < record.size_bytes {
+            self.write_record(&record).await?;
+            return Ok(record);
+        }
+        let digest = sha256_file(&partial_path)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        if record
+            .expected_sha256
+            .as_deref()
+            .is_some_and(|expected| expected != digest)
+        {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+            record.offset = 0;
+            self.write_record(&record).await?;
+            return Err(MessageAttachmentStageError::new(
+                MessageAttachmentStageErrorKind::Conflict,
+                "attachment digest does not match the declaration",
+            ));
+        }
+        tokio::fs::rename(&partial_path, &final_path)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        record.sha256 = Some(digest);
+        record.status = MessageAttachmentStageStatus::Ready;
+        self.write_record(&record).await?;
+        Ok(record)
+    }
+
+    pub async fn cancel(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        stage_id: &str,
+    ) -> MessageAttachmentStageResult<()> {
+        let lock = self.stage_lock(session_id, stage_id).await;
+        let _guard = lock.lock().await;
+        let record = self
+            .authorized_record(principal_id, session_id, stage_id)
+            .await?;
+        if record.status == MessageAttachmentStageStatus::Consumed {
+            return Err(MessageAttachmentStageError::new(
+                MessageAttachmentStageErrorKind::Conflict,
+                "an attachment stage already bound to a message cannot be cancelled",
+            ));
+        }
+        tokio::fs::remove_dir_all(self.stage_directory(session_id, stage_id)?)
+            .await
+            .map_err(MessageAttachmentStageError::internal)
+    }
+
+    pub async fn resolve_for_message(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        client_message_id: &str,
+        stage_ids: &[String],
+    ) -> MessageAttachmentStageResult<Vec<StagedMessageAttachmentSource>> {
+        let mut sources = Vec::with_capacity(stage_ids.len());
+        let mut unique = std::collections::HashSet::new();
+        for stage_id in stage_ids {
+            if !unique.insert(stage_id) {
+                continue;
+            }
+            let record = self.inspect(principal_id, session_id, stage_id).await?;
+            if record.client_message_id != client_message_id {
+                return Err(MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::Forbidden,
+                    format!(
+                        "attachment stage '{}' belongs to a different draft message",
+                        stage_id
+                    ),
+                ));
+            }
+            if !matches!(
+                record.status,
+                MessageAttachmentStageStatus::Ready | MessageAttachmentStageStatus::Consumed
+            ) {
+                return Err(MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::Conflict,
+                    format!("attachment stage '{}' is not ready", stage_id),
+                ));
+            }
+            let sha256 = record.sha256.clone().ok_or_else(|| {
+                MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::Conflict,
+                    format!("attachment stage '{}' has no verified digest", stage_id),
+                )
+            })?;
+            sources.push(StagedMessageAttachmentSource {
+                stage_id: stage_id.clone(),
+                name: record.name,
+                media_type: record.media_type,
+                size_bytes: usize::try_from(record.size_bytes)
+                    .map_err(|_| stage_exhausted("attachment size exceeds this platform"))?,
+                sha256,
+                path: self.stage_directory(session_id, stage_id)?.join("content"),
+            });
+        }
+        Ok(sources)
+    }
+
+    pub async fn mark_consumed(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        client_message_id: &str,
+        stage_ids: &[String],
+        event_id: &str,
+    ) -> MessageAttachmentStageResult<()> {
+        for stage_id in stage_ids {
+            let lock = self.stage_lock(session_id, stage_id).await;
+            let _guard = lock.lock().await;
+            let mut record = self
+                .authorized_record(principal_id, session_id, stage_id)
+                .await?;
+            if record.client_message_id != client_message_id {
+                return Err(MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::Forbidden,
+                    "attachment stage belongs to a different draft message",
+                ));
+            }
+            if let Some(existing) = record.consumed_event_id.as_deref() {
+                if existing == event_id {
+                    continue;
+                }
+                return Err(MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::Conflict,
+                    format!("attachment stage '{}' is already consumed", stage_id),
+                ));
+            }
+            record.status = MessageAttachmentStageStatus::Consumed;
+            record.consumed_event_id = Some(event_id.to_string());
+            self.write_record(&record).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn reap_expired(&self) -> MessageAttachmentStageResult<usize> {
+        if !tokio::fs::try_exists(&self.root)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        let mut sessions = tokio::fs::read_dir(&self.root)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        while let Some(session) = sessions
+            .next_entry()
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            let mut stages = match tokio::fs::read_dir(session.path()).await {
+                Ok(stages) => stages,
+                Err(_) => continue,
+            };
+            while let Some(stage) = stages
+                .next_entry()
+                .await
+                .map_err(MessageAttachmentStageError::internal)?
+            {
+                let manifest = stage.path().join("manifest.json");
+                let Ok(bytes) = tokio::fs::read(&manifest).await else {
+                    continue;
+                };
+                let Ok(record) = serde_json::from_slice::<MessageAttachmentStage>(&bytes) else {
+                    continue;
+                };
+                let lock = self.stage_lock(&record.session_id, &record.stage_id).await;
+                let _guard = lock.lock().await;
+                let Some(current) = self
+                    .read_record(&record.session_id, &record.stage_id)
+                    .await?
+                else {
+                    continue;
+                };
+                if current.expires_at <= Utc::now()
+                    && tokio::fs::remove_dir_all(
+                        self.stage_directory(&current.session_id, &current.stage_id)?,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn authorized_record(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        stage_id: &str,
+    ) -> MessageAttachmentStageResult<MessageAttachmentStage> {
+        let record = self
+            .read_record(session_id, stage_id)
+            .await?
+            .ok_or_else(|| {
+                MessageAttachmentStageError::new(
+                    MessageAttachmentStageErrorKind::NotFound,
+                    format!("attachment stage '{}' does not exist", stage_id),
+                )
+            })?;
+        if record.principal_id != principal_id {
+            return Err(MessageAttachmentStageError::new(
+                MessageAttachmentStageErrorKind::Forbidden,
+                "attachment stage belongs to a different Principal",
+            ));
+        }
+        if record.session_id != session_id {
+            return Err(MessageAttachmentStageError::new(
+                MessageAttachmentStageErrorKind::Forbidden,
+                "attachment stage belongs to a different Session",
+            ));
+        }
+        Ok(record)
+    }
+
+    async fn reject_expired(
+        &self,
+        record: &MessageAttachmentStage,
+    ) -> MessageAttachmentStageResult<()> {
+        if record.expires_at > Utc::now() {
+            return Ok(());
+        }
+        let _ =
+            tokio::fs::remove_dir_all(self.stage_directory(&record.session_id, &record.stage_id)?)
+                .await;
+        Err(MessageAttachmentStageError::new(
+            MessageAttachmentStageErrorKind::NotFound,
+            format!("attachment stage '{}' has expired", record.stage_id),
+        ))
+    }
+
+    async fn read_record(
+        &self,
+        session_id: &str,
+        stage_id: &str,
+    ) -> MessageAttachmentStageResult<Option<MessageAttachmentStage>> {
+        let directory = self.stage_directory(session_id, stage_id)?;
+        let path = directory.join("manifest.json");
+        let bytes = match tokio::fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(MessageAttachmentStageError::internal(error)),
+        };
+        let mut record: MessageAttachmentStage =
+            serde_json::from_slice(&bytes).map_err(MessageAttachmentStageError::internal)?;
+        let final_path = directory.join("content");
+        let partial_path = directory.join("content.partial");
+        if tokio::fs::try_exists(&final_path)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            let metadata = tokio::fs::metadata(&final_path)
+                .await
+                .map_err(MessageAttachmentStageError::internal)?;
+            record.offset = metadata.len();
+            if record.sha256.is_none() {
+                record.sha256 = Some(
+                    sha256_file(&final_path)
+                        .await
+                        .map_err(MessageAttachmentStageError::internal)?,
+                );
+            }
+            if record.status == MessageAttachmentStageStatus::Uploading {
+                record.status = MessageAttachmentStageStatus::Ready;
+                self.write_record(&record).await?;
+            }
+        } else if tokio::fs::try_exists(&partial_path)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            record.offset = tokio::fs::metadata(partial_path)
+                .await
+                .map_err(MessageAttachmentStageError::internal)?
+                .len();
+        } else {
+            record.offset = 0;
+        }
+        Ok(Some(record))
+    }
+
+    async fn write_record(
+        &self,
+        record: &MessageAttachmentStage,
+    ) -> MessageAttachmentStageResult<()> {
+        let directory = self.stage_directory(&record.session_id, &record.stage_id)?;
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        let path = directory.join("manifest.json");
+        let temporary = directory.join("manifest.json.partial");
+        let document = serde_json::to_vec(record).map_err(MessageAttachmentStageError::internal)?;
+        let mut file = tokio::fs::File::create(&temporary)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        file.write_all(&document)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        file.sync_all()
+            .await
+            .map_err(MessageAttachmentStageError::internal)?;
+        drop(file);
+        let rename_error = match tokio::fs::rename(&temporary, &path).await {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        #[cfg(windows)]
+        if tokio::fs::try_exists(&path)
+            .await
+            .map_err(MessageAttachmentStageError::internal)?
+        {
+            // Windows does not replace an existing destination with rename.
+            // The per-stage lock keeps this short fallback window private to
+            // the current Runtime process; Unix keeps its atomic replacement.
+            tokio::fs::remove_file(&path)
+                .await
+                .map_err(MessageAttachmentStageError::internal)?;
+            return tokio::fs::rename(&temporary, &path)
+                .await
+                .map_err(MessageAttachmentStageError::internal);
+        }
+        let _ = tokio::fs::remove_file(&temporary).await;
+        Err(MessageAttachmentStageError::internal(rename_error))
+    }
+
+    async fn stage_lock(&self, session_id: &str, stage_id: &str) -> Arc<Mutex<()>> {
+        let key = format!("{}:{stage_id}", session_scope_key(session_id));
+        let mut locks = self.locks.lock().await;
+        if locks.len() >= 1024 {
+            locks.retain(|_, lock| lock.strong_count() > 0);
+        }
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
+    fn session_directory(&self, session_id: &str) -> PathBuf {
+        self.root.join(session_scope_key(session_id))
+    }
+
+    fn stage_directory(
+        &self,
+        session_id: &str,
+        stage_id: &str,
+    ) -> MessageAttachmentStageResult<PathBuf> {
+        validate_stage_identifier(stage_id, "attachment stage id")?;
+        Ok(self
+            .session_directory(session_id)
+            .join(stage_scope_key(stage_id)))
+    }
+}
+
+fn session_scope_key(session_id: &str) -> String {
+    format!("{:x}", Sha256::digest(session_id.as_bytes()))
+}
+
+fn stage_scope_key(stage_id: &str) -> String {
+    format!("{:x}", Sha256::digest(stage_id.as_bytes()))
+}
+
+fn validate_stage_identifier(value: &str, label: &str) -> MessageAttachmentStageResult<()> {
+    if value.is_empty() || value.len() > 128 {
+        return Err(stage_invalid(format!(
+            "{label} length must be 1..=128 bytes"
+        )));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(stage_invalid(format!(
+            "{label} may contain only ASCII letters, digits, -, _, ., and :"
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_sha256(value: &str) -> MessageAttachmentStageResult<String> {
+    let digest = value.trim().strip_prefix("sha256:").unwrap_or(value.trim());
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(stage_invalid(
+            "attachment sha256 must contain 64 hex digits",
+        ));
+    }
+    Ok(digest.to_ascii_lowercase())
+}
+
+fn stage_invalid(message: impl Into<String>) -> MessageAttachmentStageError {
+    MessageAttachmentStageError::new(MessageAttachmentStageErrorKind::InvalidArgument, message)
+}
+
+fn stage_exhausted(message: impl Into<String>) -> MessageAttachmentStageError {
+    MessageAttachmentStageError::new(MessageAttachmentStageErrorKind::ResourceExhausted, message)
+}
+
+async fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    use tokio::io::AsyncReadExt as _;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -260,10 +1020,52 @@ pub async fn prepare_message_input_attachments_for_workspace(
     attachments: Vec<MessageAttachmentInput>,
     limits: ModelInputLimits,
 ) -> Result<PreparedMessageAttachments, ModelInputError> {
+    prepare_message_input_imports_for_workspace(
+        configured_root,
+        workspace_root,
+        scope_id,
+        event_id,
+        attachments,
+        Vec::new(),
+        limits,
+    )
+    .await
+}
+
+pub async fn prepare_message_input_imports_for_workspace(
+    configured_root: impl AsRef<Path>,
+    workspace_root: Option<impl AsRef<Path>>,
+    scope_id: &str,
+    event_id: &str,
+    attachments: Vec<MessageAttachmentInput>,
+    staged_attachments: Vec<StagedMessageAttachmentSource>,
+    limits: ModelInputLimits,
+) -> Result<PreparedMessageAttachments, ModelInputError> {
     safe_storage_segment(event_id, "Event id")?;
+    let mut imports = Vec::with_capacity(attachments.len() + staged_attachments.len());
+    for attachment in attachments {
+        let size_bytes = attachment.data.len();
+        let sha256 = format!("{:x}", Sha256::digest(&attachment.data));
+        imports.push(MessageAttachmentImport {
+            name: attachment.name,
+            media_type: attachment.media_type,
+            size_bytes,
+            sha256,
+            source: MessageAttachmentImportSource::Inline(attachment.data),
+        });
+    }
+    for attachment in staged_attachments {
+        imports.push(MessageAttachmentImport {
+            name: attachment.name,
+            media_type: attachment.media_type,
+            size_bytes: attachment.size_bytes,
+            sha256: attachment.sha256,
+            source: MessageAttachmentImportSource::Staged(attachment.path),
+        });
+    }
     let mut usage = ModelInputUsage::default();
-    for attachment in &attachments {
-        usage.add(attachment.data.len())?;
+    for attachment in &imports {
+        usage.add(attachment.size_bytes)?;
     }
     validate_model_input_usage(usage, limits, "this import")?;
 
@@ -287,23 +1089,23 @@ pub async fn prepare_message_input_attachments_for_workspace(
             .join(event_id)
     });
     let mut prepared = PreparedMessageAttachments {
-        metadata: Vec::with_capacity(attachments.len()),
+        metadata: Vec::with_capacity(imports.len()),
         root,
         scope_key,
         event_id: event_id.to_string(),
-        digests: attachments
+        digests: imports
             .iter()
-            .map(|attachment| format!("{:x}", Sha256::digest(&attachment.data)))
+            .map(|attachment| attachment.sha256.clone())
             .collect(),
         workspace_root,
         workspace_directory,
     };
-    if attachments.is_empty() {
+    if imports.is_empty() {
         return Ok(prepared);
     }
 
     create_pending_manifest(&prepared).await?;
-    let result = prepare_message_attachment_files(&mut prepared, attachments).await;
+    let result = prepare_message_attachment_files(&mut prepared, imports).await;
     if let Err(error) = result {
         if let Err(cleanup_error) = discard_prepared_message_attachments(
             &prepared.root,
@@ -328,7 +1130,7 @@ pub async fn prepare_message_input_attachments_for_workspace(
 
 async fn prepare_message_attachment_files(
     prepared: &mut PreparedMessageAttachments,
-    attachments: Vec<MessageAttachmentInput>,
+    attachments: Vec<MessageAttachmentImport>,
 ) -> Result<(), ModelInputError> {
     let blob_directory = prepared.root.join("blobs").join(&prepared.scope_key);
     let event_directory = prepared
@@ -346,7 +1148,22 @@ async fn prepare_message_attachment_files(
         let media_type = safe_media_type(&attachment.media_type, &name)?;
         let digest = &prepared.digests[index];
         let blob_path = blob_directory.join(digest);
-        ensure_content_blob(&blob_path, &attachment.data, &prepared.event_id, index).await?;
+        match &attachment.source {
+            MessageAttachmentImportSource::Inline(data) => {
+                ensure_content_blob(&blob_path, data, &prepared.event_id, index).await?;
+            }
+            MessageAttachmentImportSource::Staged(path) => {
+                ensure_content_blob_from_stage(
+                    &blob_path,
+                    path,
+                    attachment.size_bytes,
+                    digest,
+                    &prepared.event_id,
+                    index,
+                )
+                .await?;
+            }
+        }
         let event_path = event_directory.join(digest);
         if !tokio::fs::try_exists(&event_path).await? {
             // A concurrent rejected import may unlink the shared blob between
@@ -355,8 +1172,23 @@ async fn prepare_message_attachment_files(
             match tokio::fs::hard_link(&blob_path, &event_path).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    ensure_content_blob(&blob_path, &attachment.data, &prepared.event_id, index)
-                        .await?;
+                    match &attachment.source {
+                        MessageAttachmentImportSource::Inline(data) => {
+                            ensure_content_blob(&blob_path, data, &prepared.event_id, index)
+                                .await?;
+                        }
+                        MessageAttachmentImportSource::Staged(path) => {
+                            ensure_content_blob_from_stage(
+                                &blob_path,
+                                path,
+                                attachment.size_bytes,
+                                digest,
+                                &prepared.event_id,
+                                index,
+                            )
+                            .await?;
+                        }
+                    }
                     tokio::fs::hard_link(&blob_path, &event_path).await?;
                 }
                 Err(error) if tokio::fs::try_exists(&event_path).await.unwrap_or(false) => {
@@ -382,13 +1214,28 @@ async fn prepare_message_attachment_files(
                 return Err("workspace attachment directory escaped the Agent Workspace".into());
             }
             let workspace_path = attachment_directory.join(&name);
-            ensure_workspace_attachment_copy(
-                &workspace_path,
-                &attachment.data,
-                &prepared.event_id,
-                index,
-            )
-            .await?;
+            match &attachment.source {
+                MessageAttachmentImportSource::Inline(data) => {
+                    ensure_workspace_attachment_copy(
+                        &workspace_path,
+                        data,
+                        &prepared.event_id,
+                        index,
+                    )
+                    .await?;
+                }
+                MessageAttachmentImportSource::Staged(path) => {
+                    ensure_workspace_attachment_copy_from_stage(
+                        &workspace_path,
+                        path,
+                        attachment.size_bytes,
+                        digest,
+                        &prepared.event_id,
+                        index,
+                    )
+                    .await?;
+                }
+            }
             Some(workspace_path)
         } else {
             None
@@ -397,7 +1244,7 @@ async fn prepare_message_attachment_files(
             "id": format!("attachment_{digest}"),
             "name": name,
             "media_type": media_type,
-            "size_bytes": attachment.data.len(),
+            "size_bytes": attachment.size_bytes,
             "sha256": digest,
             "storage_path": event_path.to_string_lossy(),
         });
@@ -449,6 +1296,41 @@ async fn ensure_workspace_attachment_copy(
         return Err(error.into());
     }
     if let Err(error) = file.sync_data().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&temporary_path, path).await {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+async fn ensure_workspace_attachment_copy_from_stage(
+    path: &Path,
+    source: &Path,
+    expected_size: usize,
+    expected_digest: &str,
+    event_id: &str,
+    index: usize,
+) -> Result<(), ModelInputError> {
+    if tokio::fs::try_exists(path).await? {
+        verify_staged_file(path, expected_size, expected_digest).await?;
+        return Ok(());
+    }
+    verify_staged_file(source, expected_size, expected_digest).await?;
+    let temporary_path = path.with_extension(format!("morphz-{event_id}-{index}.partial"));
+    if let Err(error) = tokio::fs::copy(source, &temporary_path).await {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&temporary_path)
+        .await?;
+    if let Err(error) = file.sync_all().await {
         drop(file);
         let _ = tokio::fs::remove_file(&temporary_path).await;
         return Err(error.into());
@@ -518,6 +1400,88 @@ async fn ensure_content_blob(
             Err(error.into())
         }
     }
+}
+
+async fn ensure_content_blob_from_stage(
+    blob_path: &Path,
+    source: &Path,
+    expected_size: usize,
+    expected_digest: &str,
+    event_id: &str,
+    index: usize,
+) -> Result<(), ModelInputError> {
+    verify_staged_file(source, expected_size, expected_digest).await?;
+    if tokio::fs::try_exists(blob_path).await? {
+        return Ok(());
+    }
+    let temporary_path = blob_path.with_file_name(format!(
+        ".{expected_digest}.{event_id}.{index}.staged.partial"
+    ));
+    if let Err(error) = tokio::fs::copy(source, &temporary_path).await {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    if let Err(error) = verify_staged_file(&temporary_path, expected_size, expected_digest).await {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error);
+    }
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&temporary_path)
+        .await?;
+    if let Err(error) = file.sync_all().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+        return Err(error.into());
+    }
+    drop(file);
+    match tokio::fs::rename(&temporary_path, blob_path).await {
+        Ok(()) => Ok(()),
+        Err(error) if tokio::fs::try_exists(blob_path).await.unwrap_or(false) => {
+            let _ = tokio::fs::remove_file(&temporary_path).await;
+            tracing::debug!(
+                path = %blob_path.display(),
+                error = %error,
+                event_code = "model_input.concurrent_staged_blob_reused",
+                "Staged message-input content blob was reused from a concurrent import"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temporary_path).await;
+            Err(error.into())
+        }
+    }
+}
+
+async fn verify_staged_file(
+    path: &Path,
+    expected_size: usize,
+    expected_digest: &str,
+) -> Result<(), ModelInputError> {
+    let metadata = tokio::fs::symlink_metadata(path).await?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "staged attachment '{}' is not an immutable regular file",
+            path.display()
+        )
+        .into());
+    }
+    if metadata.len() != expected_size as u64 {
+        return Err(format!(
+            "staged attachment '{}' failed size validation",
+            path.display()
+        )
+        .into());
+    }
+    if sha256_file(path).await? != expected_digest {
+        return Err(format!(
+            "staged attachment '{}' failed digest validation",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 async fn create_pending_manifest(
@@ -955,6 +1919,302 @@ fn safe_media_type(value: &str, name: &str) -> Result<String, ModelInputError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn attachment_stage_limits() -> ModelInputLimits {
+        ModelInputLimits {
+            max_attachments: Some(8),
+            max_attachment_bytes: Some(1024),
+            max_total_bytes: Some(4096),
+        }
+    }
+
+    fn new_attachment_stage(
+        bytes: &[u8],
+        stage_id: &str,
+        client_message_id: &str,
+    ) -> NewMessageAttachmentStage {
+        NewMessageAttachmentStage {
+            stage_id: stage_id.to_string(),
+            principal_id: "principal-1".to_string(),
+            session_id: "session-1".to_string(),
+            client_message_id: client_message_id.to_string(),
+            name: "quarterly report.pdf".to_string(),
+            media_type: "application/pdf".to_string(),
+            size_bytes: bytes.len() as u64,
+            expected_sha256: Some(format!("{:x}", Sha256::digest(bytes))),
+        }
+    }
+
+    async fn upload_stage_bytes(
+        store: &MessageAttachmentStageStore,
+        stage_id: &str,
+        offset: u64,
+        bytes: &[u8],
+    ) -> MessageAttachmentStageResult<MessageAttachmentStage> {
+        store
+            .upload(
+                "principal-1",
+                "session-1",
+                stage_id,
+                offset,
+                futures_util::stream::iter([Ok::<_, String>(bytes.to_vec())]),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn attachment_stage_upload_resumes_after_restart_and_consumes_idempotently() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bytes = b"durable-pdf-payload";
+        let store =
+            MessageAttachmentStageStore::new(root.path(), Duration::from_secs(3600)).unwrap();
+        let created = store
+            .create(
+                new_attachment_stage(bytes, "stage-1", "client-message-1"),
+                attachment_stage_limits(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status, MessageAttachmentStageStatus::Uploading);
+        assert_eq!(created.offset, 0);
+
+        let partial = upload_stage_bytes(&store, "stage-1", 0, &bytes[..7])
+            .await
+            .unwrap();
+        assert_eq!(partial.offset, 7);
+        assert_eq!(partial.status, MessageAttachmentStageStatus::Uploading);
+
+        let restarted =
+            MessageAttachmentStageStore::new(root.path(), Duration::from_secs(3600)).unwrap();
+        assert_eq!(
+            restarted
+                .inspect("principal-1", "session-1", "stage-1")
+                .await
+                .unwrap()
+                .offset,
+            7
+        );
+        let conflict = upload_stage_bytes(&restarted, "stage-1", 0, &bytes[7..])
+            .await
+            .unwrap_err();
+        assert_eq!(conflict.kind, MessageAttachmentStageErrorKind::Conflict);
+
+        let ready = upload_stage_bytes(&restarted, "stage-1", 7, &bytes[7..])
+            .await
+            .unwrap();
+        assert_eq!(ready.status, MessageAttachmentStageStatus::Ready);
+        assert_eq!(ready.offset, bytes.len() as u64);
+        let expected_digest = format!("{:x}", Sha256::digest(bytes));
+        assert_eq!(ready.sha256.as_deref(), Some(expected_digest.as_str()));
+
+        let forbidden = restarted
+            .inspect("principal-2", "session-1", "stage-1")
+            .await
+            .unwrap_err();
+        assert_eq!(forbidden.kind, MessageAttachmentStageErrorKind::Forbidden);
+        let wrong_draft = restarted
+            .resolve_for_message(
+                "principal-1",
+                "session-1",
+                "client-message-2",
+                &["stage-1".to_string()],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(wrong_draft.kind, MessageAttachmentStageErrorKind::Forbidden);
+
+        let source = restarted
+            .resolve_for_message(
+                "principal-1",
+                "session-1",
+                "client-message-1",
+                &["stage-1".to_string(), "stage-1".to_string()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            source.len(),
+            1,
+            "duplicate stage ids must not duplicate input"
+        );
+        assert_eq!(tokio::fs::read(&source[0].path).await.unwrap(), bytes);
+
+        restarted
+            .mark_consumed(
+                "principal-1",
+                "session-1",
+                "client-message-1",
+                &["stage-1".to_string()],
+                "event-1",
+            )
+            .await
+            .unwrap();
+        restarted
+            .mark_consumed(
+                "principal-1",
+                "session-1",
+                "client-message-1",
+                &["stage-1".to_string()],
+                "event-1",
+            )
+            .await
+            .unwrap();
+        let rebound = restarted
+            .mark_consumed(
+                "principal-1",
+                "session-1",
+                "client-message-1",
+                &["stage-1".to_string()],
+                "event-2",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(rebound.kind, MessageAttachmentStageErrorKind::Conflict);
+        assert_eq!(
+            restarted
+                .inspect("principal-1", "session-1", "stage-1")
+                .await
+                .unwrap()
+                .consumed_event_id
+                .as_deref(),
+            Some("event-1")
+        );
+        assert_eq!(
+            restarted
+                .cancel("principal-1", "session-1", "stage-1")
+                .await
+                .unwrap_err()
+                .kind,
+            MessageAttachmentStageErrorKind::Conflict
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_stage_rejects_bad_digest_and_reaps_expired_drafts() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bytes = b"expected";
+        let store =
+            MessageAttachmentStageStore::new(root.path(), Duration::from_secs(3600)).unwrap();
+        store
+            .create(
+                new_attachment_stage(bytes, "stage-bad-digest", "client-message-1"),
+                attachment_stage_limits(),
+            )
+            .await
+            .unwrap();
+        let mismatch = upload_stage_bytes(&store, "stage-bad-digest", 0, b"mismatch")
+            .await
+            .unwrap_err();
+        assert_eq!(mismatch.kind, MessageAttachmentStageErrorKind::Conflict);
+        let reset = store
+            .inspect("principal-1", "session-1", "stage-bad-digest")
+            .await
+            .unwrap();
+        assert_eq!(reset.offset, 0);
+        assert_eq!(reset.status, MessageAttachmentStageStatus::Uploading);
+
+        let expiring = MessageAttachmentStageStore::new(root.path(), Duration::ZERO).unwrap();
+        expiring
+            .create(
+                new_attachment_stage(b"x", "stage-expired", "client-message-2"),
+                attachment_stage_limits(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(expiring.reap_expired().await.unwrap(), 1);
+        assert_eq!(
+            expiring
+                .inspect("principal-1", "session-1", "stage-expired")
+                .await
+                .unwrap_err()
+                .kind,
+            MessageAttachmentStageErrorKind::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn staged_and_inline_attachments_materialize_without_aliasing_draft_storage() {
+        let root = tempfile::TempDir::new().unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        let staged_bytes = b"staged-pdf";
+        let store =
+            MessageAttachmentStageStore::new(root.path(), Duration::from_secs(3600)).unwrap();
+        store
+            .create(
+                new_attachment_stage(staged_bytes, "stage-import", "client-message-import"),
+                attachment_stage_limits(),
+            )
+            .await
+            .unwrap();
+        upload_stage_bytes(&store, "stage-import", 0, staged_bytes)
+            .await
+            .unwrap();
+        let staged = store
+            .resolve_for_message(
+                "principal-1",
+                "session-1",
+                "client-message-import",
+                &["stage-import".to_string()],
+            )
+            .await
+            .unwrap();
+        let draft_path = staged[0].path.clone();
+
+        let prepared = prepare_message_input_imports_for_workspace(
+            root.path(),
+            Some(workspace.path()),
+            "session-1",
+            "event-import",
+            vec![MessageAttachmentInput {
+                name: "notes.txt".to_string(),
+                media_type: "text/plain".to_string(),
+                data: b"inline-notes".to_vec(),
+            }],
+            staged,
+            attachment_stage_limits(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.metadata().len(), 2);
+        let staged_metadata = prepared
+            .metadata()
+            .iter()
+            .find(|item| item["name"] == "quarterly report.pdf")
+            .unwrap();
+        let immutable_path = PathBuf::from(staged_metadata["storage_path"].as_str().unwrap());
+        let workspace_path = PathBuf::from(staged_metadata["workspace_path"].as_str().unwrap());
+        assert_ne!(immutable_path, draft_path);
+        assert_ne!(workspace_path, draft_path);
+        assert_eq!(
+            tokio::fs::read(&immutable_path).await.unwrap(),
+            staged_bytes
+        );
+        assert_eq!(
+            tokio::fs::read(&workspace_path).await.unwrap(),
+            staged_bytes
+        );
+
+        tokio::fs::write(&workspace_path, b"agent-edited")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(&immutable_path).await.unwrap(),
+            staged_bytes
+        );
+        assert_eq!(tokio::fs::read(&draft_path).await.unwrap(), staged_bytes);
+        tokio::fs::write(&draft_path, b"local-draft-tamper")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(&immutable_path).await.unwrap(),
+            staged_bytes,
+            "Event storage must not share an inode with mutable staging storage"
+        );
+        prepared.discard().await.unwrap();
+        assert!(!tokio::fs::try_exists(&immutable_path).await.unwrap());
+        assert!(!tokio::fs::try_exists(&workspace_path).await.unwrap());
+        assert!(tokio::fs::try_exists(&draft_path).await.unwrap());
+    }
 
     #[tokio::test]
     async fn model_input_storage_keeps_bytes_out_of_public_reference_and_verifies_digest() {

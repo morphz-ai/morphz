@@ -2,7 +2,7 @@
 
 > 本文描述适合外部客户端和 AI agent 使用的稳定最小接口面：Context、Session、Message、Event 和单 Session WebSocket；同时定义只面向 Runtime Operator 的只读全局 Overview。
 > 实现依据：`morphz/src/web.rs`、`morphz/src/sdk.rs`、`sdk/typescript/src/index.ts`。  
-> 最后按实现重新导出：2026-07-31。
+> 最后按实现重新导出：2026-09-02。
 > `/api/execution-*`、`/api/edge/*`、`/api/objectives`、Inspector/调度/记忆维护等端点属于内部控制面，不在本文的兼容性承诺内。
 
 ## 1. 给调用方的最短说明
@@ -12,7 +12,8 @@ Morphz 是异步会话 Runtime。调用方应：
 1. 启动服务：`morphz serve`，默认地址 `http://127.0.0.1:8080`。
 2. 创建或选择一个 Session。
 3. 为每条用户消息生成唯一且可重试复用的 `client_message_id`。
-4. `POST /api/sessions/{session_id}/messages`；`202` 只表示消息已接受，不表示模型已回答。
+4. 有文件时先流式上传到 `/attachment-stages`；随后
+   `POST /api/sessions/{session_id}/messages`，`202` 只表示消息已接受，不表示模型已回答。
 5. 使用事件轮询或 WebSocket 等待 `topic == "chat/reply"`，并读取 `payload.text`。
 6. WebSocket 断线、丢事件或进程重启后，以 HTTP Event History 作为权威恢复来源。
 
@@ -22,6 +23,9 @@ Morphz 是异步会话 Runtime。调用方应：
 - `POST /api/sessions/{session_id}/messages`
 - `GET /api/sessions/{session_id}/events`
 - `GET /ws?session_id={session_id}`
+
+需要附件恢复时，再实现 create/get/list/upload/delete 五个 attachment-stage 操作；这些端点
+仍属于同一 Principal-scoped Session Service，不要求客户端接触 Artifact Store 路径。
 
 ## 2. 通用约定
 
@@ -266,6 +270,59 @@ PATCH Body：
 
 ### 发送消息
 
+对于文件，推荐先走持久暂存，再发送只含引用的消息。暂存不进入 Event Ledger；它绑定
+`Principal + Session + client_message_id`，直到消息被 Runtime 原子接受后才标记为已消费。
+
+```http
+POST /api/sessions/{session_id}/attachment-stages
+Content-Type: application/json
+
+{
+  "stage_id": "caller-generated-stage-id",
+  "client_message_id": "caller-generated-unique-id",
+  "name": "manual.pdf",
+  "media_type": "application/pdf",
+  "size_bytes": 123456,
+  "expected_sha256": "<optional 64-hex digest>"
+}
+```
+
+`stage_id` 可省略，由服务生成。声明相同的 `stage_id` 可幂等重试；声明内容不同则返回
+`409 Conflict`。字节使用原始二进制流上传，不使用 JSON Base64：
+
+```http
+PUT /api/sessions/{session_id}/attachment-stages/{stage_id}/content
+X-Morphz-Upload-Offset: 0
+Content-Type: application/octet-stream
+
+<binary bytes>
+```
+
+每次响应都返回权威 `offset` 和 `status`。断线后先查询再从该 offset 续传；旧 offset 返回
+`409`，不会重写已经确认的字节：
+
+```http
+GET    /api/sessions/{session_id}/attachment-stages/{stage_id}
+GET    /api/sessions/{session_id}/attachment-stages?client_message_id={id}
+DELETE /api/sessions/{session_id}/attachment-stages/{stage_id}
+```
+
+状态为 `uploading | ready | consumed`。只有 `ready` 或同一消息已经消费的 stage 可用于发送；
+已消费 stage 不可删除。未绑定草稿按 `[model_input].attachment_stage_ttl` 回收，默认 7 天。
+Event 绑定后，Event 自己的不可变附件引用继续保留，不依赖 staging 生命周期。
+
+使用暂存附件发送：
+
+```json
+{
+  "text": "请检查这个文件",
+  "client_message_id": "caller-generated-unique-id",
+  "staged_attachment_ids": ["caller-generated-stage-id"]
+}
+```
+
+Runtime 仍兼容旧客户端的内联 Base64：
+
 ```http
 POST /api/sessions/{session_id}/messages
 ```
@@ -341,14 +398,19 @@ POST /api/sessions/{session_id}/messages
 - 发送模式是单次请求属性；它不会修改 Runtime 的默认配置，并会固化在 `chat/user_message` Event 中以保证重放语义稳定。
 - `references` 是稳定、结构化的对象引用。当前只支持 `{ "kind": "session", "session_id": "..." }`，单条消息最多 64 个；Runtime 会重新校验 Principal 可见范围、同 Agent 边界和归档状态，并在 Event 中补齐权威标题、Context 和 Agent 信息。
 - Session 引用不读取目标 Session 的消息历史，不导入另一 Context 的 Mind，不激活目标，也不创建 Session；它只向当前 Agent 提供可用于 `send_message` / `session_signal` 的稳定身份。
-- `attachments` 可省略，最多 8 个。
-- 单个附件解码后最多 20 MiB，一条消息的附件解码后合计最多 40 MiB。
+- `attachments` 与 `staged_attachment_ids` 均可省略，也可在同一消息中混用；顺序分别保持，
+  Runtime 会在持久化前统一执行数量和总大小策略。
+- 附件上限由 `[model_input]` 配置。默认单次导入最多 128 个、单个 128 MiB、合计
+  256 MiB；Provider 的物理模型请求上限仍可能更严格。
 - `name` 不能为空，最长 255 个字符。服务只保留文件名部分，例如 `../diagram.png` 会归一化为 `diagram.png`。
 - `media_type` 为空时按 `application/octet-stream` 处理；最长 128 个字符，只允许 ASCII 字母、数字和 `/ . + -`。
 - `data_base64` 必须是标准 Base64，或带 `data:*;base64,` 前缀的 Data URL。
-- HTTP JSON Body 上限为 64 MiB。Base64 会比原始文件约增大三分之一，调用方仍需同时满足 Body 和解码后附件限制。
+- 旧 JSON Base64 Body 上限由同一导入策略推导；Base64 会比原始文件约增大三分之一。
+  新客户端应使用流式 staging，避免浏览器、Gateway 与 Runtime 同时保留整份 Base64。
 
-图片没有单独的上传端点，也不使用 `multipart/form-data`；它与消息一起作为 JSON Base64 附件提交。当前附件机制也接受非图片文件，但能否被模型直接理解取决于所用模型和 Provider。
+暂存端点接受图片和其他文件，不使用 `multipart/form-data`。Runtime 只负责安全存储、完整性
+校验与 Agent Workspace 物化；PDF、DOCX 等文件由 Agent 自行选择工具解析，不在 Runtime
+内置语义解析器。旧客户端仍可将图片随消息作为 JSON Base64 提交。
 
 响应：
 

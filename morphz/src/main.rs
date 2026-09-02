@@ -4065,6 +4065,7 @@ async fn run_once(
                 actor: "User".to_string(),
                 client_message_id: Some(generated_id("cli")),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness,
                 dispatch_mode: None,
@@ -4445,6 +4446,7 @@ async fn run_interactive(
                     actor: "User-Shafreeck".to_string(),
                     client_message_id: Some(client_message_id),
                     attachments: Vec::new(),
+                    staged_attachment_ids: Vec::new(),
                     references: Vec::new(),
                     // `--harness` selects the first real Evaluation, whether
                     // its prompt came from argv or was typed interactively.

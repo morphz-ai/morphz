@@ -849,6 +849,10 @@ pub struct ModelInputConfig {
     /// as abandoned. This protects an import still running in another Runtime
     /// worker while allowing crash leftovers to be reclaimed deterministically.
     pub pending_import_grace: HumanDuration,
+    /// Retention window for a verified attachment draft that has not yet been
+    /// bound to a message Event. Consumed stages may be reaped after the same
+    /// window because immutable Event-owned links retain their bytes.
+    pub attachment_stage_ttl: HumanDuration,
 }
 
 impl Default for ModelInputConfig {
@@ -866,6 +870,9 @@ impl Default for ModelInputConfig {
             // complete within seconds. One hour is a deliberately conservative
             // multi-worker fencing window and remains operator-configurable.
             pending_import_grace: HumanDuration::from_secs(60 * 60),
+            // A week survives ordinary browser/device interruptions without
+            // turning abandoned drafts into unbounded Artifact Store growth.
+            attachment_stage_ttl: HumanDuration::from_secs(7 * 24 * 60 * 60),
         }
     }
 }
@@ -4871,6 +4878,7 @@ max_import_bytes = 536870912
 max_artifacts_per_request = 192
 max_request_bytes = 402653184
 pending_import_grace = "2h"
+attachment_stage_ttl = "14d"
 "#,
         )
         .unwrap();
@@ -4880,6 +4888,10 @@ pending_import_grace = "2h"
         assert_eq!(
             config.model_input.pending_import_grace.as_secs(),
             2 * 60 * 60
+        );
+        assert_eq!(
+            config.model_input.attachment_stage_ttl.as_secs(),
+            14 * 24 * 60 * 60
         );
         assert!(
             config.model_input.dashboard_body_limit_bytes() > config.model_input.max_import_bytes

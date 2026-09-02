@@ -5681,6 +5681,7 @@ async fn submit_prompt(
                 actor: "User".to_string(),
                 client_message_id: Some(message_id),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness,
                 dispatch_mode,

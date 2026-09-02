@@ -26,9 +26,9 @@ use crate::runtime::{
 };
 use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, CancelEdgeBackgroundExecutionCommand,
-    ClaimEdgeCommand, ConnectExecutionNodeCommand, CreateNodePairingCodeCommand,
-    CreateObjectiveCommand, ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand,
-    FinishEdgeBackgroundExecutionCommand, FinishEdgeCommand,
+    ClaimEdgeCommand, ConnectExecutionNodeCommand, CreateMessageAttachmentStageCommand,
+    CreateNodePairingCodeCommand, CreateObjectiveCommand, ExactHarnessRef, ExecutionJobQuery,
+    ExecutionNodeHeartbeatCommand, FinishEdgeBackgroundExecutionCommand, FinishEdgeCommand,
     HeartbeatEdgeBackgroundExecutionCommand, HeartbeatEdgeCommand, MessageAttachmentInput,
     MorphzSdk, OAuthProviderSetup, ObjectiveRequestOrigin, PairExecutionNodeCommand,
     ReserveEdgeBackgroundExecutionCommand, RetryDialogueTurnCommand, RotateExecutionNodeKeyCommand,
@@ -301,6 +301,8 @@ struct SendMessageRequest {
     #[serde(default)]
     attachments: Vec<IncomingMessageAttachment>,
     #[serde(default)]
+    staged_attachment_ids: Vec<String>,
+    #[serde(default)]
     references: Vec<crate::sdk::MessageReferenceInput>,
     #[serde(default)]
     harness: Option<crate::harness::ExactHarnessRef>,
@@ -323,6 +325,22 @@ struct IncomingMessageAttachment {
     name: String,
     media_type: String,
     data_base64: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateMessageAttachmentStageRequest {
+    stage_id: Option<String>,
+    client_message_id: String,
+    name: String,
+    media_type: String,
+    size_bytes: u64,
+    expected_sha256: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MessageAttachmentStagesQuery {
+    token: Option<String>,
+    client_message_id: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1324,6 +1342,20 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/messages",
                 post(handle_send_message),
+            )
+            .route(
+                "/api/sessions/:session_id/attachment-stages",
+                get(handle_list_message_attachment_stages)
+                    .post(handle_create_message_attachment_stage),
+            )
+            .route(
+                "/api/sessions/:session_id/attachment-stages/:stage_id",
+                get(handle_get_message_attachment_stage)
+                    .delete(handle_cancel_message_attachment_stage),
+            )
+            .route(
+                "/api/sessions/:session_id/attachment-stages/:stage_id/content",
+                axum::routing::put(handle_upload_message_attachment_stage),
             )
             .route(
                 "/api/sessions/:session_id/dialogue-turns/:root_turn_id/retry",
@@ -3525,6 +3557,7 @@ fn unauthorized_response() -> axum::response::Response {
 fn sdk_error_response(error: SdkError) -> axum::response::Response {
     let status = match error.code {
         SdkErrorCode::InvalidArgument => StatusCode::BAD_REQUEST,
+        SdkErrorCode::ResourceExhausted => StatusCode::PAYLOAD_TOO_LARGE,
         SdkErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
         SdkErrorCode::Forbidden => StatusCode::FORBIDDEN,
         SdkErrorCode::NotFound => StatusCode::NOT_FOUND,
@@ -7258,6 +7291,7 @@ async fn handle_send_message(
     }
     if request.text.trim().is_empty()
         && request.attachments.is_empty()
+        && request.staged_attachment_ids.is_empty()
         && request.references.is_empty()
     {
         return error_response(
@@ -7333,6 +7367,7 @@ async fn handle_send_message(
                 actor: "User-API".to_string(),
                 client_message_id: Some(client_message_id),
                 attachments,
+                staged_attachment_ids: request.staged_attachment_ids,
                 references: request.references,
                 harness: request.harness,
                 dispatch_mode: request.dispatch_mode,
@@ -7367,6 +7402,147 @@ async fn handle_send_message(
             }
             response
         }
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_create_message_attachment_stage(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<CreateMessageAttachmentStageRequest>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let stage_id = request
+        .stage_id
+        .unwrap_or_else(|| api_id("attachment-stage"));
+    match state
+        .sdk
+        .create_message_attachment_stage(
+            &principal,
+            CreateMessageAttachmentStageCommand {
+                session_id,
+                stage_id,
+                client_message_id: request.client_message_id,
+                name: request.name,
+                media_type: request.media_type,
+                size_bytes: request.size_bytes,
+                expected_sha256: request.expected_sha256,
+            },
+        )
+        .await
+    {
+        Ok(stage) => Json(stage).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_message_attachment_stages(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<MessageAttachmentStagesQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_message_attachment_stages(&principal, &session_id, query.client_message_id.as_deref())
+        .await
+    {
+        Ok(stages) => Json(json!({ "stages": stages })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_get_message_attachment_stage(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, stage_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .inspect_message_attachment_stage(&principal, &session_id, &stage_id)
+        .await
+    {
+        Ok(stage) => Json(stage).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_upload_message_attachment_stage(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, stage_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    body: Body,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let offset = match required_u64_header(&headers, "x-morphz-upload-offset") {
+        Ok(offset) => offset,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .upload_message_attachment_stage(
+            &principal,
+            &session_id,
+            &stage_id,
+            offset,
+            body.into_data_stream(),
+        )
+        .await
+    {
+        Ok(stage) => Json(stage).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_cancel_message_attachment_stage(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, stage_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .cancel_message_attachment_stage(&principal, &session_id, &stage_id)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -8948,11 +9124,17 @@ mod tests {
     async fn test_state_at_with_config_client_auth_and_secrets(
         path: &std::path::Path,
         start_workers: bool,
-        config: AppConfig,
+        mut config: AppConfig,
         client: Arc<dyn Client>,
         auth_registry: Option<AuthAdapterRegistry>,
         secret_store: Option<Arc<SecretStore>>,
     ) -> (Arc<AppState>, MorphzRuntime) {
+        if config.background_task.artifact_dir == ".morphz/artifacts" {
+            config.background_task.artifact_dir = path
+                .with_extension("artifacts")
+                .to_string_lossy()
+                .into_owned();
+        }
         let secret_store = secret_store.unwrap_or_else(|| {
             Arc::new(
                 SecretStore::new(
@@ -10149,6 +10331,7 @@ mod tests {
                 text: "I am user 1".to_string(),
                 client_message_id: Some("forged-identity-message".to_string()),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
@@ -10462,6 +10645,7 @@ mod tests {
                 text: "operator must not impersonate".to_string(),
                 client_message_id: Some("operator-impersonation-message".to_string()),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
@@ -13314,6 +13498,7 @@ account = "xai-account"
                 text: "evaluate this through the Mesh".to_string(),
                 client_message_id: Some("coordination-required-message".to_string()),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
@@ -13386,6 +13571,192 @@ account = "xai-account"
     }
 
     #[tokio::test]
+    async fn attachment_stage_http_flow_resumes_and_binds_once_to_the_message_event() {
+        let (state, runtime) = test_state().await;
+        let create_session = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("attachment-stage-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Attachment stage session".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create_session.status(), StatusCode::CREATED);
+
+        let bytes = b"streamed-document-payload";
+        let digest = format!("{:x}", sha2::Sha256::digest(bytes));
+        let create_stage = handle_create_message_attachment_stage(
+            State(Arc::clone(&state)),
+            Path("attachment-stage-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateMessageAttachmentStageRequest {
+                stage_id: Some("attachment-stage-http-1".to_string()),
+                client_message_id: "attachment-client-message-1".to_string(),
+                name: "manual.pdf".to_string(),
+                media_type: "application/pdf".to_string(),
+                size_bytes: bytes.len() as u64,
+                expected_sha256: Some(digest.clone()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create_stage.status(), StatusCode::OK);
+
+        let mut first_headers = HeaderMap::new();
+        first_headers.insert("x-morphz-upload-offset", "0".parse().unwrap());
+        let first_upload = handle_upload_message_attachment_stage(
+            State(Arc::clone(&state)),
+            Path((
+                "attachment-stage-session".to_string(),
+                "attachment-stage-http-1".to_string(),
+            )),
+            first_headers,
+            Query(AuthQuery::default()),
+            Body::from(bytes[..9].to_vec()),
+        )
+        .await
+        .into_response();
+        assert_eq!(first_upload.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first_upload.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_stage: crate::model_input::MessageAttachmentStage =
+            serde_json::from_slice(&first_body).unwrap();
+        assert_eq!(first_stage.offset, 9);
+        assert_eq!(
+            first_stage.status,
+            crate::model_input::MessageAttachmentStageStatus::Uploading
+        );
+
+        let mut stale_headers = HeaderMap::new();
+        stale_headers.insert("x-morphz-upload-offset", "0".parse().unwrap());
+        let stale_upload = handle_upload_message_attachment_stage(
+            State(Arc::clone(&state)),
+            Path((
+                "attachment-stage-session".to_string(),
+                "attachment-stage-http-1".to_string(),
+            )),
+            stale_headers,
+            Query(AuthQuery::default()),
+            Body::from(bytes[9..].to_vec()),
+        )
+        .await
+        .into_response();
+        assert_eq!(stale_upload.status(), StatusCode::CONFLICT);
+
+        let mut remaining_headers = HeaderMap::new();
+        remaining_headers.insert("x-morphz-upload-offset", "9".parse().unwrap());
+        let completed_upload = handle_upload_message_attachment_stage(
+            State(Arc::clone(&state)),
+            Path((
+                "attachment-stage-session".to_string(),
+                "attachment-stage-http-1".to_string(),
+            )),
+            remaining_headers,
+            Query(AuthQuery::default()),
+            Body::from(bytes[9..].to_vec()),
+        )
+        .await
+        .into_response();
+        assert_eq!(completed_upload.status(), StatusCode::OK);
+        let completed_body = axum::body::to_bytes(completed_upload.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let completed_stage: crate::model_input::MessageAttachmentStage =
+            serde_json::from_slice(&completed_body).unwrap();
+        assert_eq!(
+            completed_stage.status,
+            crate::model_input::MessageAttachmentStageStatus::Ready
+        );
+        assert_eq!(completed_stage.sha256.as_deref(), Some(digest.as_str()));
+
+        let listed = handle_list_message_attachment_stages(
+            State(Arc::clone(&state)),
+            Path("attachment-stage-session".to_string()),
+            HeaderMap::new(),
+            Query(MessageAttachmentStagesQuery {
+                token: None,
+                client_message_id: Some("attachment-client-message-1".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed_body = axum::body::to_bytes(listed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed_json: serde_json::Value = serde_json::from_slice(&listed_body).unwrap();
+        assert_eq!(listed_json["stages"].as_array().unwrap().len(), 1);
+
+        for expected_status in [StatusCode::ACCEPTED, StatusCode::OK] {
+            let sent = handle_send_message(
+                State(Arc::clone(&state)),
+                Path("attachment-stage-session".to_string()),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(SendMessageRequest {
+                    text: String::new(),
+                    client_message_id: Some("attachment-client-message-1".to_string()),
+                    attachments: Vec::new(),
+                    staged_attachment_ids: vec!["attachment-stage-http-1".to_string()],
+                    references: Vec::new(),
+                    harness: None,
+                    dispatch_mode: None,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    target_id: None,
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(sent.status(), expected_status);
+        }
+
+        let user_events = runtime
+            .query_events(QueryFilter {
+                session_id: Some("attachment-stage-session".to_string()),
+                topic: Some("chat/user_message".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(user_events.len(), 1);
+        let attachment = &user_events[0].payload["attachments"][0];
+        assert_eq!(attachment["name"], "manual.pdf");
+        assert_eq!(attachment["sha256"], digest);
+        assert_eq!(
+            tokio::fs::read(attachment["storage_path"].as_str().unwrap())
+                .await
+                .unwrap(),
+            bytes
+        );
+        let consumed = runtime
+            .message_attachment_stages()
+            .inspect(
+                &runtime.identity().principal_id,
+                "attachment-stage-session",
+                "attachment-stage-http-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            consumed.status,
+            crate::model_input::MessageAttachmentStageStatus::Consumed
+        );
+        assert_eq!(
+            consumed.consumed_event_id.as_deref(),
+            Some(user_events[0].id.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn session_message_endpoint_is_idempotent_and_routes_to_session() {
         let (state, runtime) = test_state().await;
         let create = handle_create_session(
@@ -13444,6 +13815,7 @@ account = "xai-account"
             Json(SendMessageRequest {
                 text: "too many".to_string(),
                 client_message_id: Some("client-message-too-many".to_string()),
+                staged_attachment_ids: Vec::new(),
                 attachments: (0..129)
                     .map(|index| IncomingMessageAttachment {
                         name: format!("shot-{index}.png"),
@@ -13477,6 +13849,7 @@ account = "xai-account"
                 Json(SendMessageRequest {
                     text: "hello".to_string(),
                     client_message_id: Some("client-message-1".to_string()),
+                    staged_attachment_ids: Vec::new(),
                     attachments: vec![IncomingMessageAttachment {
                         name: "hello.png".to_string(),
                         media_type: "image/png".to_string(),
@@ -13513,6 +13886,7 @@ account = "xai-account"
                 text: "different request".to_string(),
                 client_message_id: Some("client-message-1".to_string()),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
@@ -13670,6 +14044,7 @@ account = "xai-account"
                 text: "stream please".to_string(),
                 client_message_id: Some("stream-message-1".to_string()),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,
@@ -13888,6 +14263,7 @@ account = "xai-account"
                 text: "persist summary".to_string(),
                 client_message_id: Some("summary-restart-message".to_string()),
                 attachments: Vec::new(),
+                staged_attachment_ids: Vec::new(),
                 references: Vec::new(),
                 harness: None,
                 dispatch_mode: None,

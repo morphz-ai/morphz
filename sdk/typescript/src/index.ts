@@ -69,6 +69,48 @@ export interface MessageReceipt {
   client_message_id: string;
 }
 
+export type MessageAttachmentStageStatus = "uploading" | "ready" | "consumed";
+
+export interface MessageAttachmentStage {
+  stage_id: string;
+  principal_id: string;
+  session_id: string;
+  client_message_id: string;
+  name: string;
+  media_type: string;
+  size_bytes: number;
+  offset: number;
+  expected_sha256?: string;
+  sha256?: string;
+  status: MessageAttachmentStageStatus;
+  created_at: string;
+  expires_at: string;
+  consumed_event_id?: string;
+}
+
+export interface CreateMessageAttachmentStageInput {
+  stage_id?: string;
+  client_message_id: string;
+  name: string;
+  media_type: string;
+  size_bytes: number;
+  expected_sha256?: string;
+}
+
+export interface SendMessageOptions {
+  attachments?: Array<{
+    name: string;
+    media_type: string;
+    data_base64: string;
+  }>;
+  staged_attachment_ids?: string[];
+  references?: Array<Record<string, unknown>>;
+  dispatch_mode?: "interrupt" | "parallel" | "follow_up";
+  model_alias?: string;
+  reasoning_effort?: string;
+  target_id?: string;
+}
+
 export class MorphzHttpError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -159,14 +201,90 @@ export class MorphzClient {
     sessionId: string,
     text: string,
     clientMessageId: string,
+    options: SendMessageOptions = {},
   ): Promise<MessageReceipt> {
     return this.call(
       `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
       principal,
       {
         method: "POST",
-        body: JSON.stringify({ text, client_message_id: clientMessageId }),
+        body: JSON.stringify({
+          text,
+          client_message_id: clientMessageId,
+          ...options,
+        }),
       },
+    );
+  }
+
+  createMessageAttachmentStage(
+    principal: MorphzPrincipal,
+    sessionId: string,
+    input: CreateMessageAttachmentStageInput,
+  ): Promise<MessageAttachmentStage> {
+    return this.call(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages`,
+      principal,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  getMessageAttachmentStage(
+    principal: MorphzPrincipal,
+    sessionId: string,
+    stageId: string,
+  ): Promise<MessageAttachmentStage> {
+    return this.call(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages/${encodeURIComponent(stageId)}`,
+      principal,
+    );
+  }
+
+  async listMessageAttachmentStages(
+    principal: MorphzPrincipal,
+    sessionId: string,
+    clientMessageId?: string,
+  ): Promise<MessageAttachmentStage[]> {
+    const query = new URLSearchParams();
+    if (clientMessageId) query.set("client_message_id", clientMessageId);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    const result = await this.call<{ stages: MessageAttachmentStage[] }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages${suffix}`,
+      principal,
+    );
+    return result.stages;
+  }
+
+  uploadMessageAttachmentStage(
+    principal: MorphzPrincipal,
+    sessionId: string,
+    stageId: string,
+    offset: number,
+    body: BodyInit,
+  ): Promise<MessageAttachmentStage> {
+    return this.call(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages/${encodeURIComponent(stageId)}/content`,
+      principal,
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-morphz-upload-offset": String(offset),
+        },
+        body,
+      },
+    );
+  }
+
+  cancelMessageAttachmentStage(
+    principal: MorphzPrincipal,
+    sessionId: string,
+    stageId: string,
+  ): Promise<void> {
+    return this.call(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachment-stages/${encodeURIComponent(stageId)}`,
+      principal,
+      { method: "DELETE" },
     );
   }
 
@@ -205,7 +323,8 @@ export class MorphzClient {
     init: RequestInit = {},
   ): Promise<T> {
     const headers = new Headers(init.headers);
-    headers.set("content-type", "application/json");
+    if (init.body !== undefined && !headers.has("content-type"))
+      headers.set("content-type", "application/json");
     if (principal) {
       if (!principal.id) throw new Error("principal.id is required");
       headers.set("x-morphz-principal", principal.id);
@@ -232,6 +351,7 @@ export class MorphzClient {
       const code = typeof body.error === "object" ? body.error?.code : undefined;
       throw new MorphzHttpError(response.status, detail, code);
     }
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 }

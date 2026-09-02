@@ -269,6 +269,7 @@ const ARTIFACT_TRANSFER_WORKER_LEASE_SECS: i64 = 300;
 /// remains available through `thread_detail` when an operator opens a Thread.
 const SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD: usize = 32;
 
+#[cfg(test)]
 async fn prepare_message_attachments(
     configured_root: &str,
     workspace_root: Option<&std::path::Path>,
@@ -1583,6 +1584,10 @@ impl MorphzRuntimeBuilder {
         let artifact_transfer_stages = crate::artifact::ArtifactTransferStageStore::new(
             self.config.background_task.artifact_dir.clone(),
         );
+        let message_attachment_stages = crate::model_input::MessageAttachmentStageStore::new(
+            &self.config.background_task.artifact_dir,
+            std::time::Duration::from_secs(self.config.model_input.attachment_stage_ttl.as_secs()),
+        )?;
         let managed_ssh_backend = Arc::new(crate::execution_target::ManagedSshBackend::new(
             Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
             Arc::clone(&runtime_managed_ssh_endpoints),
@@ -1678,6 +1683,7 @@ impl MorphzRuntimeBuilder {
                 execution_jobs,
                 execution_targets,
                 artifact_transfer_stages,
+                message_attachment_stages,
                 background_scheduler,
                 secret_store,
                 provider_auth_manager,
@@ -1918,6 +1924,7 @@ struct RuntimeInner {
     execution_jobs: Arc<ExecutionJobManager<dyn ExecutionJobStore>>,
     execution_targets: Arc<crate::execution_target::ExecutionTargetDispatcher>,
     artifact_transfer_stages: crate::artifact::ArtifactTransferStageStore,
+    message_attachment_stages: crate::model_input::MessageAttachmentStageStore,
     background_scheduler: Arc<BackgroundTaskScheduler>,
     secret_store: Arc<SecretStore>,
     provider_auth_manager: Arc<crate::provider::auth::ProviderAuthManager>,
@@ -2683,6 +2690,14 @@ impl MorphzRuntime {
             reconcile_pending_message_attachments(&self.inner).await?,
             "startup",
         );
+        let expired_attachment_stages = self.inner.message_attachment_stages.reap_expired().await?;
+        if expired_attachment_stages > 0 {
+            tracing::info!(
+                removed = expired_attachment_stages,
+                event_code = "runtime.message_attachment_stages.reaped",
+                "Expired message attachment stages were removed"
+            );
+        }
         let execution_recovery = self
             .inner
             .execution_jobs
@@ -2934,6 +2949,19 @@ impl MorphzRuntime {
                         "Message-input attachment recovery failed and will be retried"
                     ),
                 }
+                match runtime.message_attachment_stages.reap_expired().await {
+                    Ok(removed) if removed > 0 => tracing::info!(
+                        removed,
+                        event_code = "runtime.message_attachment_stages.reaped",
+                        "Expired message attachment stages were removed"
+                    ),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        event_code = "runtime.message_attachment_stages.reap_failed",
+                        "Expired message attachment stages could not be removed"
+                    ),
+                }
                 drop(runtime);
             }
         });
@@ -2970,6 +2998,10 @@ impl MorphzRuntime {
 
     pub fn artifact_transfer_stages(&self) -> &crate::artifact::ArtifactTransferStageStore {
         &self.inner.artifact_transfer_stages
+    }
+
+    pub fn message_attachment_stages(&self) -> &crate::model_input::MessageAttachmentStageStore {
+        &self.inner.message_attachment_stages
     }
 
     pub fn identity(&self) -> &RuntimeIdentity {
@@ -9446,6 +9478,10 @@ pub struct MessageReceipt {
 pub struct SessionMessageOptions {
     pub requested_harness: Option<crate::harness::ExactHarnessRef>,
     pub attachments: Vec<crate::sdk::MessageAttachmentInput>,
+    /// Durable pre-send attachment stages owned by the same Principal,
+    /// Session, and client_message_id. Inline attachments remain supported for
+    /// backward compatibility, but product clients should prefer these ids.
+    pub staged_attachment_ids: Vec<String>,
     pub references: Vec<crate::sdk::MessageReferenceInput>,
     pub dispatch_mode: Option<MessageDispatchMode>,
     /// One-shot exact model route for the Evaluation rooted at this message.
@@ -9464,6 +9500,7 @@ pub struct SessionMessageOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageIngressErrorKind {
     InvalidArgument,
+    ResourceExhausted,
     Conflict,
     Forbidden,
 }
@@ -9490,6 +9527,23 @@ impl std::fmt::Display for MessageIngressError {
 }
 
 impl std::error::Error for MessageIngressError {}
+
+fn attachment_stage_ingress_error(
+    error: crate::model_input::MessageAttachmentStageError,
+) -> RuntimeError {
+    use crate::model_input::MessageAttachmentStageErrorKind;
+    let kind = match error.kind {
+        MessageAttachmentStageErrorKind::Forbidden => MessageIngressErrorKind::Forbidden,
+        MessageAttachmentStageErrorKind::Conflict => MessageIngressErrorKind::Conflict,
+        MessageAttachmentStageErrorKind::ResourceExhausted => {
+            MessageIngressErrorKind::ResourceExhausted
+        }
+        MessageAttachmentStageErrorKind::InvalidArgument
+        | MessageAttachmentStageErrorKind::NotFound => MessageIngressErrorKind::InvalidArgument,
+        MessageAttachmentStageErrorKind::Internal => return Box::new(error),
+    };
+    Box::new(MessageIngressError::new(kind, error.message))
+}
 
 fn validate_client_message_id(value: &str) -> Result<(), MessageIngressError> {
     if value.is_empty() || value.len() > 128 {
@@ -9609,6 +9663,7 @@ impl SessionHandle {
         let SessionMessageOptions {
             requested_harness,
             attachments,
+            staged_attachment_ids,
             references,
             dispatch_mode,
             model_alias,
@@ -9625,7 +9680,11 @@ impl SessionHandle {
             return Err("an archived Session cannot receive new messages".into());
         }
         let text = text.into().trim().to_string();
-        if text.is_empty() && attachments.is_empty() && references.is_empty() {
+        if text.is_empty()
+            && attachments.is_empty()
+            && staged_attachment_ids.is_empty()
+            && references.is_empty()
+        {
             return Err("message text, attachments, and references cannot all be empty".into());
         }
         if text.chars().count() > 1_000_000 {
@@ -9645,6 +9704,36 @@ impl SessionHandle {
         // read on every accepted message.
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         validate_client_message_id(&client_message_id)?;
+        let staged_attachments = self
+            .runtime
+            .inner
+            .message_attachment_stages
+            .resolve_for_message(
+                &principal_id,
+                &self.id,
+                &client_message_id,
+                &staged_attachment_ids,
+            )
+            .await
+            .map_err(attachment_stage_ingress_error)?;
+        let mut attachment_usage = crate::model_input::ModelInputUsage::default();
+        for attachment in &attachments {
+            attachment_usage.add(attachment.data.len())?;
+        }
+        for attachment in &staged_attachments {
+            attachment_usage.add(attachment.size_bytes)?;
+        }
+        crate::model_input::validate_model_input_usage(
+            attachment_usage,
+            self.runtime.inner.config.model_input.import_limits(),
+            "this message",
+        )
+        .map_err(|error| {
+            Box::new(MessageIngressError::new(
+                MessageIngressErrorKind::ResourceExhausted,
+                error.to_string(),
+            )) as RuntimeError
+        })?;
         let model_alias = if let Some(model_alias) = model_alias {
             let model_alias = model_alias.trim().to_string();
             if model_alias.is_empty() {
@@ -9824,7 +9913,7 @@ impl SessionHandle {
                 "agent_id": referenced.agent_id,
             }));
         }
-        let prepared_attachments = prepare_message_attachments(
+        let prepared_attachments = crate::model_input::prepare_message_input_imports_for_workspace(
             &self.runtime.inner.config.background_task.artifact_dir,
             Some(
                 self.runtime
@@ -9834,10 +9923,11 @@ impl SessionHandle {
                     .workspace_root
                     .as_path(),
             ),
-            &self.runtime.inner.config.model_input,
             &self.id,
             &event_id,
             attachments,
+            staged_attachments,
+            self.runtime.inner.config.model_input.import_limits(),
         )
         .await?;
         let dispatch_mode = dispatch_mode.unwrap_or_else(|| {
@@ -10062,6 +10152,26 @@ impl SessionHandle {
                         error = %error,
                         event_code = "runtime.message_attachment_commit_deferred",
                         "Message attachments committed, but pending-manifest cleanup was deferred"
+                    );
+                }
+                if let Err(error) = self
+                    .runtime
+                    .inner
+                    .message_attachment_stages
+                    .mark_consumed(
+                        &principal_id,
+                        &self.id,
+                        &client_message_id,
+                        &staged_attachment_ids,
+                        &event.id,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        event_id = %event.id,
+                        error = %error,
+                        event_code = "runtime.message_attachment_stages.consume_deferred",
+                        "Message attachment stages were bound by the Event but their draft status update was deferred"
                     );
                 }
                 // claim_message committed the immutable Event and its

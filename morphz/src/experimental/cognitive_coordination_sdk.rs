@@ -494,6 +494,7 @@ impl CognitiveEvaluationTransport for SdkEvaluationTransport {
                     actor: COORDINATION_PARTICIPANT_ACTOR.to_string(),
                     client_message_id: Some(assignment.assignment_id.clone()),
                     attachments: Vec::new(),
+                    staged_attachment_ids: Vec::new(),
                     references: Vec::new(),
                     harness: None,
                     dispatch_mode: Some(MessageDispatchMode::Parallel),
