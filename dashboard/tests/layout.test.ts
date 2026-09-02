@@ -269,6 +269,12 @@ test('narrow navigation remains a horizontally accessible function rail', () => 
 
 test('identity selectors reserve stable header widths while allowing responsive shrinkage', () => {
   assert.match(
+    appSource,
+    /<UserRound className="principal-directory-icon" size=\{14\} \/>/,
+    'the Principal directory must use an identity icon rather than the language globe',
+  )
+  assert.doesNotMatch(appSource, /<Globe className="principal-directory-icon"/)
+  assert.match(
     appCss,
     /\.identity-trail > \.context-selector\s*\{[^}]*max-width:\s*210px;[^}]*flex:\s*0 1 210px/s,
   )

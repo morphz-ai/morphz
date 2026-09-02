@@ -55,6 +55,7 @@ import {
   Square,
   Sun,
   Trash2,
+  UserRound,
   X,
 } from 'lucide-react'
 import './App.css'
@@ -7642,7 +7643,7 @@ export default function App() {
                 title={t('header.principalDirectory')}
                 onClick={() => setPrincipalMenuOpen(open => !open)}
               >
-                <Globe className="principal-directory-icon" size={14} />
+                <UserRound className="principal-directory-icon" size={14} />
                 <small>{t('header.principal').toUpperCase()}</small>
                 <strong>{activePrincipalId ? shortId(activePrincipalId, 26) : t('header.noPrincipal')}</strong>
                 <span>{principalScope ? t('header.observingPrincipal') : t('header.runtimeVerified')}</span>
