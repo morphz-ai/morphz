@@ -8486,17 +8486,17 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
     }
 
     // The tool ran and its outcome came back to the model that asked for it.
-    // The outcome is a refusal, and that is the point: the probe sits outside
-    // the workspace, and a boundary crossing discovered inside an `infer`
-    // could not have been part of what the submitted program was admitted
-    // for, so it fails closed instead of escalating for approval.
+    // The default permission profile deliberately allows read-only evidence
+    // outside the workspace; `infer` keeps that same product boundary while
+    // still withholding `eval`, so evidence gathering cannot recursively
+    // widen the submitted program.
     let tool_result = turns[2]
         .iter()
         .find(|message| message.role == "tool")
         .expect("the read outcome must reach the model that asked for it");
     assert!(
-        tool_result.content.contains("rejected"),
-        "an out-of-workspace read must be refused inside infer too: {}",
+        tool_result.content.contains("fn main() {}"),
+        "the default read-only evidence boundary must remain available inside infer: {}",
         tool_result.content
     );
 
