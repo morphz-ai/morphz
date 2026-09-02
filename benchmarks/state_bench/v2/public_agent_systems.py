@@ -15,6 +15,7 @@ import select
 import shutil
 import subprocess
 import threading
+import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -61,12 +62,45 @@ def bind_trial_runtime(
             "output_dir": str(output_dir.resolve()),
             "run_idx": run_idx,
             "trial_id": _safe_component(trial_id),
+            "closeables": [],
         }
     )
+    body_failed = False
     try:
         yield
+    except BaseException:
+        body_failed = True
+        raise
     finally:
+        cleanup_errors: list[str] = []
+        bound = _TRIAL_RUNTIME.get()
+        if bound is not None:
+            for resource in reversed(bound.get("closeables", [])):
+                try:
+                    resource.close()
+                except Exception as error:  # noqa: BLE001 - cleanup must continue
+                    cleanup_errors.append(f"{type(error).__name__}: {error}")
         _TRIAL_RUNTIME.reset(token)
+        if cleanup_errors:
+            detail = "; ".join(cleanup_errors)
+            if body_failed:
+                # Preserve the task's primary failure while still making a
+                # leaked Runtime/bridge visible to the formal-runner logs.
+                warnings.warn(
+                    f"ME-07 trial cleanup also failed: {detail}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            else:
+                raise RuntimeError(f"ME-07 trial cleanup failed: {detail}")
+
+
+def _register_trial_closeable(resource: Any) -> None:
+    """Ensure per-trial resources close even when STATE-Bench aborts early."""
+
+    bound = _TRIAL_RUNTIME.get()
+    if bound is not None:
+        bound["closeables"].append(resource)
 
 
 def _apply_trial_runtime(runtime_context: AgentRuntimeContext) -> None:
@@ -356,6 +390,7 @@ class MorphzPublicRuntimeAgent(BaseAgent):
             raise
         finally:
             token_file.unlink(missing_ok=True)
+        _register_trial_closeable(self)
 
     def _read_receipt(
         self,

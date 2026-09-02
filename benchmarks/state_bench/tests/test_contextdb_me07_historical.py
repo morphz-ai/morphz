@@ -12,6 +12,8 @@ from benchmarks.state_bench.v2.morphz_state_bench_adapter_no_model_gate import (
 )
 from benchmarks.state_bench.v2.public_agent_systems import (
     MorphzPublicRuntimeAgent,
+    _register_trial_closeable,
+    bind_trial_runtime,
 )
 from benchmarks.state_bench.v2.run_contextdb_me07_historical import (
     _classify_timeout,
@@ -86,6 +88,23 @@ def test_public_runtime_adapter_has_an_external_receipt_timeout() -> None:
     finally:
         os.close(write_fd)
         stream.close()
+
+
+def test_trial_runtime_closes_registered_resources_after_failure(tmp_path: Path) -> None:
+    class Resource:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    resource = Resource()
+    with (
+        pytest.raises(RuntimeError, match="simulator failed"),
+        bind_trial_runtime(output_dir=tmp_path, run_idx=1, trial_id="trial-1"),
+    ):
+        _register_trial_closeable(resource)
+        raise RuntimeError("simulator failed")
+    assert resource.closed is True
 
 
 def test_timeout_classification_prioritizes_durable_terminal_and_dependencies() -> None:

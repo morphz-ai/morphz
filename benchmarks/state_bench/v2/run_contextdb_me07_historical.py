@@ -621,6 +621,16 @@ def main() -> int:
                     "reply_timeout_seconds": args.reply_timeout_seconds,
                     "automatic_restart": False,
                     "explicit_resume_only": True,
+                    "transient_transport_retry": {
+                        "http_statuses": [429, 502, 503, 504],
+                        "max_attempts": 4,
+                        "base_delay_seconds": 1.0,
+                        "max_delay_seconds": 30.0,
+                        "receipt_fields": [
+                            "transport_attempts",
+                            "transient_transport_failures",
+                        ],
+                    },
                 },
                 "state_bench": {
                     "root": str(state_bench_root),

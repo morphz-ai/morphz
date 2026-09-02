@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -12,6 +14,8 @@ import httpx
 class ME07ResponsesClient:
     """Bind exactly to GPT-5.6 Sol/max/no-fallback through CLIProxyAPI."""
 
+    _TRANSIENT_HTTP_STATUSES = frozenset({429, 502, 503, 504})
+
     def __init__(
         self,
         *,
@@ -19,6 +23,9 @@ class ME07ResponsesClient:
         base_url: str | None = None,
         api_key: str | None = None,
         timeout_seconds: float = 1800,
+        max_transport_attempts: int = 4,
+        retry_base_delay_seconds: float = 1.0,
+        retry_sleep: Callable[[float], None] | None = None,
     ):
         self.model = model
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL") or "").rstrip(
@@ -29,8 +36,24 @@ class ME07ResponsesClient:
             raise RuntimeError(
                 "ME-07 Responses client requires proxy URL and client key"
             )
+        if max_transport_attempts < 1:
+            raise ValueError("max_transport_attempts must be positive")
+        if retry_base_delay_seconds < 0:
+            raise ValueError("retry_base_delay_seconds cannot be negative")
+        self._max_transport_attempts = max_transport_attempts
+        self._retry_base_delay_seconds = retry_base_delay_seconds
+        self._retry_sleep = retry_sleep or time.sleep
         self._http = httpx.Client(timeout=timeout_seconds)
         self.receipts: list[dict[str, Any]] = []
+
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                return min(30.0, max(0.0, float(retry_after)))
+            except ValueError:
+                pass
+        return min(30.0, self._retry_base_delay_seconds * (2 ** (attempt - 1)))
 
     @staticmethod
     def output_text(response: dict[str, Any]) -> str:
@@ -90,16 +113,37 @@ class ME07ResponsesClient:
         if response_format:
             payload["text"] = {"format": response_format}
 
-        response = self._http.post(
-            f"{self.base_url}/responses",
-            headers={"authorization": f"Bearer {self.api_key}"},
-            json=payload,
-        )
-        if response.is_error:
-            detail = response.text[:2000]
-            raise RuntimeError(
-                f"ME-07 Responses request failed with HTTP {response.status_code}: {detail}"
+        transient_failures: list[dict[str, Any]] = []
+        response: httpx.Response | None = None
+        for attempt in range(1, self._max_transport_attempts + 1):
+            response = self._http.post(
+                f"{self.base_url}/responses",
+                headers={"authorization": f"Bearer {self.api_key}"},
+                json=payload,
             )
+            if not response.is_error:
+                break
+            detail = response.text[:2000]
+            retryable = response.status_code in self._TRANSIENT_HTTP_STATUSES
+            if retryable and attempt < self._max_transport_attempts:
+                delay = self._retry_delay(response, attempt)
+                transient_failures.append(
+                    {
+                        "attempt": attempt,
+                        "status_code": response.status_code,
+                        "retry_delay_seconds": delay,
+                        "detail": detail[:500],
+                    }
+                )
+                self._retry_sleep(delay)
+                continue
+            raise RuntimeError(
+                "ME-07 Responses request failed after "
+                f"{attempt} transport attempt(s) with HTTP "
+                f"{response.status_code}: {detail}"
+            )
+        if response is None:  # pragma: no cover - constructor validation makes this unreachable
+            raise RuntimeError("ME-07 Responses request made no transport attempt")
         value = response.json()
         if value.get("model") != self.model:
             raise RuntimeError(
@@ -114,6 +158,8 @@ class ME07ResponsesClient:
                 "usage": usage,
                 "reasoning_effort": "max",
                 "fallback": False,
+                "transport_attempts": 1 + len(transient_failures),
+                "transient_transport_failures": transient_failures,
             }
         )
         return value
