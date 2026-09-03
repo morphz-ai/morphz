@@ -43,7 +43,18 @@ try {
   }
 
   New-Item -ItemType Directory -Force $installDir | Out-Null
-  Get-ChildItem -LiteralPath $unpacked -Filter "*.exe" | Copy-Item -Destination $installDir -Force
+  @(
+    "morphz.exe",
+    "morphz-windows-sandbox-runner.exe",
+    "morphz-windows-command-runner.exe",
+    "morphz-windows-sandbox-setup.exe"
+  ) | ForEach-Object {
+    $component = Join-Path $unpacked $_
+    if (-not (Test-Path -LiteralPath $component)) {
+      throw "Release archive does not contain required component $_."
+    }
+    Copy-Item -LiteralPath $component -Destination $installDir -Force
+  }
 
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $pathEntries = @($userPath -split ";" | Where-Object { $_ })

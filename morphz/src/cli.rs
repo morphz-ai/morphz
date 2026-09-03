@@ -7,9 +7,9 @@
 
 use crate::i18n::Locale;
 use clap::{
+    Arg, ArgAction, ArgMatches, Command, Error as ClapError,
     builder::{StringValueParser, TypedValueParser},
     error::ErrorKind,
-    Arg, ArgAction, ArgMatches, Command, Error as ClapError,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -64,6 +64,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "enable-experimental",
     "coordination-mesh",
     "to",
+    "update-version",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -75,6 +76,7 @@ const SWITCH_OPTIONS: &[&str] = &[
     "plain",
     "include-user-content",
     "allow-training",
+    "allow-downgrade",
 ];
 
 const TOP_LEVEL_COMMANDS: &[&str] = &[
@@ -101,6 +103,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "experiment",
     "job",
     "config",
+    "update",
     "doctor",
     "completion",
     "version",
@@ -287,6 +290,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             experiment_command(locale),
             job_command(locale),
             config_command(locale),
+            update_command(locale),
             Command::new("doctor")
                 .about(locale.text(
                     "Check storage, workspace, permissions and provider setup",
@@ -320,6 +324,46 @@ pub fn morphz_command_for(locale: Locale) -> Command {
         ));
 
     localize_command_chrome(command, locale, true)
+}
+
+fn update_command(locale: Locale) -> Command {
+    Command::new("update")
+        .about(locale.text(
+            "Update Morphz from a verified GitHub Release",
+            "从经过校验的 GitHub Release 更新 Morphz",
+        ))
+        .arg(
+            Arg::new("update-version")
+                .long("to")
+                .value_name("VERSION")
+                .help(locale.text(
+                    "Install an exact released version instead of latest",
+                    "安装指定的已发布版本，而不是最新版本",
+                )),
+        )
+        .arg(
+            Arg::new("allow-downgrade")
+                .long("allow-downgrade")
+                .action(ArgAction::SetTrue)
+                .help(locale.text(
+                    "Allow --to to install an older release",
+                    "允许 --to 安装较旧的发行版本",
+                )),
+        )
+        .subcommands([
+            Command::new("status").about(locale.text(
+                "Check the latest release without changing any files",
+                "检查最新发行版本，不修改任何文件",
+            )),
+            Command::new("rollback").about(locale.text(
+                "Restore the version retained by the last update",
+                "恢复上次更新保留的旧版本",
+            )),
+        ])
+        .after_help(locale.text(
+            "Examples:\n  morphz update status\n  morphz update\n  morphz update --to 0.2.0\n  morphz update rollback",
+            "示例：\n  morphz update status\n  morphz update\n  morphz update --to 0.2.0\n  morphz update rollback",
+        ))
 }
 
 const ZH_HELP_TEMPLATE_FULL: &str = "{before-help}{about-with-newline}\n用法：{usage}\n\n命令：\n{subcommands}\n参数：\n{positionals}\n选项：\n{options}{after-help}";
@@ -618,10 +662,10 @@ fn exec_command(locale: Locale) -> Command {
                 "Run one prompt and print the final reply",
                 "执行一次提示并输出最终回复",
             ))
-            .arg(prompt_arg("PROMPT", 1, None).help(locale.text(
-                "Prompt to send to the Agent",
-                "要发送给代理的提示",
-            ))),
+            .arg(
+                prompt_arg("PROMPT", 1, None)
+                    .help(locale.text("Prompt to send to the Agent", "要发送给代理的提示")),
+            ),
         "Examples:\n  morphz exec explain this repository\n  morphz exec -- --text-that-starts-with-a-dash",
     )
 }
@@ -1737,10 +1781,7 @@ fn scheduler_thread_command(locale: Locale) -> Command {
                     "reason",
                     "reason",
                     "TEXT",
-                    locale.text(
-                        "Record an auditable control reason",
-                        "记录可审计的控制原因",
-                    ),
+                    locale.text("Record an auditable control reason", "记录可审计的控制原因"),
                 ))
                 .arg(
                     prompt_arg("THREAD_ID [REASON]", 1, None)
@@ -2509,6 +2550,34 @@ mod tests {
         assert_eq!(
             invocation.option("format").unwrap().last_value(),
             Some("json")
+        );
+    }
+
+    #[test]
+    fn update_commands_preserve_the_explicit_safety_contract() {
+        let latest = parse(&["update"]);
+        assert_eq!(latest.command_path(), ["update"]);
+
+        let exact = parse(&["update", "--to", "v0.2.0", "--allow-downgrade"]);
+        assert_eq!(exact.command_path(), ["update"]);
+        assert_eq!(
+            exact.option("update-version").unwrap().last_value(),
+            Some("v0.2.0")
+        );
+        assert!(exact.has_option("allow-downgrade"));
+
+        let status = parse(&["update", "status"]);
+        assert_eq!(status.command_path(), ["update", "status"]);
+        let rollback = parse(&["update", "rollback"]);
+        assert_eq!(rollback.command_path(), ["update", "rollback"]);
+
+        let chinese = morphz_command_line_parser_for(Locale::SimplifiedChinese)
+            .parse(["--language", "zh-CN", "update", "--to", "0.2.0"])
+            .unwrap();
+        assert_eq!(chinese.command_path(), ["update"]);
+        assert_eq!(
+            chinese.option("update-version").unwrap().last_value(),
+            Some("0.2.0")
         );
     }
 

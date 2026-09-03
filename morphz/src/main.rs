@@ -1,9 +1,9 @@
 use chrono::{Local, SecondsFormat, Utc};
 use morphz::approval::ApprovalDecision;
-use morphz::cli::{morphz_command, morphz_command_line_parser_for, Invocation};
+use morphz::cli::{Invocation, morphz_command, morphz_command_line_parser_for};
 use morphz::config;
 use morphz::harness_package::HarnessPackage;
-use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
+use morphz::i18n::{Locale, UiLanguage, locale_from_cli_args};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
     CapabilityLeaseScope, ExecutionTargetAuthorizationScope, ExecutionTargetStatus, NewAgent,
@@ -34,7 +34,7 @@ use std::io::IsTerminal;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 type AppError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -115,6 +115,9 @@ async fn main() -> Result<(), AppError> {
     }
     if invocation.command_path() == ["completion"] {
         generate_completion(&invocation)?;
+        return Ok(());
+    }
+    if morphz::update::handle(&invocation, locale).await? {
         return Ok(());
     }
 
@@ -830,7 +833,7 @@ fn apply_cli_config(
             "read-only" => {
                 return Err(
                     "read-only Sandbox 尚无真实 Backend；为避免虚假安全语义，本版本拒绝启用".into(),
-                )
+                );
             }
             _ => return Err(format!("未知 Sandbox 模式 '{sandbox}'").into()),
         };
@@ -3189,9 +3192,17 @@ async fn show_scheduler(
             item.phase.as_str(),
             item.thread.supervision.lifetime.as_str(),
             item.thread.supervision.supervisor_kind.as_str(),
-            item.thread.supervision.supervisor_id.as_deref().unwrap_or("-"),
+            item.thread
+                .supervision
+                .supervisor_id
+                .as_deref()
+                .unwrap_or("-"),
             item.thread.supervision.generation,
-            item.thread.supervision.thread_group_id.as_deref().unwrap_or("-"),
+            item.thread
+                .supervision
+                .thread_group_id
+                .as_deref()
+                .unwrap_or("-"),
             item.outcome
                 .as_ref()
                 .map(|outcome| outcome.terminal_kind.as_str())
@@ -5254,15 +5265,15 @@ async fn shutdown_signal() -> ShutdownSignal {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cli_config, apply_default_workspace_policy, apply_default_workspace_policy_at,
+        ConsoleInput, ConsoleMessageKind, OfflineClient, TerminalApprovalChoice, apply_cli_config,
+        apply_default_workspace_policy, apply_default_workspace_policy_at,
         bootstrap_config_language, build_client, command_needs_llm, console_message_from_event,
         create_session_command, dashboard_browser_url, dashboard_setup_browser_url,
         ensure_cli_identity_records, format_tool_call_activity, generate_dashboard_token,
         parse_terminal_approval_input, read_console_input, resolve_resumed_session,
         runtime_control_plane_paths, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
-        validate_coding_eval_storage_isolation, wait_for_session_reply, ConsoleInput,
-        ConsoleMessageKind, OfflineClient, TerminalApprovalChoice,
+        validate_coding_eval_storage_isolation, wait_for_session_reply,
     };
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::{AppConfig, ResolvedConfig, TuiTheme};
@@ -5326,12 +5337,14 @@ mod tests {
                 resolved.config.permissions.workspace_root,
                 "/home/person/.morphz/workspace"
             );
-            assert!(!resolved
-                .config
-                .permissions
-                .write_roots
-                .iter()
-                .any(|root| root == "/launch/project"));
+            assert!(
+                !resolved
+                    .config
+                    .permissions
+                    .write_roots
+                    .iter()
+                    .any(|root| root == "/launch/project")
+            );
         }
     }
 
@@ -5400,30 +5413,38 @@ mod tests {
     }
     #[test]
     fn coding_eval_sqlite_requires_an_explicit_isolated_database() {
-        assert!(validate_coding_eval_storage_isolation(
-            true,
-            morphz::config::StorageBackend::Sqlite,
-            None,
-        )
-        .is_err());
-        assert!(validate_coding_eval_storage_isolation(
-            true,
-            morphz::config::StorageBackend::Sqlite,
-            Some("/tmp/terminal-bench-run/morphz.db"),
-        )
-        .is_ok());
-        assert!(validate_coding_eval_storage_isolation(
-            true,
-            morphz::config::StorageBackend::Postgres,
-            None,
-        )
-        .is_ok());
-        assert!(validate_coding_eval_storage_isolation(
-            false,
-            morphz::config::StorageBackend::Sqlite,
-            None,
-        )
-        .is_ok());
+        assert!(
+            validate_coding_eval_storage_isolation(
+                true,
+                morphz::config::StorageBackend::Sqlite,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_coding_eval_storage_isolation(
+                true,
+                morphz::config::StorageBackend::Sqlite,
+                Some("/tmp/terminal-bench-run/morphz.db"),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_coding_eval_storage_isolation(
+                true,
+                morphz::config::StorageBackend::Postgres,
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_coding_eval_storage_isolation(
+                false,
+                morphz::config::StorageBackend::Sqlite,
+                None,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -5451,9 +5472,11 @@ mod tests {
         let setup_plain = parser.parse(["setup", "--plain"]).unwrap();
         assert!(should_use_tui_with_terminal(&setup_plain, true).is_err());
         assert!(parser.parse(["setup", "--tui", "--no-open"]).is_err());
-        assert!(parser
-            .parse(["setup", "--tui", "--bind=127.0.0.1:9090"])
-            .is_err());
+        assert!(
+            parser
+                .parse(["setup", "--tui", "--bind=127.0.0.1:9090"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -5848,10 +5871,12 @@ mod tests {
             .unwrap();
         let mut config = AppConfig::default();
         apply_cli_config(&invocation, &mut config).unwrap();
-        assert!(config
-            .experimental
-            .enabled
-            .contains(morphz::experimental::COGNITIVE_COORDINATION));
+        assert!(
+            config
+                .experimental
+                .enabled
+                .contains(morphz::experimental::COGNITIVE_COORDINATION)
+        );
         assert_eq!(
             config.experimental.cognitive_coordination.mesh.as_deref(),
             Some("file:/etc/morphz/mesh.toml")
@@ -5884,9 +5909,11 @@ mod tests {
         apply_cli_config(&invocation, &mut config).unwrap();
         config.storage.sqlite.path = database_path.to_string_lossy().into_owned();
 
-        assert!(dispatch_storage_command(&invocation, &config)
-            .await
-            .unwrap());
+        assert!(
+            dispatch_storage_command(&invocation, &config)
+                .await
+                .unwrap()
+        );
         assert!(
             dispatch_storage_command(&invocation, &config)
                 .await
@@ -5971,11 +5998,13 @@ mod tests {
                 .root_context_id,
             persisted_context_id
         );
-        assert!(runtime
-            .get_context("context-default")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            runtime
+                .get_context("context-default")
+                .await
+                .unwrap()
+                .is_some()
+        );
         let sessions = runtime.list_sessions(false).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "session-visible");

@@ -71,9 +71,6 @@ tar -xzf "$temporary/$asset" -C "$temporary/unpacked"
 
 mkdir -p "$install_dir"
 install -m 0755 "$temporary/unpacked/morphz" "$install_dir/morphz"
-if [ -f "$temporary/unpacked/morphz-edge" ]; then
-  install -m 0755 "$temporary/unpacked/morphz-edge" "$install_dir/morphz-edge"
-fi
 
 printf '%s\n' "Morphz installed in $install_dir"
 case ":${PATH}:" in

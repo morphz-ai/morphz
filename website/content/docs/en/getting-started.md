@@ -19,16 +19,27 @@ Morphz ships as a prebuilt native binary with the Dashboard embedded. A first ru
 macOS and Linux:
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://morphz.ai/install.ps1 | iex
+irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
 ```
 
 The installer detects the current platform, downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs into the user path without requiring root or administrator access. Open a new terminal before continuing with Setup.
+
+Updates are explicit and reuse the same verified GitHub Release assets:
+
+```bash
+morphz update status
+morphz update
+```
+
+A successful update retains the previous main binary; use `morphz update rollback` when needed. The standalone `morphz-edge` Execution Target client has its own installation and update lifecycle and is never installed or updated with the main program.
+
+Before the repository is public, maintainers can test the same flow against private GitHub Releases by exporting `GH_TOKEN` or `GITHUB_TOKEN`. Set `MORPHZ_GITHUB_REPOSITORY=owner/repository` only when the release repository differs from the compiled default.
 
 ## Complete Setup
 

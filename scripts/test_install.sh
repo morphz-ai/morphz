@@ -19,9 +19,8 @@ esac
 asset="morphz-$platform-$architecture.tar.gz"
 mkdir -p "$temporary/release" "$temporary/bundle" "$temporary/bin"
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "morphz installer fixture"' > "$temporary/bundle/morphz"
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" "morphz-edge installer fixture"' > "$temporary/bundle/morphz-edge"
-chmod 0755 "$temporary/bundle/morphz" "$temporary/bundle/morphz-edge"
-tar -czf "$temporary/release/$asset" -C "$temporary/bundle" morphz morphz-edge
+chmod 0755 "$temporary/bundle/morphz"
+tar -czf "$temporary/release/$asset" -C "$temporary/bundle" morphz
 
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$temporary/release" && sha256sum "$asset" > "$asset.sha256")
@@ -34,6 +33,5 @@ MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
   sh "$repository_root/scripts/install.sh" >/dev/null
 
 [ -x "$temporary/bin/morphz" ]
-[ -x "$temporary/bin/morphz-edge" ]
+[ ! -e "$temporary/bin/morphz-edge" ]
 [ "$("$temporary/bin/morphz")" = "morphz installer fixture" ]
-[ "$("$temporary/bin/morphz-edge")" = "morphz-edge installer fixture" ]

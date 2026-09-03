@@ -211,6 +211,10 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 **TODO**：
 
 - [ ] 明确 0.1 的 Schema、配置、Provider catalog 和 Edge credential 兼容策略；
+- [x] 主程序提供显式 `update status`、指定版本更新和二进制回滚；更新路径在 Runtime/数据库初始化前运行；
+- [x] 更新归档沿用 GitHub Release 的逐制品 SHA-256，先同盘暂存并验证版本，再替换当前程序；
+- [~] Unix 已实现原子替换与旧二进制回滚；Windows 已实现退出当前进程后由独立 helper 替换，仍待原生主机验收；
+- [x] 独立 `morphz-edge` 不进入主程序安装或自更新事务，保持单独的设备部署生命周期；
 - [ ] 升级前自动检查版本、空间和备份条件；
 - [ ] 提供可验证的 SQLite 备份/恢复命令与 PostgreSQL 操作指南；
 - [ ] 配置迁移必须原子、可审计，并保留可恢复副本；

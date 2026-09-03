@@ -43,7 +43,7 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(zh, /查看源码/);
   assert.match(zh, /启动 Morphz。/);
   assert.doesNotMatch(zh, /启动一个 Morphz/);
-  assert.match(zh, /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
+  assert.match(zh, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
   assert.doesNotMatch(zh, /cargo build --release/);
   assert.match(zh, /aria-label="切换到英文"[^>]*>EN<\/a>/);
   assert.match(en, /aria-label="Switch to Chinese"[^>]*>CN<\/a>/);
@@ -66,7 +66,7 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /Keep talking while the Agent works/);
   assert.match(en, /Execution Targets/);
   assert.match(en, /Run Morphz/);
-  assert.match(en, /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
+  assert.match(en, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
   assert.match(en, /COGNITIVE APPLICATIONS/);
   assert.match(en, /CONTEXT ENCODING/);
   assert.doesNotMatch(en, /DEVELOPER PREVIEW/i);
@@ -177,8 +177,8 @@ test("renders the bilingual paper and native distribution pages", async () => {
   assert.match(html[2], /Windows/);
   assert.match(html[2], /Windows 版是原生程序/);
   assert.match(html[3], /The Windows build is native/);
-  assert.match(html[2], /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
-  assert.match(html[2], /irm https:\/\/morphz\.ai\/install\.ps1 \| iex/);
+  assert.match(html[2], /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
+  assert.match(html[2], /irm https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.ps1 \| iex/);
   assert.match(html[3], /GitHub Releases/);
 
   for (const filename of [
@@ -201,7 +201,9 @@ test("publishes installers that resolve verified GitHub Release assets", async (
   assert.equal(powershellPublic, powershellSource);
   assert.match(shellSource, /github\.com\/\$repository\/releases\/latest\/download/);
   assert.match(shellSource, /sha256sum|shasum/);
+  assert.doesNotMatch(shellSource, /unpacked\/morphz-edge/);
   assert.match(powershellSource, /Get-FileHash -Algorithm SHA256/);
+  assert.doesNotMatch(powershellSource, /"morphz-edge\.exe"/);
 });
 
 test("does not advertise the unpublished online Morphz instance", async () => {

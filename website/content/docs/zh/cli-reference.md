@@ -128,6 +128,9 @@ source: generated-cli-schema
 | `morphz config check` | 验证所有已加载的配置层 |
 | `morphz config path` | 按优先级列出已加载的配置文件 |
 | `morphz config explain` | 说明每个解析值的来源 |
+| `morphz update` | 从经过校验的 GitHub Release 更新 Morphz |
+| `morphz update status` | 检查最新发行版本，不修改任何文件 |
+| `morphz update rollback` | 恢复上次更新保留的旧版本 |
 | `morphz doctor` | 检查存储、工作区、权限和模型服务商配置 |
 | `morphz completion` | 生成命令行补全定义 |
 | `morphz version` | 显示 Morphz 版本 |
@@ -188,6 +191,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           检查或取消子代理委派
   config
           检查解析后的配置及其来源
+  update
+          从经过校验的 GitHub Release 更新 Morphz
   doctor
           检查存储、工作区、权限和模型服务商配置
   completion
@@ -1988,6 +1993,81 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           显示版本
 
 运行 `morphz config <COMMAND> --help` 查看具体命令的帮助。
+```
+
+### `morphz update`
+
+从经过校验的 GitHub Release 更新 Morphz
+
+```text
+从经过校验的 GitHub Release 更新 Morphz
+
+用法：morphz update [OPTIONS] [COMMAND]
+
+命令：
+  status
+          检查最新发行版本，不修改任何文件
+  rollback
+          恢复上次更新保留的旧版本
+选项：
+  -C, --cwd <DIR>
+          在加载配置前更改工作目录
+      --to <VERSION>
+          安装指定的已发布版本，而不是最新版本
+      --allow-downgrade
+          允许 --to 安装较旧的发行版本
+      --config-file <FILE>
+          加载指定的可信配置文件
+  -p, --profile <NAME>
+          加载具名配置方案
+      --provider <ID>
+          覆盖已配置的模型服务商
+  -h, --help
+          显示帮助
+  -m, --model <MODEL>
+          覆盖已配置的模型
+      --reasoning-effort <LEVEL>
+          设置模型推理强度
+      --agent <ID>
+          选择代理
+      --context <ID>
+          选择或挂载认知上下文
+      --session <ID>
+          重新连接现有会话
+      --harness <ID@VERSION>
+          为首次求值选择已安装领域程序包的精确版本
+  -s, --sandbox <MODE>
+          设置命令沙箱模式
+  -a, --approval <MODE>
+          设置权限审批策略
+      --add-dir <DIR>
+          添加额外的可读写工作区目录
+      --network[=<BOOL>]
+          允许沙箱命令访问网络
+  -c, --set <KEY=VALUE>
+          覆盖单个配置值
+      --log-level <FILTER>
+          覆盖日志过滤器
+      --theme <THEME>
+          选择终端界面颜色主题
+      --language <LANGUAGE>
+          选择用户界面语言
+      --format <FORMAT>
+          选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
+      --tui
+          强制使用全屏终端界面
+      --plain
+          使用经典行式终端
+  -V, --version
+          显示版本
+
+示例：
+  morphz update status
+  morphz update
+  morphz update --to 0.2.0
+  morphz update rollback
 ```
 
 ### `morphz doctor`

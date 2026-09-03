@@ -60,16 +60,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/bundle
-          cp "target/${{ matrix.target }}/release/morphz" dist/bundle/
-          cp "target/${{ matrix.target }}/release/morphz-edge" dist/bundle/
-          cp LICENSE NOTICE dist/bundle/
+          mkdir -p dist/morphz-bundle
+          cp "target/${{ matrix.target }}/release/morphz" dist/morphz-bundle/
+          cp LICENSE NOTICE dist/morphz-bundle/
           archive="${{ matrix.asset }}.tar.gz"
-          tar -czf "dist/$archive" -C dist/bundle morphz morphz-edge LICENSE NOTICE
+          tar -czf "dist/$archive" -C dist/morphz-bundle morphz LICENSE NOTICE
+          edge_asset="${{ matrix.asset }}"
+          edge_asset="morphz-edge-${edge_asset#morphz-}"
+          cp "target/${{ matrix.target }}/release/morphz-edge" "dist/$edge_asset"
           if command -v sha256sum >/dev/null 2>&1; then
             (cd dist && sha256sum "$archive" > "$archive.sha256")
+            (cd dist && sha256sum "$edge_asset" > "$edge_asset.sha256")
           else
             (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+            (cd dist && shasum -a 256 "$edge_asset" > "$edge_asset.sha256")
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -77,6 +81,7 @@ jobs:
           path: |
             dist/${{ matrix.asset }}.tar.gz
             dist/${{ matrix.asset }}.tar.gz.sha256
+            dist/morphz-edge-*
           if-no-files-found: error
 
   windows-bundle:
@@ -100,11 +105,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $bundle = "dist/bundle"
-          New-Item -ItemType Directory -Force $bundle | Out-Null
+          $bundle = "dist/morphz-bundle"
+          $edgeBundle = "dist/morphz-edge-bundle"
+          New-Item -ItemType Directory -Force $bundle, $edgeBundle | Out-Null
           @(
             "morphz.exe",
-            "morphz-edge.exe",
             "morphz-windows-sandbox-runner.exe",
             "morphz-windows-command-runner.exe",
             "morphz-windows-sandbox-setup.exe"
@@ -114,14 +119,29 @@ jobs:
           Copy-Item LICENSE, NOTICE $bundle -Force
           $archive = "morphz-windows-x86_64.zip"
           Compress-Archive -Path "$bundle/*" -DestinationPath "dist/$archive" -Force
-          $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
-          "$hash  $archive" | Set-Content -NoNewline "dist/$archive.sha256"
+          @(
+            "morphz-edge.exe",
+            "morphz-windows-sandbox-runner.exe",
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe"
+          ) | ForEach-Object {
+            Copy-Item "target/release/$_" "$edgeBundle/$_" -Force
+          }
+          Copy-Item LICENSE, NOTICE $edgeBundle -Force
+          $edgeArchive = "morphz-edge-windows-x86_64.zip"
+          Compress-Archive -Path "$edgeBundle/*" -DestinationPath "dist/$edgeArchive" -Force
+          @($archive, $edgeArchive) | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 "dist/$_").Hash.ToLowerInvariant()
+            "$hash  $_" | Set-Content -NoNewline "dist/$_.sha256"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: morphz-windows-x86_64
           path: |
             dist/morphz-windows-x86_64.zip
             dist/morphz-windows-x86_64.zip.sha256
+            dist/morphz-edge-windows-x86_64.zip
+            dist/morphz-edge-windows-x86_64.zip.sha256
           if-no-files-found: error
 
   publish:

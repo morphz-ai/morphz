@@ -31,7 +31,7 @@ fn nested_help_is_specific_to_its_subcommand() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Usage: morphz session create"));
     assert!(stdout.contains("--independent"));
-    assert!(stdout.contains("Create a Session mounted"));
+    assert!(stdout.contains("Create a Session within"));
     assert!(!stdout.contains("Manage long-lived Objectives"));
     assert!(output.stderr.is_empty());
 
@@ -41,9 +41,11 @@ fn nested_help_is_specific_to_its_subcommand() {
         "stderr={}",
         String::from_utf8_lossy(&help_command.stderr)
     );
-    assert!(String::from_utf8(help_command.stdout)
-        .unwrap()
-        .contains("Usage: morphz session create"));
+    assert!(
+        String::from_utf8(help_command.stdout)
+            .unwrap()
+            .contains("Usage: morphz session create")
+    );
 }
 
 #[test]
@@ -75,6 +77,15 @@ fn version_and_completion_do_not_initialize_the_runtime() {
     );
     assert!(version_subcommand.stderr.is_empty());
 
+    let localized_nested_version = morphz(&["--language", "zh-CN", "session", "--version"]);
+    assert!(localized_nested_version.status.success());
+    assert!(
+        String::from_utf8(localized_nested_version.stdout)
+            .unwrap()
+            .contains(env!("CARGO_PKG_VERSION"))
+    );
+    assert!(localized_nested_version.stderr.is_empty());
+
     let completion = morphz(&["completion", "zsh"]);
     assert!(
         completion.status.success(),
@@ -84,4 +95,20 @@ fn version_and_completion_do_not_initialize_the_runtime() {
     let stdout = String::from_utf8(completion.stdout).unwrap();
     assert!(stdout.contains("_morphz"));
     assert!(completion.stderr.is_empty());
+}
+
+#[test]
+fn update_help_exposes_check_pin_and_rollback_without_starting_runtime() {
+    let output = morphz(&["update", "--help"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("morphz update"));
+    assert!(stdout.contains("--to"));
+    assert!(stdout.contains("status"));
+    assert!(stdout.contains("rollback"));
+    assert!(output.stderr.is_empty());
 }

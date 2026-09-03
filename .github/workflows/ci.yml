@@ -254,26 +254,37 @@ jobs:
         run: |
           $env:MORPHZ_RUN_WINDOWS_SANDBOX_ATTACK_TEST = "1"
           cargo test -p morphz sandbox::windows::tests -- --nocapture --test-threads=1
-      - name: Assemble installable Windows bundle
+      - name: Assemble separate main and Edge Windows bundles
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force "target/morphz-windows-bundle" | Out-Null
-          $binaries = @(
+          $mainBundle = "target/morphz-windows-bundle"
+          $edgeBundle = "target/morphz-edge-windows-bundle"
+          New-Item -ItemType Directory -Force $mainBundle, $edgeBundle | Out-Null
+          @(
             "morphz.exe",
+            "morphz-windows-sandbox-runner.exe",
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe"
+          ) | ForEach-Object {
+            Copy-Item "target/windows-sandbox-tools/$_" "$mainBundle/$_" -Force
+          }
+          @(
             "morphz-edge.exe",
             "morphz-windows-sandbox-runner.exe",
             "morphz-windows-command-runner.exe",
             "morphz-windows-sandbox-setup.exe"
-          )
-          foreach ($binary in $binaries) {
-            Copy-Item "target/windows-sandbox-tools/$binary" "target/morphz-windows-bundle/$binary" -Force
+          ) | ForEach-Object {
+            Copy-Item "target/windows-sandbox-tools/$_" "$edgeBundle/$_" -Force
           }
-          Compress-Archive -Path "target/morphz-windows-bundle/*" -DestinationPath "target/morphz-windows-x86_64.zip" -Force
-      - name: Upload verified Windows bundle
+          Compress-Archive -Path "$mainBundle/*" -DestinationPath "target/morphz-windows-x86_64.zip" -Force
+          Compress-Archive -Path "$edgeBundle/*" -DestinationPath "target/morphz-edge-windows-x86_64.zip" -Force
+      - name: Upload verified Windows bundles
         uses: actions/upload-artifact@v4
         with:
           name: morphz-windows-x86_64
-          path: target/morphz-windows-x86_64.zip
+          path: |
+            target/morphz-windows-x86_64.zip
+            target/morphz-edge-windows-x86_64.zip
           if-no-files-found: error
 
   build:

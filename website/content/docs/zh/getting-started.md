@@ -19,16 +19,27 @@ Morphz 以预编译的原生二进制交付，控制台嵌入在主程序中。�
 macOS 与 Linux：
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://morphz.ai/install.ps1 | iex
+irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
 ```
 
 安装器识别当前平台，从 GitHub Releases 下载对应归档并校验 SHA-256，然后安装到用户目录，不要求 root 或管理员权限。打开一个新终端后继续设置。
+
+更新由用户显式触发，并复用同一组经过校验的 GitHub Release 资产：
+
+```bash
+morphz update status
+morphz update
+```
+
+更新成功后会保留上一个主程序二进制；需要时可运行 `morphz update rollback` 回滚。独立的执行节点客户端 `morphz-edge` 有自己的安装与更新生命周期，不会随主程序安装或更新。
+
+代码仓库公开前，维护者可以导出 `GH_TOKEN` 或 `GITHUB_TOKEN`，用同一流程测试私有 GitHub Release。只有发行仓库不同于程序内置默认值时，才需要设置 `MORPHZ_GITHUB_REPOSITORY=owner/repository`。
 
 ## 完成设置
 

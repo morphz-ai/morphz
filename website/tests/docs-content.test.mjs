@@ -62,6 +62,7 @@ test("publishes the generated bilingual CLI reference", async () => {
     "morphz objective create",
     "morphz scheduler thread resume",
     "morphz provider account login",
+    "morphz update",
   ];
 
   for (const locale of ["zh", "en"]) {

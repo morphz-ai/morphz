@@ -61,6 +61,7 @@ pub mod timer;
 pub mod tool;
 pub mod trajectory;
 pub mod tui;
+pub mod update;
 pub mod web;
 
 pub use yao_lang as yao;

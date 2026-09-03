@@ -338,7 +338,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
         </div>
         <div className="home-run__command" aria-label={t.copyLabel}>
           <header><span>{t.copyLabel}</span><small>{t.runPlatforms}</small></header>
-          <pre><code>curl -fsSL https://morphz.ai/install.sh | sh</code></pre>
+          <pre><code>curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh</code></pre>
           <footer><strong>{t.preview}</strong><span>{t.previewBody}</span></footer>
         </div>
       </section>

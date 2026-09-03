@@ -48,13 +48,13 @@ the verified boundary between implemented, validated, experimental, and planned 
 Install a prebuilt release on macOS or Linux:
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://morphz.ai/install.ps1 | iex
+irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
 ```
 
 The installers select the native GitHub Release asset and verify its SHA-256 checksum. Open a new
@@ -65,6 +65,14 @@ morphz setup
 morphz doctor
 morphz
 ```
+
+Updates are explicit and use the same verified GitHub Release assets. `morphz update status`
+checks for a release, `morphz update` installs it, and `morphz update rollback` restores the binary
+retained by the last update. The standalone `morphz-edge` Execution Target client has its own
+installation lifecycle and is never installed or updated with the main program.
+Before the repository becomes public, maintainers can exercise the same path against private
+Releases by exporting `GH_TOKEN` (or `GITHUB_TOKEN`); `MORPHZ_GITHUB_REPOSITORY=owner/repository`
+selects a different release repository without changing the binary.
 
 `setup` opens the embedded Dashboard wizard by default. Use `setup --tui` on an SSH host or a
 machine without a browser, or `setup --no-open` to print the Dashboard URL without opening it.

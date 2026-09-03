@@ -128,6 +128,9 @@ source: generated-cli-schema
 | `morphz config check` | Validate all loaded configuration layers |
 | `morphz config path` | List loaded configuration files in precedence order |
 | `morphz config explain` | Explain the source of every resolved value |
+| `morphz update` | Update Morphz from a verified GitHub Release |
+| `morphz update status` | Check the latest release without changing any files |
+| `morphz update rollback` | Restore the version retained by the last update |
 | `morphz doctor` | Check storage, workspace, permissions and provider setup |
 | `morphz completion` | Generate shell completion definitions |
 | `morphz version` | Print the Morphz version |
@@ -188,6 +191,8 @@ Commands:
           Inspect or cancel delegated Sub Agent jobs
   config
           Inspect resolved configuration and provenance
+  update
+          Update Morphz from a verified GitHub Release
   doctor
           Check storage, workspace, permissions and provider setup
   completion
@@ -2118,6 +2123,84 @@ Options:
           Print version
 
 Run `morphz config <COMMAND> --help` for command-specific help.
+```
+
+### `morphz update`
+
+Update Morphz from a verified GitHub Release
+
+```text
+Update Morphz from a verified GitHub Release
+
+Usage: morphz update [OPTIONS] [COMMAND]
+
+Commands:
+  status
+          Check the latest release without changing any files
+  rollback
+          Restore the version retained by the last update
+  help
+          Print this message or the help of the given subcommand(s)
+
+Options:
+  -C, --cwd <DIR>
+          Change working directory before loading configuration
+      --to <VERSION>
+          Install an exact released version instead of latest
+      --allow-downgrade
+          Allow --to to install an older release
+      --config-file <FILE>
+          Load an explicit trusted configuration file
+  -p, --profile <NAME>
+          Load a named configuration profile
+      --provider <ID>
+          Override the configured model provider
+  -m, --model <MODEL>
+          Override the configured model
+      --reasoning-effort <LEVEL>
+          Set model reasoning effort [possible values: default, auto, none, off, low, medium, high, max]
+      --agent <ID>
+          Select an Agent
+      --context <ID>
+          Select or mount a Cognitive Context
+      --session <ID>
+          Reattach an existing Session
+      --harness <ID@VERSION>
+          Select an exact installed Harness for the initial Evaluation
+  -s, --sandbox <MODE>
+          Set the command sandbox mode [possible values: workspace-write, full-access, danger-full-access]
+  -a, --approval <MODE>
+          Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
+      --add-dir <DIR>
+          Add an additional readable and writable Workspace directory
+      --network[=<BOOL>]
+          Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
+  -c, --set <KEY=VALUE>
+          Override one configuration value
+      --log-level <FILTER>
+          Override the tracing filter
+      --theme <THEME>
+          Select the TUI color theme [possible values: system, mono, iris, cyan, coral, no-color]
+      --language <LANGUAGE>
+          Select the user-interface language [possible values: auto, en, zh-CN]
+      --format <FORMAT>
+          Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
+      --tui
+          Force the fullscreen terminal UI
+      --plain
+          Use the classic line-oriented terminal
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+
+Examples:
+  morphz update status
+  morphz update
+  morphz update --to 0.2.0
+  morphz update rollback
 ```
 
 ### `morphz doctor`

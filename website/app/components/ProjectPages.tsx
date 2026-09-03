@@ -58,11 +58,11 @@ const downloadCopy = {
     currentBody: "预编译版本是默认安装路径，由 GitHub Releases 按版本发布并提供校验值；源码构建继续用于开发与独立复现。任何安装包都不改变本地数据与权限边界。",
     platformsLabel: "原生平台",
     platforms: [
-      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "原生沙箱与系统钥匙串"],
-      ["Linux", "x86_64", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "Bubblewrap 原生隔离"],
-      ["Windows", "x86_64 · Native", "irm https://morphz.ai/install.ps1 | iex\nmorphz setup", "ConPTY 与 Windows 原生沙箱"],
+      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "原生沙箱与系统钥匙串"],
+      ["Linux", "x86_64", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Bubblewrap 原生隔离"],
+      ["Windows", "x86_64 · Native", "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex\nmorphz setup", "ConPTY 与 Windows 原生沙箱"],
     ],
-    windows: "Windows 版是原生程序，WSL 只是可选运行方式，不是首选入口。发布归档同时包含 Morphz、边缘节点与 Windows 沙箱辅助程序。",
+    windows: "Windows 版是原生程序，WSL 只是可选运行方式，不是首选入口。主程序归档包含 Morphz 与所需的 Windows 沙箱辅助程序；独立执行节点客户端另行安装。",
     afterLabel: "安装之后",
     after: [
       ["01", "连接模型服务", "设置向导支持 API 密钥以及 Morphz 已实现的订阅 OAuth 登录流程。"],
@@ -81,11 +81,11 @@ const downloadCopy = {
     currentBody: "Prebuilt binaries are the default installation path. GitHub Releases publishes each version with checksums; source builds remain available for development and independent reproduction. Distribution does not change the local data or authority boundary.",
     platformsLabel: "Native platforms",
     platforms: [
-      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "Native sandbox and system keychain"],
-      ["Linux", "x86_64", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "Native Bubblewrap isolation"],
-      ["Windows", "x86_64 · Native", "irm https://morphz.ai/install.ps1 | iex\nmorphz setup", "ConPTY and native Windows sandbox"],
+      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Native sandbox and system keychain"],
+      ["Linux", "x86_64", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Native Bubblewrap isolation"],
+      ["Windows", "x86_64 · Native", "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex\nmorphz setup", "ConPTY and native Windows sandbox"],
     ],
-    windows: "The Windows build is native. WSL remains optional rather than the primary route. The release archive includes Morphz, Edge, and the Windows sandbox helpers.",
+    windows: "The Windows build is native. WSL remains optional rather than the primary route. The main archive contains Morphz and its required Windows sandbox helpers; the standalone Execution Target client is installed separately.",
     afterLabel: "After installation",
     after: [
       ["01", "Connect a model service", "Setup supports API keys and the subscription OAuth flows already implemented by the Runtime."],
