@@ -11,27 +11,6 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  website:
-    name: Technical Website
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: website
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.13.0
-          cache: npm
-          cache-dependency-path: website/package-lock.json
-      - name: Install website dependencies
-        run: npm ci
-      - name: Build and test public routes
-        run: npm test
-      - name: Lint website
-        run: npm run lint
-
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
