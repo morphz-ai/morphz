@@ -1,24 +1,57 @@
 ---
-title: Workspaces and execution targets
-description: Control where an Agent executes and which capabilities are available.
+title: Workspaces and Execution Targets
+description: Select where physical work occurs and constrain effects through Target authorization, sandboxing, approval, and Capability Leases.
 section: guides
 order: 230
 status: current
 ---
 
-Models propose actions; the runtime decides whether they may occur on a specific Execution Target. Target, permissions, and workspace form the boundary for real-world side effects.
+The model may propose an Action, but only the Runtime can turn it into a physical effect. An Execution Target answers “where,” Target authorization answers “which work may use it,” and sandbox plus Capability Lease boundaries answer “what exactly is allowed.”
+
+## Execution Target model
+
+An Execution Target is a stable physical destination, not a temporary worker process or network connection. The current Runtime can represent:
+
+- the machine running the current process;
+- an Edge device connected through an outbound channel;
+- an SSH destination managed through the host's OpenSSH installation;
+- a managed cloud worker supplied by a deployment.
+
+A Target records owner, provider Node, platform, workspace root, capabilities, policy digest, and availability. Credential values are forbidden from Target metadata.
+
+```bash
+morphz target list --format=json
+morphz target show <target-id> --format=json
+```
 
 ## Local workspace
 
-The default workspace is the directory from which Morphz starts. `--cwd` changes the directory before project configuration is loaded. The runtime protects its own configuration, database, executable, `.git`, `.ssh`, and other control-plane paths from Agent tools and shell commands.
+A local deployment enables the current machine as an Execution Target by default. Its workspace is the current directory when Morphz starts. `--cwd` changes that directory before project configuration is loaded.
+
+The Runtime protects its own configuration, database, executable, `.git`, `.ssh`, and other control-plane paths so the Agent cannot bypass policy through file tools or a shell. A consumer cloud deployment should disable the local Target so user work cannot fall through to the service host; see [Configuration](/en/docs/configuration).
 
 ## Sandbox and approval
 
-The Sandbox defines physical access; approval policy defines required authorization. They are different boundaries. Access to a directory does not approve every command, and approving one capability does not widen the Sandbox.
+The sandbox defines physical access. Approval policy decides whether an Action needs one-time or reusable authorization. Neither substitutes for the other: a reachable directory does not make every command approved, and approval does not expand the sandbox root.
+
+A Session's selected Target applies only to work created afterwards. A running Thread does not migrate to another machine. Dialogue may continue without a selected Target; the first physical tool request then returns an explicit Target-required state.
+
+## Scoped Target authorization
+
+Target ownership determines who can discover and administer a Target. The owner may further restrict it to an Agent, Context, or Thread:
+
+```bash
+morphz target authorize <target-id> \
+  --scope=context --scope-id=<context-id>
+
+morphz target authorizations <target-id> --format=json
+```
+
+A Target with no authorization history remains available to its owner. After the first scoped authorization exists, only matching active scopes may use the Target. Revoking the last authorization does not reopen owner-wide access. Revocation requires an exact revision and an auditable reason.
 
 ## Managed SSH
 
-Morphz can resolve remote targets through the host’s existing OpenSSH configuration. The Agent submits a host alias and required capabilities; the runtime uses the host SSH client and strict host-key validation without exposing credential values to the model.
+Morphz resolves remote destinations through the host's OpenSSH configuration. The Agent submits a host alias and capability requirements. The Runtime invokes the host SSH client with strict host-key checking and never gives credential values to the model.
 
 ```json
 {
@@ -28,27 +61,72 @@ Morphz can resolve remote targets through the host’s existing OpenSSH configur
 }
 ```
 
-Direct IP or DNS targets may include a user and port. When no key Secret is bound, existing `IdentityFile`, `ProxyJump`, and SSH Agent settings remain available through host OpenSSH.
+An explicit user and port may accompany an IP address or DNS name. Without a bound key secret, existing `IdentityFile`, `ProxyJump`, and SSH-agent configuration remain under host OpenSSH control.
 
-To avoid manually configuring `ssh-agent`, store the private-key contents in the Secret Store and bind only its alias to the Target:
+A private key may instead live in the Secret Store while the Target contains only aliases:
 
 ```json
 {
   "kind": "managed_ssh",
-  "host": "login.scnet.example",
+  "host": "login.example.com",
   "user": "researcher",
   "auth_mode": "key_only",
-  "private_key_secret": "SCNET_SSH_KEY",
-  "private_key_passphrase_secret": "SCNET_SSH_KEY_PASSPHRASE"
+  "private_key_secret": "RESEARCH_SSH_KEY",
+  "private_key_passphrase_secret": "RESEARCH_SSH_KEY_PASSPHRASE"
 }
 ```
 
-The passphrase alias is optional and valid only with a private-key alias. The Runtime resolves these Target-owned aliases in the current Context, Session, Objective, and Target scope. It writes the key to a Runtime-private `0600` temporary identity file, forces OpenSSH to use only that identity, and deletes it after the connection handoff. Values never enter Target metadata, tool arguments, Event History, or an ordinary Shell environment. `resolve_target` deliberately does not accept an arbitrary private-key path.
+The Runtime resolves Target-owned bindings within the current Context, Session, Objective, and Target scope. It writes the key to a private `0600` temporary identity file, forces OpenSSH to use only that identity, and removes the file after connection handoff. Credential values never enter Target metadata, tool parameters, Event History, or the ordinary command environment.
 
-## Edge Execution Node
+## Edge Execution Nodes
 
-An Edge Node pairs with a Morphz Gateway through an outbound connection. It fits networks the runtime cannot access directly. Pairing codes are short-lived; durable device credentials and capability leases remain local to the node and can be revoked.
+An Edge Node connects outbound to a Morphz Gateway, allowing a personal or private-network machine to execute work even when the Gateway cannot reach it directly. The main binary creates pairing codes and administers Nodes on the Gateway side:
 
-## Capability leases
+```bash
+morphz edge pairing-code --ttl=300
+morphz edge nodes --format=json
+```
 
-An approval may produce a lease limited to a Principal, Agent, Thread, Target, and capability set. Reuse is valid only inside the exact same boundary. Similar commands do not imply broader permission.
+The remote device installs and runs `morphz-edge` separately. It is execution-only, cannot evaluate models, and is not installed or updated with the main binary:
+
+```bash
+morphz-edge bootstrap \
+  --server-url=https://agent.example.com \
+  --pairing-code=pair_xxx \
+  --workspace=/path/to/workspace
+```
+
+The pairing code is a short-lived, one-time credential. After bootstrap, the device authenticates outbound with its own durable identity key and may run as a user-level background service. Its device key can be rotated and the Gateway can revoke the Node.
+
+## Capability Leases
+
+One approval may issue a reusable Capability Lease scoped to exactly one Thread, Objective, or Session. A later Action must still match:
+
+- Principal and Agent;
+- causal scope and stable scope identity;
+- Execution Target;
+- physical capability and requested-parameter subset;
+- current host and Target policy digest;
+- expiry and non-revoked status.
+
+A similar command, directory, or device does not widen a Lease. A policy change prevents an older Lease from covering a new request.
+
+```bash
+morphz lease list --target-id=<target-id> --format=json
+morphz lease revoke <lease-id> --revision=<revision> --reason='Access no longer needed'
+
+morphz-edge local-leases --json
+morphz-edge revoke-local-lease <lease-id>
+```
+
+Gateway and provider-local Leases are independently revocable. A device does not remain permanently open merely because the Gateway approved one earlier Action.
+
+## Inspect physical Jobs
+
+```bash
+morphz execution list --target-id=<target-id> --include-terminal
+morphz execution show <job-id> --format=json
+morphz execution output <job-id> --after=0 --limit=100
+```
+
+Physical Jobs, output chunks, and cancellation state are durable records. Cancellation requires an exact Job revision so a stale client cannot cancel work whose state has already changed.

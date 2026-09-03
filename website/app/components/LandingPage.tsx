@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Locale } from "@/lib/docs";
 import { sitePath, SITE_LINKS } from "@/lib/site";
 import { ContextEvaluationField } from "./ContextEvaluationField";
+import { HomeInstallCommand } from "./HomeInstallCommand";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
 
@@ -20,9 +21,9 @@ const content = {
       {
         kind: "maintenance",
         signature: "上下文 · 认知帧 · 会话",
-        index: "01 / 认知上下文自我维护",
+        index: "01 / 认知自进化",
         title: "认知上下文自我维护。\n认知持续演化。",
-        lead: "Morphz 把认知上下文作为可持久、可版本化、可求值的一等状态。运行时报告物理事实与容量压力，智能体通过显式事务决定如何整理认知。",
+        lead: "Morphz 将长期记忆组织为可持久、可版本化、可求值的认知状态。运行时报告物理事实与容量压力，智能体通过显式事务持续修订自己的认知。",
         items: [
           ["结构化认知上下文", "会话是认知上下文的组成部分", "一次上下文编码将收件箱、认知帧、会话目录、内核状态与唯一求值入口组织在同一结构中。"],
           ["不自动压缩", "认知上下文不被自动有损压缩", "达到容量压力时，运行时只报告边界；智能体显式决定保留、修订或退役什么，不将完整上下文静默改写成摘要。"],
@@ -60,7 +61,7 @@ const content = {
     mechanismIndex: "04 / 认知应用",
     mechanismTitle: "把智能体的工作方式，\n封装成认知应用。",
     mechanismLead: "认知应用组织领域能力；领域程序包定义一次求值如何运行；Yao 为模型与运行时提供共享的认知求值语言。应用可以替换工作方式，但不能绕过事务、权限与执行边界。",
-    mechanismAction: "查看领域程序包与 Yao 规范",
+    mechanismAction: "探索 Morphz 开放规范",
     mechanisms: [
       ["应用", "认知应用", "将界面、领域资源、工具和集成组织成面向具体工作的认知应用。"],
       ["领域程序包", "Harness", "以版本化包定义求值循环、领域合同、默认认知和策略。"],
@@ -76,7 +77,7 @@ const content = {
     evidenceLead: "阅读产品文档、技术文章与研究论文，或直接查看源码并在本地运行 Morphz。",
     evidence: [
       ["文章", "结构化上下文求值", "介绍 Morphz 的核心计算模型。", "blog"],
-      ["论文", "研究论文", "形式定义、系统边界与实验结果。", "paper"],
+      ["论文 · 评测", "研究论文与评测", "基于 STATE-Bench 的更新评测协议：Morphz 122/150，Letta 93/150，Mem0 96/150。", "paper"],
       ["源码", "源码与测试", "Apache-2.0 开源实现。", "source"],
       ["文档", "产品文档", "安装、配置、核心概念与运行说明。", "docs"],
     ],
@@ -84,9 +85,8 @@ const content = {
     runTitle: "在自己的机器上，\n启动 Morphz。",
     runLead: "一条命令安装预编译版本；随后通过设置向导连接模型服务并启动 Morphz。",
     copyLabel: "一条命令安装",
-    runPlatforms: "macOS · Linux",
     preview: "GitHub Release",
-    previewBody: "安装脚本识别当前平台、校验下载内容并安装到用户目录；Windows 原生版本在下载页提供。",
+    previewBody: "安装程序下载并校验对应平台的预编译版本，然后安装到用户目录；下载页提供全部安装方式。",
     docsTitle: "产品文档",
     docsCards: [
       ["快速开始", "从安装到第一次真实模型响应。", "getting-started"],
@@ -109,9 +109,9 @@ const content = {
       {
         kind: "maintenance",
         signature: "context · session · mind",
-        index: "01 / CONTEXT SELF-MAINTENANCE",
+        index: "01 / SELF-EVOLVING COGNITION",
         title: "A self-maintaining Context.\nCognition that keeps evolving.",
-        lead: "Morphz makes Context a persistent, versioned, evaluable first-class state. The Runtime reports physical facts and capacity pressure; the Agent decides how cognition changes through explicit transactions.",
+        lead: "Morphz organizes long-term memory as persistent, versioned, evaluable cognitive state. The Runtime reports physical facts and capacity pressure; the Agent continuously revises its cognition through explicit transactions.",
         items: [
           ["STRUCTURED CONTEXT", "Session is part of Context", "One Context Encoding organizes Inbox, Mind, Session Directory, Kernel state, and the sole evaluation entry in one recursive structure."],
           ["NO AUTOMATIC COMPACTION", "No automatic lossy Context compaction", "Under capacity pressure, the Runtime reports the boundary. The Agent explicitly decides what to preserve, revise, or retire instead of letting the system silently rewrite the entire Context as a summary."],
@@ -149,7 +149,7 @@ const content = {
     mechanismIndex: "04 / COGNITIVE APPLICATIONS",
     mechanismTitle: "Package how an Agent works\nas a cognitive application.",
     mechanismLead: "A Cognitive Application organizes domain capabilities. A Harness defines how an Evaluation runs. Yao gives the model and Runtime a shared cognitive evaluation language. Applications can replace the working method without bypassing Runtime transactions, authority, or execution boundaries.",
-    mechanismAction: "View the Harness and Yao specifications",
+    mechanismAction: "Explore the Morphz open standards",
     mechanisms: [
       ["APPLICATION", "Cognitive Application", "Organizes interfaces, domain resources, tools, and integrations for a specific field of work."],
       ["HARNESS", "Harness", "A versioned package defines the Evaluation Loop, domain contract, default Mind, and policy."],
@@ -165,7 +165,7 @@ const content = {
     evidenceLead: "Read the product docs, technical article, and research paper, or inspect the source and run Morphz locally.",
     evidence: [
       ["ARTICLE", "Structured Context Evaluation", "An introduction to the Morphz computational model.", "blog"],
-      ["PAPER", "Research paper", "Formal definitions, system boundaries, and results.", "paper"],
+      ["PAPER · EVALUATION", "Research paper and evaluation", "Updated STATE-Bench-derived protocol: Morphz 122/150, Letta 93/150, Mem0 96/150.", "paper"],
       ["SOURCE", "Source and tests", "The Apache-2.0 open-source implementation.", "source"],
       ["DOCS", "Product documentation", "Installation, configuration, concepts, and operation.", "docs"],
     ],
@@ -173,9 +173,8 @@ const content = {
     runTitle: "Run Morphz\non your own machine.",
     runLead: "Install a prebuilt release with one command, then connect a model service through Setup and start Morphz.",
     copyLabel: "ONE-COMMAND INSTALL",
-    runPlatforms: "macOS · Linux",
     preview: "GITHUB RELEASE",
-    previewBody: "The installer detects the platform, verifies the download, and installs to the user path. Native Windows installation is on the download page.",
+    previewBody: "The installer downloads and verifies the prebuilt release for the selected platform, then installs it to the user path. The download page lists every installation route.",
     docsTitle: "Product documentation",
     docsCards: [
       ["Getting started", "Install Morphz and receive the first real model response.", "getting-started"],
@@ -306,7 +305,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
           <p>{t.mechanismIndex}</p>
           <h2>{t.mechanismTitle}</h2>
           <span>{t.mechanismLead}</span>
-          <a className="home-link" href={SITE_LINKS.standards}>{t.mechanismAction}<b aria-hidden="true">↗</b></a>
+          <Link className="home-link" href={sitePath(locale, "/standards")}>{t.mechanismAction}<b aria-hidden="true">→</b></Link>
         </header>
         <div className="home-mechanism__steps">
           {t.mechanisms.map(([label, title, description], index) => (
@@ -336,11 +335,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
           <p>{t.runIndex}</p><h2>{t.runTitle}</h2><span>{t.runLead}</span>
           <Link className="home-button home-button--primary" href={download}>{t.start}<b aria-hidden="true">→</b></Link>
         </div>
-        <div className="home-run__command" aria-label={t.copyLabel}>
-          <header><span>{t.copyLabel}</span><small>{t.runPlatforms}</small></header>
-          <pre><code>curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh</code></pre>
-          <footer><strong>{t.preview}</strong><span>{t.previewBody}</span></footer>
-        </div>
+        <HomeInstallCommand locale={locale} title={t.copyLabel} release={t.preview} description={t.previewBody} />
       </section>
 
       <section className="home-evidence">

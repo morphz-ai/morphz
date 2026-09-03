@@ -100,5 +100,7 @@ cargo build --release
 ## 下一步
 
 - 阅读[核心概念](/docs/core-concepts)，理解认知上下文与会话的区别；
+- 阅读[会话与并发工作](/docs/sessions-and-concurrency)，理解共享认知上的多条工作线；
+- 阅读[认知应用、领域程序与 Yao](/docs/cognitive-applications)，为目标绑定领域工作方法；
 - 阅读[模型服务、账号与路由](/docs/providers-and-models)，理解模型选择器实际提交的内容；
 - 在远程机器上部署时阅读[远程 OAuth 登录](/docs/remote-oauth)。

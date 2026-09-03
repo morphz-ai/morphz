@@ -7,6 +7,7 @@ const copy = {
   zh: {
     essay: "文章",
     paper: "论文",
+    standards: "规范",
     docs: "文档",
     download: "下载",
     source: "源码",
@@ -20,6 +21,7 @@ const copy = {
   en: {
     essay: "Essay",
     paper: "Paper",
+    standards: "Standards",
     docs: "Docs",
     download: "Download",
     source: "Source",
@@ -45,12 +47,14 @@ export function SiteHeader({
   const home = sitePath(locale, "/");
   const essay = sitePath(locale, "/blog/from-chat-completion-to-structured-context-evaluation");
   const paper = sitePath(locale, "/paper");
+  const standards = sitePath(locale, "/standards");
   const docs = sitePath(locale, "/docs");
   const download = sitePath(locale, "/download");
   const otherLanguage = otherLanguageHref ?? (locale === "zh" ? "/en" : "/");
   const navigation = [
     [essay, t.essay],
     [paper, t.paper],
+    [standards, t.standards],
     [docs, t.docs],
     [download, t.download],
   ] as const;

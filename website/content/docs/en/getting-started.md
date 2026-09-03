@@ -100,5 +100,7 @@ The resulting binary is `target/release/morphz`. The one-command installer above
 ## Next steps
 
 - Read [Core concepts](/en/docs/core-concepts) to distinguish Contexts from Sessions;
+- Read [Sessions and concurrent work](/en/docs/sessions-and-concurrency) to understand independent workstreams over shared cognition;
+- Read [Cognitive Applications, Harnesses, and Yao](/en/docs/cognitive-applications) to bind domain practice to an Objective;
 - Read [Model services, accounts, and routes](/en/docs/providers-and-models) to understand the model selector;
 - Read [Remote OAuth](/en/docs/remote-oauth) before deploying on a remote host.

@@ -10,6 +10,7 @@ const copy = {
     ecosystem: "开源项目",
     essay: "技术文章",
     paper: "研究论文",
+    standards: "开放规范",
     docs: "公开文档",
     download: "下载与运行",
     source: "GitHub 源码",
@@ -21,6 +22,7 @@ const copy = {
     ecosystem: "Open source",
     essay: "Technical essay",
     paper: "Research paper",
+    standards: "Open standards",
     docs: "Documentation",
     download: "Download and run",
     source: "GitHub source",
@@ -49,6 +51,7 @@ export function SiteFooter({ locale }: { locale: Locale }) {
           <div className="site-footer__links">
             <Link href={sitePath(locale, "/blog/from-chat-completion-to-structured-context-evaluation")}>{t.essay}</Link>
             <Link href={sitePath(locale, "/paper")}>{t.paper}</Link>
+            <Link href={sitePath(locale, "/standards")}>{t.standards}</Link>
             <Link href={sitePath(locale, "/docs")}>{t.docs}</Link>
             <Link href={sitePath(locale, "/download")}>{t.download}</Link>
           </div>

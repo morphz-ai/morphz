@@ -27,7 +27,6 @@ const revealSelector = [
   ".project-page__section > .project-page__label",
   ".project-page__rows > article",
   ".platform-grid > article",
-  ".platform-note",
   ".project-page__closing > *",
   ".docs-index > .eyebrow",
   ".docs-index > h1",
@@ -40,6 +39,14 @@ const revealSelector = [
   ".doc-article > .doc-article__description",
   ".doc-prose > *",
   ".doc-article__footer",
+  ".standards-hero__copy > *",
+  ".standards-stack > article",
+  ".standards-thesis > *",
+  ".standards-families > header > *",
+  ".standards-family-grid > article",
+  ".standards-directions > header > *",
+  ".standards-direction-grid > article",
+  ".standards-maturity > div",
   ".site-footer > *",
 ].join(",");
 

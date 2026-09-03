@@ -62,6 +62,49 @@ local_enabled = false
 
 也可设置 `MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED=false`。此时会话未选择设备时仍可正常对话；第一次需要物理工具时，运行时会返回 `EXECUTION_TARGET_REQUIRED`。客户端可调用 `GET /api/sessions/:session_id/execution-targets`，据其 `reason` 区分“安装并配对 `morphz-edge`”与“从已有设备中选择”。会话的选择只影响随后创建的新任务，已运行任务不会迁移。
 
+## 存储权威
+
+SQLite 是默认物理存储，适合本机与单实例部署：
+
+```toml
+[storage]
+backend = "sqlite"
+cognitive_store = "context_db"
+
+[storage.sqlite]
+path = "morphz.db"
+max_connections = 8
+```
+
+多实例服务可以显式选择 PostgreSQL。连接地址通过一个由配置指定名称的环境变量提供，避免数据库凭证进入普通配置与诊断输出：
+
+```toml
+[storage]
+backend = "postgres"
+cognitive_store = "context_db"
+
+[storage.postgres]
+url_env = "MORPHZ_POSTGRES_URL"
+max_connections = 16
+```
+
+仅设置 `MORPHZ_POSTGRES_URL` 不会自动切换物理存储。认知存储默认使用上下文数据库；`legacy` 仅用于显式迁移兼容回退。启动不会隐式迁移认知权威，迁移必须由运维者明确执行。
+
+## 会话工作集与认知整理
+
+```toml
+[orchestrator.session_working_set]
+active_window = "24h"
+max_sessions = 50
+
+[orchestrator.frame_retirement]
+cooling_ticks = 8
+```
+
+活动窗口和数量上限决定哪些非当前会话可以进入本轮有界工作集；实际投影仍要服从上下文容量。`cooling_ticks` 表示普通认知帧从请求退役到整理窗口生效之间经过的认知时钟步数，不应把它改成物理时间或立即删除开关。
+
+高并发服务还可以调整激活准入容量。默认同时运行 16 个激活、最多持久排队 256 个，并为对话与最终交付保留容量。除非已经监测模型、数据库和执行节点的真实承载能力，否则不要仅为了提高吞吐而放大这些上限。
+
 ## 容量覆盖
 
 模型服务的容量字段都是可选的：

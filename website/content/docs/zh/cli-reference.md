@@ -32,7 +32,7 @@ source: generated-cli-schema
 | `morphz target show` | 查看一个执行节点 |
 | `morphz target enable` | 启用一个执行节点 |
 | `morphz target disable` | 禁用一个执行节点 |
-| `morphz target authorize` | 将执行节点限制到代理、上下文或线程范围 |
+| `morphz target authorize` | 将执行节点限制到智能体、上下文或线程范围 |
 | `morphz target authorizations` | 列出执行节点的范围授权 |
 | `morphz target revoke-authorization` | 撤销一个执行节点范围授权 |
 | `morphz lease` | 检查和撤销执行节点能力租约 |
@@ -95,10 +95,10 @@ source: generated-cli-schema
 | `morphz session show` | 显示一个会话 |
 | `morphz session create` | 在指定上下文中创建会话 |
 | `morphz session resume` | 重新连接现有或最近活跃的会话 |
-| `morphz agent` | 管理持久代理 |
-| `morphz agent list` | 列出代理 |
-| `morphz agent show` | 显示一个代理 |
-| `morphz agent create` | 创建带根上下文和初始会话的代理 |
+| `morphz agent` | 管理持久智能体 |
+| `morphz agent list` | 列出智能体 |
+| `morphz agent show` | 显示一个智能体 |
+| `morphz agent create` | 创建带根上下文和初始会话的智能体 |
 | `morphz harness` | 安装和查看版本化领域程序包 |
 | `morphz harness list` | 列出已安装的领域程序包版本 |
 | `morphz harness show` | 显示一个已安装领域程序包的精确版本 |
@@ -111,18 +111,18 @@ source: generated-cli-schema
 | `morphz objective pause` | 暂停目标 |
 | `morphz objective resume` | 继续目标 |
 | `morphz objective cancel` | 取消目标 |
-| `morphz trajectory` | 导出和校验可移植的代理执行轨迹包 |
-| `morphz trajectory export` | 将运行时权威事实导出为代理执行轨迹包 |
-| `morphz trajectory verify` | 校验不可信的代理执行轨迹包 |
+| `morphz trajectory` | 导出和校验可移植的智能体执行轨迹包 |
+| `morphz trajectory export` | 将运行时权威事实导出为智能体执行轨迹包 |
+| `morphz trajectory verify` | 校验不可信的智能体执行轨迹包 |
 | `morphz trajectory episode` | 派生经过权限校验的训练片段 |
 | `morphz storage` | 检查并迁移运行时存储权威 |
 | `morphz storage migrate-cognitive-store` | 将认知状态显式同步到选定存储引擎 |
 | `morphz experiment` | 检查并验证显式门控的实验功能 |
 | `morphz experiment list` | 列出实验功能的编译与启用状态 |
 | `morphz experiment check` | 确认一个实验功能已经编译并启用 |
-| `morphz job` | 检查或取消子代理委派 |
-| `morphz job list` | 列出子代理委派 |
-| `morphz job cancel` | 取消子代理委派及其后代 |
+| `morphz job` | 检查或取消子智能体委派 |
+| `morphz job list` | 列出子智能体委派 |
+| `morphz job cancel` | 取消子智能体委派及其后代 |
 | `morphz config` | 检查解析后的配置及其来源 |
 | `morphz config show` | 输出解析后的配置 |
 | `morphz config check` | 验证所有已加载的配置层 |
@@ -140,7 +140,7 @@ source: generated-cli-schema
 ```text
 Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，运行时是确定性事务内核。
 
-不带子命令输入的文本会直接发送给所选代理实例。
+不带子命令输入的文本会直接发送给所选智能体实例。
 
 用法：morphz [OPTIONS] [PROMPT]... [COMMAND]
 
@@ -176,19 +176,19 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   session
           管理上下文中的会话
   agent
-          管理持久代理
+          管理持久智能体
   harness
           安装和查看版本化领域程序包
   objective
           管理长期目标
   trajectory
-          导出和校验可移植的代理执行轨迹包
+          导出和校验可移植的智能体执行轨迹包
   storage
           检查并迁移运行时存储权威
   experiment
           检查并验证显式门控的实验功能
   job
-          检查或取消子代理委派
+          检查或取消子智能体委派
   config
           检查解析后的配置及其来源
   update
@@ -201,7 +201,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           显示 Morphz 版本
 参数：
   [PROMPT]...
-          直接向代理发送文本
+          直接向智能体发送文本
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -222,7 +222,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置模型推理强度
 
       --agent <ID>
-          选择代理
+          选择智能体
 
       --context <ID>
           选择或挂载认知上下文
@@ -294,7 +294,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 参数：
   <PROMPT>...
-          要发送给代理的提示
+          要发送给智能体的提示
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -311,7 +311,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -388,7 +388,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置模型推理强度
 
       --agent <ID>
-          选择代理
+          选择智能体
 
       --context <ID>
           选择或挂载认知上下文
@@ -483,7 +483,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置模型推理强度
 
       --agent <ID>
-          选择代理
+          选择智能体
 
       --context <ID>
           选择或挂载认知上下文
@@ -579,7 +579,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置模型推理强度
 
       --agent <ID>
-          选择代理
+          选择智能体
 
       --context <ID>
           选择或挂载认知上下文
@@ -677,7 +677,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -733,7 +733,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   disable
           禁用一个执行节点
   authorize
-          将执行节点限制到代理、上下文或线程范围
+          将执行节点限制到智能体、上下文或线程范围
   authorizations
           列出执行节点的范围授权
   revoke-authorization
@@ -752,7 +752,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
   -h, --help
@@ -819,7 +819,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -888,7 +888,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -961,7 +961,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置模型推理强度
 
       --agent <ID>
-          选择代理
+          选择智能体
 
       --context <ID>
           选择或挂载认知上下文
@@ -1053,7 +1053,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1124,7 +1124,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1193,7 +1193,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1266,7 +1266,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
   -h, --help
           显示帮助
       --context <ID>
@@ -1335,7 +1335,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1406,7 +1406,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1445,20 +1445,20 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 ### `morphz agent`
 
-管理持久代理
+管理持久智能体
 
 ```text
-管理持久代理
+管理持久智能体
 
 用法：morphz agent [OPTIONS] [COMMAND]
 
 命令：
   list
-          列出代理
+          列出智能体
   show
-          显示一个代理
+          显示一个智能体
   create
-          创建带根上下文和初始会话的代理
+          创建带根上下文和初始会话的智能体
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -1475,7 +1475,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1544,7 +1544,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1619,7 +1619,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
   -h, --help
@@ -1660,18 +1660,18 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 ### `morphz trajectory`
 
-导出和校验可移植的代理执行轨迹包
+导出和校验可移植的智能体执行轨迹包
 
 ```text
-导出和校验可移植的代理执行轨迹包
+导出和校验可移植的智能体执行轨迹包
 
 用法：morphz trajectory [OPTIONS] [COMMAND]
 
 命令：
   export
-          将运行时权威事实导出为代理执行轨迹包
+          将运行时权威事实导出为智能体执行轨迹包
   verify
-          校验不可信的代理执行轨迹包
+          校验不可信的智能体执行轨迹包
   episode
           派生经过权限校验的训练片段
 选项：
@@ -1690,7 +1690,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1753,7 +1753,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1820,7 +1820,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1859,18 +1859,18 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 ### `morphz job`
 
-检查或取消子代理委派
+检查或取消子智能体委派
 
 ```text
-检查或取消子代理委派
+检查或取消子智能体委派
 
 用法：morphz job [OPTIONS] [COMMAND]
 
 命令：
   list
-          列出子代理委派
+          列出子智能体委派
   cancel
-          取消子代理委派及其后代
+          取消子智能体委派及其后代
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -1887,7 +1887,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -1958,7 +1958,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -2029,7 +2029,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -2095,7 +2095,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -2161,7 +2161,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>
@@ -2224,7 +2224,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --reasoning-effort <LEVEL>
           设置模型推理强度
       --agent <ID>
-          选择代理
+          选择智能体
       --context <ID>
           选择或挂载认知上下文
       --session <ID>

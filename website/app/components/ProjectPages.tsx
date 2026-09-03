@@ -3,11 +3,12 @@ import type { Locale } from "@/lib/docs";
 import { paperPdf, sitePath, SITE_LINKS } from "@/lib/site";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
+import { CopyCommand } from "./CopyCommand";
 
 const paperCopy = {
   zh: {
     eyebrow: "预印本 · 2026",
-    title: "结构化上下文上的非确定性认知符号求值",
+    title: ["结构化上下文上的", "非确定性认知符号求值"],
     byline: "Raymond Ren · 双语预印本",
     lead: "论文给出 Morphz 计算模型的形式定义、实现边界与分层实验：大语言模型在智能体自有的结构化上下文上求值认知符号，确定性运行时保留对权限、版本、真实观察与权威状态提交的控制。",
     read: "阅读中文 PDF",
@@ -27,7 +28,7 @@ const paperCopy = {
   },
   en: {
     eyebrow: "MORPHZ / PREPRINT / 2026",
-    title: "Nondeterministic Cognitive Symbol Evaluation over Structured Context",
+    title: ["Nondeterministic Cognitive", "Symbol Evaluation over", "Structured Context"],
     byline: "Raymond Ren · bilingual preprint",
     lead: "The paper defines the Morphz computational model, its implementation boundary, and layered experiments: an LLM evaluates cognitive symbols over agent-owned Structured Context while a deterministic runtime retains authority over capabilities, versions, real observations, and committed state.",
     read: "Read the English PDF",
@@ -50,19 +51,18 @@ const paperCopy = {
 const downloadCopy = {
   zh: {
     eyebrow: "原生运行",
-    title: "在你的机器上运行 Morphz。",
+    title: ["在你的机器上", "运行 Morphz。"],
     lead: "Morphz 是本地优先的原生运行时。macOS、Linux 和 Windows 共享同一套认知上下文、调度、模型服务与恢复语义；控制台随 Morphz 一同提供。",
     releases: "GitHub Releases",
     source: "从源码构建",
-    current: "当前发布方式",
-    currentBody: "预编译版本是默认安装路径，由 GitHub Releases 按版本发布并提供校验值；源码构建继续用于开发与独立复现。任何安装包都不改变本地数据与权限边界。",
+    current: "安装方式",
+    currentBody: "日常使用可直接安装 GitHub Releases 提供的预编译版本；每个下载文件均附带 SHA-256 校验值。参与开发或需要独立复现时，也可以从源码构建。",
     platformsLabel: "原生平台",
     platforms: [
       ["macOS", "Apple Silicon · Intel", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "原生沙箱与系统钥匙串"],
       ["Linux", "x86_64", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Bubblewrap 原生隔离"],
       ["Windows", "x86_64 · Native", "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex\nmorphz setup", "ConPTY 与 Windows 原生沙箱"],
     ],
-    windows: "Windows 版是原生程序，WSL 只是可选运行方式，不是首选入口。主程序归档包含 Morphz 与所需的 Windows 沙箱辅助程序；独立执行节点客户端另行安装。",
     afterLabel: "安装之后",
     after: [
       ["01", "连接模型服务", "设置向导支持 API 密钥以及 Morphz 已实现的订阅 OAuth 登录流程。"],
@@ -73,19 +73,18 @@ const downloadCopy = {
   },
   en: {
     eyebrow: "MORPHZ / NATIVE RUNTIME",
-    title: "Run Morphz on your machine.",
+    title: ["Run Morphz", "on your machine."],
     lead: "Morphz is a local-first native runtime. macOS, Linux, and Windows share the same Context, scheduling, provider, and recovery semantics; the Dashboard ships with the Runtime.",
     releases: "GitHub Releases",
     source: "Build from source",
-    current: "Current distribution",
-    currentBody: "Prebuilt binaries are the default installation path. GitHub Releases publishes each version with checksums; source builds remain available for development and independent reproduction. Distribution does not change the local data or authority boundary.",
+    current: "Installation options",
+    currentBody: "For regular use, install a prebuilt binary from GitHub Releases; each download includes a SHA-256 checksum. Build from source when contributing to development or reproducing the project independently.",
     platformsLabel: "Native platforms",
     platforms: [
       ["macOS", "Apple Silicon · Intel", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Native sandbox and system keychain"],
       ["Linux", "x86_64", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Native Bubblewrap isolation"],
       ["Windows", "x86_64 · Native", "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex\nmorphz setup", "ConPTY and native Windows sandbox"],
     ],
-    windows: "The Windows build is native. WSL remains optional rather than the primary route. The main archive contains Morphz and its required Windows sandbox helpers; the standalone Execution Target client is installed separately.",
     afterLabel: "After installation",
     after: [
       ["01", "Connect a model service", "Setup supports API keys and the subscription OAuth flows already implemented by the Runtime."],
@@ -102,11 +101,11 @@ export function PaperPage({ locale }: { locale: Locale }) {
   return (
     <main className="content-site">
       <SiteHeader locale={locale} otherLanguageHref={sitePath(otherLocale, "/paper")} />
-      <article className="project-page paper-page">
+      <article className={`project-page paper-page paper-page--${locale}`}>
         <header className="project-page__header">
           <div>
             <p className="eyebrow">{t.eyebrow}</p>
-            <h1>{t.title}</h1>
+            <h1>{t.title.map((line) => <span key={line}>{line}</span>)}</h1>
           </div>
           <div className="project-page__intro">
             <p className="project-page__byline">{t.byline}</p>
@@ -151,7 +150,7 @@ export function DownloadPage({ locale }: { locale: Locale }) {
       <SiteHeader locale={locale} otherLanguageHref={sitePath(otherLocale, "/download")} />
       <article className="project-page download-page">
         <header className="project-page__header">
-          <div><p className="eyebrow">{t.eyebrow}</p><h1>{t.title}</h1></div>
+          <div><p className="eyebrow">{t.eyebrow}</p><h1>{t.title.map((line) => <span key={line}>{line}</span>)}</h1></div>
           <div className="project-page__intro">
             <p>{t.lead}</p>
             <div className="project-page__actions">
@@ -171,12 +170,14 @@ export function DownloadPage({ locale }: { locale: Locale }) {
             {t.platforms.map(([name, architecture, command, capability]) => (
               <article key={name}>
                 <header><h2>{name}</h2><span>{architecture}</span></header>
-                <pre><code>{command}</code></pre>
+                <div className="platform-command">
+                  <pre><code>{command}</code></pre>
+                  <CopyCommand command={command} locale={locale} platform={name} />
+                </div>
                 <p><i aria-hidden="true" />{capability}</p>
               </article>
             ))}
           </div>
-          <p className="platform-note">{t.windows}</p>
         </section>
 
         <section className="project-page__section">

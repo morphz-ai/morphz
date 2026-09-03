@@ -22,7 +22,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(zh, /为长期并发工作而生/);
   assert.match(zh, /查看功能/);
   assert.match(zh, /核心功能/);
-  assert.match(zh, /认知上下文自我维护/);
+  assert.match(zh, /认知自进化/);
+  assert.match(zh, /将长期记忆组织为可持久、可版本化、可求值的认知状态/);
   assert.match(zh, /认知上下文不被自动有损压缩/);
   assert.match(zh, /认知帧通过证据持续修订/);
   assert.match(zh, /当前与近期会话进入上下文/);
@@ -41,11 +42,16 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.doesNotMatch(zh, /home-cognitive-os__paren/);
   assert.match(zh, /认知上下文编码/);
   assert.match(zh, /查看源码/);
+  assert.match(zh, /基于 STATE-Bench 的更新评测协议：Morphz 122\/150，Letta 93\/150，Mem0 96\/150/);
   assert.match(zh, /href="\/docs\/execution-lifecycle"[^>]*><h3>并发与目标/);
   assert.match(zh, /href="\/docs\/execution-targets"[^>]*><h3>执行与安全/);
   assert.match(zh, /启动 Morphz。/);
   assert.doesNotMatch(zh, /启动一个 Morphz/);
   assert.match(zh, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
+  assert.match(zh, /aria-label="选择安装平台"/);
+  assert.match(zh, /macOS/);
+  assert.match(zh, /Linux/);
+  assert.match(zh, /Windows/);
   assert.doesNotMatch(zh, /cargo build --release/);
   assert.match(zh, /aria-label="切换到英文"[^>]*>EN<\/a>/);
   assert.match(en, /aria-label="Switch to Chinese"[^>]*>CN<\/a>/);
@@ -61,7 +67,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /cognitive operating-system core/);
   assert.match(en, /Frame · Session swap in \/ swap out/);
   assert.doesNotMatch(en, /Frame · Context swap in \/ swap out|Frame and Context working-set swapping/);
-  assert.match(en, /CONTEXT SELF-MAINTENANCE/);
+  assert.match(en, /SELF-EVOLVING COGNITION/);
+  assert.match(en, /organizes long-term memory as persistent, versioned, evaluable cognitive state/);
   assert.match(en, /No automatic lossy Context compaction/);
   assert.match(en, /Current and recent Sessions enter Context/);
   assert.match(en, /up to 50 Sessions active within the last 24 hours/);
@@ -69,7 +76,9 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /Execution Targets/);
   assert.match(en, /Run Morphz/);
   assert.match(en, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
+  assert.match(en, /aria-label="Choose an installation platform"/);
   assert.match(en, /COGNITIVE APPLICATIONS/);
+  assert.match(en, /Updated STATE-Bench-derived protocol: Morphz 122\/150, Letta 93\/150, Mem0 96\/150/);
   assert.match(en, /CONTEXT ENCODING/);
   assert.match(en, /href="\/en\/docs\/execution-lifecycle"[^>]*><h3>Concurrency and goals/);
   assert.match(en, /href="\/en\/docs\/execution-targets"[^>]*><h3>Execution and safety/);
@@ -109,22 +118,44 @@ test("uses one site header across landing and content pages", async () => {
 });
 
 test("renders documentation indexes and bilingual article routes", async () => {
-  const routes = ["/docs", "/en/docs", "/docs/core-concepts", "/en/docs/core-concepts", "/docs/contexts-and-recall"];
+  const routes = [
+    "/docs",
+    "/en/docs",
+    "/docs/core-concepts",
+    "/en/docs/core-concepts",
+    "/docs/contexts-and-recall",
+    "/docs/sessions-and-concurrency",
+    "/en/docs/sessions-and-concurrency",
+    "/docs/cognitive-applications",
+    "/en/docs/cognitive-applications",
+    "/docs/agent-trajectories",
+    "/en/docs/agent-trajectories",
+  ];
   const responses = await Promise.all(routes.map(render));
   for (const response of responses) assert.equal(response.status, 200);
-  const html = await Promise.all(responses.map((response) => response.text()));
-  assert.match(html[0], /从真实任务开始理解 Morphz/);
-  assert.match(html[1], /Learn Morphz through real tasks/);
-  assert.match(html[2], /认知帧/);
-  assert.match(html[3], /Cognitive frame/);
-  assert.match(html[4], /认知上下文、认知帧与召回/);
-  assert.doesNotMatch(html[4], /Context、认知帧与 Recall/);
-  assert.match(html[2], /当前实现/);
-  assert.match(html[3], /Current behavior/);
-  assert.match(html[2], /会话是认知上下文中的一等交互与执行对象/);
-  assert.match(html[2], /认知上下文不被自动有损压缩/);
-  assert.match(html[3], /A Session is a first-class interaction and execution object inside Context/);
-  assert.match(html[3], /does not let the Runtime silently rewrite the entire Context/);
+  const pages = new Map(await Promise.all(responses.map(async (response, index) => [routes[index], await response.text()])));
+  assert.match(pages.get("/docs"), /从真实任务开始理解 Morphz/);
+  assert.match(pages.get("/en/docs"), /Learn Morphz through real tasks/);
+  assert.match(pages.get("/docs/core-concepts"), /面向长期、并发工作的开源智能体/);
+  assert.match(pages.get("/docs/core-concepts"), /认知自进化/);
+  assert.match(pages.get("/docs/core-concepts"), /主体/);
+  assert.match(pages.get("/en/docs/core-concepts"), /open-source agent for durable, concurrent work/);
+  assert.match(pages.get("/en/docs/core-concepts"), /self-evolving cognition/);
+  assert.match(pages.get("/en/docs/core-concepts"), /Principal identity/);
+  assert.match(pages.get("/docs/contexts-and-recall"), /退役不是失效或删除/);
+  assert.match(pages.get("/docs/sessions-and-concurrency"), /会话退役与恢复/);
+  assert.match(pages.get("/en/docs/sessions-and-concurrency"), /Retiring and restoring Session attention/);
+  assert.match(pages.get("/docs/cognitive-applications"), /安装不等于运行或授权/);
+  assert.match(pages.get("/en/docs/cognitive-applications"), /Installation is not activation or authority/);
+  assert.match(pages.get("/docs/agent-trajectories"), /不是聊天记录、调试日志或新的事实来源/);
+  assert.match(pages.get("/en/docs/agent-trajectories"), /not a transcript, debug log, or new source of truth/);
+  assert.match(pages.get("/docs/core-concepts"), /当前实现/);
+  assert.match(pages.get("/en/docs/core-concepts"), /Current behavior/);
+  assert.match(pages.get("/docs/core-concepts"), /href="\/en\/docs\/core-concepts"[^>]*class="language-switch"/);
+  assert.match(pages.get("/en/docs/core-concepts"), /href="\/docs\/core-concepts"[^>]*class="language-switch"/);
+  assert.doesNotMatch(pages.get("/docs/core-concepts"), /docs-toolbar__language/);
+  assert.doesNotMatch(pages.get("/en/docs/core-concepts"), /docs-toolbar__language/);
+  assert.match(pages.get("/docs/core-concepts"), /status-badge status-badge--current/);
 });
 
 test("uses the Dashboard electric-cyan palette across the public site", async () => {
@@ -207,15 +238,18 @@ test("renders the bilingual paper and native distribution pages", async () => {
   for (const response of responses) assert.equal(response.status, 200);
   const html = await Promise.all(responses.map((response) => response.text()));
 
-  assert.match(html[0], /结构化上下文上的非确定性认知符号求值/);
+  assert.match(html[0], /结构化上下文上的/);
+  assert.match(html[0], /非确定性认知符号求值/);
   assert.match(html[0], /morphz_nondeterministic_cognitive_symbol_evaluation_preprint_zh\.pdf/);
-  assert.match(html[1], /Nondeterministic Cognitive Symbol Evaluation over Structured Context/);
+  assert.match(html[1], /Nondeterministic Cognitive/);
+  assert.match(html[1], /Symbol Evaluation over/);
+  assert.match(html[1], /Structured Context/);
   assert.match(html[1], /morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en\.pdf/);
   assert.match(html[2], /macOS/);
   assert.match(html[2], /Linux/);
   assert.match(html[2], /Windows/);
-  assert.match(html[2], /Windows 版是原生程序/);
-  assert.match(html[3], /The Windows build is native/);
+  assert.doesNotMatch(html[2], /独立执行节点客户端/);
+  assert.doesNotMatch(html[3], /standalone Execution Target client/);
   assert.match(html[2], /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
   assert.match(html[2], /irm https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.ps1 \| iex/);
   assert.match(html[3], /GitHub Releases/);
@@ -243,6 +277,14 @@ test("publishes installers that resolve verified GitHub Release assets", async (
   assert.doesNotMatch(shellSource, /unpacked\/morphz-edge/);
   assert.match(powershellSource, /Get-FileHash -Algorithm SHA256/);
   assert.doesNotMatch(powershellSource, /"morphz-edge\.exe"/);
+});
+
+test("lets the home page select native installation commands", async () => {
+  const source = await readFile(new URL("../app/components/HomeInstallCommand.tsx", import.meta.url), "utf8");
+  assert.match(source, /navigator\.platform/);
+  assert.match(source, /install\.sh \| sh/);
+  assert.match(source, /install\.ps1 \| iex/);
+  assert.match(source, /aria-pressed=\{platform === key\}/);
 });
 
 test("does not advertise the unpublished online Morphz instance", async () => {

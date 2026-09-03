@@ -7,9 +7,9 @@
 
 use crate::i18n::Locale;
 use clap::{
-    Arg, ArgAction, ArgMatches, Command, Error as ClapError,
     builder::{StringValueParser, TypedValueParser},
     error::ErrorKind,
+    Arg, ArgAction, ArgMatches, Command, Error as ClapError,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -256,7 +256,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
         ))
         .long_about(locale.text(
             "Morphz is an S-Expression Cognitive Machine with persistent Context, Sessions, Objectives and a fullscreen terminal UI. The language model is its nondeterministic semantic processor; the Runtime is its deterministic transactional kernel.\n\nText entered without a subcommand is sent directly to the selected Agent instance.",
-            "Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，运行时是确定性事务内核。\n\n不带子命令输入的文本会直接发送给所选代理实例。",
+            "Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，运行时是确定性事务内核。\n\n不带子命令输入的文本会直接发送给所选智能体实例。",
         ))
         .propagate_version(true)
         .next_line_help(true)
@@ -264,7 +264,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
         .args(global_args(locale))
         .arg(prompt_arg("PROMPT", 0, None).help(locale.text(
             "Send text directly to the Agent",
-            "直接向代理发送文本",
+            "直接向智能体发送文本",
         )))
         .subcommands([
             exec_command(locale),
@@ -472,7 +472,7 @@ fn global_args(locale: Locale) -> Vec<Arg> {
             "agent",
             "agent",
             "ID",
-            locale.text("Select an Agent", "选择代理"),
+            locale.text("Select an Agent", "选择智能体"),
         ),
         value_arg(
             "context",
@@ -664,7 +664,7 @@ fn exec_command(locale: Locale) -> Command {
             ))
             .arg(
                 prompt_arg("PROMPT", 1, None)
-                    .help(locale.text("Prompt to send to the Agent", "要发送给代理的提示")),
+                    .help(locale.text("Prompt to send to the Agent", "要发送给智能体的提示")),
             ),
         "Examples:\n  morphz exec explain this repository\n  morphz exec -- --text-that-starts-with-a-dash",
     )
@@ -1121,7 +1121,7 @@ fn target_command(locale: Locale) -> Command {
             Command::new("authorize")
                 .about(locale.text(
                     "Restrict a Target to an Agent, Context or Thread scope",
-                    "将执行节点限制到代理、上下文或线程范围",
+                    "将执行节点限制到智能体、上下文或线程范围",
                 ))
                 .arg(
                     prompt_arg("TARGET_ID", 1, Some(1))
@@ -1928,26 +1928,26 @@ fn session_command(locale: Locale) -> Command {
 
 fn agent_command(locale: Locale) -> Command {
     Command::new("agent")
-        .about(locale.text("Manage persistent Agents", "管理持久代理"))
+        .about(locale.text("Manage persistent Agents", "管理持久智能体"))
         .subcommands([
             output_examples(
                 locale,
                 Command::new("list")
-                    .about(locale.text("List Agents", "列出代理"))
+                    .about(locale.text("List Agents", "列出智能体"))
                     .arg(local_switch_arg(
                         "include-archived",
                         "include-archived",
-                        locale.text("Include archived Agents", "包含已归档的代理"),
+                        locale.text("Include archived Agents", "包含已归档的智能体"),
                     )),
                 "Example:\n  morphz agent list --format=json",
             ),
             output_examples(
                 locale,
                 Command::new("show")
-                    .about(locale.text("Show one Agent", "显示一个代理"))
+                    .about(locale.text("Show one Agent", "显示一个智能体"))
                     .arg(prompt_arg("ID", 0, Some(1)).help(locale.text(
                         "Agent ID; defaults to --agent",
-                        "代理标识；默认使用 --agent",
+                        "智能体标识；默认使用 --agent",
                     ))),
                 "Example:\n  morphz agent show default-agent",
             ),
@@ -1956,19 +1956,19 @@ fn agent_command(locale: Locale) -> Command {
                 Command::new("create")
                     .about(locale.text(
                         "Create an Agent with a Root Context and initial Session",
-                        "创建带根上下文和初始会话的代理",
+                        "创建带根上下文和初始会话的智能体",
                     ))
                     .arg(local_value_arg(
                         "id",
                         "id",
                         "ID",
-                        locale.text("Use an explicit Agent ID", "使用指定的代理标识"),
+                        locale.text("Use an explicit Agent ID", "使用指定的智能体标识"),
                     ))
                     .arg(local_value_arg(
                         "title",
                         "title",
                         "TEXT",
-                        locale.text("Set the Agent title", "设置代理标题"),
+                        locale.text("Set the Agent title", "设置智能体标题"),
                     )),
                 "Example:\n  morphz agent create --id=reviewer --title='Review Agent'",
             ),
@@ -2076,7 +2076,7 @@ fn trajectory_command(locale: Locale) -> Command {
     Command::new("trajectory")
         .about(locale.text(
             "Export and verify portable Agent Trajectory Bundles",
-            "导出和校验可移植的代理执行轨迹包",
+            "导出和校验可移植的智能体执行轨迹包",
         ))
         .subcommands([
             output_examples(
@@ -2084,7 +2084,7 @@ fn trajectory_command(locale: Locale) -> Command {
                 Command::new("export")
                     .about(locale.text(
                         "Export authoritative Runtime facts as an Agent Trajectory Bundle",
-                        "将运行时权威事实导出为代理执行轨迹包",
+                        "将运行时权威事实导出为智能体执行轨迹包",
                     ))
                     .arg(
                         local_value_arg(
@@ -2146,7 +2146,7 @@ fn trajectory_command(locale: Locale) -> Command {
                 Command::new("verify")
                     .about(locale.text(
                         "Validate an untrusted Agent Trajectory Bundle",
-                        "校验不可信的代理执行轨迹包",
+                        "校验不可信的智能体执行轨迹包",
                     ))
                     .arg(prompt_arg("FILE", 1, Some(1)).help(locale.text(
                         "Bundle JSON file",
@@ -2265,12 +2265,12 @@ fn job_command(locale: Locale) -> Command {
     Command::new("job")
         .about(locale.text(
             "Inspect or cancel delegated Sub Agent jobs",
-            "检查或取消子代理委派",
+            "检查或取消子智能体委派",
         ))
         .subcommands([
             output_examples(
                 locale,
-                Command::new("list").about(locale.text("List delegated jobs", "列出子代理委派")),
+                Command::new("list").about(locale.text("List delegated jobs", "列出子智能体委派")),
                 "Example:\n  morphz job list --format=json",
             ),
             output_examples(
@@ -2278,7 +2278,7 @@ fn job_command(locale: Locale) -> Command {
                 Command::new("cancel")
                     .about(locale.text(
                         "Cancel a delegated job and its descendants",
-                        "取消子代理委派及其后代",
+                        "取消子智能体委派及其后代",
                     ))
                     .arg(
                         prompt_arg("ID", 1, Some(1))

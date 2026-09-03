@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 import { blogsFor } from "@/lib/blog";
 import { docsFor } from "@/lib/docs";
+import { standardsFor } from "@/lib/standards";
 
 const origin = process.env.NEXT_PUBLIC_SITE_URL ?? "https://morphz.ai";
 
@@ -9,7 +10,7 @@ function absolute(path: string): string {
 }
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const bilingualPages = ["", "/blog", "/paper", "/docs", "/download"];
+  const bilingualPages = ["", "/blog", "/paper", "/standards", "/docs", "/download"];
   const staticPages: MetadataRoute.Sitemap = bilingualPages.flatMap((path) => [
     {
       url: absolute(path || "/"),
@@ -87,5 +88,30 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
   ]);
 
-  return [...staticPages, ...docPages, ...blogPages];
+  const standardPages: MetadataRoute.Sitemap = standardsFor("zh").flatMap(({ slug }) => [
+    {
+      url: absolute(`/standards/${slug}`),
+      changeFrequency: "monthly",
+      priority: 0.7,
+      alternates: {
+        languages: {
+          "zh-CN": absolute(`/standards/${slug}`),
+          en: absolute(`/en/standards/${slug}`),
+        },
+      },
+    },
+    {
+      url: absolute(`/en/standards/${slug}`),
+      changeFrequency: "monthly",
+      priority: 0.7,
+      alternates: {
+        languages: {
+          "zh-CN": absolute(`/standards/${slug}`),
+          en: absolute(`/en/standards/${slug}`),
+        },
+      },
+    },
+  ]);
+
+  return [...staticPages, ...docPages, ...blogPages, ...standardPages];
 }

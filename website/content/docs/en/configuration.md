@@ -62,6 +62,49 @@ local_enabled = false
 
 `MORPHZ_EXECUTION_TARGETS_LOCAL_ENABLED=false` is the equivalent environment override. A Session without a selected device can still converse; its first physical tool request returns `EXECUTION_TARGET_REQUIRED`. Clients can call `GET /api/sessions/:session_id/execution-targets` and use its `reason` to distinguish “install and pair `morphz-edge`” from “select one of the existing devices.” A Session selection affects only subsequently-created work and never migrates active work.
 
+## Storage authority
+
+SQLite is the default physical store and suits local or single-instance deployments:
+
+```toml
+[storage]
+backend = "sqlite"
+cognitive_store = "context_db"
+
+[storage.sqlite]
+path = "morphz.db"
+max_connections = 8
+```
+
+A multi-instance service can select PostgreSQL explicitly. Configuration names the environment variable that carries the connection URL so database credentials do not enter ordinary configuration or diagnostic output:
+
+```toml
+[storage]
+backend = "postgres"
+cognitive_store = "context_db"
+
+[storage.postgres]
+url_env = "MORPHZ_POSTGRES_URL"
+max_connections = 16
+```
+
+Merely setting `MORPHZ_POSTGRES_URL` does not switch the physical store. ContextDB is the default cognitive authority. `legacy` is available only as an explicit migration-compatibility fallback. Startup never migrates cognitive authority implicitly; an operator must request migration.
+
+## Session Working Set and cognitive organization
+
+```toml
+[orchestrator.session_working_set]
+active_window = "24h"
+max_sessions = 50
+
+[orchestrator.frame_retirement]
+cooling_ticks = 8
+```
+
+The activity window and count limit determine which non-current Sessions may enter a bounded Working Set; the final projection still obeys the Context budget. `cooling_ticks` counts cognitive-clock steps between a Frame retirement request and the organizing window becoming effective. It is neither wall-clock time nor an immediate-deletion switch.
+
+A high-concurrency service may also tune Activation admission. The defaults allow 16 running Activations and 256 durable queued Activations while reserving capacity for dialogue and final delivery. Do not increase these values merely for nominal throughput without measuring model, database, and Execution Target capacity.
+
 ## Capacity overrides
 
 Provider capacity fields are optional:

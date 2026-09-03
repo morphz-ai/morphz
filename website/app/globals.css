@@ -224,7 +224,6 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 .platform-grid pre { min-height: 150px; margin: 20px 0 24px; padding: 20px; overflow-x: auto; color: var(--paper); background: var(--ink); font: 500 11px/1.9 var(--font-geist-mono); }
 .platform-grid p { margin: 0; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
 .platform-grid p i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-.platform-note { max-width: 850px; margin: 42px 0 0 auto; color: var(--muted); font-size: 16px; line-height: 1.75; }
 
 /* Documentation */
 .docs-toolbar { position: sticky; top: 70px; z-index: 40; min-height: 62px; padding: 9px max(24px, calc((100vw - var(--max)) / 2)); display: grid; grid-template-columns: 240px minmax(220px, 600px) 1fr; gap: 24px; align-items: center; border-bottom: 1px solid var(--line-strong); background: color-mix(in srgb, var(--paper) 94%, transparent); backdrop-filter: blur(14px); }
@@ -1597,7 +1596,6 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 .content-site .project-page__intro > p,
 .content-site .project-page__rows p,
 .content-site .platform-grid p,
-.content-site .platform-note { color: var(--muted); }
 .content-site .project-page__closing a { color: var(--blue); }
 .content-site .platform-grid article { border-color: var(--line); }
 .content-site .platform-grid pre {
