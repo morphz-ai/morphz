@@ -7,7 +7,7 @@ use crate::llm::{
     Client, Message, ModelAttachment, ModelAttemptBinding, ModelFailure, ModelFailureKind,
     ModelStreamEvent, ModelStreamSender, ModelTextPart, ModelUsage, PromptTokenAccuracy,
     PromptTokenCount, ProviderContinuation, ReasoningEffort, Response, SegmentedModelText,
-    ToolCallRepr, ToolDefinition,
+    ToolCallRepr, ToolDefinition, MODEL_ATTACHMENT_MESSAGE_NAME,
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -1387,12 +1387,21 @@ impl ProtocolClient {
     fn prepare_prompt_cache_messages(
         &self,
         model: &str,
-        mut messages: Vec<Message>,
+        messages: Vec<Message>,
         tools: &[ToolDefinition],
         reasoning_override: Option<Option<ReasoningEffort>>,
         record_current_boundary: bool,
     ) -> Result<Vec<Message>, ProviderError> {
-        if self.protocol_for_model(model) != ModelProtocol::OpenaiResponses {
+        let protocol = self.protocol_for_model(model);
+        let mut messages = if matches!(
+            protocol,
+            ModelProtocol::OpenaiChat | ModelProtocol::OpenaiResponses
+        ) {
+            normalize_openai_tool_result_batches(messages)?
+        } else {
+            messages
+        };
+        if protocol != ModelProtocol::OpenaiResponses {
             return Ok(messages);
         }
         let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
@@ -3805,6 +3814,103 @@ fn build_request_with_prompt_cache(
     }
 }
 
+/// OpenAI-compatible protocols require every result for one assistant tool-call
+/// batch before the conversation may continue with a user message. Morphz keeps
+/// image payloads in transport-only user messages immediately after the tool
+/// result that produced them, so a parallel batch can otherwise become:
+///
+/// assistant(A, B), tool(A), image(A), tool(B), image(B)
+///
+/// Strict Chat-compatible gateways reject that transcript because image(A)
+/// begins a new user turn while B is still unanswered. Preserve the relative
+/// order of both result sets, but place every result before the batch's image
+/// messages. The transformation is idempotent and deliberately validates the
+/// complete batch rather than hiding a genuinely missing or duplicated result.
+fn normalize_openai_tool_result_batches(
+    messages: Vec<Message>,
+) -> Result<Vec<Message>, ProviderError> {
+    let message_count = messages.len();
+    let mut pending = VecDeque::from(messages);
+    let mut normalized = Vec::with_capacity(message_count);
+
+    while let Some(message) = pending.pop_front() {
+        let expected_ids = if message.role == "assistant" {
+            message
+                .tool_calls
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|call| call.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        normalized.push(message);
+        if expected_ids.is_empty() {
+            continue;
+        }
+
+        let expected = expected_ids.iter().cloned().collect::<HashSet<_>>();
+        if expected.len() != expected_ids.len() || expected.contains("") {
+            return Err(format!(
+                "Runtime cannot assemble an OpenAI tool continuation: assistant tool-call IDs must be non-empty and unique ({expected_ids:?})"
+            )
+            .into());
+        }
+
+        let mut seen = HashSet::with_capacity(expected.len());
+        let mut results = Vec::with_capacity(expected.len());
+        let mut attachments = Vec::new();
+        while let Some(next) = pending.front() {
+            if next.role == "tool" {
+                let result_id = next
+                    .tool_call_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| {
+                        "Runtime cannot assemble an OpenAI tool continuation: a tool result has no tool_call_id"
+                            .to_string()
+                    })?;
+                if !expected.contains(result_id) {
+                    return Err(format!(
+                        "Runtime cannot assemble an OpenAI tool continuation: result '{result_id}' does not belong to assistant batch {expected_ids:?}"
+                    )
+                    .into());
+                }
+                if !seen.insert(result_id.to_string()) {
+                    return Err(format!(
+                        "Runtime cannot assemble an OpenAI tool continuation: result '{result_id}' is duplicated"
+                    )
+                    .into());
+                }
+                results.push(pending.pop_front().expect("front was inspected"));
+                continue;
+            }
+            if next.name.as_deref() == Some(MODEL_ATTACHMENT_MESSAGE_NAME) && !results.is_empty() {
+                attachments.push(pending.pop_front().expect("front was inspected"));
+                continue;
+            }
+            break;
+        }
+
+        if seen != expected {
+            let missing = expected_ids
+                .iter()
+                .filter(|id| !seen.contains(id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "Runtime cannot assemble an OpenAI tool continuation: missing results for {missing:?}"
+            )
+            .into());
+        }
+        normalized.extend(results);
+        normalized.extend(attachments);
+    }
+
+    Ok(normalized)
+}
+
 fn build_openai_chat_request(
     model: &str,
     max_output_tokens: Option<u32>,
@@ -5704,6 +5810,137 @@ mod tests {
         assert_eq!(results[1]["content"][0]["type"], "text");
         assert_eq!(results[1]["content"][1]["type"], "image");
         assert_eq!(results[1]["content"][1]["source"]["data"], "c2Vjb25k");
+    }
+
+    #[test]
+    fn openai_parallel_tool_results_precede_their_attachment_messages() {
+        let tool_call = |id: &str, path: &str| ToolCall {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            function: FunctionCall {
+                name: "read".to_string(),
+                arguments: json!({"path": path}).to_string(),
+            },
+        };
+        let tool_result = |id: &str, content: &str| Message {
+            role: "tool".to_string(),
+            content: content.to_string(),
+            name: Some("read".to_string()),
+            tool_call_id: Some(id.to_string()),
+            tool_calls: None,
+        };
+        let attachment = |name: &str, data: &str| {
+            attachment_message(vec![ModelAttachment {
+                name: name.to_string(),
+                media_type: "image/jpeg".to_string(),
+                data_base64: data.to_string(),
+            }])
+            .expect("attachment marker must serialize")
+        };
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: "Compare both images.".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: String::new(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(vec![
+                    tool_call("call_first", "/tmp/first.jpg"),
+                    tool_call("call_second", "/tmp/second.jpg"),
+                ]),
+            },
+            tool_result("call_first", "first image loaded"),
+            attachment("first.jpg", "Zmlyc3Q="),
+            tool_result("call_second", "second image loaded"),
+            attachment("second.jpg", "c2Vjb25k"),
+        ];
+
+        for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiResponses] {
+            let normalized = normalize_openai_tool_result_batches(messages.clone()).unwrap();
+            assert_eq!(
+                normalize_openai_tool_result_batches(normalized.clone()).unwrap(),
+                normalized,
+                "normalization must be safe for token measurement followed by dispatch"
+            );
+            assert_eq!(normalized[2].tool_call_id.as_deref(), Some("call_first"));
+            assert_eq!(normalized[3].tool_call_id.as_deref(), Some("call_second"));
+            assert_eq!(
+                normalized[4].name.as_deref(),
+                Some(MODEL_ATTACHMENT_MESSAGE_NAME)
+            );
+            assert_eq!(
+                normalized[5].name.as_deref(),
+                Some(MODEL_ATTACHMENT_MESSAGE_NAME)
+            );
+
+            let request = build_request(protocol, "m", None, None, &normalized, &[]);
+            match protocol {
+                ModelProtocol::OpenaiChat => {
+                    assert_eq!(request["messages"][2]["role"], "tool");
+                    assert_eq!(request["messages"][2]["tool_call_id"], "call_first");
+                    assert_eq!(request["messages"][3]["role"], "tool");
+                    assert_eq!(request["messages"][3]["tool_call_id"], "call_second");
+                    assert_eq!(request["messages"][4]["role"], "user");
+                    assert_eq!(request["messages"][5]["role"], "user");
+                }
+                ModelProtocol::OpenaiResponses => {
+                    assert_eq!(request["input"][3]["type"], "function_call_output");
+                    assert_eq!(request["input"][3]["call_id"], "call_first");
+                    assert_eq!(request["input"][4]["type"], "function_call_output");
+                    assert_eq!(request["input"][4]["call_id"], "call_second");
+                    assert_eq!(request["input"][5]["role"], "user");
+                    assert_eq!(request["input"][6]["role"], "user");
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn openai_tool_result_preflight_rejects_an_incomplete_parallel_batch() {
+        let calls = ["call_first", "call_second"]
+            .into_iter()
+            .map(|id| ToolCall {
+                id: id.to_string(),
+                r#type: "function".to_string(),
+                function: FunctionCall {
+                    name: "read".to_string(),
+                    arguments: json!({"path": format!("/tmp/{id}.jpg")}).to_string(),
+                },
+            })
+            .collect();
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: String::new(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(calls),
+            },
+            Message {
+                role: "tool".to_string(),
+                content: "first image loaded".to_string(),
+                name: Some("read".to_string()),
+                tool_call_id: Some("call_first".to_string()),
+                tool_calls: None,
+            },
+            attachment_message(vec![ModelAttachment {
+                name: "first.jpg".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data_base64: "Zmlyc3Q=".to_string(),
+            }])
+            .unwrap(),
+        ];
+
+        let error = normalize_openai_tool_result_batches(messages).unwrap_err();
+        assert!(error.to_string().contains("call_second"));
+        assert!(error.to_string().contains("missing results"));
     }
 
     #[test]
