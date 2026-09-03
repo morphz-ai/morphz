@@ -3586,6 +3586,73 @@ impl ScheduleTxTool {
         self
     }
 
+    async fn inspect_schedule_in_context(
+        &self,
+        schedule_id: &str,
+        context_id: &str,
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if schedule_id.trim().is_empty() {
+            return Err("schedule_id must not be empty".into());
+        }
+        let inspected = self.scheduler.inspect(schedule_id).await?;
+        if let Some(intent) = &inspected {
+            let target = self
+                .sessions
+                .get_thread(&intent.thread_id)
+                .await?
+                .ok_or_else(|| {
+                    format!("Target Thread for Schedule '{}' does not exist", intent.id)
+                })?;
+            if target.context_id != context_id {
+                return Err(
+                    "A Schedule from another Context cannot be inspected or modified".into(),
+                );
+            }
+        }
+        Ok(inspected)
+    }
+
+    async fn execute_inspects(
+        &self,
+        operations: Vec<ScheduleOperation>,
+        context_id: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut results = Vec::with_capacity(operations.len());
+        let mut found = 0usize;
+        for operation in operations {
+            let ScheduleOperation::Inspect { schedule_id } = operation else {
+                return Err(
+                    "Internal error: a non-inspect operation entered the batch reader".into(),
+                );
+            };
+            let schedule = self
+                .inspect_schedule_in_context(&schedule_id, context_id)
+                .await?;
+            if schedule.is_some() {
+                found += 1;
+            }
+            results.push(serde_json::json!({
+                "schedule_id": schedule_id,
+                "status": if schedule.is_some() { "ok" } else { "not_found" },
+                "schedule": schedule,
+            }));
+        }
+        let status = if found == results.len() {
+            "ok"
+        } else if found == 0 {
+            "not_found"
+        } else {
+            "partial"
+        };
+        Ok(crate::local_time::localized_runtime_json(serde_json::json!({
+            "status": status,
+            "operation": "inspect",
+            "results": results,
+            "guidance": "Each result is read-only current state. Subsequent mutations must be submitted separately with the current revision returned for that Schedule; the Runtime rejects stale revisions."
+        }))
+        .to_string())
+    }
+
     async fn execute_control(
         &self,
         operation: ScheduleOperation,
@@ -3606,24 +3673,9 @@ impl ScheduleTxTool {
                 );
             }
         };
-        if schedule_id.trim().is_empty() {
-            return Err("schedule_id must not be empty".into());
-        }
-        let inspected = self.scheduler.inspect(schedule_id).await?;
-        if let Some(intent) = &inspected {
-            let target = self
-                .sessions
-                .get_thread(&intent.thread_id)
-                .await?
-                .ok_or_else(|| {
-                    format!("Target Thread for Schedule '{}' does not exist", intent.id)
-                })?;
-            if target.context_id != context_id {
-                return Err(
-                    "A Schedule from another Context cannot be inspected or modified".into(),
-                );
-            }
-        }
+        let inspected = self
+            .inspect_schedule_in_context(schedule_id, context_id)
+            .await?;
 
         let (operation_name, mutation) = match operation {
             ScheduleOperation::Inspect { .. } => {
@@ -4178,11 +4230,14 @@ enum ScheduleOperation {
 }
 
 impl ScheduleOperation {
-    fn is_control(&self) -> bool {
+    fn is_inspect(&self) -> bool {
+        matches!(self, Self::Inspect { .. })
+    }
+
+    fn is_mutating_control(&self) -> bool {
         matches!(
             self,
-            Self::Inspect { .. }
-                | Self::Pause { .. }
+            Self::Pause { .. }
                 | Self::Resume { .. }
                 | Self::Reschedule { .. }
                 | Self::Cancel { .. }
@@ -4267,7 +4322,7 @@ impl Tool for ScheduleTxTool {
         });
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn may select an Agent-authorized model route; omit model to inherit the Session model or Runtime primary model. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. promote and inspect/pause/resume/reschedule/cancel must be submitted alone and use expected_revision to prevent stale writes. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. schedule_tx must be the only tool call in the response.".to_string(),
+            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn may select an Agent-authorized model route; omit model to inherit the Session model or Runtime primary model. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. Multiple inspect operations may be batched together. promote and pause/resume/reschedule/cancel must be submitted alone; mutations use expected_revision to prevent stale writes. inspect cannot be mixed with create or mutating operations. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. schedule_tx must be the only tool call in the response.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -4474,29 +4529,56 @@ impl Tool for ScheduleTxTool {
         if session.context_id != context_id {
             return Err("schedule_tx Session and Context routes are inconsistent".into());
         }
-        let control_count = args
+        let inspect_count = args
             .operations
             .iter()
-            .filter(|operation| operation.is_control())
+            .filter(|operation| operation.is_inspect())
             .count();
-        if control_count > 0 {
+        let mutating_control_count = args
+            .operations
+            .iter()
+            .filter(|operation| operation.is_mutating_control())
+            .count();
+        if inspect_count > 0 || mutating_control_count > 0 {
             if args.group.is_some() {
-                return Err("A Schedule control operation cannot include a group".into());
-            }
-            if control_count != 1 || args.operations.len() != 1 {
                 return Err(
-                    "A Schedule control operation must be submitted alone and cannot be mixed with create operations or other control operations".into(),
+                    "Schedule inspect and control operations cannot include a group".into(),
                 );
             }
-            return self
-                .execute_control(
-                    args.operations
-                        .into_iter()
-                        .next()
-                        .expect("validated one control operation"),
-                    &context_id,
-                )
-                .await;
+            if mutating_control_count > 0 {
+                if mutating_control_count != 1 || args.operations.len() != 1 {
+                    return Err(
+                        "A mutating Schedule control operation must be submitted alone and cannot be mixed with inspect, create, or another control operation".into(),
+                    );
+                }
+                return self
+                    .execute_control(
+                        args.operations
+                            .into_iter()
+                            .next()
+                            .expect("validated one mutating control operation"),
+                        &context_id,
+                    )
+                    .await;
+            }
+            if inspect_count != args.operations.len() {
+                return Err(
+                    "Schedule inspect operations may be batched only with other inspect operations"
+                        .into(),
+                );
+            }
+            if inspect_count == 1 {
+                return self
+                    .execute_control(
+                        args.operations
+                            .into_iter()
+                            .next()
+                            .expect("validated one inspect operation"),
+                        &context_id,
+                    )
+                    .await;
+            }
+            return self.execute_inspects(args.operations, &context_id).await;
         }
         let current_thread = self
             .sessions
@@ -11931,6 +12013,123 @@ Body
                 .unwrap()
                 .status,
             ScheduleStatus::Dispatched
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_batches_read_only_inspects_but_not_mutations() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-inspect-batch", "root-inspect-batch")],
+        )
+        .await;
+        let (scheduler, _timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+        let first = seed_test_schedule(
+            &store,
+            "schedule-inspect-first",
+            "thread-inspect-batch",
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        )
+        .await;
+        let second = seed_test_schedule(
+            &store,
+            "schedule-inspect-second",
+            "thread-inspect-batch",
+            chrono::Utc::now() + chrono::Duration::hours(2),
+        )
+        .await;
+        let tool = ScheduleTxTool::new(
+            Arc::clone(&scheduler),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+        );
+        let route = Some(ToolCausalRoute {
+            thread_id: "thread-inspect-batch".to_string(),
+            activation_id: "activation-inspect-batch".to_string(),
+            model_attempt_id: None,
+            root_turn_id: "root-inspect-batch".to_string(),
+            trigger_event_id: "event-inspect-batch".to_string(),
+            trigger_sequence: 1,
+        });
+
+        let inspected = CURRENT_SESSION_ID
+            .scope(
+                "session-scheduler-test".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-scheduler-test".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-inspect-batch".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(
+                            route.clone(),
+                            tool.execute(
+                                &serde_json::json!({
+                                    "operations": [
+                                        {"op": "inspect", "schedule_id": first.id},
+                                        {"op": "inspect", "schedule_id": second.id}
+                                    ]
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let inspected: serde_json::Value = serde_json::from_str(&inspected).unwrap();
+        assert_eq!(inspected["status"], "ok");
+        assert_eq!(inspected["operation"], "inspect");
+        assert_eq!(inspected["results"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            inspected["results"][0]["schedule_id"],
+            "schedule-inspect-first"
+        );
+        assert_eq!(inspected["results"][0]["schedule"]["revision"], 1);
+        assert_eq!(
+            inspected["results"][1]["schedule_id"],
+            "schedule-inspect-second"
+        );
+        assert_eq!(inspected["results"][1]["schedule"]["revision"], 1);
+
+        let mixed = CURRENT_SESSION_ID
+            .scope(
+                "session-scheduler-test".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-scheduler-test".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-inspect-mutation-mixed".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(
+                            route,
+                            tool.execute(
+                                &serde_json::json!({
+                                    "operations": [
+                                        {"op": "inspect", "schedule_id": "schedule-inspect-first"},
+                                        {
+                                            "op": "pause",
+                                            "schedule_id": "schedule-inspect-second",
+                                            "expected_revision": 1
+                                        }
+                                    ]
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(mixed.to_string().contains("must be submitted alone"));
+        assert_eq!(
+            store
+                .get_schedule("schedule-inspect-second")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduleStatus::Queued,
+            "a rejected mixed batch must not partially mutate any Schedule"
         );
     }
 

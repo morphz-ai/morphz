@@ -10426,7 +10426,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "inspect",
-                        atom("schedule_tx inspect returns durable current state, time, and revision; observe the latest facts before control"),
+                        atom("schedule_tx may batch multiple inspect operations and nothing else; each result returns durable current state, time, and revision for one Schedule"),
                     ),
                     pair(
                         "control",
@@ -10434,7 +10434,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "control-shape",
-                        atom("one schedule_tx control permits one op and cannot mix with enqueue/spawn or another control"),
+                        atom("pause/resume/reschedule/cancel each require one schedule_tx operation and cannot mix with inspect, enqueue/spawn, or another mutation"),
                     ),
                     pair(
                         "exclusive",
