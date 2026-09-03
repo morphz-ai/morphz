@@ -41,11 +41,9 @@ fn nested_help_is_specific_to_its_subcommand() {
         "stderr={}",
         String::from_utf8_lossy(&help_command.stderr)
     );
-    assert!(
-        String::from_utf8(help_command.stdout)
-            .unwrap()
-            .contains("Usage: morphz session create")
-    );
+    assert!(String::from_utf8(help_command.stdout)
+        .unwrap()
+        .contains("Usage: morphz session create"));
 }
 
 #[test]
@@ -79,11 +77,9 @@ fn version_and_completion_do_not_initialize_the_runtime() {
 
     let localized_nested_version = morphz(&["--language", "zh-CN", "session", "--version"]);
     assert!(localized_nested_version.status.success());
-    assert!(
-        String::from_utf8(localized_nested_version.stdout)
-            .unwrap()
-            .contains(env!("CARGO_PKG_VERSION"))
-    );
+    assert!(String::from_utf8(localized_nested_version.stdout)
+        .unwrap()
+        .contains(env!("CARGO_PKG_VERSION")));
     assert!(localized_nested_version.stderr.is_empty());
 
     let completion = morphz(&["completion", "zsh"]);
