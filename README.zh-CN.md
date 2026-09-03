@@ -8,7 +8,7 @@ Morphz 是一台面向持久 Agent 的 **S 表达式认知机（S-Expression Cog
 它让结构化 Context，而不是不断增长的聊天记录，成为大语言模型直接求值的对象。模型负责
 非确定性语义处理；确定性事务内核负责事实、权限、状态、执行与恢复。
 
-Morphz 由[新变元](https://newvar.ai)创建并维护。
+Morphz 由新变元创建并维护。
 
 ## Developer Preview
 

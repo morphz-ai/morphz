@@ -7,7 +7,6 @@ export const SITE_LINKS = {
   standards: "https://github.com/morphz-ai/morphz/tree/main/docs/standards",
   research:
     "https://github.com/morphz-ai/morphz/tree/main/docs/research/paper_evaluation",
-  company: "https://newvar.ai",
 } as const;
 
 export function sitePath(locale: Locale, path: string): string {

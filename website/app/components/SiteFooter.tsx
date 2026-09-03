@@ -7,25 +7,23 @@ const copy = {
     statement: "让一个智能体在同一认知上下文中维护认知，并发推进多个目标。",
     maintained: "由新变元创造并维护。",
     technical: "产品与研究",
-    ecosystem: "项目与团队",
+    ecosystem: "开源项目",
     essay: "技术文章",
     paper: "研究论文",
     docs: "公开文档",
     download: "下载与运行",
     source: "GitHub 源码",
-    company: "新变元",
   },
   en: {
     statement: "One Agent maintains cognition and advances concurrent objectives inside one Context.",
     maintained: "Created and maintained by Newvar.",
     technical: "Product and research",
-    ecosystem: "Project and company",
+    ecosystem: "Open source",
     essay: "Technical essay",
     paper: "Research paper",
     docs: "Documentation",
     download: "Download and run",
     source: "GitHub source",
-    company: "Newvar",
   },
 } as const;
 
@@ -59,7 +57,6 @@ export function SiteFooter({ locale }: { locale: Locale }) {
           <span>{t.ecosystem}</span>
           <div className="site-footer__links">
             <a href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
-            <a href={SITE_LINKS.company}>{t.company}<span aria-hidden="true">↗</span></a>
           </div>
         </section>
       </div>

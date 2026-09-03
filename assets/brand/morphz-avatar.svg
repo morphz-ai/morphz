@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
-  <title id="title">Morphz</title>
-  <desc id="description">A geometric letter M held between two tapered teal parentheses.</desc>
-  <rect width="256" height="256" rx="56" fill="#17191d"/>
+  <title id="title">Morphz avatar</title>
+  <desc id="description">The Morphz mark on a full-bleed dark background for avatar services.</desc>
+  <rect width="256" height="256" fill="#17191d"/>
 
   <path
     d="M72 52C45 72 31 99 31 128s14 56 41 76c4 2 5-1 2-5-19-20-28-45-28-71s9-51 28-71c3-4 2-7-2-5Z"

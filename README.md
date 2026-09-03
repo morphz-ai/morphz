@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/morphz-mark.svg" alt="Morphz logo: M inside parentheses" width="112" height="112">
+</p>
+
 # Morphz
 
 English · [简体中文](README.zh-CN.md)
@@ -9,7 +13,7 @@ Context—not a growing chat transcript—the object a language model evaluates 
 handles nondeterministic semantics; a deterministic transaction kernel owns facts, authority,
 state, execution, and recovery.
 
-Morphz is created and maintained by [Newvar](https://newvar.ai).
+Morphz is created and maintained by Newvar.
 
 ## Developer Preview
 
