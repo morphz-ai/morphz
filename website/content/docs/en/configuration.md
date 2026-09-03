@@ -35,7 +35,7 @@ Effective configuration can come from the user layer, project layer, environment
 morphz config explain --format=json
 ```
 
-Use this when the Dashboard default differs from the TOML file you are reading.
+When the Dashboard default differs from a TOML layer, this command identifies the overriding source.
 
 ## Credentials
 
@@ -86,7 +86,7 @@ max_artifacts_per_request = 128
 max_request_bytes = 268435456
 ```
 
-The first three fields bound one user upload or tool-result import; the last two bound the final physical model request. Dashboard reads this same policy from Runtime instead of carrying another set of constants. The defaults support a typical 43-screenshot visual review, while remaining configurable host memory, disk, and transport safeguards—not claims about a model.
+The first three fields bound one user upload or tool-result import; the last two bound the final physical model request. Dashboard reads this same policy from Runtime instead of carrying another set of constants. These limits are configurable host memory, disk, and transport safeguards—not claims about a model.
 
 Declare stricter physical-model limits only when the service returns them explicitly or the operator has confirmed them:
 

@@ -74,7 +74,7 @@ pub fn render_cli_reference(locale: Locale) -> String {
         (
             "命令行参考",
             "从 Morphz 当前命令结构自动生成的完整命令索引与顶层帮助。",
-            "本页由 Morphz 当前命令行结构自动生成。请不要直接编辑；运行生成命令刷新。",
+            "本页根据 Morphz 当前命令行结构生成，并与当前二进制保持一致。",
             "命令索引",
             "顶层命令帮助",
             "查看更深层帮助",
@@ -84,7 +84,7 @@ pub fn render_cli_reference(locale: Locale) -> String {
         (
             "CLI reference",
             "Complete command index and top-level help generated from the current Morphz Clap schema.",
-            "This page is generated from the current Morphz CLI schema. Do not edit it directly; run the generator to refresh it.",
+            "This page is generated from the current Morphz CLI schema and matches the current binary.",
             "Command index",
             "Top-level command help",
             "Discover deeper help",

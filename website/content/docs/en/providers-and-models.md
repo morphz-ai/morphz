@@ -50,4 +50,4 @@ A route can contain multiple ordered candidates when several services provide th
 - **Maximum input**: prompt-only limit;
 - **Maximum output**: generation allowance.
 
-Morphz stores fields returned by the service and leaves absent fields unknown. Operators may override a confirmed limit, but the runtime must not invent capacity values.
+Morphz stores capacity fields returned by the service and leaves absent fields unknown. Operators may override a confirmed limit; the Runtime never fills missing fields with guessed values.

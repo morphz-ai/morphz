@@ -31,7 +31,7 @@ OAuth tokens and API keys do not belong in ordinary TOML. The configuration stor
 
 Authentication proves that Morphz has authorization material. The selector also requires an enabled model route. When a service exposes a model catalog, the Dashboard shows the names returned by that service. When it does not, the operator must enter a physical model name the service really accepts.
 
-Morphz must not invent model names or display a generated route ID as though it were a user-defined alias.
+Morphz displays model names returned by the service or explicitly configured by the user. Generated route IDs are never presented as user-defined aliases.
 
 ## Default model
 

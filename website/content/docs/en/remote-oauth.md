@@ -17,7 +17,7 @@ When a service supports device authorization, the Dashboard presents a verificat
 3. Keep the Morphz login surface open while it waits for confirmation;
 4. Persist the account, service, and route only after authorization succeeds.
 
-Device authorization never requires the browser to reach the server’s `localhost`, making it the best fit for SSH and headless systems. Some services require the user or workspace administrator to enable it first; the UI should expose that requirement directly.
+Device authorization never requires the browser to reach the server’s `localhost`, making it the best fit for SSH and headless systems. Some services require the user or workspace administrator to enable it first; when prompted, follow the provider link shown in the Dashboard and retry after enabling it.
 
 ## Hand off a browser callback
 

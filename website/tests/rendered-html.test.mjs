@@ -41,6 +41,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.doesNotMatch(zh, /home-cognitive-os__paren/);
   assert.match(zh, /认知上下文编码/);
   assert.match(zh, /查看源码/);
+  assert.match(zh, /href="\/docs\/execution-lifecycle"[^>]*><h3>并发与目标/);
+  assert.match(zh, /href="\/docs\/execution-targets"[^>]*><h3>执行与安全/);
   assert.match(zh, /启动 Morphz。/);
   assert.doesNotMatch(zh, /启动一个 Morphz/);
   assert.match(zh, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
@@ -69,6 +71,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
   assert.match(en, /COGNITIVE APPLICATIONS/);
   assert.match(en, /CONTEXT ENCODING/);
+  assert.match(en, /href="\/en\/docs\/execution-lifecycle"[^>]*><h3>Concurrency and goals/);
+  assert.match(en, /href="\/en\/docs\/execution-targets"[^>]*><h3>Execution and safety/);
   assert.doesNotMatch(en, /DEVELOPER PREVIEW/i);
   assert.doesNotMatch(en, /NO MIND COMPACTION|compacting the Mind|Sessions mounted in one Context|synced|EVIDENCE PATH|See the behavior|ask how it holds|WHY IT WORKS|not presented as a production promise|Keep the paper experiment|Prepare the open-source release/i);
   for (const html of [zh, en]) {
@@ -79,6 +83,28 @@ test("renders the finished Chinese and English home pages", async () => {
     assert.doesNotMatch(html, /实时人格|Live agent/);
     assert.doesNotMatch(html, /S 表达式认知机|S-Expression Cognitive Machine/);
     assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
+  }
+});
+
+test("uses one site header across landing and content pages", async () => {
+  const zhRoutes = ["/", "/paper", "/download", "/docs", "/blog"];
+  const enRoutes = ["/en", "/en/paper", "/en/download", "/en/docs", "/en/blog"];
+  const responses = await Promise.all([...zhRoutes, ...enRoutes].map(render));
+  for (const response of responses) assert.equal(response.status, 200);
+  const pages = await Promise.all(responses.map((response) => response.text()));
+
+  for (const html of pages.slice(0, zhRoutes.length)) {
+    const header = html.match(/<header class="site-header">[\s\S]*?<\/header>/)?.[0] ?? "";
+    assert.match(header, /文章[\s\S]*?论文[\s\S]*?文档[\s\S]*?下载[\s\S]*?源码[\s\S]*?class="language-switch"[^>]*>EN<\/a>/);
+    assert.match(header, /class="theme-toggle"[\s\S]*?aria-label="切换明暗主题"/);
+    assert.doesNotMatch(header, /共享认知 Agent|实时人格|>English<|导航[\s\S]*?\+/);
+  }
+
+  for (const html of pages.slice(zhRoutes.length)) {
+    const header = html.match(/<header class="site-header">[\s\S]*?<\/header>/)?.[0] ?? "";
+    assert.match(header, /Essay[\s\S]*?Paper[\s\S]*?Docs[\s\S]*?Download[\s\S]*?Source[\s\S]*?class="language-switch"[^>]*>CN<\/a>/);
+    assert.match(header, /class="theme-toggle"[\s\S]*?aria-label="Toggle color theme"/);
+    assert.doesNotMatch(header, /Shared-Mind Agent|Live agent|>Chinese<|Menu[\s\S]*?\+/);
   }
 });
 
@@ -103,10 +129,23 @@ test("renders documentation indexes and bilingual article routes", async () => {
 
 test("uses the Dashboard electric-cyan palette across the public site", async () => {
   const css = await readFile(new URL("../app/clean-theme.css", import.meta.url), "utf8");
-  assert.match(css, /--accent: #168997;/);
-  assert.match(css, /--accent-strong: #08636e;/);
-  assert.match(css, /--accent-bright: #56d0de;/);
+  assert.match(css, /--theme-accent: light-dark\(#168997, #56d0de\);/);
+  assert.match(css, /--theme-accent-strong: light-dark\(#08636e, #8adfe7\);/);
+  assert.match(css, /--theme-accent-bright: light-dark\(#56d0de, #63d5df\);/);
   assert.doesNotMatch(css, /#315bea|#2448ca|#edf1ff/i);
+});
+
+test("follows the system color scheme and remembers an explicit theme", async () => {
+  const [css, layout, toggle] = await Promise.all([
+    readFile(new URL("../app/clean-theme.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/ThemeToggle.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(css, /color-scheme: light dark/);
+  assert.match(css, /:root\[data-theme="dark"\]/);
+  assert.match(css, /prefers-color-scheme: dark/);
+  assert.match(layout, /localStorage\.getItem\("morphz-theme"\)/);
+  assert.match(toggle, /localStorage\.setItem\("morphz-theme", next\)/);
 });
 
 test("keeps mobile navigation separate from the language switch", async () => {

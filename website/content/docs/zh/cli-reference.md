@@ -7,7 +7,7 @@ status: current
 source: generated-cli-schema
 ---
 
-> 本页由 Morphz 当前命令行结构自动生成。请不要直接编辑；运行生成命令刷新。
+> 本页根据 Morphz 当前命令行结构生成，并与当前二进制保持一致。
 
 ## 命令索引
 

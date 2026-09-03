@@ -7,7 +7,7 @@ status: current
 source: generated-cli-schema
 ---
 
-> This page is generated from the current Morphz CLI schema. Do not edit it directly; run the generator to refresh it.
+> This page is generated from the current Morphz CLI schema and matches the current binary.
 
 ## Command index
 

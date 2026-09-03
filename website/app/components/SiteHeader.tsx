@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
 import { sitePath, SITE_LINKS } from "@/lib/site";
+import { ThemeToggle } from "./ThemeToggle";
 
 const copy = {
   zh: {
@@ -14,6 +15,7 @@ const copy = {
     home: "Morphz 首页",
     navigation: "主要导航",
     menu: "导航",
+    theme: "切换明暗主题",
   },
   en: {
     essay: "Essay",
@@ -26,6 +28,7 @@ const copy = {
     home: "Morphz home",
     navigation: "Primary navigation",
     menu: "Menu",
+    theme: "Toggle color theme",
   },
 } as const;
 
@@ -80,6 +83,7 @@ export function SiteHeader({
         </details>
 
         <div className="site-header__meta">
+          <ThemeToggle label={t.theme} />
           <Link className="language-switch" href={otherLanguage} aria-label={t.language}>{t.languageShort}</Link>
         </div>
       </div>

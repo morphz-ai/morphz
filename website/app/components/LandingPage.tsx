@@ -89,10 +89,10 @@ const content = {
     previewBody: "安装脚本识别当前平台、校验下载内容并安装到用户目录；Windows 原生版本在下载页提供。",
     docsTitle: "产品文档",
     docsCards: [
-      ["快速开始", "从构建到第一次真实模型响应。", "getting-started"],
+      ["快速开始", "从安装到第一次真实模型响应。", "getting-started"],
       ["核心概念", "认知上下文、会话、认知与执行生命周期。", "core-concepts"],
-      ["并发与目标", "目标、线程与持久调度。", "operations"],
-      ["执行与安全", "沙箱、权限与执行节点。", "security"],
+      ["并发与目标", "目标、线程与持久调度。", "execution-lifecycle"],
+      ["执行与安全", "沙箱、权限与执行节点。", "execution-targets"],
     ],
   },
   en: {
@@ -178,10 +178,10 @@ const content = {
     previewBody: "The installer detects the platform, verifies the download, and installs to the user path. Native Windows installation is on the download page.",
     docsTitle: "Product documentation",
     docsCards: [
-      ["Getting started", "Build Morphz and receive the first real model response.", "getting-started"],
+      ["Getting started", "Install Morphz and receive the first real model response.", "getting-started"],
       ["Core concepts", "Context, Sessions, Mind, and execution lifecycles.", "core-concepts"],
-      ["Concurrency and goals", "Objectives, Threads, and durable scheduling.", "operations"],
-      ["Execution and safety", "Sandboxing, authority, and Execution Targets.", "security"],
+      ["Concurrency and goals", "Objectives, Threads, and durable scheduling.", "execution-lifecycle"],
+      ["Execution and safety", "Sandboxing, authority, and Execution Targets.", "execution-targets"],
     ],
   },
 } as const;

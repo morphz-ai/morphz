@@ -16,6 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 const canonicalOrigin = new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://morphz.ai");
+const themeInitScript = `try{const t=localStorage.getItem("morphz-theme");if(t==="light"||t==="dark"){document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t}}catch{}`;
 
 export const metadata: Metadata = {
   metadataBase: canonicalOrigin,
@@ -42,7 +43,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
