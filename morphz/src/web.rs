@@ -2647,7 +2647,7 @@ fn oauth_provider_setup(service: &str) -> Result<OAuthProviderSetup, &'static st
             provider_id: "antigravity-subscription".to_string(),
             provider_adapter: "google-antigravity".to_string(),
             protocol: ModelProtocol::GeminiContent,
-            base_url: "https://cloudcode-pa.googleapis.com".to_string(),
+            base_url: crate::provider::ANTIGRAVITY_DAILY_BASE_URL.to_string(),
             account_id,
             auth_adapter: "antigravity-oauth".to_string(),
             login_adapter: None,
@@ -11894,6 +11894,10 @@ mod tests {
         }
 
         let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        assert_eq!(
+            snapshot.provider_instances["antigravity-subscription"].base_url,
+            crate::provider::ANTIGRAVITY_DAILY_BASE_URL
+        );
         for account_id in authenticated_accounts {
             let account = snapshot.auth_accounts.get(&account_id).unwrap();
             assert!(account.authenticated, "{account_id} was not authenticated");

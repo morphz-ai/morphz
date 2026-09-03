@@ -5,6 +5,7 @@
 //! OAuth browser/device flows, refresh fencing and request authorization are
 //! owned here. Token material is stored only through [`SecretStore`].
 
+use super::{antigravity_request_user_agent, response_body_preview, ANTIGRAVITY_DAILY_BASE_URL};
 use crate::config::AuthAccountConfig;
 use crate::memory::{ProviderAccountStateStore, ProviderAccountStatus};
 use crate::secret_store::{SecretScopeKind, SecretStore, SecretUseContext};
@@ -31,6 +32,8 @@ const KIMI_ADAPTER_ID: &str = "kimi-oauth";
 const XAI_ADAPTER_ID: &str = "xai-oauth";
 const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
 const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
+const ANTIGRAVITY_NODE_API_CLIENT_UA: &str = "google-api-nodejs-client/10.3.0";
+const ANTIGRAVITY_GOOG_API_CLIENT_UA: &str = "gl-node/22.21.1";
 const XAI_GROK_CLIENT_VERSION: &str = "0.2.93";
 const CODEX_ACCOUNT_PROBE_TIMEOUT_SECS: u64 = 20;
 
@@ -716,6 +719,12 @@ pub trait AuthAdapter: Send + Sync {
     ) -> Result<AdapterLoginResult, String>;
     async fn refresh(&self, current: &OAuthTokenSet) -> Result<OAuthTokenSet, String>;
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String>;
+    /// Return true when a persisted token predates required non-secret account
+    /// metadata and must pass through the existing fenced refresh path before
+    /// it can authorize requests.
+    fn requires_metadata_refresh(&self, _token: &OAuthTokenSet) -> bool {
+        false
+    }
     /// Optional authenticated account observability. Most Provider OAuth
     /// adapters do not expose subscription data; Codex implements this through
     /// the official app-server protocol using externally managed tokens.
@@ -1352,7 +1361,7 @@ impl ProviderAuthManager {
                 adapter.id()
             ));
         }
-        if token.needs_refresh(Utc::now()) {
+        if token.needs_refresh(Utc::now()) || adapter.requires_metadata_refresh(&token) {
             token = self
                 .refresh_token(account_id, &account, adapter.as_ref(), token)
                 .await?;
@@ -1383,7 +1392,7 @@ impl ProviderAuthManager {
                 adapter.id()
             ));
         }
-        if token.needs_refresh(Utc::now()) {
+        if token.needs_refresh(Utc::now()) || adapter.requires_metadata_refresh(&token) {
             token = self
                 .refresh_token(account_id, &account, adapter.as_ref(), token)
                 .await?;
@@ -1526,7 +1535,9 @@ impl ProviderAuthManager {
                 + std::time::Duration::from_secs(REFRESH_LEASE_SECS as u64 + 1);
             loop {
                 let reloaded = self.load_token(account)?;
-                if !reloaded.needs_refresh(Utc::now()) {
+                if !reloaded.needs_refresh(Utc::now())
+                    && !adapter.requires_metadata_refresh(&reloaded)
+                {
                     return Ok(reloaded);
                 }
                 if tokio::time::Instant::now() >= deadline {
@@ -2843,6 +2854,7 @@ pub struct AntigravityOAuthAdapter {
     token_url: String,
     userinfo_url: String,
     project_url: String,
+    onboard_url: String,
     client_id: String,
     client_secret: String,
     redirect_uri: String,
@@ -2859,6 +2871,7 @@ impl Default for AntigravityOAuthAdapter {
             userinfo_url: "https://www.googleapis.com/oauth2/v2/userinfo?alt=json".to_string(),
             project_url: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
                 .to_string(),
+            onboard_url: format!("{ANTIGRAVITY_DAILY_BASE_URL}/v1internal:onboardUser"),
             client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
                 .to_string(),
             client_secret: "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".to_string(),
@@ -2937,6 +2950,71 @@ struct AntigravityPending {
     verifier: String,
 }
 
+fn antigravity_project_id_from_value(value: &Value) -> Option<String> {
+    ["cloudaicompanionProject", "projectId", "project"]
+        .into_iter()
+        .find_map(|key| {
+            value.get(key).and_then(|entry| {
+                entry
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        entry
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_string)
+                    })
+            })
+        })
+}
+
+fn antigravity_default_tier_id(value: &Value) -> String {
+    value
+        .get("allowedTiers")
+        .and_then(Value::as_array)
+        .and_then(|tiers| {
+            tiers.iter().find_map(|tier| {
+                tier.get("isDefault")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    .then(|| tier.get("id").and_then(Value::as_str))
+                    .flatten()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+            })
+        })
+        .or_else(|| {
+            value
+                .get("currentTier")
+                .and_then(|tier| tier.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "free-tier".to_string())
+}
+
+fn antigravity_user_agent_version(user_agent: &str) -> &str {
+    user_agent
+        .split_whitespace()
+        .next()
+        .and_then(|product| product.strip_prefix("antigravity/hub/"))
+        .or_else(|| {
+            user_agent
+                .split_whitespace()
+                .next()
+                .and_then(|product| product.strip_prefix("antigravity/"))
+        })
+        .filter(|version| !version.is_empty())
+        .unwrap_or("2.9.1")
+}
+
 impl AntigravityOAuthAdapter {
     #[cfg(test)]
     fn with_test_endpoints(
@@ -2944,6 +3022,7 @@ impl AntigravityOAuthAdapter {
         token_url: impl Into<String>,
         userinfo_url: impl Into<String>,
         project_url: impl Into<String>,
+        onboard_url: impl Into<String>,
         client_id: impl Into<String>,
         client_secret: impl Into<String>,
         redirect_uri: impl Into<String>,
@@ -2954,6 +3033,7 @@ impl AntigravityOAuthAdapter {
             token_url: token_url.into(),
             userinfo_url: userinfo_url.into(),
             project_url: project_url.into(),
+            onboard_url: onboard_url.into(),
             client_id: client_id.into(),
             client_secret: client_secret.into(),
             redirect_uri: redirect_uri.into(),
@@ -2969,6 +3049,10 @@ impl AntigravityOAuthAdapter {
             .get(&self.userinfo_url)
             .bearer_auth(access_token)
             .header(reqwest::header::ACCEPT, "application/json")
+            .header(
+                reqwest::header::USER_AGENT,
+                antigravity_request_user_agent(),
+            )
             .send()
             .await
             .map_err(|error| format!("Antigravity user information request failed: {error}"))?;
@@ -2985,7 +3069,64 @@ impl AntigravityOAuthAdapter {
             .map(str::to_string))
     }
 
-    async fn project_id(&self, access_token: &str) -> Result<Option<String>, String> {
+    async fn onboard_user(&self, access_token: &str, tier_id: &str) -> Result<String, String> {
+        let short_user_agent = antigravity_request_user_agent();
+        let user_agent = format!("{short_user_agent} {ANTIGRAVITY_NODE_API_CLIENT_UA}");
+        let body = serde_json::json!({
+            "tier_id": tier_id,
+            "metadata": {
+                "ide_type": "ANTIGRAVITY",
+                "ide_version": antigravity_user_agent_version(&short_user_agent),
+                "ide_name": "antigravity"
+            }
+        });
+        for attempt in 0..5 {
+            let response = self
+                .http
+                .get()?
+                .post(&self.onboard_url)
+                .bearer_auth(access_token)
+                .header(reqwest::header::ACCEPT, "*/*")
+                .header(reqwest::header::USER_AGENT, &user_agent)
+                .header("x-goog-api-client", ANTIGRAVITY_GOOG_API_CLIENT_UA)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|error| format!("Antigravity onboarding request failed: {error}"))?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|error| format!("Antigravity onboarding response failed: {error}"))?;
+            if !status.is_success() {
+                return Err(format!(
+                    "Antigravity onboarding returned HTTP {status}: {}",
+                    response_body_preview(text)
+                ));
+            }
+            let value: Value = serde_json::from_str(&text)
+                .map_err(|error| format!("invalid Antigravity onboarding response: {error}"))?;
+            let project_id = value
+                .get("response")
+                .and_then(antigravity_project_id_from_value)
+                .or_else(|| antigravity_project_id_from_value(&value));
+            if let Some(project_id) = project_id {
+                return Ok(project_id);
+            }
+            if value.get("done").and_then(Value::as_bool) == Some(true) {
+                return Err(
+                    "Antigravity onboarding completed without a Cloud AI Companion project"
+                        .to_string(),
+                );
+            }
+            if attempt < 4 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+        Err("Antigravity onboarding did not complete after 5 attempts".to_string())
+    }
+
+    async fn project_id(&self, access_token: &str) -> Result<String, String> {
         let response = self
             .http
             .get()?
@@ -2994,29 +3135,28 @@ impl AntigravityOAuthAdapter {
             .header(reqwest::header::ACCEPT, "*/*")
             .header(
                 reqwest::header::USER_AGENT,
-                "antigravity/1.19.5 linux/amd64",
+                antigravity_request_user_agent(),
             )
             .json(&serde_json::json!({ "metadata": { "ideType": "ANTIGRAVITY" } }))
             .send()
             .await
             .map_err(|error| format!("Antigravity project discovery request failed: {error}"))?;
         if !response.status().is_success() {
-            return Ok(None);
+            let status = response.status();
+            let text = response_body_preview(response.text().await.unwrap_or_default());
+            return Err(format!(
+                "Antigravity project discovery returned HTTP {status}: {text}"
+            ));
         }
         let value: Value = response
             .json()
             .await
             .map_err(|error| format!("invalid Antigravity project discovery response: {error}"))?;
-        Ok(["cloudaicompanionProject", "projectId", "project"]
-            .into_iter()
-            .find_map(|key| {
-                value.get(key).and_then(|entry| {
-                    entry
-                        .as_str()
-                        .map(str::to_string)
-                        .or_else(|| entry.get("id").and_then(Value::as_str).map(str::to_string))
-                })
-            }))
+        if let Some(project_id) = antigravity_project_id_from_value(&value) {
+            return Ok(project_id);
+        }
+        self.onboard_user(access_token, &antigravity_default_tier_id(&value))
+            .await
     }
 
     async fn token_set(
@@ -3032,9 +3172,7 @@ impl AntigravityOAuthAdapter {
         let email = self.user_info(&response.access_token).await?;
         let project_id = self.project_id(&response.access_token).await?;
         let mut metadata = BTreeMap::new();
-        if let Some(project_id) = project_id {
-            metadata.insert("project_id".to_string(), project_id);
-        }
+        metadata.insert("project_id".to_string(), project_id);
         Ok(OAuthTokenSet {
             adapter_id: ANTIGRAVITY_ADAPTER_ID.to_string(),
             adapter_version: self.version().to_string(),
@@ -3067,7 +3205,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
     }
 
     fn version(&self) -> &'static str {
-        "cliproxyapi-compatible-2026-08-02"
+        "cliproxyapi-compatible-2026-09-03"
     }
 
     fn flow(&self) -> OAuthFlowKind {
@@ -3096,7 +3234,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        None
+        Some("2026-09-03")
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -3217,6 +3355,13 @@ impl AuthAdapter for AntigravityOAuthAdapter {
         self.token_set(response, Some(refresh.to_string())).await
     }
 
+    fn requires_metadata_refresh(&self, token: &OAuthTokenSet) -> bool {
+        token
+            .metadata
+            .get("project_id")
+            .is_none_or(|project_id| project_id.trim().is_empty())
+    }
+
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
         if token.access_token.trim().is_empty() {
             return Err("Antigravity OAuth Access Token is empty".to_string());
@@ -3226,10 +3371,7 @@ impl AuthAdapter for AntigravityOAuthAdapter {
                 "authorization".to_string(),
                 format!("Bearer {}", token.access_token),
             ),
-            (
-                "user-agent".to_string(),
-                "antigravity/1.19.5 linux/amd64".to_string(),
-            ),
+            ("user-agent".to_string(), antigravity_request_user_agent()),
         ]);
         if let Some(project_id) = token.metadata.get("project_id") {
             headers.insert("x-goog-user-project".to_string(), project_id.clone());
@@ -4344,6 +4486,28 @@ mod tests {
         }))
     }
 
+    async fn antigravity_refresh_token_endpoint(
+        State(refreshes): State<Arc<AtomicUsize>>,
+        Form(form): Form<HashMap<String, String>>,
+    ) -> Json<Value> {
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some("refresh_token")
+        );
+        assert_eq!(
+            form.get("refresh_token").map(String::as_str),
+            Some("legacy-refresh")
+        );
+        refreshes.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        Json(json!({
+            "access_token": "antigravity-access",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "openid email cloud-platform"
+        }))
+    }
+
     async fn antigravity_userinfo_endpoint(headers: HeaderMap) -> Json<Value> {
         assert_eq!(
             headers
@@ -4351,6 +4515,10 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer antigravity-access")
         );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("antigravity/hub/")));
         Json(json!({ "email": "antigravity@example.test" }))
     }
 
@@ -4361,7 +4529,62 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer antigravity-access")
         );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("antigravity/hub/")));
         Json(json!({ "cloudaicompanionProject": "morphz-project" }))
+    }
+
+    async fn antigravity_project_without_id_endpoint(headers: HeaderMap) -> Json<Value> {
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer antigravity-access")
+        );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("antigravity/hub/")));
+        Json(json!({
+            "allowedTiers": [
+                {"id": "paid-tier", "isDefault": false},
+                {"id": "free-tier", "isDefault": true}
+            ]
+        }))
+    }
+
+    async fn antigravity_onboard_endpoint(
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        assert_eq!(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer antigravity-access")
+        );
+        assert_eq!(
+            headers
+                .get("x-goog-api-client")
+                .and_then(|value| value.to_str().ok()),
+            Some(ANTIGRAVITY_GOOG_API_CLIENT_UA)
+        );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value.starts_with("antigravity/hub/")
+                    && value.contains(ANTIGRAVITY_NODE_API_CLIENT_UA)
+            }));
+        assert_eq!(body["tier_id"], "free-tier");
+        assert_eq!(body["metadata"]["ide_type"], "ANTIGRAVITY");
+        assert_eq!(body["metadata"]["ide_name"], "antigravity");
+        Json(json!({
+            "done": true,
+            "response": {"cloudaicompanionProject": {"id": "onboarded-project"}}
+        }))
     }
 
     #[tokio::test]
@@ -4378,6 +4601,7 @@ mod tests {
             format!("http://{address}/token"),
             format!("http://{address}/userinfo"),
             format!("http://{address}/project"),
+            format!("http://{address}/onboard"),
             "antigravity-test-client",
             "antigravity-test-secret",
             "http://localhost/oauth-callback",
@@ -4427,6 +4651,113 @@ mod tests {
                 .map(String::as_str),
             Some("morphz-project")
         );
+    }
+
+    #[tokio::test]
+    async fn antigravity_onboards_accounts_without_an_existing_project() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/userinfo", get(antigravity_userinfo_endpoint))
+            .route("/project", post(antigravity_project_without_id_endpoint))
+            .route("/onboard", post(antigravity_onboard_endpoint));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let adapter = AntigravityOAuthAdapter::with_test_endpoints(
+            "https://accounts.example/authorize",
+            format!("http://{address}/token"),
+            format!("http://{address}/userinfo"),
+            format!("http://{address}/project"),
+            format!("http://{address}/onboard"),
+            "antigravity-test-client",
+            "antigravity-test-secret",
+            "http://localhost/oauth-callback",
+        );
+        let token = adapter
+            .token_set(
+                OAuthTokenResponse {
+                    access_token: "antigravity-access".to_string(),
+                    refresh_token: "antigravity-refresh".to_string(),
+                    id_token: String::new(),
+                    token_type: "Bearer".to_string(),
+                    expires_in: 3600.0,
+                    scope: "openid email cloud-platform".to_string(),
+                    error: String::new(),
+                    error_description: String::new(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            token.metadata.get("project_id").map(String::as_str),
+            Some("onboarded-project")
+        );
+        assert!(!adapter.requires_metadata_refresh(&token));
+        let mut legacy = token.clone();
+        legacy.metadata.clear();
+        assert!(adapter.requires_metadata_refresh(&legacy));
+    }
+
+    #[tokio::test]
+    async fn antigravity_legacy_token_repairs_project_metadata_once_under_refresh_lease() {
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/token", post(antigravity_refresh_token_endpoint))
+            .route("/userinfo", get(antigravity_userinfo_endpoint))
+            .route("/project", post(antigravity_project_endpoint))
+            .with_state(Arc::clone(&refreshes));
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let adapter = Arc::new(AntigravityOAuthAdapter::with_test_endpoints(
+            "https://accounts.example/authorize",
+            format!("http://{address}/token"),
+            format!("http://{address}/userinfo"),
+            format!("http://{address}/project"),
+            format!("http://{address}/onboard"),
+            "antigravity-test-client",
+            "antigravity-test-secret",
+            "http://localhost/oauth-callback",
+        ));
+        let mut registry = AuthAdapterRegistry::default();
+        registry.register(adapter);
+        let (_directory, manager, _secret_store) =
+            test_manager(oauth_account(ANTIGRAVITY_ADAPTER_ID), registry).await;
+        let legacy = OAuthTokenSet {
+            adapter_id: ANTIGRAVITY_ADAPTER_ID.to_string(),
+            adapter_version: "cliproxyapi-compatible-2026-08-02".to_string(),
+            access_token: "legacy-access".to_string(),
+            refresh_token: Some("legacy-refresh".to_string()),
+            id_token: None,
+            token_type: Some("Bearer".to_string()),
+            scopes: vec!["cloud-platform".to_string()],
+            expires_at: Some(Utc::now() + ChronoDuration::hours(1)),
+            subject: None,
+            account_id: None,
+            email: None,
+            device_id: None,
+            metadata: BTreeMap::new(),
+        };
+        manager
+            .store_token(&manager.account("oauth-account").unwrap(), &legacy)
+            .unwrap();
+
+        let (left, right) = tokio::join!(
+            manager.materialize_authorization("oauth-account"),
+            manager.materialize_authorization("oauth-account")
+        );
+        for authorization in [left.unwrap(), right.unwrap()] {
+            assert_eq!(authorization.bearer_token, "antigravity-access");
+            assert_eq!(
+                authorization
+                    .headers
+                    .get("x-goog-user-project")
+                    .map(String::as_str),
+                Some("morphz-project")
+            );
+        }
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
     }
 
     #[test]

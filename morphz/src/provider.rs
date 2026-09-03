@@ -11,7 +11,7 @@ use crate::llm::{
 };
 use base64::Engine;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER, USER_AGENT};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -33,6 +33,18 @@ pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
 // allow operators to advance it without rebuilding if the upstream raises its
 // minimum client version.
 const CODEX_CLIENT_VERSION: &str = "0.144.4";
+
+pub(crate) const ANTIGRAVITY_DAILY_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
+pub(crate) const ANTIGRAVITY_PRODUCTION_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_FALLBACK_VERSION: &str = "2.9.1";
+
+pub(crate) fn antigravity_request_user_agent() -> String {
+    std::env::var("MORPHZ_ANTIGRAVITY_USER_AGENT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("antigravity/hub/{ANTIGRAVITY_FALLBACK_VERSION} darwin/arm64"))
+}
 
 fn codex_client_version() -> String {
     std::env::var("MORPHZ_CODEX_CLIENT_VERSION")
@@ -81,7 +93,12 @@ fn positive_usize(value: Option<&Value>) -> Option<usize> {
 fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderModelConfig {
     let context_window_tokens = ["context_window_tokens", "context_window", "context_length"]
         .into_iter()
-        .find_map(|field| positive_usize(row.get(field)));
+        .find_map(|field| positive_usize(row.get(field)))
+        .or_else(|| {
+            (protocol == ModelProtocol::GeminiContent)
+                .then(|| positive_usize(row.get("maxTokens")))
+                .flatten()
+        });
     let max_input_tokens = positive_usize(row.get("max_input_tokens")).or_else(|| {
         (protocol == ModelProtocol::GeminiContent)
             .then(|| positive_usize(row.get("inputTokenLimit")))
@@ -89,7 +106,10 @@ fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderMod
     });
     let max_output_tokens = positive_usize(row.get("max_output_tokens")).or_else(|| {
         (protocol == ModelProtocol::GeminiContent)
-            .then(|| positive_usize(row.get("outputTokenLimit")))
+            .then(|| {
+                positive_usize(row.get("outputTokenLimit"))
+                    .or_else(|| positive_usize(row.get("maxOutputTokens")))
+            })
             .flatten()
     });
     // These fields are consumed only when a service returns them explicitly.
@@ -106,6 +126,102 @@ fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderMod
         max_input_attachments,
         max_input_attachment_bytes,
         max_input_attachment_total_bytes,
+    }
+}
+
+fn push_unique_model_id(ids: &mut Vec<String>, seen: &mut HashSet<String>, value: &Value) {
+    let Some(id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+        return;
+    };
+    let id = id.strip_prefix("models/").unwrap_or(id).to_string();
+    if seen.insert(id.clone()) {
+        ids.push(id);
+    }
+}
+
+fn collect_antigravity_agent_model_ids(
+    value: &Value,
+    ids: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_antigravity_agent_model_ids(value, ids, seen);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(Value::Array(model_ids)) = object.get("modelIds") {
+                for model_id in model_ids {
+                    push_unique_model_id(ids, seen, model_id);
+                }
+            }
+            for (key, value) in object {
+                if key != "modelIds" {
+                    collect_antigravity_agent_model_ids(value, ids, seen);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn antigravity_deprecated_model_ids(value: &Value) -> HashSet<String> {
+    match value.get("deprecatedModelIds") {
+        Some(Value::Array(ids)) => ids
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::Object(ids)) => ids.keys().cloned().collect(),
+        _ => HashSet::new(),
+    }
+}
+
+fn parse_antigravity_model_catalog(
+    value: &Value,
+) -> Result<Vec<DiscoveredProviderModel>, ProviderError> {
+    let metadata = value
+        .get("models")
+        .and_then(Value::as_object)
+        .ok_or("Antigravity model catalog is missing the models object")?;
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(default_model) = value.get("defaultAgentModelId") {
+        push_unique_model_id(&mut ids, &mut seen, default_model);
+    }
+    if let Some(agent_sorts) = value.get("agentModelSorts") {
+        collect_antigravity_agent_model_ids(agent_sorts, &mut ids, &mut seen);
+    }
+    if ids.is_empty() {
+        return Err(
+            "Antigravity model catalog has no defaultAgentModelId or agentModelSorts modelIds"
+                .into(),
+        );
+    }
+    let deprecated = antigravity_deprecated_model_ids(value);
+    ids.retain(|id| !deprecated.contains(id));
+    if ids.is_empty() {
+        return Err("Antigravity model catalog contains only deprecated Agent models".into());
+    }
+    Ok(ids
+        .into_iter()
+        .map(|id| DiscoveredProviderModel {
+            profile: metadata
+                .get(&id)
+                .map(|row| discovered_model_profile(row, ModelProtocol::GeminiContent))
+                .unwrap_or_default(),
+            id,
+        })
+        .collect())
+}
+
+fn response_body_preview(text: String) -> String {
+    const MAX_CHARS: usize = 2_000;
+    if text.chars().count() <= MAX_CHARS {
+        text
+    } else {
+        format!("{}…", text.chars().take(MAX_CHARS).collect::<String>())
     }
 }
 
@@ -1183,6 +1299,12 @@ impl ProtocolClient {
                 HeaderValue::from_str(&value)?,
             );
         }
+        if adapter == "google-antigravity" && !headers.contains_key(USER_AGENT) {
+            headers.insert(
+                USER_AGENT,
+                HeaderValue::from_str(&antigravity_request_user_agent())?,
+            );
+        }
         let mut http_builder =
             crate::http_transport::client_builder(crate::http_transport::HttpProxyScope::Provider)
                 .connect_timeout(Duration::from_secs(llm.connect_timeout_secs.max(1)));
@@ -1309,10 +1431,21 @@ impl ProtocolClient {
 
     fn endpoint_for(&self, streaming: bool, model: &str) -> Result<String, ProviderError> {
         if self.adapter == "google-antigravity" {
-            let root = self
+            let configured_root = self
                 .base_url
                 .trim_end_matches('/')
                 .trim_end_matches("/v1internal");
+            // Older Morphz releases persisted the production control-plane
+            // host as the inference endpoint. Treat both built-in host values
+            // as one compatibility family so those accounts migrate to the
+            // current daily inference endpoint without another OAuth login.
+            let root = if configured_root == ANTIGRAVITY_DAILY_BASE_URL
+                || configured_root == ANTIGRAVITY_PRODUCTION_BASE_URL
+            {
+                ANTIGRAVITY_DAILY_BASE_URL
+            } else {
+                configured_root
+            };
             let method = if streaming {
                 "streamGenerateContent?alt=sse"
             } else {
@@ -1925,9 +2058,86 @@ impl ProtocolClient {
         );
     }
 
+    fn antigravity_catalog_base_urls(&self) -> Vec<String> {
+        let configured = self
+            .base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1internal")
+            .to_string();
+        if configured == ANTIGRAVITY_DAILY_BASE_URL || configured == ANTIGRAVITY_PRODUCTION_BASE_URL
+        {
+            vec![
+                ANTIGRAVITY_DAILY_BASE_URL.to_string(),
+                ANTIGRAVITY_PRODUCTION_BASE_URL.to_string(),
+            ]
+        } else {
+            vec![configured]
+        }
+    }
+
+    async fn list_antigravity_model_catalog(
+        &self,
+    ) -> Result<Vec<DiscoveredProviderModel>, ProviderError> {
+        let mut failures = Vec::new();
+        for base_url in self.antigravity_catalog_base_urls() {
+            let endpoint = format!(
+                "{}/v1internal:fetchAvailableModels",
+                base_url.trim_end_matches('/')
+            );
+            let response = match tokio::time::timeout(
+                self.stream_idle_timeout,
+                self.authorize(
+                    self.protocol,
+                    self.http.post(&endpoint).json(&serde_json::json!({})),
+                )
+                .send(),
+            )
+            .await
+            {
+                Err(_) => {
+                    failures.push(format!(
+                        "{endpoint} exceeded {} seconds",
+                        self.stream_idle_timeout.as_secs()
+                    ));
+                    continue;
+                }
+                Ok(Err(error)) => {
+                    failures.push(format!("{endpoint}: {error}"));
+                    continue;
+                }
+                Ok(Ok(response)) => response,
+            };
+            let status = response.status();
+            if !status.is_success() {
+                let text = response_body_preview(response.text().await.unwrap_or_default());
+                failures.push(format!("{endpoint} returned HTTP {status}: {text}"));
+                continue;
+            }
+            let value = match response.json::<Value>().await {
+                Ok(value) => value,
+                Err(error) => {
+                    failures.push(format!("{endpoint} returned invalid JSON: {error}"));
+                    continue;
+                }
+            };
+            match parse_antigravity_model_catalog(&value) {
+                Ok(models) => return Ok(models),
+                Err(error) => failures.push(format!("{endpoint}: {error}")),
+            }
+        }
+        Err(format!(
+            "Antigravity model catalog discovery failed: {}",
+            failures.join("; ")
+        )
+        .into())
+    }
+
     pub(crate) async fn list_model_catalog(
         &self,
     ) -> Result<Vec<DiscoveredProviderModel>, ProviderError> {
+        if self.adapter == "google-antigravity" {
+            return self.list_antigravity_model_catalog().await;
+        }
         let mut endpoint = reqwest::Url::parse(&format!("{}/models", self.base_url))?;
         if self.adapter == "openai-codex" {
             let client_version = codex_client_version();
@@ -1950,7 +2160,7 @@ impl ProtocolClient {
         })??;
         let status = response.status();
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+            let text = response_body_preview(response.text().await.unwrap_or_default());
             return Err(format!(
                 "{} model catalog returned HTTP {}: {}",
                 self.protocol.as_str(),
@@ -4775,11 +4985,11 @@ mod tests {
 
         assert_eq!(
             client.endpoint_for(false, "gemini-test").unwrap(),
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
         );
         assert_eq!(
             client.endpoint_for(true, "gemini-test").unwrap(),
-            "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
         );
 
         let request = client.request_for_model("gemini-test", &messages(), &[]);
@@ -4794,6 +5004,10 @@ mod tests {
         assert!(request["requestId"]
             .as_str()
             .is_some_and(|value| value.starts_with("agent-")));
+        assert!(client.headers[USER_AGENT]
+            .to_str()
+            .unwrap()
+            .starts_with("antigravity/hub/"));
     }
 
     #[test]
@@ -4832,6 +5046,114 @@ mod tests {
         let generic_request = generic.request_for_model("gemini-test", &messages(), &[]);
         assert!(generic_request.get("request").is_none());
         assert!(generic_request["contents"].is_array());
+    }
+
+    #[tokio::test]
+    async fn antigravity_discovers_agent_models_and_probes_internal_generation() {
+        let app = Router::new().fallback(
+            |method: axum::http::Method,
+             uri: axum::http::Uri,
+             headers: axum::http::HeaderMap,
+             Json(body): Json<Value>| async move {
+                assert_eq!(method, axum::http::Method::POST);
+                match uri.path() {
+                    "/v1internal:fetchAvailableModels" => {
+                        assert_eq!(body, json!({}));
+                        assert_eq!(
+                            headers
+                                .get("authorization")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("Bearer antigravity-access")
+                        );
+                        assert!(headers
+                            .get("user-agent")
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|value| value.starts_with("antigravity/hub/")));
+                        Json(json!({
+                            "defaultAgentModelId": "gemini-agent-default",
+                            "agentModelSorts": [{
+                                "groups": [{
+                                    "modelIds": [
+                                        "gemini-agent-default",
+                                        "claude-agent-secondary",
+                                        "deprecated-agent"
+                                    ]
+                                }]
+                            }],
+                            "deprecatedModelIds": {
+                                "deprecated-agent": "gemini-agent-default"
+                            },
+                            "tabModelIds": ["tab-specialized"],
+                            "models": {
+                                "gemini-agent-default": {
+                                    "maxTokens": 200000,
+                                    "maxOutputTokens": 64000
+                                },
+                                "claude-agent-secondary": {"maxTokens": 180000},
+                                "deprecated-agent": {"maxTokens": 1000},
+                                "tab-specialized": {"maxTokens": 1000}
+                            }
+                        }))
+                    }
+                    "/v1internal:generateContent" => {
+                        assert_eq!(body["model"], "gemini-agent-default");
+                        assert_eq!(body["project"], "project-123");
+                        assert_eq!(body["requestType"], "agent");
+                        assert!(body["request"]["contents"].is_array());
+                        assert_eq!(
+                            headers
+                                .get("authorization")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("Bearer antigravity-access")
+                        );
+                        Json(json!({
+                                "response": {
+                                    "candidates": [{
+                                        "finishReason": "STOP",
+                                        "content": {"parts": [{"text": "MORPHZ_OK"}]}
+                                }]
+                            }
+                        }))
+                    }
+                    path => panic!("unexpected Antigravity test path {path}"),
+                }
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::GeminiContent,
+                base_url: format!("http://{address}"),
+                headers: BTreeMap::from([
+                    (
+                        "authorization".to_string(),
+                        "Bearer antigravity-access".to_string(),
+                    ),
+                    ("x-goog-user-project".to_string(), "project-123".to_string()),
+                ]),
+                ..ProviderConfig::default()
+            },
+            "google-antigravity",
+            "gemini-agent-default".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        let catalog = client.list_model_catalog().await.unwrap();
+        assert_eq!(
+            catalog
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gemini-agent-default", "claude-agent-secondary"]
+        );
+        assert_eq!(catalog[0].profile.context_window_tokens, Some(200_000));
+        assert_eq!(catalog[0].profile.max_output_tokens, Some(64_000));
+        assert_eq!(catalog[1].profile.context_window_tokens, Some(180_000));
+        client.probe_health().await.unwrap();
     }
 
     #[test]

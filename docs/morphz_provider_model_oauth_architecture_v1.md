@@ -116,7 +116,7 @@ v1 已按同一 `AuthAdapter` 生命周期实现五种计划内 OAuth 服务：
 - Codex：浏览器 Authorization Code + PKCE 为通用登录，Device Authorization 是需要上游显式启用、适合远程/无头环境的推荐选择，Responses 方言；
 - Kimi Code：Device Authorization、Chat Completions 方言；
 - Anthropic/Claude：Authorization Code + PKCE、本地回调、Anthropic Messages 方言；
-- Google/Antigravity：Authorization Code + PKCE；内置桌面凭据使用本地回调，自有 Web OAuth 客户端可使用 Runtime HTTPS 回调；Gemini Content 方言；
+- Google/Antigravity：Authorization Code + PKCE；内置桌面凭据使用本地回调，自有 Web OAuth 客户端可使用 Runtime HTTPS 回调；使用 Cloud Code `v1internal` 的项目发现、必要时的用户 onboarding、Agent 模型目录与 Gemini Content 请求方言；
 - xAI：OIDC Discovery + Device Authorization、OpenAI 兼容方言。
 
 这些 Adapter 已完成不依赖真实订阅的确定性登录、刷新、敏感字段隔离和请求物化测试。真实登录和模型端点冒烟必须由 Operator 使用自己的账号完成，不能用假账号、静态展示数据或个人订阅作为 CI 依赖。OpenRouter、CLIProxyAPI 和其他 Gateway 继续通过四种兼容协议与 API Key/无认证方式接入，不需要 Morphz 感知网关产品本身。
@@ -812,7 +812,7 @@ SQLite 的账号状态、亲和、刷新 fencing、Attempt Binding 与远端目�
 | 7 | 新模型可手工配置、诊断并刷新远端目录 | 已实现 SDK/CLI/HTTP/Dashboard |
 | 8 | OAuth Token 不进入配置、Event History、Prompt、Dashboard 或普通日志 | 已由类型边界、Secret Store 与错误脱敏实现；继续保留回归审计 |
 | 9 | 兼容 Gateway 仍作为普通 Provider 接入 | 已保留四协议配置入口 |
-| 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；真实端点冒烟需要外部测试账号，未伪造完成 |
+| 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；2026-09-03 的 Antigravity 真实账号冒烟暴露并修复了错误复用公共 `/models` 与旧客户端标识的问题，修复版本仍需由 Operator 复验；其他真实端点继续需要外部测试账号，未伪造完成 |
 
 ### 20.1 Codex 订阅可观测性
 
