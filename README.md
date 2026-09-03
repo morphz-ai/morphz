@@ -1,337 +1,139 @@
 # Morphz
 
-Morphz 是一台由 Rust Runtime 承载、运行在大语言模型上的 **S-Expression Cognitive Machine（S 表达式认知机）**。LLM 是可替换的非确定性语义处理器，负责理解、推理与提出认知或行动；Runtime 是确定性事务内核，负责结构、事务、版本、权限、资源边界、持久化与恢复。Agent 是认知机加载身份、Context、能力与行为策略后的实例，不是 Morphz 的基础机器定义。
+English · [简体中文](README.zh-CN.md)
 
-## 许可证
+> **From Chat Completion to Structured Context Evaluation.**
 
-Morphz 的原创源码、测试、开发工具、技术文档、规范文本和公开一致性测试夹具默认采用
-[Apache License 2.0](LICENSE)。论文、专利文件、网站编辑内容、品牌素材和第三方材料适用
-独立条款；完整边界见[许可证适用范围](LICENSE_SCOPE.zh-CN.md)、[专利政策](PATENTS.zh-CN.md)、
-[商标政策](TRADEMARKS.zh-CN.md)与[第三方声明](THIRD_PARTY_NOTICES.md)。
+Morphz is an **S-Expression Cognitive Machine** built for durable agents. It makes structured
+Context—not a growing chat transcript—the object a language model evaluates directly. The model
+handles nondeterministic semantics; a deterministic transaction kernel owns facts, authority,
+state, execution, and recovery.
 
-当前核心能力、验证边界和仍未成熟的方向，统一以 [Morphz Runtime 核心实现状态总览 v1](docs/morphz_runtime_core_implementation_status_v1.md) 为索引。历史设计文档保留演进过程；若其中的旧实施状态与当前源码不一致，以该状态总览和最新专项文档为准。
+Morphz is created and maintained by [Newvar](https://newvar.ai).
 
-当前 Agent-Owned Context v1 将状态分成：
+## Developer Preview
 
-- `kernel`：Runtime 拥有的只读 Context、当前求值的 active Session、version 和 Context pressure；
-- `mind`：LLM 拥有的自由格式 Context Frames；
-- `inbox`：持久化 Events 中尚未被 Agent 主动退役的原始 Observation。
+Morphz 0.1 is a source-first Developer Preview. Its core mechanisms are reproducible, while public
+interfaces, multi-process operation, and parts of cross-platform validation continue to evolve.
+Breaking changes are possible, and this release does not claim production-grade multi-tenant cloud
+operation.
 
-`context_tx` 提供 `create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint/retire-session/restore-session` 原语；`recall` 用于按稳定引用分页读取 Event History 原文或恢复 Frame。主链路不会自动摘要历史、按轮数裁剪信息或把 Graph 检索结果静默注入 Mind。完整设计见 [Agent-Owned Context 设计文档](docs/morphz_agent_owned_context_design.md)。
+Native sandbox implementations exist for macOS, Linux, and Windows. The final 0.1 OS and
+architecture support matrix is still being validated; Linux workspace-write mode requires
+Bubblewrap, and Windows security claims depend on the complete Morphz Windows helper bundle.
 
-长期架构把 Agent 视为持续存在的逻辑认知主体，把 Session 视为可多路复用的交互连接，把 Context 视为可共享、COW 分支、合并和重置的一等版本化对象；多个 Session 可以共享一个 Mind，一个 Session 也可以由多个 Sub Agent/算力节点并行推进。该方向不代表当前能力已经全部实现，完整边界见 [共享 Context、多会话与并行认知架构](docs/morphz_shared_context_multisession_architecture.md)。
+See the [current implementation status](docs/morphz_runtime_core_implementation_status_v1.md) for
+the verified boundary between implemented, validated, experimental, and planned capabilities.
 
-Agent 拥有 Mind 的认识论与语义控制权；Runtime 则负责不可伪造的事件顺序、直接因果、身份、来源、版本、事务、权限和控制反馈。Runtime 不替 Agent 判断业务真理，而是为自由认知提供符合现实的坐标系。该分工见 [现实约束下的自主认知 Context](docs/morphz_reality_constrained_epistemic_context.md)。
+## What Morphz changes
 
-Reality Contract v1 已将上述现实约束与认识纪律统一生成到 System Prompt、Context Protocol 和 `context_tx` 工具说明，并完成 Gemini 跨领域五次回归。实现细节、Prefix Cache 编排和真实结果见 [Reality Contract v1 验证报告](docs/morphz_reality_contract_v1_validation.md)。
+- **Context is durable state.** An Agent owns versioned cognitive Frames independently of any one
+  Session or transcript.
+- **Evaluation is a state transition.** The model proposes meaning and action; the deterministic
+  kernel validates and commits authorized changes.
+- **Concurrency has causal structure.** Objectives, Threads, Activations, dependencies, and
+  versioned transactions make parallel work inspectable and recoverable.
+- **Cognitive practice is programmable.** Harness packages and Yao programs can define evaluation
+  loops without replacing Agent identity.
+- **Experience is portable evidence.** Agent Trajectory and Mind Frame Exchange specifications
+  define auditable records and selected cognitive exchange beyond one implementation.
 
-早期真实测试的模型身份、结果与结论边界见 [Morphz 评测历史快照](docs/morphz_eval_status.md)。该文档保留 Protocol v8–v16 的可比基线，不代表当前默认模型或生产协议版本。
+## Build and run
 
-Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同条件比较已有 Mind 对后续任务的影响。初版结果后来发现 Inbox 可以替 Mind 通过的评分缺陷；当前已改为严格检查活动 Mind Frame/Relation。场景设计、无效夹具与历史结果更正见 [Experience Transfer Benchmark v1](docs/morphz_experience_transfer_benchmark_v1.md)。
+### Prerequisites
 
-历史 Cognitive SExpr VM Prompt 实验将 LLM 定义为持续运行的 Morphz（S 表达式认知机）的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。实验所用旧英文词序保留在历史报告中；当前产品统一使用 **S-Expression Cognitive Machine**。完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
+- The Rust toolchain pinned by [`rust-toolchain.toml`](rust-toolchain.toml) (currently Rust 1.97.1);
+- access to at least one supported model service;
+- read and write access to the working directory you give the Agent.
 
-Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。`cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具和持久化状态；普通无工具文本直接回复当前 active Session，`no_reply` 表示显式静默，`send_message` 向另一 Session 写入可见消息但不激活它，`session_signal` 向已存在的同 Agent Session 投递内部协调消息并启动该 Session 的独立求值。完整响应协议见 [单 Session 求值与响应路由协议 v1](docs/morphz_response_routing_protocol_v1.md)。
-
-Dashboard Composer 支持对已有 Session 的结构化 `@Session` 引用：界面展示标题，Event 与模型输入使用 Runtime 校验后的稳定 `session_id`。引用本身不读取目标消息流、不激活目标，也不会创建 Session；Session 仍是 Human/上层系统拥有的 IO 与回复路由边界，Agent 的自主分解使用 Objective/Thread。
-
-Context-Owned Session Service v1 提供持久化 Context/Session Registry、消息幂等、按 Session 的消息与回复路由、共享 Context Encoding、过滤 WebSocket 和取消语义。一个 Context 拥有一个共享 Mind 和多个可并发活跃的 Session；同一 Session 可以同时拥有 Dialogue、Execution、Objective 与 Delivery Thread，回复和工具 continuation 通过稳定因果身份保持隔离。`context_tx` 的物理提交仍短暂串行化，但对象级 MVCC 会分别检查 Frame 内容、生命周期目标、精确关系边、Frame 顺序和 checkpoint 标识；只要事务实际读写的边界未变化，旧版本事务即可安全自动 rebase。真正的同对象冲突、`rollback` 和 Session attention 操作仍保持 fence。接口与边界见 [Session Service v1](docs/morphz_session_service_v1.md) 与 [Context 事务、Mind Projection 与分布式扩展](docs/morphz_context_transaction_scalability_and_mind_projection_v1.md)。
-
-Agent / Context / Session Lifecycle v1 在统一 Mount/Seed/Projection 底层上提供四个高层语义：`create_session` 在当前 Context 创建共享会话，`create_independent_session` 继承 Mind 但隔离原 Session/Inbox，`create_agent` 创建全新 Agent/Root Context/初始 Session，`delegate` 把共享 Mind 与可选的当前 Session 证据交给隔离 Sub Agent，并将结果返回父 Session 验证和整合。设计、不变量、API 与验证结果见 [Lifecycle 与 Delegation v1](docs/morphz_agent_context_session_lifecycle_v1.md)。
-
-Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。
-
-真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Event 证据评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
-
-Scheduler Kernel v2 将物理工作与 Context transaction 分开控制。当前 Context Protocol v26 以 Thread、Activation、结构化 Dependency、Session Working Set、Session attention 和因果可见边界承载并发；每个模型请求只有一个 active Session，不再保留多 Session 合并求值。无工具非空文本是当前 Dialogue/Delivery Activation 的可投递终态，独占 `no_reply` 是静默终态；空响应或非法混用会有限纠错后安全收口。物理工具结果只恢复所属因果链，更晚到达的并发消息不会倒灌进旧 Thread。内部调度 Signal、终态与依赖推进由 Kernel 原子提交，不再依赖 Event → Signal Outbox 的二次翻译。完整现状见 [Scheduler Kernel v2 稳定化重构](docs/morphz_scheduler_kernel_stabilization_v2.md)。
-
-Runtime 注入给模型的稳定 Context 协议、Yao/VM 算子契约、Harness 执行指令和 Function Calling 工具 Schema 统一使用英文，作为后续多语言实验的基准。用户原文、外部证据、Mind BODY 和工具真实输出保持原始语言；当前改动不改变协议符号或算子语义。生产测试会拒绝这些稳定契约重新混入 CJK 文本。
-
-Session Working Set 默认选择当前 Session 与最近 24 小时内最多 50 个活跃 Session；共享 Mind 始终保留，超出窗口、数量或 Token Budget 的 Session 只退出完整 Observation 投影。Agent 可用 `retire-session/restore-session` 持久维护注意力，新定向消息或工具结果会自动恢复目标 Session。可用 `MORPHZ_SESSION_ACTIVE_WINDOW` 和 `MORPHZ_SESSION_WORKING_SET_MAX` 调整策略；`morphz context status`、TUI 底部状态栏以及 `/api/contexts/:context_id/working-set`、`/api/contexts/:context_id/work-items` 可查看实际编译状态。完整实现与真实 Gemini 并发结果见 [并发 Session 与认知工作集 v1](docs/morphz_concurrent_session_working_set_v1.md)。
-
-Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
-
-生产 Prompt pressure 已不再只统计 Frame 与 Inbox 字符：Orchestrator 在 completion 前计量完整工作请求，并在 Context Encoding 中显示来源、范围与可信度。核心路径禁止为 Token 计数产生额外远程请求；统一协议 Client 使用完整请求估算和 completion 返回的真实输入 usage 校准，后续可按 profile 显式接入本地 tokenizer/chat-template。设计与边界见 [Prompt Token Accounting v1](docs/morphz_prompt_token_accounting_v1.md)。
-
-Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估容量、语义保真和维护效率。首次完整运行的 Capacity/Fidelity 通过、Efficiency 未通过：56 条原始历史全部退休且峰值仅 4,491/8,000，但模型发生多事务循环并线性保护批次 Frame。协议、轨迹与下一步见 [Context Long-Run Eval](docs/morphz_context_long_run_eval.md)。
-
-## 本地启动
-
-1. 编译核心，并把二进制放到独立运行目录。不要把 Morphz 源码仓库同时作为 Agent 的工作区：
-
-   ```bash
-   cargo build --release -p morphz
-   mkdir -p ../morphz-runtime
-   cp target/release/morphz ../morphz-runtime/morphz
-   cd ../morphz-runtime
-   ./morphz setup
-   ./morphz
-   ```
-
-   全屏 `setup` 可选择 OpenAI、Anthropic、Gemini 或自定义 Provider，并把协议、凭证
-   引用和模型选择保存到用户级模型配置 `~/.morphz/models.toml`；Runtime、权限、存储和
-   服务端策略保存在 `~/.morphz/morphz.toml`。API Key 可存入系统 Keychain、权限为
-   `0600` 的用户级明文 Morphz secrets 文件，或引用既有环境变量；本地无认证服务不需要 Key。
-   工作目录中的 `.env` 不会被隐式加载，防止不可信项目把宿主凭证重定向到项目指定端点。
-
-   默认工作区按入口语义解析：`serve`、`dashboard`、`edge run` 等持久服务只使用
-   `~/.morphz/workspace`；交互式 TUI、`exec` 和其他前台命令以启动目录（或 `--cwd`）为主工作区，
-   并同时把 `~/.morphz/workspace` 作为额外可读写工作区。显式
-   `permissions.workspace_root` / `MORPHZ_WORKSPACE_ROOT` 优先于这些默认值。用户可重复传入
-   `--add-dir=/path/to/project`，或在 `[permissions].write_roots` 中持久保存额外可读写工作区；
-   每个目录独立授权，不会把权限模式升级为完全访问。
-
-   默认权限允许工作区读写、工作区外只读和网络访问；工作区外写入仍需审批。Runtime 会把
-   实际加载的 `MORPHZ_CONFIG_PATH`、当前可执行文件、SQLite 主库及 `-wal/-shm` 强制
-   加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
-   `.env`、`.git`、`.ssh` 同样默认受保护。
-
-   交互式 TTY 默认进入 Ratatui 界面：Enter 按配置的默认方式发送，Option+Enter 并发发送，
-   Ctrl/Command+Enter 排到前一条消息之后，Shift+Enter 或 Ctrl+J 换行；Ctrl+T 打开任务视图，
-   Ctrl+K 打开 Mind，Ctrl+G 浏览并切换 Session，Alt+T 切换主题，`?` 打开帮助。Ctrl+P 打开独立控制面，
-   可搜索会话、目标、Context、真实工具清单、执行任务、委派、主题、模型、推理强度、取消和内嵌终端等当前可用操作；
-   Composer 始终只发送对话，开头的 `/` 不再解释为本地命令。进入内嵌终端后按 Ctrl+] 返回 Morphz。
-   任务与 Mind 视图用方向键选择、
-   Tab 切换内容/输入焦点，任务诊断使用 D。Morphz 默认不捕获鼠标，终端原生文本选择和复制
-   可以直接使用。Provider 返回的模型正文和工具参数按统一流式事件
-   展示；无工具正文完整返回后会提交为持久化 Session 消息。控制面可在与 Dashboard
-   一致的电光青、鸢尾紫、暖珊瑚和纯单色四套主题间切换。`--plain` 可选择
-   行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。
-
-   用户界面语言由统一的 `[ui].language` 配置控制，可设为 `auto`、`en` 或 `zh-CN`；
-   `--language`（别名 `--lang`）优先于配置，`MORPHZ_LANGUAGE` 用于覆盖自动检测。
-   Setup、CLI 帮助和 TUI 使用同一语言选择。Dashboard 是多用户客户端，默认跟随浏览器语言，
-   并允许每个浏览器独立切换和记忆语言；各界面共享同一套产品术语。
-
-   ```toml
-   [ui]
-   language = "zh-CN"
-   ```
-
-   Runtime 本机承接 Managed SSH 不需要再维护一套 Morphz SSH 配置。只要宿主用户已有的
-   OpenSSH 配置可以解析目标（例如 `ssh production`），Agent 就可通过
-   `resolve_target` 传入 `kind = "managed_ssh"`、`host = "production"`。直接使用 IP 或
-   DNS hostname 时可同时传入 `user` 和 `port`，例如：
-
-   ```json
-   {
-     "kind": "managed_ssh",
-     "host": "192.0.2.10",
-     "user": "deploy",
-     "port": 2222,
-     "capabilities": ["exec"]
-   }
-   ```
-
-   Runtime 会执行 `ssh -G`、按当前 Principal 动态注册稳定 Target。`full_access` 模式下，
-   Runtime-local Managed SSH 不再额外触发审批；受限模式在当前 Thread 第一次使用该 Target
-   能力时走现有自动审批，策略要求时回退到人工审批。人工审批可选择仅批准一次、在本轮任务
-   内复用，或在当前 Session 内复用；可复用规则仍严格绑定相同 Principal + Agent + Target、
-   能力类型和权限边界，不会启用 `full_access`。后续请求只有属于已批准边界的子集时才直接执行，
-   用户可在 Dashboard 的“授权规则”中收窄、缩短或撤销规则。Agent 不会读取 `~/.ssh/config`、私钥或认证材料，也不能通过本地 `exec` 绕过
-   Runtime 直接运行 `ssh`、`scp` 或 `sftp`。
-
-   实际连接由 Runtime 的 OpenSSH 客户端完成，沿用宿主的 `Host`、`User`、`Port`、
-   `ProxyJump` 和 known-hosts 设置，同时强制严格 host-key 校验。未显式绑定私钥时，
-   `key_only` 兼容宿主 `IdentityFile` / `SSH_AUTH_SOCK`，并使用 `BatchMode=yes`。如果用户不想
-   手工配置 `ssh-agent`，可以把私钥内容保存到 Secret Store，再把 alias 绑定到 Target：
-
-   ```json
-   {
-     "kind": "managed_ssh",
-     "host": "login.scnet.example",
-     "user": "researcher",
-     "auth_mode": "key_only",
-     "private_key_secret": "SCNET_SSH_KEY",
-     "private_key_passphrase_secret": "SCNET_SSH_KEY_PASSPHRASE"
-   }
-   ```
-
-   `private_key_passphrase_secret` 仅在私钥加密时需要。Runtime 按当前 Context、Session、
-   Objective 和 Target scope 解析凭证，将私钥短暂物化为 Runtime 私有目录中的 `0600`
-   文件，通过 `IdentityFile=none`、`IdentitiesOnly=yes` 只使用该密钥，并在连接完成后自动删除；
-   私钥和口令都不会进入工具参数、Event History、Target 元数据或普通 Shell 环境。
-
-   仅提供密码的主机同样可以先把密码保存到 Secret Store，再把 alias 绑定到 Target：
-
-   ```json
-   {
-     "kind": "managed_ssh",
-     "host": "workspace.example.com",
-     "user": "deploy",
-     "port": 47557,
-     "auth_mode": "password_only",
-     "password_secret": "WORKSPACE_SSH_PASSWORD"
-   }
-   ```
-
-   `auth_mode` 还支持 `key_then_password`。密码与加密私钥口令通过一次性 askpass FIFO
-   交给 OpenSSH。已有 Target 可用 `target_id` 加相应的 Secret alias 绑定或轮换凭证；
-   切换认证模式会清除该模式不使用的绑定。`resolve_target` 不接受任意私钥路径或凭证值。
-   `host` 可直接使用 SSH config 中的 Host、普通 DNS hostname 或 IPv4 地址，不需要先创建
-   Edge Node 或 Managed SSH Target。
-
-   管理员仍可选择预注册固定 Target（例如需要稳定显示名、平台和 Workspace 元数据时）：
-
-   ```toml
-   [[managed_ssh.targets]]
-   id = "target-server"
-   name = "Production server"
-   endpoint_ref = "production"
-   platform = "linux-x86_64"
-   workspace_root = "/srv/app"
-   ```
-
-   这种可选的固定 Target 对应宿主连接描述符保存为
-   `~/.morphz/edge/ssh/production.json`（实际根目录遵循 Morphz 用户目录）：
-
-   ```json
-   {
-     "host": "server.example",
-     "user": "deploy",
-     "port": 22,
-     "known_hosts_file": "/absolute/operator-owned/path/known_hosts",
-     "approved": true,
-     "auth_mode": "key_only",
-     "private_key_secret": "PRODUCTION_SSH_KEY"
-   }
-   ```
-
-   固定描述符始终使用显式 `known_hosts_file`；`key_only` / `key_then_password` 可以继承
-   `SSH_AUTH_SOCK`，也可以引用 `private_key_secret`；密码模式引用 `password_secret`。
-   它只是可选的管理员固定策略，不是 Managed SSH 的使用前提。
-
-   CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
-
-   ```bash
-   morphz 帮我检查当前项目
-   morphz --sandbox=workspace-write --approval=auto 继续优化坦克大战
-   morphz exec --session=session_123 -- 只执行这一轮并输出最终答复
-   ```
-
-   裸启动和裸提示词会在所选共享 Context 中新建一个 Session。`morphz resume` 默认恢复
-   最近活跃的 Session；指定通信通道可使用 `morphz resume ID`、`--session=ID` 或
-   `morphz session resume ID`。它不是“恢复记忆”，因为新 Session
-   本来就能读取共享 Context 的认知结构。`morphz session create --independent` 会从
-   当前 Mind snapshot 创建一个隔离 Context，再把新 Session 挂载上去。可用
-   `morphz context/session/agent/job --help` 查看总览，或直接运行 `morphz --help`。
-
-   Provider 与配置诊断命令：
-
-   ```bash
-   morphz provider list
-   morphz provider show <provider-instance-id>
-   morphz provider account list
-   morphz provider account login <account-id>
-   morphz provider account test <account-id> --route=<model-alias>
-   morphz model route list
-   morphz model route test <model-alias> --account=<account-id>
-   morphz model refresh <model-alias> --account=<account-id>
-   morphz config explain --format=json
-   morphz doctor
-   ```
-
-   Runtime 使用稳定的 Model Route alias 求值；一个 alias 可以按顺序路由到不同
-   Provider Instance、Auth Account 与物理模型名。同一种 OAuth Adapter 也可以配置多个
-   相互隔离的账号。完整领域模型、OAuth 边界和运维契约见
-   [Provider、Model 与 OAuth 架构 v1](docs/morphz_provider_model_oauth_architecture_v1.md)。
-
-2. 如需 HTTP/WebSocket 与 Inspector，先启动 Server：
-
-   ```bash
-   morphz serve
-   ```
-
-   再在另一个终端启动 Inspector：
-
-   ```bash
-   cd dashboard
-   npm ci
-   npm run dev
-   ```
-
-`morphz serve` 默认监听 `127.0.0.1:8080`。SQLite 路径通过 `[storage.sqlite].path` 或
-`MORPHZ_STORAGE_SQLITE_PATH` 覆盖；监听地址可用 `--bind` 或 `MORPHZ_BIND` 设置。新项目的
-Runtime 核心配置保存在 `~/.morphz/morphz.toml`，Provider、Account、Model Route 与默认
-推理配置保存在 `~/.morphz/models.toml`；项目偏好放在 `.morphz/morphz.toml`。旧版合并
-配置在首次启动时原子拆分，已有 `models.toml` 的操作者修改优先。Provider、Credential、权限
-和监听地址属于用户或系统控制面，项目配置不能修改。完整分层设计见
-[CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。
-
-`[llm].model` 是默认主模型；`allowed_evaluation_models` 只授予 Agent 主动委托求值时可额外
-选择的 Model Route。普通 Evaluation 与 `schedule_tx` 未显式选模时使用当前 Session 的选择，
-并最终回退到主模型；`infer` 未显式选模时直接使用主模型。Operator 可以在 Dashboard 为
-Session 选择任意已启用 Route；该选择不会改写 Runtime 主模型。一次求值的模型在 Activation
-首次执行前持久绑定，恢复与 Provider 重试不会换模型，也不会隐式跨模型故障转移。
-
-```toml
-# ~/.morphz/models.toml
-[llm]
-model = "primary"
-allowed_evaluation_models = ["fast", "deep"]
-```
-
-监听非本机地址时必须配置访问令牌。`MORPHZ_DASHBOARD_TOKEN` 始终是 Dashboard/Operator
-管理面凭证；可信 Gateway 模式还使用 `[server.identity].service_token_env` 指向的独立服务
-凭证，并要求 Gateway 的 Session 请求携带 Runtime Principal。这两个令牌必须不同，管理面
-认证也不会被解释成用户身份声明。完整契约见
-[SDK v1 与可信 Gateway 身份接入](docs/morphz_sdk_and_trusted_gateway_identity_v1.md)。
-Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带管理令牌，也可分别用
-`VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
-
-容器和托管环境可以使用 `MORPHZ_STORAGE_BACKEND=postgres`、
-`MORPHZ_POSTGRES_MAX_CONNECTIONS`、`MORPHZ_SERVER_IDENTITY_MODE=trusted-gateway`、
-`MORPHZ_SERVER_IDENTITY_PROVIDER_ID` 与 `MORPHZ_SERVER_IDENTITY_SERVICE_TOKEN_ENV`
-覆盖对应的宿主控制面配置。PostgreSQL 凭证仍只通过 `MORPHZ_POSTGRES_URL` 提供，
-不会写入普通配置或诊断输出。
-
-面向外部客户端或其他 AI agent 的最小接口、认证、幂等、事件轮询和 WebSocket
-恢复约定，见 [HTTP API：AI Agent 接入契约 v1](docs/http_api_agent_contract_v1.md)。
-
-Docker 示例：
+Build from the repository root:
 
 ```bash
-docker build -t morphz .
-docker volume create morphz-config
-docker run --rm -it \
-  -e OPENAI_API_KEY \
-  -v morphz-config:/home/morphz/.morphz \
-  morphz setup
-docker run --rm -p 8080:8080 \
-  -e OPENAI_API_KEY \
-  -e MORPHZ_DASHBOARD_TOKEN="replace-with-a-long-random-token" \
-  -v morphz-config:/home/morphz/.morphz \
-  -v morphz-data:/home/morphz/data \
-  morphz
+cargo build --release
 ```
 
-## 验证
+Configure a model service and start Morphz:
+
+```bash
+./target/release/morphz setup
+./target/release/morphz doctor
+./target/release/morphz
+```
+
+`setup` opens the embedded Dashboard wizard by default. Use `setup --tui` on an SSH host or a
+machine without a browser, or `setup --no-open` to print the Dashboard URL without opening it.
+
+The directory from which Morphz runs may become the Agent's working directory. For real use, copy
+the binary to a separate executable location or start it with an explicit `--cwd`; do not grant an
+experimental Agent write access to a source checkout unintentionally.
+
+For the complete first-run path, read [Getting started](https://morphz.ai/en/docs/getting-started).
+
+## Documentation and research
+
+- [Project website](https://morphz.ai)
+- [Documentation](https://morphz.ai/en/docs)
+- [Technical essay: From Chat Completion to Structured Context Evaluation](https://morphz.ai/en/blog/from-chat-completion-to-structured-context-evaluation)
+- [English preprint](website/public/paper/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en.pdf)
+  · [中文预印本](website/public/paper/morphz_nondeterministic_cognitive_symbol_evaluation_preprint_zh.pdf)
+- [Morphz technical standards](docs/standards/README.md)
+- [Core implementation status](docs/morphz_runtime_core_implementation_status_v1.md)
+
+The standards workspace includes Structured Context, Agent Trajectory, Cognitive Applications and
+Harnesses, Yao, and Mind Frame Exchange. Draft standards describe review targets; they do not by
+themselves prove that every requirement is implemented.
+
+## Repository map
+
+- `morphz/` — core implementation, application API, CLI, and server adapters;
+- `yao/` — the typed language used for deterministic evaluation programs;
+- `morphz-evals/` — evaluation framework and fixtures;
+- `extensions/` — optional capabilities outside the default core;
+- `dashboard/` — embedded web control surface and inspector;
+- `website/` — the Morphz technical website;
+- `docs/standards/` — public specifications and conformance work;
+- `docs/` — architecture, research, verification, and roadmap material.
+
+## Development
+
+Run the Rust quality gate:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo build --release --workspace
+```
 
+Validate the Dashboard separately:
+
+```bash
 cd dashboard
+npm ci
 npm run lint
+npm run test
 npm run build
 ```
 
-## 安全边界
+See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change and
+[GOVERNANCE.md](GOVERNANCE.md) for project and standards governance.
 
-`list_files/search/read/edit/write/exec` 共享同一个 `PermissionProfile` 和 `PermissionBroker`。默认 `auto_review` 模式允许工作区读写、工作区外只读和网络访问；额外写权限等越界能力由独立 AI Reviewer 审查，protected paths 不能通过审批覆盖。Reviewer 无法判断时会进入可等待的人工审批通道。`permissions.auto_review_model` 可以指定一个独立的 Model Route（例如成本更低、延迟更小的审核模型）；未配置时才为向后兼容复用主模型。Dashboard 的“身份与模型”页面可从已启用路由中选择审核模型，保存后立即热切换并持久化，不改变对话模型。CLI 可直接批准或拒绝，Web 使用 `GET /api/approvals` 与 `POST /api/approvals/:id`。`edit/write` 另外使用 SHA-256 乐观并发校验及同目录原子替换。
+## Security
 
-每条消息都支持三种持久化调度语义：`interrupt` 会替换尚未跨越 Execution 边界的在途 DialogueTurn，并按 Event Sequence 合并尚未回复的输入；`parallel` 会立即建立独立 DialogueTurn 并与前一轮并发求值；`follow_up` 会等待前一轮完成且结果交付后再求值。Dashboard 中 Enter 使用配置默认值，Option/Alt+Enter 并发发送，Ctrl/Command+Enter 跟进发送，也可从发送按钮菜单显式选择。`orchestrator.interrupt_dialogue_on_new_message = true` 时默认使用 `interrupt`，设为 `false` 时默认使用 `follow_up`；对应环境变量为 `MORPHZ_INTERRUPT_DIALOGUE_ON_NEW_MESSAGE`。独立审核模型也可由 `MORPHZ_AUTO_REVIEW_MODEL` 覆盖。
+Morphz applies a shared permission profile to file, shell, local execution, and remote execution
+capabilities. Workspace-write mode is enforced by a native OS sandbox and fails closed when the
+required backend is unavailable. `full_access` deliberately removes those boundaries and should
+only be used in an environment you already trust.
 
-`exec` 会把相同的路径、protected paths 和网络权限编译到操作系统原生沙箱：macOS 使用 Seatbelt；Linux 使用 Bubblewrap，缺少或不能运行 `bwrap` 时 fail-closed；Windows 使用固定 OpenAI Codex revision 的 Restricted Token、ACL/Capability SID、WFP、私有桌面与 Job Object，并要求安装包含三个 sandbox helper 的完整 Morphz Windows bundle。三平台安全声明都以各自原生攻击 CI 为门禁，交叉编译或 Linux 容器不能替代 Windows 验证。高层模式为 `request_approval`、`auto_review`、`full_access` 和 `custom`；完全访问会关闭文件边界与 OS 沙箱并显示启动警告，但敏感环境变量是否传给 Shell 仍由独立环境策略控制。完整设计和当前边界见 [统一沙箱执行与可插拔审批架构](docs/morphz_sandbox_execution_and_approval_architecture.md)。
+The security model remains part of the Developer Preview. Review the
+[sandbox and approval architecture](docs/morphz_sandbox_execution_and_approval_architecture.md)
+before exposing Morphz to untrusted workspaces or remote users.
 
-## 目录说明
+## License
 
-- `morphz/`：Agent Runtime 核心、统一 Application API、CLI 与 Server 适配器。
-- `extensions/morphz-memory-vector/`：可选 Graph/Vector/Embedding 召回扩展；默认核心不加载。
-- `morphz-evals/`：独立评测框架、评测二进制和测试夹具。
-- `executor/`：可选本地 BGE 推理库，仅由启用 `local-bge` 的扩展依赖。
-- `dashboard/`：可选 Mind/Context/Session Inspector，不属于 Runtime Core。
-- `docs/`：设计与研究文档。
-- `app/`：历史 Streamlit Schema 原型，目前不属于 Morphz 核心启动链路。
+Original source code, tests, development tools, technical documentation, specification text, and
+public conformance fixtures are generally licensed under the
+[Apache License 2.0](LICENSE). Papers, patent materials, website editorial content, brand assets,
+and third-party materials may have separate terms. See the [license scope](LICENSE_SCOPE.md),
+[patent policy](PATENTS.md), [trademark policy](TRADEMARKS.md), and
+[third-party notices](THIRD_PARTY_NOTICES.md).
