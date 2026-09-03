@@ -34,7 +34,9 @@ const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
 const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
 const ANTIGRAVITY_NODE_API_CLIENT_UA: &str = "google-api-nodejs-client/10.3.0";
 const ANTIGRAVITY_GOOG_API_CLIENT_UA: &str = "gl-node/22.21.1";
-const XAI_GROK_CLIENT_VERSION: &str = "0.2.93";
+const CLAUDE_CLI_VERSION: &str = "2.1.220";
+const CLAUDE_OAUTH_BETAS: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11";
+const XAI_GROK_CLIENT_VERSION: &str = "0.2.120";
 const CODEX_ACCOUNT_PROBE_TIMEOUT_SECS: u64 = 20;
 
 /// A normalized ChatGPT subscription window returned by the official Codex
@@ -557,6 +559,10 @@ impl OAuthTokenSet {
 pub struct RequestAuthorization {
     pub bearer_token: String,
     pub headers: BTreeMap<String, String>,
+    /// Provider-specific values used to construct the request body. These are
+    /// deliberately separate from HTTP headers: turning request context into
+    /// an upstream header can change quota-project semantics.
+    pub request_context: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2199,6 +2205,7 @@ fn codex_materialize(token: &OAuthTokenSet) -> Result<RequestAuthorization, Stri
                 format!("codex_cli_rs/{client_version} (morphz; oauth)"),
             ),
         ]),
+        request_context: BTreeMap::new(),
     })
 }
 
@@ -2340,7 +2347,7 @@ impl AuthAdapter for KimiOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        None
+        Some("2026-09-03")
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -2480,6 +2487,7 @@ impl AuthAdapter for KimiOAuthAdapter {
         Ok(RequestAuthorization {
             bearer_token: token.access_token.clone(),
             headers: kimi_headers(device_id),
+            request_context: BTreeMap::new(),
         })
     }
 }
@@ -2553,7 +2561,7 @@ impl Default for ClaudeOAuthAdapter {
         Self {
             http: OAuthHttpClient::default(),
             auth_url: "https://claude.ai/oauth/authorize".to_string(),
-            token_url: "https://api.anthropic.com/v1/oauth/token".to_string(),
+            token_url: "https://platform.claude.com/v1/oauth/token".to_string(),
             client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
             redirect_uri: "http://localhost:54545/callback".to_string(),
             listen_loopback: true,
@@ -2624,7 +2632,9 @@ impl ClaudeOAuthAdapter {
             .http
             .get()?
             .post(&self.token_url)
-            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
+            .header(reqwest::header::USER_AGENT, "axios/1.15.2")
+            .header(reqwest::header::CONNECTION, "close")
             .json(&body)
             .send()
             .await
@@ -2694,7 +2704,7 @@ impl AuthAdapter for ClaudeOAuthAdapter {
     }
 
     fn version(&self) -> &'static str {
-        "cliproxyapi-compatible-2026-08-02"
+        "cliproxyapi-compatible-2026-09-03"
     }
 
     fn flow(&self) -> OAuthFlowKind {
@@ -2710,7 +2720,7 @@ impl AuthAdapter for ClaudeOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        None
+        Some("2026-09-03")
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -2837,12 +2847,31 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                     format!("Bearer {}", token.access_token),
                 ),
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ("anthropic-beta".to_string(), CLAUDE_OAUTH_BETAS.to_string()),
                 (
-                    "anthropic-beta".to_string(),
-                    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28".to_string(),
+                    "user-agent".to_string(),
+                    format!("claude-cli/{CLAUDE_CLI_VERSION} (external, cli)"),
                 ),
-                ("user-agent".to_string(), "claude-cli/2.1.76 (morphz; oauth)".to_string()),
+                ("x-app".to_string(), "cli".to_string()),
+                (
+                    "anthropic-dangerous-direct-browser-access".to_string(),
+                    "true".to_string(),
+                ),
+                ("x-stainless-retry-count".to_string(), "0".to_string()),
+                ("x-stainless-runtime".to_string(), "node".to_string()),
+                ("x-stainless-lang".to_string(), "js".to_string()),
+                (
+                    "x-stainless-package-version".to_string(),
+                    "0.94.0".to_string(),
+                ),
+                (
+                    "x-stainless-runtime-version".to_string(),
+                    "v26.3.0".to_string(),
+                ),
+                ("x-stainless-os".to_string(), "MacOS".to_string()),
+                ("x-stainless-arch".to_string(), "arm64".to_string()),
             ]),
+            request_context: BTreeMap::new(),
         })
     }
 }
@@ -3366,19 +3395,22 @@ impl AuthAdapter for AntigravityOAuthAdapter {
         if token.access_token.trim().is_empty() {
             return Err("Antigravity OAuth Access Token is empty".to_string());
         }
-        let mut headers = BTreeMap::from([
+        let headers = BTreeMap::from([
             (
                 "authorization".to_string(),
                 format!("Bearer {}", token.access_token),
             ),
             ("user-agent".to_string(), antigravity_request_user_agent()),
         ]);
-        if let Some(project_id) = token.metadata.get("project_id") {
-            headers.insert("x-goog-user-project".to_string(), project_id.clone());
-        }
+        let project_id = token
+            .metadata
+            .get("project_id")
+            .filter(|project_id| !project_id.trim().is_empty())
+            .ok_or("Antigravity OAuth Token is missing Cloud Code project ID")?;
         Ok(RequestAuthorization {
             bearer_token: token.access_token.clone(),
             headers,
+            request_context: BTreeMap::from([("project_id".to_string(), project_id.clone())]),
         })
     }
 }
@@ -3510,7 +3542,7 @@ impl AuthAdapter for XaiOAuthAdapter {
     }
 
     fn version(&self) -> &'static str {
-        "cliproxyapi-compatible-2026-08-02"
+        "cliproxyapi-compatible-2026-09-03"
     }
 
     fn flow(&self) -> OAuthFlowKind {
@@ -3526,7 +3558,7 @@ impl AuthAdapter for XaiOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        None
+        Some("2026-09-03")
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -3680,7 +3712,16 @@ impl AuthAdapter for XaiOAuthAdapter {
                     "User-Agent".to_string(),
                     format!("xai-grok-workspace/{XAI_GROK_CLIENT_VERSION}"),
                 ),
+                (
+                    "x-grok-client-identifier".to_string(),
+                    "grok-shell".to_string(),
+                ),
+                (
+                    "x-authenticateresponse".to_string(),
+                    "authenticate-response".to_string(),
+                ),
             ]),
+            request_context: BTreeMap::new(),
         })
     }
 }
@@ -3894,6 +3935,40 @@ mod tests {
         assert!(!ClaudeOAuthAdapter::default().http.is_initialized());
         assert!(!AntigravityOAuthAdapter::default().http.is_initialized());
         assert_eq!(AuthAdapterRegistry::builtins().descriptors().len(), 6);
+    }
+
+    #[test]
+    fn compatibility_adapter_defaults_match_audited_upstream_contract() {
+        let kimi = KimiOAuthAdapter::default();
+        assert_eq!(
+            kimi.device_code_url,
+            "https://auth.kimi.com/api/oauth/device_authorization"
+        );
+        assert_eq!(kimi.token_url, "https://auth.kimi.com/api/oauth/token");
+        assert_eq!(kimi.client_id, "17e5f671-d194-4dfb-9706-5516cb48c098");
+        assert_eq!(kimi.last_verified_on(), Some("2026-09-03"));
+
+        let claude = ClaudeOAuthAdapter::default();
+        assert_eq!(claude.auth_url, "https://claude.ai/oauth/authorize");
+        assert_eq!(
+            claude.token_url,
+            "https://platform.claude.com/v1/oauth/token"
+        );
+        assert_eq!(claude.client_id, "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+        assert_eq!(claude.last_verified_on(), Some("2026-09-03"));
+
+        let xai = XaiOAuthAdapter::default();
+        assert_eq!(
+            xai.discovery_url,
+            "https://auth.x.ai/.well-known/openid-configuration"
+        );
+        assert_eq!(xai.client_id, "b1a00492-073a-47ea-816f-4c329264a828");
+        assert_eq!(
+            xai.scope,
+            "openid profile email offline_access grok-cli:access api:access"
+        );
+        assert_eq!(xai.last_verified_on(), Some("2026-09-03"));
+        assert_eq!(XAI_GROK_CLIENT_VERSION, "0.2.120");
     }
 
     #[derive(Default)]
@@ -4408,7 +4483,15 @@ mod tests {
             .unwrap()
     }
 
-    async fn claude_token_endpoint(Json(payload): Json<Value>) -> Json<Value> {
+    async fn claude_token_endpoint(headers: HeaderMap, Json(payload): Json<Value>) -> Json<Value> {
+        assert_eq!(
+            headers.get("accept").and_then(|value| value.to_str().ok()),
+            Some("application/json, text/plain, */*")
+        );
+        assert!(headers
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value == "axios/1.15.2"));
         assert_eq!(payload["client_id"], "claude-test-client");
         assert!(!payload["code_verifier"]
             .as_str()
@@ -4464,6 +4547,32 @@ mod tests {
                 .get("anthropic-version")
                 .map(String::as_str),
             Some("2023-06-01")
+        );
+        assert_eq!(
+            authorization
+                .headers
+                .get("anthropic-beta")
+                .map(String::as_str),
+            Some(CLAUDE_OAUTH_BETAS)
+        );
+        assert!(!authorization
+            .headers
+            .get("anthropic-beta")
+            .is_some_and(|value| value.contains("token-efficient-tools")));
+        assert_eq!(
+            authorization.headers.get("x-app").map(String::as_str),
+            Some("cli")
+        );
+        assert_eq!(
+            authorization.headers.get("user-agent").map(String::as_str),
+            Some("claude-cli/2.1.220 (external, cli)")
+        );
+        assert_eq!(
+            authorization
+                .headers
+                .get("x-stainless-package-version")
+                .map(String::as_str),
+            Some("0.94.0")
         );
     }
 
@@ -4644,10 +4753,11 @@ mod tests {
         );
         let authorization = adapter.materialize(&token).unwrap();
         assert_eq!(authorization.bearer_token, "antigravity-access");
+        assert!(!authorization.headers.contains_key("x-goog-user-project"));
         assert_eq!(
             authorization
-                .headers
-                .get("x-goog-user-project")
+                .request_context
+                .get("project_id")
                 .map(String::as_str),
             Some("morphz-project")
         );
@@ -4749,10 +4859,11 @@ mod tests {
         );
         for authorization in [left.unwrap(), right.unwrap()] {
             assert_eq!(authorization.bearer_token, "antigravity-access");
+            assert!(!authorization.headers.contains_key("x-goog-user-project"));
             assert_eq!(
                 authorization
-                    .headers
-                    .get("x-goog-user-project")
+                    .request_context
+                    .get("project_id")
                     .map(String::as_str),
                 Some("morphz-project")
             );
@@ -4880,6 +4991,20 @@ mod tests {
                 .get("X-XAI-Token-Auth")
                 .map(String::as_str),
             Some("xai-grok-cli")
+        );
+        assert_eq!(
+            authorization
+                .headers
+                .get("x-grok-client-identifier")
+                .map(String::as_str),
+            Some("grok-shell")
+        );
+        assert_eq!(
+            authorization
+                .headers
+                .get("x-authenticateresponse")
+                .map(String::as_str),
+            Some("authenticate-response")
         );
     }
 

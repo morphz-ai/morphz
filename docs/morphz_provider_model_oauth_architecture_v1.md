@@ -812,7 +812,7 @@ SQLite 的账号状态、亲和、刷新 fencing、Attempt Binding 与远端目�
 | 7 | 新模型可手工配置、诊断并刷新远端目录 | 已实现 SDK/CLI/HTTP/Dashboard |
 | 8 | OAuth Token 不进入配置、Event History、Prompt、Dashboard 或普通日志 | 已由类型边界、Secret Store 与错误脱敏实现；继续保留回归审计 |
 | 9 | 兼容 Gateway 仍作为普通 Provider 接入 | 已保留四协议配置入口 |
-| 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；2026-09-03 的 Antigravity 真实账号冒烟暴露并修复了错误复用公共 `/models` 与旧客户端标识的问题，修复版本仍需由 Operator 复验；其他真实端点继续需要外部测试账号，未伪造完成 |
+| 10 | 内置 Adapter 确定性契约与真实端点冒烟 | Codex、Kimi、Claude、Antigravity、xAI 的确定性契约已通过；2026-09-03 的 Antigravity 真实账号冒烟连续暴露并修复了公共 `/models` 误用、旧客户端标识，以及把请求体 `project` 错发为 `x-goog-user-project` 配额头的问题。同期对 CLIProxyAPI 当前主线做兼容审计：Kimi 的 Device Flow 与推理端点保持一致；Claude 更新到 `platform.claude.com` Token Endpoint 和当前 CLI 请求身份；xAI 更新当前 Grok CLI 版本及身份 Header。Codex 已由 Operator 真实验证；其余真实订阅仍需 Operator 使用自己的账号复验，未伪造完成 |
 
 ### 20.1 Codex 订阅可观测性
 

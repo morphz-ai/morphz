@@ -394,6 +394,7 @@ pub(crate) struct ProtocolClient {
     model: RwLock<String>,
     credential: Option<String>,
     headers: HeaderMap,
+    request_context: BTreeMap<String, String>,
     max_retries: u32,
     initial_backoff_secs: u64,
     stream_idle_timeout: Duration,
@@ -1277,6 +1278,24 @@ impl ProtocolClient {
         credential: Option<String>,
         llm: &LlmConfig,
     ) -> Result<Self, ProviderError> {
+        Self::new_with_adapter_and_context(
+            provider,
+            adapter,
+            model,
+            credential,
+            llm,
+            BTreeMap::new(),
+        )
+    }
+
+    pub(crate) fn new_with_adapter_and_context(
+        provider: &ProviderConfig,
+        adapter: &str,
+        model: String,
+        credential: Option<String>,
+        llm: &LlmConfig,
+        request_context: BTreeMap<String, String>,
+    ) -> Result<Self, ProviderError> {
         if provider.models.get(&model).is_some_and(|profile| {
             profile.prompt_cache_strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
         }) && !cfg!(feature = "experimental-structured-context-delta-cache")
@@ -1326,6 +1345,7 @@ impl ProtocolClient {
             model: RwLock::new(model),
             credential,
             headers,
+            request_context,
             max_retries: llm.max_retries.max(1),
             initial_backoff_secs: llm.initial_backoff_secs,
             stream_idle_timeout: Duration::from_secs(llm.stream_idle_timeout_secs.max(1)),
@@ -1675,9 +1695,8 @@ impl ProtocolClient {
             "request": nested,
         });
         if let Some(project) = self
-            .headers
-            .get("x-goog-user-project")
-            .and_then(|value| value.to_str().ok())
+            .request_context
+            .get("project_id")
             .filter(|value| !value.trim().is_empty())
         {
             envelope["project"] = json!(project);
@@ -4966,20 +4985,17 @@ mod tests {
 
     #[test]
     fn antigravity_uses_internal_endpoints_and_request_envelope() {
-        let client = ProtocolClient::new_with_adapter(
+        let client = ProtocolClient::new_with_adapter_and_context(
             &ProviderConfig {
                 protocol: ModelProtocol::GeminiContent,
                 base_url: "https://cloudcode-pa.googleapis.com".to_string(),
-                headers: BTreeMap::from([(
-                    "x-goog-user-project".to_string(),
-                    "project-123".to_string(),
-                )]),
                 ..ProviderConfig::default()
             },
             "google-antigravity",
             "gemini-test".to_string(),
             None,
             &LlmConfig::default(),
+            BTreeMap::from([("project_id".to_string(), "project-123".to_string())]),
         )
         .unwrap();
 
@@ -5069,6 +5085,7 @@ mod tests {
                             .get("user-agent")
                             .and_then(|value| value.to_str().ok())
                             .is_some_and(|value| value.starts_with("antigravity/hub/")));
+                        assert!(headers.get("x-goog-user-project").is_none());
                         Json(json!({
                             "defaultAgentModelId": "gemini-agent-default",
                             "agentModelSorts": [{
@@ -5106,6 +5123,7 @@ mod tests {
                                 .and_then(|value| value.to_str().ok()),
                             Some("Bearer antigravity-access")
                         );
+                        assert!(headers.get("x-goog-user-project").is_none());
                         Json(json!({
                                 "response": {
                                     "candidates": [{
@@ -5122,23 +5140,21 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let client = ProtocolClient::new_with_adapter(
+        let client = ProtocolClient::new_with_adapter_and_context(
             &ProviderConfig {
                 protocol: ModelProtocol::GeminiContent,
                 base_url: format!("http://{address}"),
-                headers: BTreeMap::from([
-                    (
-                        "authorization".to_string(),
-                        "Bearer antigravity-access".to_string(),
-                    ),
-                    ("x-goog-user-project".to_string(), "project-123".to_string()),
-                ]),
+                headers: BTreeMap::from([(
+                    "authorization".to_string(),
+                    "Bearer antigravity-access".to_string(),
+                )]),
                 ..ProviderConfig::default()
             },
             "google-antigravity",
             "gemini-agent-default".to_string(),
             None,
             &LlmConfig::default(),
+            BTreeMap::from([("project_id".to_string(), "project-123".to_string())]),
         )
         .unwrap();
 

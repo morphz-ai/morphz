@@ -1497,6 +1497,7 @@ impl RoutedClient {
                 )
             })?;
         let mut headers = provider.headers.clone();
+        let mut request_context = BTreeMap::new();
         let credential = match account.auth_adapter.as_str() {
             "none" => None,
             "credential" | "api-key" | "env" | "keychain" | "command" => {
@@ -1548,6 +1549,7 @@ impl RoutedClient {
                     .headers
                     .keys()
                     .any(|name| name.eq_ignore_ascii_case("authorization"));
+                request_context = authorization.request_context;
                 headers.extend(authorization.headers);
                 (!supplies_authorization_header).then_some(authorization.bearer_token)
             }
@@ -1568,12 +1570,13 @@ impl RoutedClient {
             .read()
             .map_err(|_| "LLM configuration lock is poisoned")?
             .clone();
-        let client = Arc::new(ProtocolClient::new_with_adapter(
+        let client = Arc::new(ProtocolClient::new_with_adapter_and_context(
             &physical,
             &provider.adapter,
             binding.physical_model.clone(),
             credential,
             &llm,
+            request_context,
         )?);
         if !oauth {
             self.clients

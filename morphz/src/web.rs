@@ -8996,6 +8996,7 @@ mod tests {
             Ok(RequestAuthorization {
                 bearer_token: token.access_token.clone(),
                 headers: BTreeMap::new(),
+                request_context: BTreeMap::new(),
             })
         }
     }
