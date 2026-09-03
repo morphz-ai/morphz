@@ -6,7 +6,7 @@
 >
 > 规范原文：[English](../yao_core_language_specification_v0_1.md)
 >
-> 最后更新：2026-08-21
+> 最后更新：2026-09-04
 
 ## 1. 目的
 
@@ -77,6 +77,8 @@ Yao 源码没有内嵌语言版本声明。`(version ...)` 不是 Core Form，�
 Harness Package 版本和实现内部持久化 Typed IR Schema 版本是彼此独立的元数据边界，程序
 不能从源码内部改变其语义。每种声明最多出现一次，未知声明必须被拒绝。可单独使用
 `(requires (tools ...))`；声明的 Tool 是静态 `call` 与嵌套 `infer` 证据工具的闭合上界。
+Analyzer 始终推导完整的传递性 Effect 集。普通程序应省略 `(effects ...)`；一旦显式声明，
+它就是面向接口、准入契约与审计的闭合上界，所有推导出的 Effect 都必须包含在其中。
 
 ### 4.1 模型可见 Language Card
 
@@ -267,6 +269,35 @@ Runtime 必须先解码、校验终值，再允许其进入 Runtime 持有的数
 分类失败。类型名区分大小写；历史小写别名 `text`、`json` 不属于 Core 类型，必须拒绝，
 不得静默归一化。
 
+### 9.3 已绑定 HNS Function
+
+HNS Profile 可以为一个精确 Evaluation 绑定有限的类型化函数模块：
+
+```lisp
+(fn NAME
+  (visibility internal|exported)
+  (description "...")
+  (params (ARG TYPE)...)
+  (returns TYPE)
+  (effects EFFECT...)
+  (body EXPR))
+```
+
+Function Application 是 `(NAME (ARG EXPR)...)`，不得使用只表示 Tool Effect 的 `call`。
+函数名和参数名必须静态可知；参数必须是纯表达式，采用具名传递，名称唯一、完整并通过类型
+检查。参数不可变且只在函数体内有效。除参数和 Profile 显式提供的不可变 `runtime` 绑定外，
+函数体不能获得调用者的其他词法绑定，也不能修改或泄漏调用者局部作用域。
+
+`visibility` 默认为 `internal`。模型编写的 Program 只能应用 exported Function。导出函数
+必须提供非空说明和显式闭合 Effect 上界；内部函数的 Effect 可以推导。每次 Application
+都把函数体的完整传递性 Effect 集合带入调用者。
+
+模块调用图必须无环；v0.1 不支持递归、高阶函数、动态查找、闭包和函数自有循环。Analyzer
+必须解析并类型检查完整模块，校验传递性 Effect，限制模块大小、调用深度和链接后 IR 大小，
+并在执行前静态链接每个 Application。持久化 Typed IR 在重启后必须能够继续执行，不得依赖
+可变模块 Registry。Binding Profile 可以发布共享名义类型声明和不含函数体的 exported
+Function 接口，但不能在普通模型发现中暴露 internal 接口或函数体。
+
 ## 10. 结构化并行
 
 ```lisp
@@ -344,5 +375,7 @@ Harness 或模型路径。
 
 Core v0.1 实现必须发布测试，覆盖解析与 Span、规范编码、所有内置类型与算子、名字解析、
 不可变性、作用域、穷尽性、类型拒绝、Effect 推导、能力越界、typed inference、`par`
-隔离与恢复、Program Value 校验与安全、资源边界、Legacy 源码拒绝及持久化 IR 迁移 Fixture。每个规范样例在
-序列化/重启前后必须得到观察等价结果。
+隔离与恢复、Program Value 校验与安全、资源边界、Legacy 源码拒绝及持久化 IR 迁移 Fixture。
+支持 HNS Function Profile 时，还必须覆盖可见性、具名参数、返回类型、传递性 Effect 上界、
+递归环拒绝、链接后 IR 上限、作用域隔离和重启等价性。每个规范样例在序列化/重启前后必须
+得到观察等价结果。

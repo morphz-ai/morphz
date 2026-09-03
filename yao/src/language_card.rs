@@ -36,8 +36,9 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
     (nominal "(types (record NAME (field TYPE)...) (union NAME (variant (field TYPE)...)...))")
     (boundary "Json must be decoded before narrower typed use"))
   (requirements
-    (form "(requires (tools NAME...) (effects EFFECT...) (objects KIND...))")
-    (meaning "a closed upper bound that narrows, never grants, Runtime authority"))
+    (form "(requires (tools NAME...) (objects KIND...)); program effects are inferred")
+    (advanced "optional (effects EFFECT...) is an explicit closed upper bound for interfaces and audits")
+    (meaning "requirements narrow, never grant, Runtime authority"))
   (values
     (constructors "(list E...) (dict (KEY E)...) (record TYPE (FIELD E)...) (variant TYPE.VARIANT (FIELD E)...) (some E) (none TYPE) (ok E ERROR-TYPE) (err E OK-TYPE)")
     (collections "list is List<T> and dict is homogeneous Map<T>; fixed heterogeneous fields require a declared record")
@@ -46,6 +47,7 @@ pub const LANGUAGE_CARD: &str = r#"(language-card
   (control
     (forms "(seq E...) (bind NAME E) (if BOOL THEN ELSE) (fallback PRIMARY BACKUP) (map LIST NAME BODY)")
     (match "(match VALUE ((case TYPE.VARIANT (FIELD NAME)...) E)...); named-union cases are exhaustive")
+    (hns-functions "the bound evaluation-profile may publish body-free (fn NAME (visibility exported) (description STRING) (params (ARG TYPE)...) (returns TYPE) (effects EFFECT...)) interfaces and shared (types ...); invoke one as (NAME (ARG EXPR)...); call is reserved for Runtime Tools")
     (rule "effectful results must first be bound; conditions, operands, arguments, and collections are pure"))
   (effects
     (call "(call TOOL (ARG EXPR...)...); arguments are checked against the Tool schema")
@@ -82,6 +84,7 @@ mod tests {
         assert!(LANGUAGE_CARD.contains("(eval ...) or (infer ...) root"));
         assert!(LANGUAGE_CARD.contains("same complete Yao BODY"));
         assert!(LANGUAGE_CARD.contains("captures are the only parent lexical values disclosed"));
+        assert!(LANGUAGE_CARD.contains("invoke one as (NAME (ARG EXPR)...)"));
         for form in ["(seq E...)", "(bind NAME E)", "(call TOOL", "(par (branch"] {
             assert!(LANGUAGE_CARD.contains(form), "missing {form}");
         }

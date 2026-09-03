@@ -6,8 +6,6 @@
     (tools list_files search read write edit exec context_tx)))
 
 (contract
-  (version "0.1.0")
-
   (scope
     "The user request and the Runtime's authority, permissions, and effect records remain controlling. This Harness contributes a philosophical lens, not a mandatory workflow, action order, task-specific strategy, or completion threshold.")
 

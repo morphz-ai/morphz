@@ -86,6 +86,25 @@ pub trait DomainHarness: Send + Sync {
         None
     }
 
+    /// Canonical package-local `(fn ...)` sources. The Runtime admits and
+    /// statically links these only through an exact Evaluation binding.
+    fn function_sources(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Canonical package `(types ...)` declarations shared by exported HNS
+    /// function interfaces. They are scoped to the exact Evaluation binding,
+    /// never installed in a process-global language environment.
+    fn type_sources(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Body-free declarations for exported functions. These are the only HNS
+    /// functions visible to model-authored Yao programs.
+    fn exported_function_interfaces(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Domain-level validation only. Runtime Target authorization, Capability
     /// Lease and local sandbox checks still run afterwards and cannot be
     /// overridden by returning `Ok` here.

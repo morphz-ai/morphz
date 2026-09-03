@@ -6,7 +6,7 @@
 >
 > Canonical language: English
 >
-> Last updated: 2026-08-21
+> Last updated: 2026-09-04
 >
 > Chinese translation: [zh-CN](zh-CN/yao_core_language_specification_v0_1.md)
 
@@ -91,6 +91,9 @@ implementation MUST reject an unknown declaration instead of ignoring it.
 
 `(requires (tools ...))` is valid without `(effects ...)`. Tool names in
 `requires` are a closed upper bound for statically named `call` and nested `infer` evidence tools.
+The Analyzer always infers the complete transitive Effect set. Ordinary programs SHOULD omit
+`(effects ...)`; when present, it is an explicit closed upper bound intended for interfaces,
+admission contracts, and audits, and every inferred Effect MUST fit inside it.
 
 ### 4.1 Model-visible Language Card
 
@@ -327,6 +330,39 @@ classified inference failure.
 Type names are case-sensitive. Historical lowercase aliases such as `text` and `json` are not Core
 types and MUST be rejected rather than silently normalized.
 
+### 9.3 Bound HNS Functions
+
+An HNS profile MAY bind a finite module of typed functions to one exact Evaluation:
+
+```lisp
+(fn NAME
+  (visibility internal|exported)
+  (description "...")
+  (params (ARG TYPE)...)
+  (returns TYPE)
+  (effects EFFECT...)
+  (body EXPR))
+```
+
+Function application is `(NAME (ARG EXPR)...)`; it MUST NOT use `call`, which remains the Tool
+Effect syntax. Names and arguments are static. Arguments are pure, named, unique, complete, and
+type-checked. Parameters are immutable and scoped to the function body. A function body receives
+no caller lexical bindings except its parameters and an explicitly profile-provided immutable
+`runtime` binding. Caller-local bindings MUST NOT be mutated or leaked by an application.
+
+`visibility` defaults to `internal`. A model-authored Program MAY apply only exported functions.
+An exported function MUST provide a non-empty description and an explicit closed Effect upper
+bound. Internal function Effects MAY be inferred. Every application contributes the body's
+complete transitive Effect set to its caller.
+
+The module call graph MUST be acyclic; recursion, higher-order functions, dynamic lookup, closures,
+and function-owned loops are not part of v0.1. The Analyzer MUST resolve and type-check the whole
+module, validate transitive Effects, enforce finite module, call-depth, and linked-IR budgets, and
+statically link each application before execution. Persisted typed IR MUST remain executable after
+restart without consulting a mutable module registry. A binding profile MAY publish shared nominal
+type declarations and body-free exported interfaces, but MUST NOT expose internal interfaces or
+function bodies as part of ordinary model discovery.
+
 ## 10. Structured parallelism
 
 Core v0.1 defines one parallel expression:
@@ -439,6 +475,9 @@ A Core implementation claiming v0.1 conformance MUST publish tests that cover:
 - every built-in type, constructor, operator, and failure rule;
 - name resolution, immutability, branch scope, exhaustiveness, and type rejection;
 - static effect inference and capability subset rejection;
+- HNS Function visibility, named arguments, return typing, transitive Effect bounds, cycle
+  rejection, linked-IR limits, scope isolation, and restart equivalence when that profile is
+  supported;
 - typed inference decoding, including malformed and adversarial results;
 - `par` ordering, isolation, bounded concurrency, multi-failure reporting, and restart equivalence;
 - Program Value validation, effect escape rejection, hashing, provenance, nesting limits, and

@@ -12,6 +12,8 @@ pub const DEFAULT_MAX_EXPRESSION_DEPTH: usize = 32;
 pub const DEFAULT_MAX_HIR_NODES: usize = 4_096;
 pub const DEFAULT_MAX_FIELDS: usize = 256;
 pub const DEFAULT_MAX_PAR_BRANCHES: usize = 32;
+pub const DEFAULT_MAX_FUNCTIONS: usize = 128;
+pub const DEFAULT_MAX_FUNCTION_CALL_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnalysisLimits {
@@ -20,6 +22,8 @@ pub struct AnalysisLimits {
     pub max_hir_nodes: usize,
     pub max_fields: usize,
     pub max_par_branches: usize,
+    pub max_functions: usize,
+    pub max_function_call_depth: usize,
 }
 
 impl Default for AnalysisLimits {
@@ -30,6 +34,8 @@ impl Default for AnalysisLimits {
             max_hir_nodes: DEFAULT_MAX_HIR_NODES,
             max_fields: DEFAULT_MAX_FIELDS,
             max_par_branches: DEFAULT_MAX_PAR_BRANCHES,
+            max_functions: DEFAULT_MAX_FUNCTIONS,
+            max_function_call_depth: DEFAULT_MAX_FUNCTION_CALL_DEPTH,
         }
     }
 }
@@ -176,6 +182,37 @@ pub struct NamedArgument {
     pub name: String,
     pub values: Vec<HirExpr>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionVisibility {
+    Internal,
+    Exported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FunctionParameter {
+    name: String,
+    ty: Type,
+    span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionDeclaration {
+    name: String,
+    visibility: FunctionVisibility,
+    parameters: Vec<FunctionParameter>,
+    returns: Type,
+    declared_effects: Option<EffectSet>,
+    body: Expr,
+    span: SourceSpan,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledFunction {
+    declaration: FunctionDeclaration,
+    body: HirExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +363,16 @@ pub enum HirKind {
         tool: String,
         arguments: Vec<NamedArgument>,
     },
+    /// A package-local HNS function application linked at admission time.
+    ///
+    /// The typed body travels inside the durable HIR, so restart never
+    /// resolves a floating package or consults a mutable function registry.
+    FunctionApplication {
+        function: String,
+        arguments: Vec<NamedArgument>,
+        parameters: Vec<String>,
+        body: Box<HirExpr>,
+    },
     /// A complete Yao expression whose Evaluation Loop is owned by the model.
     ///
     /// This is the canonical `infer` form. The body is analyzed by the same
@@ -402,11 +449,103 @@ pub fn analyze(
     Analyzer::new(profile, limits).analyze_program(&root)
 }
 
+/// Analyzes one program against the exact package-local HNS functions bound
+/// to the current Evaluation. `allow_internal` is true only for the package's
+/// own entry program; model-authored programs may reference exported
+/// functions only.
+pub fn analyze_with_functions(
+    source: &str,
+    function_sources: &[String],
+    allow_internal: bool,
+    profile: &dyn AnalysisProfile,
+    limits: AnalysisLimits,
+) -> Result<Program, Diagnostic> {
+    analyze_with_module(
+        source,
+        &[],
+        function_sources,
+        allow_internal,
+        profile,
+        limits,
+    )
+}
+
+/// Analyzes one program against an exact, immutable HNS module.
+///
+/// `type_sources` contains canonical `(types ...)` forms exported by the
+/// bound package entry. Keeping them separate from the submitted program
+/// lets model-authored `eval` programs use nominal types named by exported
+/// function interfaces without copying those declarations into every call.
+pub fn analyze_with_module(
+    source: &str,
+    type_sources: &[String],
+    function_sources: &[String],
+    allow_internal: bool,
+    profile: &dyn AnalysisProfile,
+    limits: AnalysisLimits,
+) -> Result<Program, Diagnostic> {
+    let total_source_bytes = type_sources
+        .iter()
+        .try_fold(source.len(), |total, item| total.checked_add(item.len()))
+        .and_then(|total| {
+            function_sources
+                .iter()
+                .try_fold(total, |total, item| total.checked_add(item.len()))
+        })
+        .ok_or_else(|| {
+            diag(
+                DiagnosticCode::ResourceLimit,
+                "Yao module source size overflow",
+                SourceSpan::empty(crate::diagnostic::SourceLocation::start()),
+            )
+        })?;
+    if total_source_bytes > limits.parse.max_source_bytes {
+        return Err(diag(
+            DiagnosticCode::ResourceLimit,
+            format!(
+                "Yao module source is {total_source_bytes} bytes, exceeding the limit of {}",
+                limits.parse.max_source_bytes
+            ),
+            SourceSpan::empty(crate::diagnostic::SourceLocation::start()),
+        ));
+    }
+    if function_sources.len() > limits.max_functions {
+        return Err(diag(
+            DiagnosticCode::ResourceLimit,
+            format!(
+                "Yao module declares {} functions, exceeding the limit of {}",
+                function_sources.len(),
+                limits.max_functions
+            ),
+            SourceSpan::empty(crate::diagnostic::SourceLocation::start()),
+        ));
+    }
+    let root = parse_one(source, limits.parse)?;
+    let type_forms = type_sources
+        .iter()
+        .map(|types| parse_one(types, limits.parse))
+        .collect::<Result<Vec<_>, _>>()?;
+    let function_forms = function_sources
+        .iter()
+        .map(|function| parse_one(function, limits.parse))
+        .collect::<Result<Vec<_>, _>>()?;
+    Analyzer::new(profile, limits)
+        .with_types(type_forms)
+        .with_functions(function_forms, allow_internal)
+        .analyze_program(&root)
+}
+
 struct Analyzer<'a> {
     profile: &'a dyn AnalysisProfile,
     limits: AnalysisLimits,
     requirements: Requirements,
     definitions: BTreeMap<String, TypeDefinition>,
+    type_forms: Vec<Expr>,
+    function_forms: Vec<Expr>,
+    function_declarations: BTreeMap<String, FunctionDeclaration>,
+    compiled_functions: BTreeMap<String, CompiledFunction>,
+    function_stack: Vec<String>,
+    allow_internal_functions: bool,
     node_count: usize,
 }
 
@@ -417,8 +556,25 @@ impl<'a> Analyzer<'a> {
             limits,
             requirements: Requirements::default(),
             definitions: BTreeMap::new(),
+            type_forms: Vec::new(),
+            function_forms: Vec::new(),
+            function_declarations: BTreeMap::new(),
+            compiled_functions: BTreeMap::new(),
+            function_stack: Vec::new(),
+            allow_internal_functions: false,
             node_count: 0,
         }
+    }
+
+    fn with_types(mut self, forms: Vec<Expr>) -> Self {
+        self.type_forms = forms;
+        self
+    }
+
+    fn with_functions(mut self, forms: Vec<Expr>, allow_internal: bool) -> Self {
+        self.function_forms = forms;
+        self.allow_internal_functions = allow_internal;
+        self
     }
 
     fn analyze_program(mut self, root: &Expr) -> Result<Program, Diagnostic> {
@@ -454,10 +610,32 @@ impl<'a> Analyzer<'a> {
             self.requirements = self.parse_requirements(&items[cursor])?;
             cursor += 1;
         }
+        self.prepare_external_type_definitions()?;
         if is_form(items.get(cursor), "types") {
-            self.definitions = self.parse_type_definitions(&items[cursor])?;
-            self.validate_type_definitions()?;
+            let local = self.parse_type_definitions(&items[cursor])?;
+            for (name, definition) in local {
+                if self.definitions.insert(name.clone(), definition).is_some() {
+                    return Err(diag(
+                        DiagnosticCode::DuplicateName,
+                        format!("program type '{name}' conflicts with the bound HNS module type"),
+                        items[cursor].span(),
+                    ));
+                }
+            }
             cursor += 1;
+        }
+        self.validate_type_definitions()?;
+        self.prepare_function_declarations()?;
+        let function_names = self
+            .function_declarations
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in function_names {
+            self.compile_function(&name)?;
+        }
+        if self.allow_internal_functions {
+            self.validate_bound_function_tool_upper_bound()?;
         }
 
         let mut scope = Scope::new(self.profile);
@@ -492,6 +670,53 @@ impl<'a> Analyzer<'a> {
         self.finish_program(root, owner, body)
     }
 
+    fn prepare_external_type_definitions(&mut self) -> Result<(), Diagnostic> {
+        let forms = std::mem::take(&mut self.type_forms);
+        for form in forms {
+            if !is_form(Some(&form), "types") {
+                return Err(diag(
+                    DiagnosticCode::InvalidType,
+                    "HNS module type source must have a (types ...) root",
+                    form.span(),
+                ));
+            }
+            let definitions = self.parse_type_definitions(&form)?;
+            for (name, definition) in definitions {
+                if self.definitions.insert(name.clone(), definition).is_some() {
+                    return Err(diag(
+                        DiagnosticCode::DuplicateName,
+                        format!("bound HNS module declares type '{name}' more than once"),
+                        form.span(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_bound_function_tool_upper_bound(&self) -> Result<(), Diagnostic> {
+        let Some(tools) = &self.requirements.tools else {
+            return Ok(());
+        };
+        for function in self.compiled_functions.values() {
+            for effect in function.body.effects.iter() {
+                if let Effect::Tool(tool) = effect {
+                    if !tools.contains(tool) {
+                        return Err(diag(
+                            DiagnosticCode::EffectEscape,
+                            format!(
+                                "HNS function '{}' reaches tool '{tool}' outside the package entry requires.tools set",
+                                function.declaration.name
+                            ),
+                            function.declaration.span,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn finish_program(
         self,
         root: &Expr,
@@ -500,15 +725,32 @@ impl<'a> Analyzer<'a> {
     ) -> Result<Program, Diagnostic> {
         if let Some(declared) = &self.requirements.effects {
             if !body.effects.is_subset(declared) {
+                let missing = EffectSet::new(
+                    body.effects
+                        .iter()
+                        .filter(|effect| !declared.contains(effect))
+                        .cloned(),
+                );
                 return Err(diag(
                     DiagnosticCode::EffectEscape,
                     format!(
-                        "program effects {:?} exceed declared upper bound {:?}",
-                        body.effects, declared
+                        "program effects {:?} exceed declared upper bound {:?}; missing {:?}. Remove requires.effects to let Yao infer the complete set, or add every missing effect explicitly",
+                        body.effects, declared, missing
                     ),
                     body.span,
                 ));
             }
+        }
+        let linked_nodes = hir_node_count(&body);
+        if linked_nodes > self.limits.max_hir_nodes {
+            return Err(diag(
+                DiagnosticCode::ResourceLimit,
+                format!(
+                    "statically linked Yao HIR contains {linked_nodes} nodes, exceeding the limit of {}",
+                    self.limits.max_hir_nodes
+                ),
+                body.span,
+            ));
         }
         let mut program = Program {
             language_version: TYPED_IR_SCHEMA_VERSION.to_string(),
@@ -523,6 +765,338 @@ impl<'a> Analyzer<'a> {
         };
         program.source_hash = program_hash(&program);
         Ok(program)
+    }
+
+    fn prepare_function_declarations(&mut self) -> Result<(), Diagnostic> {
+        let forms = std::mem::take(&mut self.function_forms);
+        for form in forms {
+            let declaration = self.parse_function_declaration(&form)?;
+            if self
+                .function_declarations
+                .insert(declaration.name.clone(), declaration.clone())
+                .is_some()
+            {
+                return Err(diag(
+                    DiagnosticCode::DuplicateName,
+                    format!("duplicate HNS function '{}'", declaration.name),
+                    declaration.span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_function_declaration(
+        &self,
+        expression: &Expr,
+    ) -> Result<FunctionDeclaration, Diagnostic> {
+        let items = expect_list(expression, "HNS function must be (fn NAME ...)")?;
+        if items.first().and_then(Expr::as_symbol) != Some("fn") {
+            return Err(diag(
+                DiagnosticCode::UnknownOperator,
+                "HNS function must have an (fn ...) root",
+                expression.span(),
+            ));
+        }
+        let Some(name_expr) = items.get(1) else {
+            return Err(diag(
+                DiagnosticCode::UnknownName,
+                "fn declaration is missing its name",
+                expression.span(),
+            ));
+        };
+        let name = expect_symbol(name_expr, "fn name must be a symbol")?;
+        if !is_identifier(name) || is_reserved_operator(name) {
+            return Err(diag(
+                DiagnosticCode::DuplicateName,
+                format!("invalid or reserved HNS function name '{name}'"),
+                name_expr.span(),
+            ));
+        }
+
+        let mut visibility = None;
+        let mut description = None;
+        let mut parameters = None;
+        let mut returns = None;
+        let mut declared_effects = None;
+        let mut body = None;
+        for clause in &items[2..] {
+            let fields = expect_list(clause, "fn clauses must be lists")?;
+            let Some(clause_name) = fields.first().and_then(Expr::as_symbol) else {
+                return Err(diag(
+                    DiagnosticCode::UnknownName,
+                    "fn clause has no name",
+                    clause.span(),
+                ));
+            };
+            match clause_name {
+                "visibility" => {
+                    if visibility.is_some() {
+                        return Err(duplicate_function_clause("visibility", clause.span()));
+                    }
+                    let [_, value] = fields else {
+                        return Err(diag(
+                            DiagnosticCode::InvalidType,
+                            "fn visibility must be (visibility internal|exported)",
+                            clause.span(),
+                        ));
+                    };
+                    visibility = Some(
+                        match expect_symbol(value, "fn visibility must be internal or exported")? {
+                            "internal" => FunctionVisibility::Internal,
+                            "exported" => FunctionVisibility::Exported,
+                            other => {
+                                return Err(diag(
+                                    DiagnosticCode::InvalidType,
+                                    format!("unknown fn visibility '{other}'"),
+                                    value.span(),
+                                ))
+                            }
+                        },
+                    );
+                }
+                "description" => {
+                    if description.is_some() {
+                        return Err(duplicate_function_clause("description", clause.span()));
+                    }
+                    let [_, value] = fields else {
+                        return Err(diag(
+                            DiagnosticCode::InvalidType,
+                            "fn description must contain exactly one string",
+                            clause.span(),
+                        ));
+                    };
+                    let Expr::Atom(atom) = value else {
+                        return Err(diag(
+                            DiagnosticCode::InvalidType,
+                            "fn description must be a string",
+                            value.span(),
+                        ));
+                    };
+                    if atom.kind != AtomKind::String || atom.value.trim().is_empty() {
+                        return Err(diag(
+                            DiagnosticCode::InvalidType,
+                            "fn description must be a non-empty string",
+                            atom.span,
+                        ));
+                    }
+                    description = Some(atom.value.clone());
+                }
+                "params" => {
+                    if parameters.is_some() {
+                        return Err(duplicate_function_clause("params", clause.span()));
+                    }
+                    let mut parsed = Vec::new();
+                    let mut names = HashSet::new();
+                    for parameter in &fields[1..] {
+                        let parts = expect_list(parameter, "fn parameter must be (NAME TYPE)")?;
+                        let [parameter_name, parameter_type] = parts else {
+                            return Err(diag(
+                                DiagnosticCode::InvalidType,
+                                "fn parameter must contain exactly NAME and TYPE",
+                                parameter.span(),
+                            ));
+                        };
+                        let parameter_name = expect_binding_name(parameter_name)?;
+                        if parameter_name == "runtime" || !names.insert(parameter_name.to_string())
+                        {
+                            return Err(diag(
+                                DiagnosticCode::DuplicateName,
+                                format!("invalid or duplicate fn parameter '{parameter_name}'"),
+                                parameter.span(),
+                            ));
+                        }
+                        let ty = self.parse_type(parameter_type)?;
+                        self.validate_type_names(&ty, parameter_type.span())?;
+                        parsed.push(FunctionParameter {
+                            name: parameter_name.to_string(),
+                            ty,
+                            span: parameter.span(),
+                        });
+                    }
+                    parameters = Some(parsed);
+                }
+                "returns" => {
+                    if returns.is_some() {
+                        return Err(duplicate_function_clause("returns", clause.span()));
+                    }
+                    let [_, value] = fields else {
+                        return Err(diag(
+                            DiagnosticCode::InvalidType,
+                            "fn returns must be (returns TYPE)",
+                            clause.span(),
+                        ));
+                    };
+                    let ty = self.parse_type(value)?;
+                    self.validate_type_names(&ty, value.span())?;
+                    returns = Some(ty);
+                }
+                "effects" => {
+                    if declared_effects.is_some() {
+                        return Err(duplicate_function_clause("effects", clause.span()));
+                    }
+                    declared_effects = Some(self.parse_effects(&fields[1..])?);
+                }
+                "body" => {
+                    if body.is_some() {
+                        return Err(duplicate_function_clause("body", clause.span()));
+                    }
+                    let [_, value] = fields else {
+                        return Err(diag(
+                            DiagnosticCode::InvalidType,
+                            "fn body must contain exactly one Yao expression",
+                            clause.span(),
+                        ));
+                    };
+                    body = Some(value.clone());
+                }
+                other => {
+                    return Err(diag(
+                        DiagnosticCode::UnknownName,
+                        format!("unknown fn clause '{other}'"),
+                        fields[0].span(),
+                    ))
+                }
+            }
+        }
+        let visibility = visibility.unwrap_or(FunctionVisibility::Internal);
+        if visibility == FunctionVisibility::Exported && description.is_none() {
+            return Err(diag(
+                DiagnosticCode::InvalidType,
+                format!("exported fn '{name}' requires a non-empty description"),
+                expression.span(),
+            ));
+        }
+        if visibility == FunctionVisibility::Exported && declared_effects.is_none() {
+            return Err(diag(
+                DiagnosticCode::InvalidType,
+                format!("exported fn '{name}' requires an explicit (effects ...) upper bound"),
+                expression.span(),
+            ));
+        }
+        Ok(FunctionDeclaration {
+            name: name.to_string(),
+            visibility,
+            parameters: parameters.ok_or_else(|| {
+                diag(
+                    DiagnosticCode::InvalidType,
+                    format!("fn '{name}' is missing (params ...)"),
+                    expression.span(),
+                )
+            })?,
+            returns: returns.ok_or_else(|| {
+                diag(
+                    DiagnosticCode::InvalidType,
+                    format!("fn '{name}' is missing (returns TYPE)"),
+                    expression.span(),
+                )
+            })?,
+            declared_effects,
+            body: body.ok_or_else(|| {
+                diag(
+                    DiagnosticCode::InvalidType,
+                    format!("fn '{name}' is missing (body EXPR)"),
+                    expression.span(),
+                )
+            })?,
+            span: expression.span(),
+        })
+    }
+
+    fn compile_function(&mut self, name: &str) -> Result<CompiledFunction, Diagnostic> {
+        if let Some(function) = self.compiled_functions.get(name) {
+            return Ok(function.clone());
+        }
+        if let Some(position) = self.function_stack.iter().position(|item| item == name) {
+            let mut cycle = self.function_stack[position..].to_vec();
+            cycle.push(name.to_string());
+            let declaration = self
+                .function_declarations
+                .get(name)
+                .expect("function name was resolved before cycle detection");
+            return Err(diag(
+                DiagnosticCode::RecursiveFunction,
+                format!(
+                    "recursive HNS function cycle is not supported: {}",
+                    cycle.join(" -> ")
+                ),
+                declaration.span,
+            ));
+        }
+        if self.function_stack.len() >= self.limits.max_function_call_depth {
+            let declaration = self
+                .function_declarations
+                .get(name)
+                .expect("function name exists");
+            return Err(diag(
+                DiagnosticCode::ResourceLimit,
+                format!(
+                    "HNS function call depth exceeds {}",
+                    self.limits.max_function_call_depth
+                ),
+                declaration.span,
+            ));
+        }
+        let declaration = self
+            .function_declarations
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                diag(
+                    DiagnosticCode::UnknownName,
+                    format!("unknown HNS function '{name}'"),
+                    empty_span(),
+                )
+            })?;
+        self.function_stack.push(name.to_string());
+        let result = (|| {
+            let mut scope = Scope::new(self.profile);
+            for parameter in &declaration.parameters {
+                if scope
+                    .bindings
+                    .insert(parameter.name.clone(), parameter.ty.clone())
+                    .is_some()
+                {
+                    return Err(diag(
+                        DiagnosticCode::DuplicateName,
+                        format!(
+                            "fn parameter '{}' shadows an implicit binding",
+                            parameter.name
+                        ),
+                        parameter.span,
+                    ));
+                }
+            }
+            let body = self.analyze_expr(&declaration.body, &mut scope, 0)?;
+            require_assignable(&body.ty, &declaration.returns, body.span)?;
+            if let Some(declared) = &declaration.declared_effects {
+                if !body.effects.is_subset(declared) {
+                    let missing = EffectSet::new(
+                        body.effects
+                            .iter()
+                            .filter(|effect| !declared.contains(effect))
+                            .cloned(),
+                    );
+                    return Err(diag(
+                        DiagnosticCode::EffectEscape,
+                        format!(
+                            "fn '{}' effects {:?} exceed declared upper bound {:?}; missing {:?}",
+                            declaration.name, body.effects, declared, missing
+                        ),
+                        body.span,
+                    ));
+                }
+            }
+            Ok(CompiledFunction {
+                declaration: declaration.clone(),
+                body,
+            })
+        })();
+        self.function_stack.pop();
+        let function = result?;
+        self.compiled_functions
+            .insert(name.to_string(), function.clone());
+        Ok(function)
     }
 
     fn analyze_expr(
@@ -615,6 +1189,14 @@ impl<'a> Analyzer<'a> {
                     name if name.contains('.') => {
                         self.analyze_host(name, arguments, scope, expression.span(), depth)
                     }
+                    name if self.function_declarations.contains_key(name) => self
+                        .analyze_function_application(
+                            name,
+                            arguments,
+                            scope,
+                            expression.span(),
+                            depth,
+                        ),
                     other => Err(diag(
                         DiagnosticCode::UnknownOperator,
                         format!("unknown Yao operator '{other}'"),
@@ -1662,11 +2244,12 @@ impl<'a> Analyzer<'a> {
             ));
         };
         let tool = expect_symbol(tool_expr, "tool name must be a symbol")?;
-        if self
-            .requirements
-            .tools
-            .as_ref()
-            .is_some_and(|tools| !tools.contains(tool))
+        if self.function_stack.is_empty()
+            && self
+                .requirements
+                .tools
+                .as_ref()
+                .is_some_and(|tools| !tools.contains(tool))
         {
             return Err(diag(
                 DiagnosticCode::EffectEscape,
@@ -1698,6 +2281,103 @@ impl<'a> Analyzer<'a> {
                 arguments: named,
             },
             signature.result,
+            effects,
+            span,
+        ))
+    }
+
+    fn analyze_function_application(
+        &mut self,
+        name: &str,
+        arguments: &[Expr],
+        scope: &mut Scope,
+        span: SourceSpan,
+        depth: usize,
+    ) -> Result<HirExpr, Diagnostic> {
+        let function = self.compile_function(name)?;
+        if self.function_stack.is_empty()
+            && !self.allow_internal_functions
+            && function.declaration.visibility != FunctionVisibility::Exported
+        {
+            return Err(diag(
+                DiagnosticCode::UnknownName,
+                format!("HNS function '{name}' is internal and cannot be called by this program"),
+                span,
+            ));
+        }
+        let named = self.analyze_named_arguments(arguments, scope, depth + 1)?;
+        require_pure_all(
+            named.iter().flat_map(|argument| argument.values.iter()),
+            "function arguments",
+        )?;
+        let names = named
+            .iter()
+            .map(|argument| argument.name.as_str())
+            .collect::<HashSet<_>>();
+        for parameter in &function.declaration.parameters {
+            if !names.contains(parameter.name.as_str()) {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    format!("missing required fn argument '{}'", parameter.name),
+                    span,
+                ));
+            }
+        }
+        for argument in &named {
+            let Some(parameter) = function
+                .declaration
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == argument.name)
+            else {
+                return Err(diag(
+                    DiagnosticCode::UnknownName,
+                    format!("unknown fn argument '{}'", argument.name),
+                    argument.span,
+                ));
+            };
+            let [value] = argument.values.as_slice() else {
+                return Err(diag(
+                    DiagnosticCode::TypeMismatch,
+                    format!("fn argument '{}' requires exactly one value", argument.name),
+                    argument.span,
+                ));
+            };
+            require_assignable(&value.ty, &parameter.ty, value.span)?;
+        }
+        if self.function_stack.is_empty() {
+            if let Some(tools) = &self.requirements.tools {
+                for effect in function.body.effects.iter() {
+                    if let Effect::Tool(tool) = effect {
+                        if !tools.contains(tool) {
+                            return Err(diag(
+                                DiagnosticCode::EffectEscape,
+                                format!(
+                                    "fn '{name}' reaches tool '{tool}' outside the program requires.tools set"
+                                ),
+                                span,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let argument_effects =
+            union_effects(named.iter().flat_map(|argument| argument.values.iter()));
+        let effects = argument_effects.union(&function.body.effects);
+        Ok(hir(
+            HirKind::FunctionApplication {
+                function: name.to_string(),
+                arguments: named,
+                parameters: function
+                    .declaration
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.name.clone())
+                    .collect(),
+                body: Box::new(function.body.clone()),
+            },
+            function.declaration.returns,
             effects,
             span,
         ))
@@ -2903,6 +3583,72 @@ fn hir(kind: HirKind, ty: Type, effects: EffectSet, span: SourceSpan) -> HirExpr
     }
 }
 
+fn hir_node_count(expression: &HirExpr) -> usize {
+    let named = |arguments: &[NamedArgument]| {
+        arguments
+            .iter()
+            .flat_map(|argument| argument.values.iter())
+            .map(hir_node_count)
+            .sum::<usize>()
+    };
+    let children = match &expression.kind {
+        HirKind::Literal { .. } | HirKind::Reference { .. } | HirKind::OptionNone { .. } => 0,
+        HirKind::List { elements } => elements.iter().map(hir_node_count).sum(),
+        HirKind::Dict { entries }
+        | HirKind::Record {
+            fields: entries, ..
+        }
+        | HirKind::Variant {
+            fields: entries, ..
+        } => entries.iter().map(|(_, value)| hir_node_count(value)).sum(),
+        HirKind::OptionSome { value }
+        | HirKind::ResultOk { value, .. }
+        | HirKind::ResultErr { value, .. }
+        | HirKind::ContextTransaction { context: value, .. }
+        | HirKind::Get { value, .. }
+        | HirKind::Decode { value, .. }
+        | HirKind::Is { value, .. }
+        | HirKind::Run { program: value } => hir_node_count(value),
+        HirKind::EvidenceCandidate { kind, value, refs } => {
+            hir_node_count(kind)
+                + hir_node_count(value)
+                + refs.iter().map(hir_node_count).sum::<usize>()
+        }
+        HirKind::OutcomeCandidate {
+            value, evidence, ..
+        } => hir_node_count(value) + evidence.iter().map(hir_node_count).sum::<usize>(),
+        HirKind::Pure { operands, .. } => operands.iter().map(hir_node_count).sum(),
+        HirKind::Seq { steps } => steps.iter().map(hir_node_count).sum(),
+        HirKind::Bind { value, .. } => hir_node_count(value),
+        HirKind::If {
+            condition,
+            when_true,
+            when_false,
+        } => hir_node_count(condition) + hir_node_count(when_true) + hir_node_count(when_false),
+        HirKind::Match { value, cases } => {
+            hir_node_count(value)
+                + cases
+                    .iter()
+                    .map(|case| hir_node_count(&case.body))
+                    .sum::<usize>()
+        }
+        HirKind::Fallback { primary, backup } => hir_node_count(primary) + hir_node_count(backup),
+        HirKind::Map {
+            collection, body, ..
+        } => hir_node_count(collection) + hir_node_count(body),
+        HirKind::Call { arguments, .. } | HirKind::Host { arguments, .. } => named(arguments),
+        HirKind::FunctionApplication {
+            arguments, body, ..
+        } => named(arguments) + hir_node_count(body),
+        HirKind::InferBody { body, .. } => hir_node_count(body),
+        HirKind::Par { branches } => branches
+            .iter()
+            .map(|branch| hir_node_count(&branch.body))
+            .sum(),
+    };
+    1usize.saturating_add(children)
+}
+
 fn diag(code: DiagnosticCode, message: impl Into<String>, span: SourceSpan) -> Diagnostic {
     Diagnostic::new(code, message, span)
 }
@@ -3017,6 +3763,65 @@ fn duplicate_declaration(name: &str, span: SourceSpan) -> Diagnostic {
         DiagnosticCode::DuplicateName,
         format!("duplicate requires.{name} declaration"),
         span,
+    )
+}
+
+fn duplicate_function_clause(name: &str, span: SourceSpan) -> Diagnostic {
+    diag(
+        DiagnosticCode::DuplicateName,
+        format!("duplicate fn.{name} declaration"),
+        span,
+    )
+}
+
+fn is_reserved_operator(value: &str) -> bool {
+    matches!(
+        value,
+        "eval"
+            | "fn"
+            | "requires"
+            | "types"
+            | "list"
+            | "dict"
+            | "record"
+            | "variant"
+            | "some"
+            | "none"
+            | "ok"
+            | "err"
+            | "evidence"
+            | "outcome"
+            | "context-transaction"
+            | "get"
+            | "decode"
+            | "is"
+            | "eq"
+            | "ne"
+            | "lt"
+            | "le"
+            | "gt"
+            | "ge"
+            | "and"
+            | "or"
+            | "not"
+            | "add"
+            | "sub"
+            | "mul"
+            | "div"
+            | "seq"
+            | "bind"
+            | "if"
+            | "match"
+            | "fallback"
+            | "map"
+            | "call"
+            | "infer"
+            | "par"
+            | "run"
+            | "host.view"
+            | "evidence.commit"
+            | "outcome.commit"
+            | "context.propose"
     )
 }
 
@@ -3839,6 +4644,8 @@ mod tests {
         "#;
         let error = analyze(source, &profile(), AnalysisLimits::default()).unwrap_err();
         assert_eq!(error.code, DiagnosticCode::EffectEscape);
+        assert!(error.message.contains("Remove requires.effects"));
+        assert!(error.message.contains("Infer"));
     }
 
     #[test]
@@ -3913,5 +4720,210 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, DiagnosticCode::ResourceLimit);
+    }
+
+    #[test]
+    fn hns_functions_are_typed_linked_and_visibility_checked() {
+        let functions = vec![
+            r#"(fn add-one
+                  (visibility exported)
+                  (description "Add one to an integer")
+                  (params (value Int))
+                  (returns Int)
+                  (effects)
+                  (body (add value 1)))"#
+                .to_string(),
+            r#"(fn private-double
+                  (params (value Int))
+                  (returns Int)
+                  (body (mul value 2)))"#
+                .to_string(),
+        ];
+        let program = analyze_with_functions(
+            "(eval (add-one (value 41)))",
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(program.output, Type::Int);
+        assert!(matches!(
+            program.body.kind,
+            HirKind::FunctionApplication { ref function, .. } if function == "add-one"
+        ));
+
+        let external = analyze_with_functions(
+            "(eval (private-double (value 2)))",
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(external.code, DiagnosticCode::UnknownName);
+
+        analyze_with_functions(
+            "(eval (private-double (value 2)))",
+            &functions,
+            true,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn hns_function_effects_are_transitive_and_bounded() {
+        let functions = vec![
+            r#"(fn read-internal
+                  (params (path String))
+                  (returns Json)
+                  (body (call read (path path))))"#
+                .to_string(),
+            r#"(fn load
+                  (visibility exported)
+                  (description "Read one package-authorized path")
+                  (params (path String))
+                  (returns Json)
+                  (effects (tool read))
+                  (body (read-internal (path path))))"#
+                .to_string(),
+        ];
+        let program = analyze_with_functions(
+            r#"(eval (requires (tools read)) (load (path "README.md")))"#,
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            program.effects,
+            EffectSet::new([Effect::Tool("read".into())])
+        );
+
+        let escaped = analyze_with_functions(
+            r#"(eval (requires (tools)) (load (path "README.md")))"#,
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(escaped.code, DiagnosticCode::EffectEscape);
+        assert!(escaped.message.contains("fn 'load' reaches tool 'read'"));
+
+        let package_bound = analyze_with_functions(
+            r#"(eval (requires (tools)) 0)"#,
+            &functions,
+            true,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(package_bound.code, DiagnosticCode::EffectEscape);
+        assert!(
+            package_bound
+                .message
+                .contains("outside the package entry requires.tools set"),
+            "{}",
+            package_bound.message
+        );
+    }
+
+    #[test]
+    fn hns_function_cycles_are_rejected_before_execution() {
+        let functions = vec![
+            r#"(fn first
+                  (params (value Int))
+                  (returns Int)
+                  (body (second (value value))))"#
+                .to_string(),
+            r#"(fn second
+                  (params (value Int))
+                  (returns Int)
+                  (body (first (value value))))"#
+                .to_string(),
+        ];
+        let error = analyze_with_functions(
+            "(eval 0)",
+            &functions,
+            true,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::RecursiveFunction);
+        assert!(error.message.contains("first -> second -> first"));
+    }
+
+    #[test]
+    fn bound_hns_module_types_are_available_to_exported_functions_and_callers() {
+        let types = vec![r#"(types
+                  (record Receipt
+                    (path String)
+                    (verified Bool)))"#
+            .to_string()];
+        let functions = vec![r#"(fn receipt
+                  (visibility exported)
+                  (description "Build a verified receipt")
+                  (params (path String))
+                  (returns Receipt)
+                  (effects)
+                  (body (record Receipt (path path) (verified true))))"#
+            .to_string()];
+        let program = analyze_with_module(
+            r#"(eval (receipt (path "README.md")))"#,
+            &types,
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(program.output, Type::Named("Receipt".to_string()));
+        assert!(program.types.contains_key("Receipt"));
+
+        let conflict = analyze_with_module(
+            r#"(eval
+                 (types (record Receipt (value Int)))
+                 (receipt (path "README.md")))"#,
+            &types,
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(conflict.code, DiagnosticCode::DuplicateName);
+        assert!(conflict
+            .message
+            .contains("conflicts with the bound HNS module"));
+    }
+
+    #[test]
+    fn repeated_function_applications_are_bounded_after_static_linking() {
+        let functions = vec![r#"(fn add-one
+                  (visibility exported)
+                  (description "Add one")
+                  (params (value Int))
+                  (returns Int)
+                  (effects)
+                  (body (add value 1)))"#
+            .to_string()];
+        let error = analyze_with_functions(
+            "(eval (seq (add-one (value 1)) (add-one (value 2))))",
+            &functions,
+            false,
+            &profile(),
+            AnalysisLimits {
+                max_hir_nodes: 9,
+                ..AnalysisLimits::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::ResourceLimit);
+        assert!(error.message.contains("statically linked Yao HIR"));
     }
 }

@@ -6,8 +6,6 @@
     (tools list_files search read write edit exec context_tx)))
 
 (contract
-  (version "0.4.0")
-
   (identity
     "This Harness governs heterogeneous terminal tasks that may require investigation, implementation, recovery, research, configuration, or a persistent service. It supplies a reusable cognitive procedure, not task-specific knowledge. The user request and the Runtime's authority, permissions, deadlines, and effect records remain controlling.")
 

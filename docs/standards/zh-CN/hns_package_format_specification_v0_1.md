@@ -8,9 +8,9 @@
 >
 > 规范文本语言：英文
 >
-> 源码基线：截至 2026-09-03 的 Morphz Runtime
+> 源码基线：截至 2026-09-04 的 Morphz Runtime
 >
-> 日期：2026-09-03
+> 日期：2026-09-04
 >
 > 规范文本：[English](../hns_package_format_specification_v0_1.md)
 >
@@ -54,6 +54,7 @@ HarnessPackage
 |- Manifest              恰好一个
 |- Contract              恰好一个
 |- Default Mind          零或一个
+|- HNS Functions         零或多个
 `- Entry Program         恰好一个
 ```
 
@@ -86,6 +87,7 @@ coding.hns
 - 一个 `(manifest ...)` 顶层 Artifact；
 - 一个 `(contract ...)` 顶层 Artifact；
 - 零或一个 `(mind ...)` 顶层 Artifact；
+- 零或多个名称唯一的 `(fn ...)` 顶层 Artifact；
 - 一个 `(eval ...)` 或一个 `(infer ...)` 顶层 Artifact。
 
 未知或重复顶层 Artifact 必须导致加载失败。源码中的 Artifact 顺序可以变化；归一化使用
@@ -100,6 +102,7 @@ coding.hns/
 |- manifest.yao
 |- contract.yao
 |- mind.yao             可选
+|- functions/           可选；每个 .yao 文件包含一个 fn
 `- programs/
    `- main.yao          示例入口路径
 ```
@@ -109,6 +112,8 @@ coding.hns/
 - `manifest.yao` 必须存在，并恰好包含一个 `(manifest ...)` Artifact；
 - `contract.yao` 必须存在，并恰好包含一个 `(contract ...)` Artifact；
 - `mind.yao` 存在时，必须恰好包含一个 `(mind ...)` Artifact；
+- `functions/` 目录存在时，其中每个普通 `*.yao` 文件必须恰好包含一个 `(fn ...)`
+  Artifact，并且整个 Package 内的函数名必须唯一；
 - Manifest 必须指定一个相对 Entry Program 路径；
 - 被选择的 Entry Program 文件必须恰好包含一个 `(eval ...)` 或 `(infer ...)` Artifact。
 
@@ -198,6 +203,8 @@ Contract：
 
 - 对一个精确 Package 身份必须不可变；
 - 必须从精确绑定 Package 挂载；
+- 不得重复 Package `version` 或声明独立 Contract 版本；Package 演化由 Manifest version
+  与精确内容身份共同标识；
 - 不得授予能力；
 - 不得仅仅通过声明就断言外部副作用或验证已经发生；
 - 应足够紧凑，避免为了挂载 Contract 而在每次 Evaluation 中强制注入全部详细 Skill。
@@ -248,10 +255,49 @@ Language Profile 能够确定有效子集时才可以省略；省略不得表示
 对于 Model-owned 入口，实际提供给模型的 Tool 集合，是该上界、完整正文中静态命名的
 `(call TOOL ...)` 与当前权限三者的交集。
 
+当 Package 声明任何 HNS Function 时，其 Entry Program 必须显式声明覆盖完整函数模块的
+`(requires (tools ...))` 上界。每个 Function 可传递到达的所有 Tool Effect 都必须包含在该
+上界内；纯函数模块可以使用 `(requires (tools))`。这个模块上界本身仍必须是 Manifest Tools
+的子集。
+
 ### 9.3 执行边界
 
 Entry Program 必须依照 Morphz Harness 规范执行。特别是，`call` 或等价副作用请求必须由
 Runtime 授权和执行中介；嵌套 `infer` 或等价操作必须保留显式因果身份和有界有效能力范围。
+
+### 9.4 HNS Function 模块
+
+HNS Function 是有边界的 Package 局部 Yao 函数，不是独立 Process，也不拥有 Evaluation
+Loop。v0.1 形态为：
+
+```lisp
+(fn NAME
+  (visibility internal|exported)
+  (description "...")
+  (params (ARG TYPE)...)
+  (returns TYPE)
+  (effects EFFECT...)
+  (body EXPR))
+```
+
+`visibility` 默认为 `internal`。`params`、`returns` 和 `body` 是必需 Clause。导出 Function
+还必须具有非空 `description` 和显式闭合的 `effects` 上界；内部 Function 可以省略
+`effects`，由 Analyzer 推导。函数参数不可变，也不得命名为 `runtime`。
+
+Function Application 使用 `(NAME (ARG EXPR)...)`；`call` 只保留给 Runtime Tool。应用必须
+使用静态已知函数名和具名参数；参数必须纯、完整、唯一且通过类型检查。模型编写的 Program
+只能应用 exported Function；Package Entry 还可以应用 internal Function。
+
+Runtime 必须在执行任何 Entry 节点前解析并类型检查所有 Function，构造静态无环调用图，
+推导传递性 Effect，拒绝递归环，并限制函数数量、调用深度、源码大小和链接后 IR 大小；每个
+Application 必须在准入阶段静态链接进 Typed IR。因此，持久化 Plan 在恢复时不得解析浮动
+Function Registry，也不得重新读取可变文件。
+
+Entry Program 中的名义 `(types ...)` 声明构成当前 HNS Function 的共享类型模块。Runtime
+必须把这些共享声明和不含函数体的 exported Function 接口放入精确绑定的
+`evaluation-profile`；内部接口和所有 Function Body 不得进入模型可见 Context。完整声明、
+共享类型和实现都必须参与 Package 内容身份。Function 及其 Effect 声明都不能授予 Runtime、
+Principal、Tool、Execution Target、沙箱、Lease 或人工审批权限。
 
 ## 10. 归一化与内容身份
 
@@ -262,7 +308,8 @@ Loader 必须把两种物理形态归一化为以下逻辑顺序：
 1. 包含归一化 `id`、`version`、`title`、逻辑 `entry` 和已识别能力列表的 Manifest；
 2. Contract；
 3. 存在时的 Default Mind；
-4. 被选择的 Entry Program。
+4. 按函数名排序的 HNS Function；
+5. 被选择的 Entry Program。
 
 当文件系统位置、源码空白、注释和单文件或目录形态解析出相同归一化 Artifact 时，它们不得
 影响逻辑 Package 身份。
@@ -295,9 +342,11 @@ Core v0.1 Loader 必须在激活 Package 前完成：
 5. 在不发生 Package 逃逸的前提下解析目录 Entry；
 6. 确定显式 Entry 控制权；
 7. 验证 Entry Program Tool 声明是 Manifest Tool 声明的子集；
-8. 归一化逻辑 Package；
-9. 计算并保留内容身份；
-10. 拒绝已安装 `(id, version)` 对下的冲突内容。
+8. 解析每个 HNS Function，强制名称唯一，构造静态无环调用图，校验签名、函数体、返回值、
+   传递性 Effect 和完整模块 Tool 上界；
+9. 归一化逻辑 Package；
+10. 计算并保留内容身份；
+11. 拒绝已安装 `(id, version)` 对下的冲突内容。
 
 所有无需外部副作用即可完成的校验，都应在任何 Entry Program 节点执行前完成。
 
@@ -317,7 +366,6 @@ Evaluation Binding 必须使用精确 ID、版本与内容身份。Binding 选�
 以下 Package 能力被有意保留，不由 Core v0.1 隐含支持：
 
 - 多个命名 Entry Program；
-- Package 内部 `process` 定义与导出 Process 接口；
 - 嵌入式 Skill 资源；
 - Verifier 声明与可执行 Validator 资源；
 - Package 依赖与 Lockfile；
@@ -353,6 +401,8 @@ Loader 至少必须针对以下情况显式失败且不得激活 Package：
 - 目录 Entry 路径无效或逃逸；
 - Entry Program 根既不是 `eval` 也不是 `infer`；
 - Program Tool 需求超出 Manifest Tool 集合；
+- HNS Function 模块无效、重名、递归、类型错误或超过资源上限；
+- Function Effect 超出它声明的 Effect 上界或 Entry 模块 Tool 上界；
 - 同一已安装 ID 和版本下出现冲突内容；
 - 必要 Language 或 Harness 兼容能力不可用；
 - 解析或归一化期间超过资源限制。

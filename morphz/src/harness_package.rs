@@ -4,6 +4,7 @@
 //! separate Yao artifacts.  Both forms normalize into [`HarnessPackage`];
 //! downstream attachment and execution must not branch on the physical form.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -67,9 +68,23 @@ pub struct HarnessProgram {
     pub id: String,
     pub owner: EvaluationOwner,
     pub declared_tools: Option<Vec<String>>,
+    /// Canonical `(types ...)` declaration shared with this package's `fn`
+    /// module and model-authored calls to exported functions.
+    pub type_source: Option<String>,
     /// Canonical Yao source. The full validator lowers this into Typed Plan IR
     /// when an Objective/Evaluation activates the Harness.
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessFunction {
+    pub name: String,
+    pub visibility: crate::yao::FunctionVisibility,
+    /// Canonical complete `(fn ...)` source used for admission and hashing.
+    pub source: String,
+    /// Canonical declaration with `(body ...)` removed. Only exported
+    /// interfaces enter model-visible Context.
+    pub interface_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +98,7 @@ pub struct HarnessPackage {
     pub manifest: HarnessManifest,
     pub contract: SExpr,
     pub mind: Option<SExpr>,
+    pub functions: Vec<HarnessFunction>,
     pub entry: HarnessProgram,
     /// Hash of the normalized logical package, independent from whether it was
     /// loaded from one `.hns` file or a directory.
@@ -134,6 +150,7 @@ impl HarnessPackage {
         let mut manifest = None;
         let mut contract = None;
         let mut mind = None;
+        let mut functions = BTreeMap::new();
         let mut program_source = None;
 
         for (form, typed_form) in forms.into_iter().zip(typed_forms) {
@@ -141,6 +158,14 @@ impl HarnessPackage {
                 "manifest" => set_once(&mut manifest, form, "manifest")?,
                 "contract" => set_once(&mut contract, form, "contract")?,
                 "mind" => set_once(&mut mind, form, "mind")?,
+                "fn" => {
+                    let function = parse_harness_function(&typed_form)?;
+                    if functions.insert(function.name.clone(), function).is_some() {
+                        return Err(HarnessPackageError::new(
+                            "single-file .hns declares the same fn name more than once",
+                        ));
+                    }
+                }
                 "eval" | "infer" => {
                     if program_source
                         .replace(crate::yao::canonical_source(&typed_form))
@@ -153,7 +178,7 @@ impl HarnessPackage {
                 }
                 other => {
                     return Err(HarnessPackageError::new(format!(
-                        "single-file .hns contains unknown top-level artifact '({other} ...)'; v1 accepts only manifest, contract, mind, and eval/infer"
+                        "single-file .hns contains unknown top-level artifact '({other} ...)'; v1 accepts only manifest, contract, mind, fn, and eval/infer"
                     )))
                 }
             }
@@ -170,18 +195,22 @@ impl HarnessPackage {
         })?;
         let header = inspect_program_source(&program_source)
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
+        let type_source = program_type_source(&program_source)?;
         validate_model_entry_declaration(header.owner, header.declared_tools.as_deref())?;
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
+        validate_function_module_declaration(functions.len(), header.declared_tools.as_deref())?;
         let program_id = manifest.entry.clone().unwrap_or_else(|| "main".to_string());
 
         Ok(Self::from_normalized_parts(
             manifest,
             contract,
             mind,
+            functions.into_values().collect(),
             HarnessProgram {
                 id: program_id,
                 owner: header.owner,
                 declared_tools: header.declared_tools,
+                type_source,
                 source: program_source,
             },
             HarnessPackageOrigin::File(source_name),
@@ -207,6 +236,7 @@ impl HarnessPackage {
         let program_source = read_program_artifact(&entry_path)?;
         let header = inspect_program_source(&program_source)
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
+        let type_source = program_type_source(&program_source)?;
         validate_model_entry_declaration(header.owner, header.declared_tools.as_deref())?;
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
 
@@ -217,6 +247,8 @@ impl HarnessPackage {
         } else {
             None
         };
+        let functions = read_function_artifacts(path)?;
+        validate_function_module_declaration(functions.len(), header.declared_tools.as_deref())?;
         let program_id = Path::new(entry)
             .file_stem()
             .and_then(|name| name.to_str())
@@ -227,10 +259,12 @@ impl HarnessPackage {
             manifest,
             contract,
             mind,
+            functions,
             HarnessProgram {
                 id: program_id,
                 owner: header.owner,
                 declared_tools: header.declared_tools,
+                type_source,
                 source: program_source,
             },
             HarnessPackageOrigin::Directory(path.to_path_buf()),
@@ -241,6 +275,7 @@ impl HarnessPackage {
         manifest: HarnessManifest,
         contract: SExpr,
         mind: Option<SExpr>,
+        functions: Vec<HarnessFunction>,
         entry: HarnessProgram,
         origin: HarnessPackageOrigin,
     ) -> Self {
@@ -248,6 +283,7 @@ impl HarnessPackage {
             manifest,
             contract,
             mind,
+            functions,
             entry,
             artifact_hash: String::new(),
             origin,
@@ -288,6 +324,11 @@ impl HarnessPackage {
         if let Some(mind) = &self.mind {
             artifacts.push(mind.to_string());
         }
+        artifacts.extend(
+            self.functions
+                .iter()
+                .map(|function| function.source.clone()),
+        );
         artifacts.push(self.entry.source.clone());
         artifacts.join("\n")
     }
@@ -329,6 +370,27 @@ impl DomainHarness for LoadedDomainHarness {
 
     fn entry_program(&self) -> Option<String> {
         Some(self.package.entry.source.clone())
+    }
+
+    fn function_sources(&self) -> Vec<String> {
+        self.package
+            .functions
+            .iter()
+            .map(|function| function.source.clone())
+            .collect()
+    }
+
+    fn type_sources(&self) -> Vec<String> {
+        self.package.entry.type_source.iter().cloned().collect()
+    }
+
+    fn exported_function_interfaces(&self) -> Vec<String> {
+        self.package
+            .functions
+            .iter()
+            .filter(|function| function.visibility == crate::yao::FunctionVisibility::Exported)
+            .map(|function| function.interface_source.clone())
+            .collect()
     }
 }
 
@@ -772,6 +834,153 @@ fn read_program_artifact(path: &Path) -> Result<String, HarnessPackageError> {
     }
 }
 
+fn program_type_source(source: &str) -> Result<Option<String>, HarnessPackageError> {
+    let form =
+        crate::yao::parse_one(source, crate::yao::ParseLimits::default()).map_err(|error| {
+            HarnessPackageError::new(format!("Harness entry is not valid typed Yao: {error}"))
+        })?;
+    let items = form.as_list().ok_or_else(|| {
+        HarnessPackageError::new("Harness entry must have an (eval ...) or (infer ...) root")
+    })?;
+    let mut cursor = 1;
+    if items
+        .get(cursor)
+        .and_then(crate::yao::Expr::as_list)
+        .and_then(|parts| parts.first())
+        .and_then(crate::yao::Expr::as_symbol)
+        == Some("requires")
+    {
+        cursor += 1;
+    }
+    Ok(items
+        .get(cursor)
+        .filter(|item| {
+            item.as_list()
+                .and_then(|parts| parts.first())
+                .and_then(crate::yao::Expr::as_symbol)
+                == Some("types")
+        })
+        .map(crate::yao::canonical_source))
+}
+
+fn read_function_artifacts(root: &Path) -> Result<Vec<HarnessFunction>, HarnessPackageError> {
+    let directory = root.join("functions");
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    if !directory.is_dir() {
+        return Err(HarnessPackageError::new(format!(
+            "Harness functions path must be a directory: {}",
+            directory.display()
+        )));
+    }
+    let canonical_root = fs::canonicalize(root)?;
+    let mut paths = fs::read_dir(&directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    let mut functions = BTreeMap::new();
+    for path in paths {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("yao") {
+            return Err(HarnessPackageError::new(format!(
+                "Harness functions directory accepts only .yao files: {}",
+                path.display()
+            )));
+        }
+        let canonical_path = fs::canonicalize(&path)?;
+        if !canonical_path.starts_with(&canonical_root) || !canonical_path.is_file() {
+            return Err(HarnessPackageError::new(format!(
+                "Harness function must be a regular file inside the package: {}",
+                path.display()
+            )));
+        }
+        let source = fs::read_to_string(&canonical_path)?;
+        let form = crate::yao::parse_one(&source, crate::yao::ParseLimits::default()).map_err(
+            |error| {
+                HarnessPackageError::new(format!(
+                    "{} is not a valid HNS function: {error}",
+                    path.display()
+                ))
+            },
+        )?;
+        let function = parse_harness_function(&form)?;
+        if functions.insert(function.name.clone(), function).is_some() {
+            return Err(HarnessPackageError::new(
+                "directory .hns declares the same fn name more than once",
+            ));
+        }
+    }
+    Ok(functions.into_values().collect())
+}
+
+fn parse_harness_function(form: &crate::yao::Expr) -> Result<HarnessFunction, HarnessPackageError> {
+    let items = form.as_list().ok_or_else(|| {
+        HarnessPackageError::new("HNS function artifact must be an (fn ...) list")
+    })?;
+    if items.first().and_then(crate::yao::Expr::as_symbol) != Some("fn") {
+        return Err(HarnessPackageError::new(
+            "HNS function artifact must have an (fn ...) root",
+        ));
+    }
+    let name = items
+        .get(1)
+        .and_then(crate::yao::Expr::as_symbol)
+        .ok_or_else(|| HarnessPackageError::new("HNS fn declaration is missing its name"))?
+        .to_string();
+    let mut visibility = crate::yao::FunctionVisibility::Internal;
+    let mut visibility_seen = false;
+    let mut body_count = 0usize;
+    let mut interface_items = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let clause_name = item
+            .as_list()
+            .and_then(|parts| parts.first())
+            .and_then(crate::yao::Expr::as_symbol);
+        if clause_name == Some("body") {
+            body_count += 1;
+            continue;
+        }
+        if clause_name == Some("visibility") {
+            if visibility_seen {
+                return Err(HarnessPackageError::new(format!(
+                    "HNS fn '{name}' declares visibility more than once"
+                )));
+            }
+            visibility_seen = true;
+            let fields = item.as_list().expect("clause inspected above");
+            visibility = match fields.get(1).and_then(crate::yao::Expr::as_symbol) {
+                Some("internal") if fields.len() == 2 => crate::yao::FunctionVisibility::Internal,
+                Some("exported") if fields.len() == 2 => crate::yao::FunctionVisibility::Exported,
+                _ => {
+                    return Err(HarnessPackageError::new(format!(
+                        "HNS fn '{name}' visibility must be internal or exported"
+                    )))
+                }
+            };
+        }
+        // The first two items are `fn` and its name; every other non-body
+        // clause belongs to the public interface representation.
+        if index < 2 || clause_name != Some("body") {
+            interface_items.push(item.clone());
+        }
+    }
+    if body_count != 1 {
+        return Err(HarnessPackageError::new(format!(
+            "HNS fn '{name}' must contain exactly one (body EXPR) clause"
+        )));
+    }
+    let interface = crate::yao::Expr::List {
+        items: interface_items,
+        span: form.span(),
+    };
+    Ok(HarnessFunction {
+        name,
+        visibility,
+        source: crate::yao::canonical_source(form),
+        interface_source: crate::yao::canonical_source(&interface),
+    })
+}
+
 fn parse_manifest(form: &SExpr) -> Result<HarnessManifest, HarnessPackageError> {
     if root_name(form)? != "manifest" {
         return Err(HarnessPackageError::new(
@@ -930,6 +1139,18 @@ fn validate_model_entry_declaration(
     Ok(())
 }
 
+fn validate_function_module_declaration(
+    function_count: usize,
+    declared_tools: Option<&[String]>,
+) -> Result<(), HarnessPackageError> {
+    if function_count > 0 && declared_tools.is_none() {
+        return Err(HarnessPackageError::new(
+            "Harnesses with fn declarations must explicitly declare the complete module (requires (tools ...)) upper bound on their entry; an empty tools list is valid for a pure module",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -952,6 +1173,29 @@ mod tests {
           (call read (path "README.md")))
     "#;
 
+    const SINGLE_WITH_FUNCTIONS: &str = r#"
+        (manifest
+          (id coding)
+          (version "1.0.0")
+          (title "Coding Harness")
+          (capabilities (tools read)))
+        (contract (identity "coding"))
+        (fn private-normalize
+          (params (path String))
+          (returns String)
+          (body path))
+        (fn load-file
+          (visibility exported)
+          (description "Load one file from the bound workspace")
+          (params (path String))
+          (returns Json)
+          (effects (tool read))
+          (body (call read (path (private-normalize (path path))))))
+        (eval
+          (requires (tools read))
+          (load-file (path "README.md")))
+    "#;
+
     #[test]
     fn single_file_normalizes_into_one_package() {
         let package = HarnessPackage::from_source("coding.hns", SINGLE).unwrap();
@@ -961,6 +1205,68 @@ mod tests {
         assert_eq!(package.entry.declared_tools, Some(vec!["read".to_string()]));
         assert!(package.mind.is_some());
         assert!(matches!(package.origin, HarnessPackageOrigin::File(_)));
+    }
+
+    #[test]
+    fn single_file_functions_are_sorted_and_export_only_their_interfaces() {
+        let package = HarnessPackage::from_source("coding.hns", SINGLE_WITH_FUNCTIONS).unwrap();
+        assert_eq!(
+            package
+                .functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["load-file", "private-normalize"]
+        );
+        let exported = package
+            .functions
+            .iter()
+            .find(|function| function.name == "load-file")
+            .unwrap();
+        assert_eq!(
+            exported.visibility,
+            crate::yao::FunctionVisibility::Exported
+        );
+        assert!(exported.interface_source.contains("(description "));
+        assert!(!exported.interface_source.contains("(body "));
+        let private = package
+            .functions
+            .iter()
+            .find(|function| function.name == "private-normalize")
+            .unwrap();
+        assert_eq!(private.visibility, crate::yao::FunctionVisibility::Internal);
+    }
+
+    #[test]
+    fn entry_nominal_types_are_shared_with_the_bound_function_module() {
+        let source = SINGLE_WITH_FUNCTIONS.replace(
+            "(requires (tools read))\n          (load-file",
+            "(requires (tools read))\n          (types (record Receipt (path String) (verified Bool)))\n          (load-file",
+        );
+        let package = HarnessPackage::from_source("coding.hns", &source).unwrap();
+        assert_eq!(
+            package.entry.type_source.as_deref(),
+            Some("(types (record Receipt (path String) (verified Bool)))")
+        );
+        let registry = HarnessRegistry::default();
+        registry.register_package(package).unwrap();
+        let harness = registry.get("coding", "1.0.0").unwrap();
+        assert_eq!(
+            harness.type_sources(),
+            vec!["(types (record Receipt (path String) (verified Bool)))".to_string()]
+        );
+    }
+
+    #[test]
+    fn function_module_requires_an_explicit_entry_tool_upper_bound() {
+        let source = SINGLE_WITH_FUNCTIONS.replace("(requires (tools read))", "");
+        let error = HarnessPackage::from_source("coding.hns", &source)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("must explicitly declare the complete module"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1003,6 +1309,64 @@ mod tests {
         assert_eq!(package.entry.owner, single.entry.owner);
         assert_eq!(package.entry.declared_tools, single.entry.declared_tools);
         assert!(matches!(package.origin, HarnessPackageOrigin::Directory(_)));
+    }
+
+    #[test]
+    fn directory_and_single_file_functions_have_one_logical_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("coding.hns");
+        fs::create_dir_all(root.join("programs")).unwrap();
+        fs::create_dir_all(root.join("functions")).unwrap();
+        fs::write(
+            root.join("manifest.yao"),
+            r#"(manifest
+                (id coding)
+                (version "1.0.0")
+                (title "Coding Harness")
+                (entry "programs/main.yao")
+                (capabilities (tools read)))"#,
+        )
+        .unwrap();
+        fs::write(root.join("contract.yao"), "(contract (identity coding))").unwrap();
+        fs::write(
+            root.join("functions/private-normalize.yao"),
+            r#"(fn private-normalize
+                (params (path String))
+                (returns String)
+                (body path))"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("functions/load-file.yao"),
+            r#"(fn load-file
+                (visibility exported)
+                (description "Load one file from the bound workspace")
+                (params (path String))
+                (returns Json)
+                (effects (tool read))
+                (body (call read (path (private-normalize (path path))))))"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("programs/main.yao"),
+            r#"(eval
+                (requires (tools read))
+                (load-file (path "README.md")))"#,
+        )
+        .unwrap();
+
+        let directory_package = HarnessPackage::load(&root).unwrap();
+        let single_package =
+            HarnessPackage::from_source("coding.hns", SINGLE_WITH_FUNCTIONS).unwrap();
+        assert_eq!(directory_package.functions, single_package.functions);
+        assert_eq!(
+            directory_package.canonical_source(),
+            single_package.canonical_source()
+        );
+        assert_eq!(
+            directory_package.artifact_hash,
+            single_package.artifact_hash
+        );
     }
 
     #[test]
@@ -1062,6 +1426,17 @@ mod tests {
         .unwrap();
         assert_eq!(first.artifact_hash, second.artifact_hash);
         assert_eq!(first.canonical_source(), second.canonical_source());
+    }
+
+    #[test]
+    fn function_body_is_part_of_the_immutable_package_identity() {
+        let first = HarnessPackage::from_source("coding.hns", SINGLE_WITH_FUNCTIONS).unwrap();
+        let changed = HarnessPackage::from_source(
+            "coding.hns",
+            &SINGLE_WITH_FUNCTIONS.replace("(body path)", "(body (concat path \".bak\"))"),
+        )
+        .unwrap();
+        assert_ne!(first.artifact_hash, changed.artifact_hash);
     }
 
     #[test]
@@ -1182,5 +1557,24 @@ mod tests {
                 .unwrap(),
             Some(evaluation)
         );
+    }
+
+    #[tokio::test]
+    async fn package_functions_survive_catalog_reopen_byte_for_byte() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("harness-functions.db");
+        let package = HarnessPackage::from_source("coding.hns", SINGLE_WITH_FUNCTIONS).unwrap();
+
+        {
+            let store = SqliteStore::new(database.to_str().unwrap()).await.unwrap();
+            assert!(persist_harness_package(&store, &package).await.unwrap());
+        }
+
+        let reopened = SqliteStore::new(database.to_str().unwrap()).await.unwrap();
+        let loaded = load_persisted_harness_packages(&reopened).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].functions, package.functions);
+        assert_eq!(loaded[0].artifact_hash, package.artifact_hash);
+        assert_eq!(loaded[0].canonical_source(), package.canonical_source());
     }
 }

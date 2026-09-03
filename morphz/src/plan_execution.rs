@@ -2920,7 +2920,7 @@ fn infer_request_event(
             ..
         } => "This node requires a Yao Program Value candidate. The final body must be exactly one raw Yao program with one explicit (eval ...) or (infer ...) root. Follow the single Yao Language Card in Context Encoding and do not include (version ...), JSON wrapping, Markdown fences, or explanatory text. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; returned source is never executed directly.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
-            "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation."
+            "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation. A String result is a JSON string literal such as \"A\"; bare A is invalid."
         ),
     };
     let program = request

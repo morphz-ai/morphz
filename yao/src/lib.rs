@@ -23,8 +23,9 @@ pub use eval::{
 };
 pub use language_card::{LANGUAGE_CARD, LANGUAGE_CARD_MAX_CHARS, TYPED_IR_SCHEMA_VERSION};
 pub use sema::{
-    analyze, AnalysisLimits, AnalysisProfile, EvaluationOwner, HirExpr, HirKind, Program,
-    StaticProfile, ToolSignature, TypeDefinition,
+    analyze, analyze_with_functions, analyze_with_module, AnalysisLimits, AnalysisProfile,
+    EvaluationOwner, FunctionVisibility, HirExpr, HirKind, Program, StaticProfile, ToolSignature,
+    TypeDefinition,
 };
 pub use syntax::{parse_all, parse_one, Atom, AtomKind, Expr, ParseLimits};
 pub use types::{Effect, EffectSet, Type};

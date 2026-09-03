@@ -38,7 +38,7 @@ fn dialectical_practice_harness_is_a_separate_model_owned_package() {
     assert_eq!(package.manifest.version, "0.1.0");
     assert_eq!(
         package.artifact_hash,
-        "sha256:832b0ad09484048beb300c828e82a0e3ea5b5b1deb966f09ab268dd85fd934e1"
+        "sha256:e64ecc22640122af11db9244f7993572ae8b502280fa0d6e23d3a822958f76dc"
     );
     assert_terminal_tools(&package);
     assert!(DIALECTICAL_PRACTICE_HARNESS_SOURCE.contains("concrete situation"));
@@ -54,7 +54,7 @@ fn closed_v0_4_package_remains_parseable_as_historical_evidence() {
     assert_eq!(package.manifest.version, "0.4.0");
     assert_eq!(
         package.artifact_hash,
-        "sha256:eed08a74c3d5ec48270f9488b55a47a24c30ed34d022294351b56791aa8c3bf6"
+        "sha256:02afb51c8e6d2049eeab851b209c017a4812d297484dd6afc6072ed81800ab3e"
     );
     assert_terminal_tools(&package);
 }

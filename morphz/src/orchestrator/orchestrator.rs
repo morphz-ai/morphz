@@ -778,6 +778,7 @@ fn harness_entry_callable_tools(
 
 fn validate_harness_entry_program(
     source: &str,
+    function_sources: &[String],
     registry: &Registry,
     runtime_eval_tools: &[String],
     model_tool_definitions: &[ToolDefinition],
@@ -792,8 +793,10 @@ fn validate_harness_entry_program(
     }
     let callable =
         harness_entry_callable_tools(header.owner, runtime_eval_tools, model_tool_definitions);
-    crate::sexpr_eval::validate(
+    crate::sexpr_eval::validate_with_functions(
         source,
+        function_sources,
+        true,
         registry,
         &crate::sexpr_eval::AllowList::new(callable),
     )
@@ -896,6 +899,22 @@ fn render_harness_context(
             ]));
         }
         profile.push(SExpr::List(entry));
+    }
+    for source in harness.type_sources() {
+        let types = crate::sexpr::parse(&source).map_err(|error| {
+            format!("Harness shared types are not a valid S-expression: {error}")
+        })?;
+        profile.push(types);
+    }
+    let function_interfaces = harness.exported_function_interfaces();
+    if !function_interfaces.is_empty() {
+        let mut functions = vec![SExpr::Atom("functions".to_string())];
+        for source in function_interfaces {
+            functions.push(crate::sexpr::parse(&source).map_err(|error| {
+                format!("Harness exported fn interface is not a valid S-expression: {error}")
+            })?);
+        }
+        profile.push(SExpr::List(functions));
     }
     if let Some(mind) = harness.default_mind() {
         let mind = crate::sexpr::parse(&mind).map_err(|error| {
@@ -1488,6 +1507,11 @@ struct ToolExecutionOptions {
     /// these tools. Persisted with assistant_call so crash recovery cannot
     /// silently broaden Recall to a different view.
     context_view_manifest: Option<ContextViewManifest>,
+    /// Exact HNS functions from the immutable Evaluation binding. Only the
+    /// `eval` Tool consumes this scope; physical tools never receive it.
+    harness_functions: Option<Arc<Vec<String>>>,
+    /// Nominal type declarations shared by those exact HNS functions.
+    harness_types: Option<Arc<Vec<String>>>,
 }
 
 #[derive(Debug, Default)]
@@ -10706,6 +10730,20 @@ impl Orchestrator {
             .get("phase")
             .and_then(|value| value.as_str())
             .unwrap_or("work");
+        let recovered_harness = self
+            .harness_mount_for_activation(&activation.context_id, activation)
+            .await?;
+        let harness_functions = recovered_harness
+            .as_ref()
+            .map(|(_, harness, _)| Arc::new(harness.function_sources()))
+            .filter(|functions| !functions.is_empty());
+        let harness_types = recovered_harness
+            .as_ref()
+            .map(|(_, harness, _)| Arc::new(harness.type_sources()))
+            .filter(|types| !types.is_empty())
+            // The package Entry already contains its own `(types ...)` form;
+            // only model-authored eval programs need the bound module copy.
+            .filter(|_| phase != "harness-entry");
         tracing::info!(
             activation_id = %activation.id,
             tool_calls = response.tool_calls.len(),
@@ -10728,6 +10766,8 @@ impl Orchestrator {
                 provider_continuation: None,
                 prompt_cache_transport_seed: None,
                 context_view_manifest,
+                harness_functions,
+                harness_types,
             },
         )
         .await?;
@@ -11425,12 +11465,24 @@ impl Orchestrator {
         let harness_context = harness_activation
             .as_ref()
             .map(|(_, _, rendered)| rendered.clone());
+        let harness_function_sources = harness_activation
+            .as_ref()
+            .map(|(_, harness, _)| Arc::new(harness.function_sources()))
+            .filter(|functions| !functions.is_empty());
+        let harness_type_sources = harness_activation
+            .as_ref()
+            .map(|(_, harness, _)| Arc::new(harness.type_sources()))
+            .filter(|types| !types.is_empty());
         let harness_entry_program = harness_activation
             .as_ref()
             .and_then(|(_, harness, _)| harness.entry_program())
             .map(|source| {
                 validate_harness_entry_program(
                     &source,
+                    harness_function_sources
+                        .as_deref()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
                     self.registry.as_ref(),
                     &self.orchestrator_config.eval_callable_tools,
                     &self.tool_definitions,
@@ -11876,6 +11928,8 @@ impl Orchestrator {
                         provider_continuation: None,
                         prompt_cache_transport_seed: None,
                         context_view_manifest: None,
+                        harness_functions: None,
+                        harness_types: None,
                     },
                 ))
                 .await?;
@@ -11894,7 +11948,12 @@ impl Orchestrator {
                 if program.owner() == crate::sexpr_eval::EvaluationOwner::Runtime
                     && self
                         .dispatch_runtime_harness_entry(
-                            session_id, activation, binding, source, program,
+                            session_id,
+                            activation,
+                            binding,
+                            source,
+                            program,
+                            harness_function_sources.clone(),
                         )
                         .await?
                 {
@@ -12971,6 +13030,8 @@ impl Orchestrator {
                             provider_continuation: provider_continuation.clone(),
                             prompt_cache_transport_seed: None,
                             context_view_manifest: Some(request_context_view_manifest.clone()),
+                            harness_functions: harness_function_sources.clone(),
+                            harness_types: harness_type_sources.clone(),
                         },
                     ))
                     .await?;
@@ -13335,6 +13396,8 @@ impl Orchestrator {
                     provider_continuation: terminal_provider_continuation,
                     prompt_cache_transport_seed: prompt_cache_transport_seed_to_persist,
                     context_view_manifest: Some(terminal_context_view_manifest),
+                    harness_functions: harness_function_sources.clone(),
+                    harness_types: harness_type_sources.clone(),
                 },
             ))
             .await;
@@ -16362,6 +16425,8 @@ impl Orchestrator {
                 provider_continuation: None,
                 prompt_cache_transport_seed: None,
                 context_view_manifest: None,
+                harness_functions: None,
+                harness_types: None,
             },
         )
         .await?;
@@ -18091,6 +18156,8 @@ impl Orchestrator {
                 .map(|evaluation| evaluation.objective_id.clone());
             let task_wake_on_output = options.wake_on_output;
             let task_context_view_manifest = options.context_view_manifest.clone().map(Arc::new);
+            let task_harness_functions = options.harness_functions.clone();
+            let task_harness_types = options.harness_types.clone();
             // Established before the spawn, because task-locals do not cross
             // into a new task: the chain below rebuilds every one of them.
             let inference_channel: Option<Arc<dyn crate::sexpr_eval::RuntimeInference>> =
@@ -18137,6 +18204,10 @@ impl Orchestrator {
                     None
                 };
             let handle = tokio::spawn(async move {
+                crate::sexpr_eval::CURRENT_HARNESS_TYPES
+                    .scope(task_harness_types, async move {
+                        crate::sexpr_eval::CURRENT_HARNESS_FUNCTIONS
+                            .scope(task_harness_functions, async move {
                 crate::sexpr_eval::CURRENT_PLAN_EXECUTOR
                     .scope(plan_executor, async move {
                 crate::sexpr_eval::CURRENT_INFERENCE
@@ -18546,6 +18617,10 @@ impl Orchestrator {
                                 .await
                         })
                         .await
+                    })
+                    .await
+                    })
+                    .await
                     })
                     .await
                     })
@@ -19170,6 +19245,7 @@ impl Orchestrator {
         binding: &HarnessBinding,
         source: &str,
         program: &crate::sexpr_eval::Program,
+        harness_functions: Option<Arc<Vec<String>>>,
     ) -> Result<bool, DynError> {
         if program.owner() != crate::sexpr_eval::EvaluationOwner::Runtime {
             return Ok(false);
@@ -19261,6 +19337,8 @@ impl Orchestrator {
                 provider_continuation: None,
                 prompt_cache_transport_seed: None,
                 context_view_manifest: None,
+                harness_functions,
+                harness_types: None,
             },
         )
         .await?;
@@ -23290,7 +23368,21 @@ mod tests {
                   (capabilities (tools read) (skills rust)))
                 (contract (identity "coding"))
                 (mind (frame (id coding/evidence)))
-                (eval (requires (tools read)) (call read (path "README.md")))
+                (fn private-helper
+                  (params (path String))
+                  (returns String)
+                  (body path))
+                (fn make-receipt
+                  (visibility exported)
+                  (description "Build a typed coding receipt")
+                  (params (path String))
+                  (returns Receipt)
+                  (effects)
+                  (body (record Receipt (path path) (verified true))))
+                (eval
+                  (requires (tools read))
+                  (types (record Receipt (path String) (verified Bool)))
+                  (call read (path "README.md")))
             "#,
         )
         .unwrap();
@@ -23327,6 +23419,11 @@ mod tests {
         assert!(context.contains("(read-only-default-mind (mind"));
         assert!(context.contains("(capabilities read rust)"));
         assert!(context.contains("(entry (owner runtime)"));
+        assert!(context.contains("(types (record Receipt"));
+        assert!(context.contains("(functions (fn make-receipt"));
+        assert!(context.contains("Build a typed coding receipt"));
+        assert!(!context.contains("private-helper"));
+        assert!(!context.contains("(body (record Receipt"));
         assert!(!context.contains("(program (eval"));
         assert!(context.contains("Runtime lowers this entry to Typed Plan IR"));
         assert!(context.find("(evaluation-profile").unwrap() < context.find("(inbox").unwrap());

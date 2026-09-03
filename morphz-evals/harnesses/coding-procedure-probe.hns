@@ -6,8 +6,6 @@
     (tools list_files search read write edit exec context_tx)))
 
 (contract
-  (version "1.0.0")
-
   (identity
     "这是一个编码 Harness 遵守能力实验。除正常的软件修复纪律外，还包含一个刻意反常但安全的程序探针。该探针不帮助解决缺陷；它只用于验证你能否准确执行当前 Contract。")
 

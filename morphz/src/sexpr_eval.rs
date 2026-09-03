@@ -527,6 +527,47 @@ pub fn validate(
     validate_typed(source, registry, gate)
 }
 
+/// Validates a program against the package-local functions carried by one
+/// exact HNS binding. Package entry programs may set `allow_internal`; model
+/// authored `eval` calls must leave it false.
+pub fn validate_with_functions(
+    source: &str,
+    function_sources: &[String],
+    allow_internal: bool,
+    registry: &Registry,
+    gate: &dyn ToolGate,
+) -> Result<Program, EvalError> {
+    validate_with_module(
+        source,
+        &[],
+        function_sources,
+        allow_internal,
+        registry,
+        gate,
+    )
+}
+
+/// Validates against the complete type/function module exported by one exact
+/// HNS binding. Module types exist so an exported `fn` may use a nominal
+/// record or union without forcing every caller to redeclare it.
+pub fn validate_with_module(
+    source: &str,
+    type_sources: &[String],
+    function_sources: &[String],
+    allow_internal: bool,
+    registry: &Registry,
+    gate: &dyn ToolGate,
+) -> Result<Program, EvalError> {
+    validate_typed_with_module(
+        source,
+        type_sources,
+        function_sources,
+        allow_internal,
+        registry,
+        gate,
+    )
+}
+
 /// Historical source admission retained only for migration fixtures. New
 /// source, Tools, Harnesses, and public callers all enter typed Yao through
 /// [`validate`]. Persisted lowered Plan IR remains independently readable.
@@ -574,12 +615,30 @@ fn validate_typed(
     registry: &Registry,
     gate: &dyn ToolGate,
 ) -> Result<Program, EvalError> {
+    validate_typed_with_module(source, &[], &[], false, registry, gate)
+}
+
+fn validate_typed_with_module(
+    source: &str,
+    type_sources: &[String],
+    function_sources: &[String],
+    allow_internal: bool,
+    registry: &Registry,
+    gate: &dyn ToolGate,
+) -> Result<Program, EvalError> {
     let profile = MorphzAnalysisProfile { registry, gate };
-    let typed = crate::yao::analyze(source, &profile, crate::yao::AnalysisLimits::default())
-        .map_err(|diagnostic| EvalError {
-            message: format!("Yao typed admission failed: {diagnostic}"),
-            diagnostic: Some(Box::new(diagnostic)),
-        })?;
+    let typed = crate::yao::analyze_with_module(
+        source,
+        type_sources,
+        function_sources,
+        allow_internal,
+        &profile,
+        crate::yao::AnalysisLimits::default(),
+    )
+    .map_err(|diagnostic| EvalError {
+        message: format!("Yao typed admission failed: {diagnostic}"),
+        diagnostic: Some(Box::new(diagnostic)),
+    })?;
     let owner = match typed.owner {
         crate::yao::EvaluationOwner::Runtime => EvaluationOwner::Runtime,
         crate::yao::EvaluationOwner::Model => EvaluationOwner::Model,
@@ -2206,6 +2265,40 @@ impl PlanMachine {
                     Err(error) => self.raise(error),
                 }
             }
+            crate::yao::HirKind::FunctionApplication {
+                function,
+                arguments,
+                parameters,
+                body,
+            } => match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
+                Ok(mut arguments) => {
+                    let saved_env = self.env.clone();
+                    let mut local = HashMap::new();
+                    if let Some(runtime) = saved_env.get("runtime") {
+                        local.insert("runtime".to_string(), runtime.clone());
+                    }
+                    for parameter in parameters {
+                        let Some(value) = arguments.remove(&parameter) else {
+                            self.raise(EvalError::from(format!(
+                                "function '{function}' is missing linked argument '{parameter}'"
+                            )));
+                            return None;
+                        };
+                        local.insert(parameter, value);
+                    }
+                    if let Some(unexpected) = arguments.keys().next() {
+                        self.raise(EvalError::from(format!(
+                            "function '{function}' received unexpected linked argument '{unexpected}'"
+                        )));
+                        return None;
+                    }
+                    self.env = local;
+                    self.frames.push(MachineFrame::RestoreScope { saved_env });
+                    self.frames
+                        .push(MachineFrame::TypedEval { expression: *body });
+                }
+                Err(error) => self.raise(error),
+            },
             crate::yao::HirKind::InferBody {
                 body,
                 captures,
@@ -2735,16 +2828,15 @@ pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<Js
                         .to_string(),
                 );
             }
-            let transport = match (&ty, value) {
-                (crate::yao::Type::String, value @ JsonValue::String(_)) => value,
-                (_, JsonValue::String(text)) => {
+            let transport = match value {
+                JsonValue::String(text) => {
                     serde_json::from_str(text.trim()).map_err(|error| {
                         format!(
                         "infer declared a typed Yao result, but the final body is not valid JSON transport: {error}"
                     )
                     })?
                 }
-                (_, structured) => structured,
+                structured => structured,
             };
             crate::yao::decode_value(&ty, transport, &definitions, span)
                 .map_err(|error| format!("infer result does not satisfy Yao type {ty:?}: {error}"))
@@ -2825,6 +2917,20 @@ tokio::task_local! {
     /// omit it and exercise the legacy pure interpreter through
     /// [`CURRENT_INFERENCE`]. Product assembly always injects this channel.
     pub static CURRENT_PLAN_EXECUTOR: Option<Arc<dyn RuntimePlanExecutor>>;
+}
+
+tokio::task_local! {
+    /// Exact canonical `(fn ...)` sources from the HNS bound to this
+    /// Evaluation. The Orchestrator reconstructs this scope across spawned
+    /// Tool tasks; an unbound Evaluation receives no package-local functions.
+    pub static CURRENT_HARNESS_FUNCTIONS: Option<Arc<Vec<String>>>;
+}
+
+tokio::task_local! {
+    /// Exact canonical `(types ...)` declarations from the HNS bound to this
+    /// Evaluation. They make nominal types in exported `fn` signatures
+    /// available without copying declarations into each model-authored call.
+    pub static CURRENT_HARNESS_TYPES: Option<Arc<Vec<String>>>;
 }
 
 /// Core physical tools an `eval` program may call when nothing is configured.
@@ -2950,7 +3056,24 @@ impl crate::tool::Tool for EvalTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: EvalArgs = serde_json::from_str(arguments)?;
         let gate = AllowList::new(self.effective_callable_tools());
-        let program = validate(&args.program, &self.registry, &gate)?;
+        let function_sources = CURRENT_HARNESS_FUNCTIONS
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        let type_sources = CURRENT_HARNESS_TYPES
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        let program = validate_with_module(
+            &args.program,
+            type_sources.as_slice(),
+            function_sources.as_slice(),
+            false,
+            &self.registry,
+            &gate,
+        )?;
         if program.owner() != EvaluationOwner::Runtime {
             return Err("eval Tool accepts only a Runtime-owned (eval ...) root; Runtime creates a formal Evaluation for (infer ...)".into());
         }
@@ -3311,7 +3434,7 @@ mod tests {
             ("read", serde_json::json!("沈砚握紧了铜印")),
             ("search", JsonValue::Null),
         ]);
-        let (inference, requests) = host("两半");
+        let (inference, requests) = host(r#""两半""#);
         let program = validate(
             r#"(eval
                  (requires (tools read search))
@@ -3348,6 +3471,35 @@ mod tests {
             .get("program")
             .and_then(JsonValue::as_str)
             .is_some_and(|program| program.contains("根据 body 判断铜印现在是什么形态")));
+    }
+
+    #[tokio::test]
+    async fn typed_infer_union_dispatches_through_match() {
+        let (registry, _) = fixture(&[]);
+        let (inference, _) = host(
+            r#"{"$yao":{"kind":"variant","type":"Action","variant":"walk","fields":{"count":2}}}"#,
+        );
+        let program = validate(
+            r#"(eval
+                 (requires (tools))
+                 (types (union Action (walk (count Int)) (stop)))
+                 (seq
+                   (bind action
+                     (infer
+                       (returns Action)
+                       (variant Action.walk (count 1))))
+                   (match action
+                     ((case Action.walk (count steps)) steps)
+                     ((case Action.stop) 0))))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            evaluate(&program, registry, inference).await.unwrap(),
+            serde_json::json!(2)
+        );
     }
 
     #[tokio::test]
@@ -3514,7 +3666,7 @@ mod tests {
             .map(|index| index.to_string())
             .collect::<Vec<_>>();
         let (registry, _) = fixture(&[("list_files", serde_json::json!(items))]);
-        let (inference, requests) = host("ok");
+        let (inference, requests) = host(r#""ok""#);
         let program = validate(
             r#"(eval
                  (requires (tools list_files))
@@ -3583,6 +3735,65 @@ mod tests {
 
         assert!(called.load(Ordering::SeqCst));
         assert_eq!(output, r#"{"source":"durable-plan"}"#);
+    }
+
+    #[tokio::test]
+    async fn the_tool_resolves_only_the_exact_bound_hns_function_module() {
+        use crate::tool::Tool;
+
+        let registry = fixture(&[]).0;
+        let tool = EvalTool::with_default_tools(registry);
+        let types = Arc::new(vec![
+            "(types (record Receipt (path String) (verified Bool)))".to_string(),
+        ]);
+        let functions = Arc::new(vec![r#"(fn make-receipt
+                  (visibility exported)
+                  (description "Build a typed receipt")
+                  (params (path String))
+                  (returns Receipt)
+                  (effects)
+                  (body (record Receipt (path path) (verified true))))"#
+            .to_string()]);
+        let arguments = serde_json::json!({
+            "program": r#"(eval (make-receipt (path "README.md")))"#
+        })
+        .to_string();
+
+        let output = CURRENT_HARNESS_TYPES
+            .scope(
+                Some(types),
+                CURRENT_HARNESS_FUNCTIONS.scope(
+                    Some(Arc::clone(&functions)),
+                    CURRENT_INFERENCE.scope(Some(host("unused").0), tool.execute(&arguments)),
+                ),
+            )
+            .await
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["$yao"]["fields"]["path"], "README.md");
+        assert_eq!(value["$yao"]["fields"]["verified"], true);
+        assert_eq!(value["$yao"]["type"], "Receipt");
+
+        // A Runtime-owned package Entry carries its own type declarations;
+        // the same exact function module links without injecting them twice.
+        let entry_arguments = serde_json::json!({
+            "program": r#"(eval
+              (types (record Receipt (path String) (verified Bool)))
+              (make-receipt (path "entry.md")))"#
+        })
+        .to_string();
+        let entry_output = CURRENT_HARNESS_TYPES
+            .scope(
+                None,
+                CURRENT_HARNESS_FUNCTIONS.scope(
+                    Some(functions),
+                    CURRENT_INFERENCE.scope(Some(host("unused").0), tool.execute(&entry_arguments)),
+                ),
+            )
+            .await
+            .unwrap();
+        let entry_value: JsonValue = serde_json::from_str(&entry_output).unwrap();
+        assert_eq!(entry_value["$yao"]["fields"]["path"], "entry.md");
     }
 
     #[tokio::test]
@@ -3786,7 +3997,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let offered = Arc::new(Mutex::new(Vec::new()));
         let host: Arc<dyn RuntimeInference> = Arc::new(ScriptedHost {
-            answer: "ok".to_string(),
+            answer: r#""ok""#.to_string(),
             seen,
             tools_offered: Arc::clone(&offered),
         });
@@ -3821,7 +4032,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let offered = Arc::new(Mutex::new(Vec::new()));
         let host: Arc<dyn RuntimeInference> = Arc::new(ScriptedHost {
-            answer: "ok".to_string(),
+            answer: r#""ok""#.to_string(),
             seen,
             tools_offered: Arc::clone(&offered),
         });
@@ -3843,7 +4054,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let offered = Arc::new(Mutex::new(Vec::new()));
         let host: Arc<dyn RuntimeInference> = Arc::new(ScriptedHost {
-            answer: "ok".to_string(),
+            answer: r#""ok""#.to_string(),
             seen,
             tools_offered: Arc::clone(&offered),
         });
@@ -4055,6 +4266,57 @@ mod tests {
     }
 
     #[test]
+    fn linked_hns_function_effect_resumes_after_plan_serialization() {
+        let registry = fixture(&[("read", serde_json::json!("contents"))]).0;
+        let functions = vec![r#"(fn load-file
+                  (visibility exported)
+                  (description "Load one file")
+                  (params (path String))
+                  (returns Json)
+                  (effects (tool read))
+                  (body (call read (path path))))"#
+            .to_string()];
+        let program = validate_with_functions(
+            r#"(eval
+                 (requires (tools read))
+                 (load-file (path "README.md")))"#,
+            &functions,
+            false,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let encoded_program = serde_json::to_string(&program).unwrap();
+        assert!(encoded_program.contains("function_application"));
+        assert!(encoded_program.contains("load-file"));
+
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let effect = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect @ PlanEffect::Call { .. }) => effect,
+            other => panic!("expected linked function call, got {other:?}"),
+        };
+        assert!(matches!(
+            &effect,
+            PlanEffect::Call {
+                tool,
+                arguments,
+                ..
+            } if tool == "read" && arguments["path"] == "README.md"
+        ));
+
+        let encoded_machine = serde_json::to_string(&machine).unwrap();
+        let mut restored: PlanMachine = serde_json::from_str(&encoded_machine).unwrap();
+        assert_eq!(restored.pending_effect(), Some(&effect));
+        restored
+            .resume_effect(effect.sequence(), Ok(serde_json::json!("contents")))
+            .unwrap();
+        assert_eq!(
+            restored.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!("contents"))
+        );
+    }
+
+    #[test]
     fn plan_machine_routes_a_failed_effect_through_fallback() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let program = validate(
@@ -4173,6 +4435,29 @@ mod tests {
             machine.advance(&registry),
             PlanAdvance::Complete(serde_json::json!(42))
         );
+    }
+
+    #[test]
+    fn string_infer_results_have_one_canonical_json_transport() {
+        let result = || InferResultKind::Yao {
+            ty: crate::yao::Type::String,
+            definitions: BTreeMap::new(),
+            span: crate::yao::SourceSpan::empty(crate::yao::SourceLocation::start()),
+        };
+
+        let decoded = decode_infer_result(
+            result(),
+            JsonValue::String(r#""./bin/morphz-microduck walk-steps --count 2""#.to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            decoded,
+            JsonValue::String("./bin/morphz-microduck walk-steps --count 2".to_string())
+        );
+
+        let error = decode_infer_result(result(), JsonValue::String("A".to_string()))
+            .expect_err("a bare model string is not valid JSON transport");
+        assert!(error.contains("not valid JSON transport"), "{error}");
     }
 
     #[test]

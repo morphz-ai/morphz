@@ -282,6 +282,51 @@ pub fn evaluate_pure(
             }
             Ok(JsonValue::Array(output))
         }
+        HirKind::FunctionApplication {
+            function,
+            arguments,
+            parameters,
+            body,
+        } => {
+            let mut values = HashMap::new();
+            for argument in arguments {
+                let [value] = argument.values.as_slice() else {
+                    return fail(
+                        expression,
+                        format!(
+                            "function '{function}' argument '{}' does not contain exactly one value",
+                            argument.name
+                        ),
+                    );
+                };
+                values.insert(
+                    argument.name.clone(),
+                    evaluate_pure(value, environment, definitions)?,
+                );
+            }
+            let mut local = HashMap::new();
+            if let Some(runtime) = environment.get("runtime") {
+                local.insert("runtime".to_string(), runtime.clone());
+            }
+            for parameter in parameters {
+                let value = values.remove(parameter).ok_or_else(|| EvalFailure {
+                    message: format!(
+                        "function '{function}' is missing linked argument '{parameter}'"
+                    ),
+                    span: expression.span,
+                })?;
+                local.insert(parameter.clone(), value);
+            }
+            if let Some(unexpected) = values.keys().next() {
+                return fail(
+                    expression,
+                    format!(
+                        "function '{function}' received unexpected linked argument '{unexpected}'"
+                    ),
+                );
+            }
+            evaluate_pure(body, &mut local, definitions)
+        }
         HirKind::Par { branches } => {
             let mut fields = Vec::with_capacity(branches.len());
             for branch in branches {
@@ -1227,6 +1272,35 @@ mod tests {
             json!("verified")
         );
         assert!(!environment.contains_key("why"));
+    }
+
+    #[test]
+    fn evaluates_pure_linked_hns_function_in_an_isolated_scope() {
+        let functions = vec![r#"(fn add-one
+                  (visibility exported)
+                  (description "Add one")
+                  (params (value Int))
+                  (returns Int)
+                  (effects)
+                  (body
+                    (seq
+                      (bind local (add value 1))
+                      local)))"#
+            .to_string()];
+        let program = crate::sema::analyze_with_functions(
+            "(eval (add-one (value 41)))",
+            &functions,
+            false,
+            &StaticProfile::default(),
+            AnalysisLimits::default(),
+        )
+        .unwrap();
+        let mut environment = HashMap::from([("local".to_string(), json!("caller"))]);
+        assert_eq!(
+            evaluate_pure(&program.body, &mut environment, &program.types).unwrap(),
+            json!(42)
+        );
+        assert_eq!(environment["local"], json!("caller"));
     }
 
     #[test]

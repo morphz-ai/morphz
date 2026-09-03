@@ -16,6 +16,7 @@ pub enum DiagnosticCode {
     InvalidType,
     DuplicateName,
     RecursiveType,
+    RecursiveFunction,
     TypeMismatch,
     UnknownName,
     UnknownOperator,

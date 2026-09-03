@@ -10,7 +10,7 @@
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
 > 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)
 
-> 实施边界更新（2026-08-01）：上述基础设施 v1 已实现，并已对齐 Scheduler Kernel v2 的 Direct Signal 与恢复边界；领域 `process`、模块组合、远端签名目录、内置 Coding/写作/视频包以及可重复的能力增益仍处于实验或未来阶段。“Harness 机制可运行”不等于某个领域 Harness 已经证明优于模型原生能力。
+> 实施边界更新（2026-09-04）：上述基础设施 v1 已实现，并已对齐 Scheduler Kernel v2 的 Direct Signal 与恢复边界；无递归、静态链接的领域 `fn` v1 也已实现。模块组合、远端签名目录、内置 Coding/写作/视频包以及可重复的能力增益仍处于实验或未来阶段。“Harness 机制可运行”不等于某个领域 Harness 已经证明优于模型原生能力。
 
 ## 1. 核心结论
 
@@ -166,10 +166,10 @@ Harness 可以给出领域调度建议和默认策略，但 Objective、Evaluati
 6. **Default Frames（默认认知 Frame）**：由人精心构造的领域认识纪律和可复用经验。
 7. **Skill Index（技能索引）**：紧凑描述可发现的 Skill，具体内容按需加载。
 8. **Evidence / Validator Adapter（证据与校验适配）**：把测试、编译、渲染或业务验证结果转换为具有来源的 Observation。
-9. **Process Library（过程库，规划中）**：用无递归、静态可解析的 Yao
-   `process` 复用有限领域过程；HNS 可以把其中一部分导出为认知应用的类型化函数接口。
+9. **Function Library（函数库，已实现 v1）**：用无递归、静态可解析的 Yao
+   `fn` 复用有限领域过程；HNS 可以把其中一部分导出为认知应用的类型化函数接口。
    当前绑定 HNS 的导出签名可以进入 `evaluation-profile`，模型通过固定 `eval` 表面引用，
-   Runtime 按精确 Binding 链接函数体并降低为 SubPlan。它不创建动态 LLM Tool Definition，
+   Runtime 按精确 Binding 把函数体静态链接进 Typed Plan IR。它不创建动态 LLM Tool Definition，
    不能绕过 Runtime Tool 边界，也不负责开放式长期循环。
 10. **Presentation Metadata（可选展示元数据）**：帮助 Dashboard 或 CLI 展示领域对象，但不能成为 Runtime 正确性的依赖。
 11. **Migration（迁移规则）**：Harness 契约升级时处理其命名空间内的 Projection 和默认 Frame。
@@ -183,7 +183,7 @@ coding.hns
   (manifest ...)
   (contract ...)
   (mind ...)
-  (process ...)*  ; 目标设计，当前 Loader 尚未实现
+  (fn ...)*
   (eval ...)
 ```
 
@@ -195,7 +195,7 @@ coding.hns/
 ├── contract.yao
 ├── mind.yao
 ├── programs/
-├── processes/    # 目标设计，当前 Loader 尚未实现
+├── functions/
 ├── skills/
 ├── validators/
 └── migrations/
@@ -245,8 +245,6 @@ Harness 契约可以使用 SExpr 提供结构，同时在基础算子和领域�
 
 ```lisp
 (contract
-  (version "1.0.0")
-
   (identity
     "这是面向软件仓库求值的领域运行环境。")
 
@@ -307,7 +305,7 @@ Evaluation + Harness
         │
         ├── eval：Runtime 确定性推进
         ├── infer：LLM 非确定性判断
-        ├── process：包内有限过程复用（规划中）
+        ├── fn：包内有限函数复用（已实现 v1）
         └── call：跨越 Tool / Execution Job 物理边界
 ```
 
@@ -316,9 +314,10 @@ Evaluation + Harness
 加入通用 `while/until`；已知集合使用 `map`，每轮有限步骤由 Harness 组织，
 下一轮是否继续由模型依据最新事实和 Objective 状态判断。
 
-`call` 只调用 Runtime 注册 Tool。未来的包内 `process` 使用普通的 Yao 函数应用
-`(PROCESS ARG...)`，并在加载或 Program 准入期依据精确 Harness Binding 静态解析、lowering
-为 SubPlan。Process 与 Tool 位于不同符号空间，第一版 Process 禁止递归。导出 Process 的
+`call` 只调用 Runtime 注册 Tool。包内 `fn` 使用普通的 Yao 函数应用
+`(FUNCTION ARG...)`，并在加载或 Program 准入期依据精确 Harness Binding 静态解析、lowering
+为已类型化的 Function Application，并把函数体静态链接进持久 Plan IR。Function 与 Tool
+位于不同符号空间，第一版 Function 禁止递归。导出 Function 的
 类型化签名进入当前 HNS 的 Context，完整函数体仍保留在内容寻址 Package 内。这一能力既
 用于模块复用，也为认知应用提供不依赖动态 LLM Tool Definition 的局部函数接口，但不会
 成为第二套调度器。
@@ -408,7 +407,7 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 本设计当前不承诺：
 
 - 冻结 `.hns` 中所有可选字段或完整 Yao 算子集合；
-- 已经实现包内 `process` 或显式 `par`；
+- 更高阶、递归或动态链接的包内 `fn`，以及显式 `par`；
 - 在 Yao 中提供通用 `while/until`、递归或第二套长期任务循环；
 - 在 Scheduler Kernel 中加入 Coding 专用字段；
 - 支持任意多个 Harness 组合；
@@ -429,8 +428,8 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 4. 按 Binding 分派顶层 `eval/infer` 入口；（已完成）
 5. 提供 Evaluation 精确 Binding、Objective 可选默认值及 SDK/HTTP/CLI/模型选择接口；（已完成）
 6. 用外部 Coding Harness 对现有编码任务做严格 A/B；（首组已完成）
-7. 从 Coding、Writing、Video 三类真实 Harness 中提取重复结构，验证并实现
-   无递归包内 Process；
+7. 用 Coding、Writing、Video 三类真实 Harness 验证已实现的无递归包内 Function，继续
+   收窄公共接口；
 8. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
 9. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
 10. 只有出现明确的确定性并发需求时才增加 `par → Action Group`；

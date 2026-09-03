@@ -6,8 +6,6 @@
     (tools list_files search read write edit exec context_tx)))
 
 (contract
-  (version "1.0.0")
-
   (identity
     "这是面向真实软件仓库开发、诊断、修改和验证的领域运行环境。当前 Evaluation 是本次工作的求值边界；它可以由普通用户请求直接产生，也可以推进一个持久 Objective。Harness 提供工作纪律，但不替代用户要求、Objective 完成条件、仓库规则或 Runtime 的现实约束。")
 

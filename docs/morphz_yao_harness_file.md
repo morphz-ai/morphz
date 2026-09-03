@@ -89,11 +89,8 @@ coding.hns
 - 恰好一个 `(contract ...)`；
 - 至多一个 `(mind ...)`；
 - 恰好一个 `(eval ...)` 或 `(infer ...)`；
+- 零到多个名称唯一的 `(fn ...)`；
 - 未知顶层 artifact 在加载期拒绝，不能静默忽略。
-
-后续语言版本计划允许零到多个 `(process ...)` 顶层 artifact，作为包内可复用
-的有限过程；当前 Loader 尚未接受该语法，不能把下文的目标设计误认为已实现
-能力。
 
 这非常适合内置 Coding Harness：源码可以通过 `include_str!("coding.hns")`
 编进单一二进制，安装与版本校验仍走同一个加载器。
@@ -110,7 +107,7 @@ coding.hns/
 ├── programs/
 │   ├── main.yao
 │   └── review.yao
-├── processes/          # 目标设计；当前 Loader 尚未实现
+├── functions/          # 每个 *.yao 文件包含一个 fn
 ├── skills/
 ├── validators/
 └── migrations/
@@ -187,8 +184,6 @@ Contract 描述领域中不能由模型随意重新解释的对象、证据和�
 
 ```lisp
 (contract
-  (version "1.0.0")
-
   (identity
     "这是面向软件仓库开发、修改和验证的领域运行环境。")
 
@@ -312,23 +307,22 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
 它挂载 Harness Contract 和 Mind 后进入现有 Agent attempt loop。工具调用仍由 Runtime 调度，不因为 LLM 持有主控制权而绕过 Kernel。
 
-### 3.5 `process`：计划中的包内函数与认知应用接口
+### 3.5 `fn`：已实现的包内函数与认知应用接口
 
-当前 `call` 只能指向 Runtime 已注册 Tool，Loader 也还不能加载 Process；前文的
-`inspect-repository`、`apply-plan` 和 `run-tests` 因此只是目标设计示例。长期来看，
-所有组合逻辑都必须写成 Rust Tool 会让 Harness
-退化成工具配置，因此 `.hns` 还需要包内命名过程。Process 不只是实现内部复用；被 HNS
-显式导出的 Process 还可以构成最小认知应用提供给模型的 Yao 函数接口。
+`call` 只能指向 Runtime 已注册 Tool。若所有组合逻辑都必须写成 Rust Tool，会让 Harness
+退化成工具配置，因此 `.hns` 还需要包内命名函数。Function 不只是实现内部复用；被 HNS
+显式导出的 Function 还可以构成最小认知应用提供给模型的 Yao 函数接口。
 
-目标语法采用已有的 `process` 概念，而不增加另一套 `fn/def` 方言：
+语法使用 `fn`，因为这里声明的是可类型检查、可应用的 HNS 局部函数，而不是拥有
+独立生命周期或执行循环的 Process。函数是否纯、允许越过哪些边界，由 `effects` 明确表达：
 
 ```lisp
-(process apply-plan
+(fn apply-plan
+  (visibility internal)
   (description
     "按照已经形成的修改计划逐项修改文件。")
-
-  (params plan)
-
+  (params (plan Plan))
+  (returns Json)
   (body
     (map plan.changes change
       (call edit
@@ -336,7 +330,7 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
         (content change.content)))))
 ```
 
-包内 Process 使用普通的 Yao 函数调用；`call` 只保留给 Runtime Tool：
+包内 Function 使用普通的 Yao 函数调用；`call` 只保留给 Runtime Tool：
 
 ```lisp
 (eval
@@ -356,18 +350,18 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
       (plan decision))))
 ```
 
-编译期根据语法位置和 Process 符号表生成不同 IR，而不是到执行时猜测：
+编译期根据语法位置和 Function 符号表生成不同 IR，而不是到执行时猜测：
 
 ```text
-apply-plan       → package-local Process → Function Application → SubPlan / 静态展开
+apply-plan       → package-local Function → Function Application / 静态链接 Typed IR
 call edit        → Runtime Tool          → Execution Job
 ```
 
-候选设计把 Process 分为 `internal` 与 `exported` 两种可见性。精确表面语法尚未冻结，
-但一个导出 Process 至少需要稳定的名称、说明、类型化参数、返回类型和传递性 Effect 上界：
+Function 分为 `internal` 与 `exported` 两种可见性。导出 Function 必须提供稳定的名称、
+非空说明、类型化参数、返回类型和显式的传递性 Effect 上界：
 
 ```lisp
-(process walk-steps
+(fn walk-steps
   (visibility exported)
   (description "让当前机器人向前行走指定的语义步数，并返回经过里程计验证的结果。")
   (params (count Int))
@@ -376,27 +370,34 @@ call edit        → Runtime Tool          → Execution Job
   (body ...))
 ```
 
+内部 `fn` 可以省略 `(effects ...)`，由 Analyzer 从函数体和被调函数中完整推导；导出 `fn`
+必须显式给出 Effect 上界，使实现升级不能在不改变接口身份的情况下悄悄增加 `infer`、Tool
+或 Host Effect。Effect 在这里是可审计的接口契约，不是要求普通 HNS 作者手工重复编译器结论。
+
 绑定 HNS 后，Context Encoding 应注入该精确 Artifact 的导出接口，而不是所有已安装 HNS
-的目录，也不是 Process 完整实现：
+的目录，也不是 Function 完整实现：
 
 ```lisp
-(harness-interface
-  (id microduck-embodied)
-  (artifact "sha256:...")
-  (process walk-steps
-    (description "让当前机器人向前行走指定的语义步数，并返回经过里程计验证的结果。")
-    (params (count Int))
-    (returns WalkReceipt)
-    (effects (tool exec))))
+(evaluation-profile
+  ...
+  (types
+    (record WalkReceipt ...))
+  (functions
+    (fn walk-steps
+      (visibility exported)
+      (description "让当前机器人向前行走指定的语义步数，并返回经过里程计验证的结果。")
+      (params (count Int))
+      (returns WalkReceipt)
+      (effects (tool exec)))))
 ```
 
 这些签名都来自本次 Evaluation 已绑定的 HNS，因而与当前任务直接相关，可以作为
-`evaluation-profile` 的内容寻址部分稳定进入 Context。内部 Process 不进入 Context；完整
+`evaluation-profile` 的内容寻址部分稳定进入 Context。内部 Function 不进入 Context；完整
 函数体由 Runtime 从精确 HNS Artifact 读取。若单个 HNS 导出数量大到无法完整呈现，应先
 收窄其公共接口，后续 Profile 才考虑模块化的惰性发现，而不能退回全局 Tool 目录。
 
 模型不通过 LLM API 的动态 Tool Definition 调用这些函数，而是继续使用固定的 `eval`
-Function Calling 表面，提交引用导出 Process 的 Yao 程序：
+Function Calling 表面，提交引用导出 Function 的 Yao 程序：
 
 ```lisp
 (eval
@@ -404,27 +405,32 @@ Function Calling 表面，提交引用导出 Process 的 Yao 程序：
     (count 2)))
 ```
 
-`EvalTool` 在 Program 准入期使用当前 Evaluation 的精确 Harness Binding 取得只读 Process
-符号表，把列表首位的 Process 名解析为函数应用，并完成类型检查、传递性 Effect 校验和链接；
-随后把 Process 函数体 lowering 为持久 SubPlan。这个机制不把 Process 注册成全局 Runtime
+`EvalTool` 在 Program 准入期使用当前 Evaluation 的精确 Harness Binding 取得只读 Function
+符号表，把列表首位的 Function 名解析为函数应用，并完成类型检查、传递性 Effect 校验和链接；
+随后把 Function 函数体静态链接进持久 Typed Plan IR。这个机制不把 Function 注册成全局 Runtime
 Tool，不改变 LLM API Tool Schema，也不允许 HNS 扩大 Principal、Runtime、Target 或部署
 策略授予的权限。
 
-第一版 Process 应冻结以下边界：
+第一版 HNS Function 已冻结以下边界：
 
-- Process 不得覆盖 Yao 核心算子或声明；Process 调用在加载或 Program 准入期完成静态解析；
-- Process 与 Runtime Tool 使用不同语法和符号空间：`(NAME ...)` 是函数应用，
+- Function 不得覆盖 Yao 核心算子或声明；Function 调用在加载或 Program 准入期完成静态解析；
+- Function 与 Runtime Tool 使用不同语法和符号空间：`(NAME ...)` 是函数应用，
   `(call TOOL ...)` 是物理 Tool Effect；实现可以对容易造成误解的同名声明给出 Lint；
-- 只有 `exported` Process 的签名进入模型 Context，并可由模型提交的 `eval` 程序引用；
+- 只有 `exported` Function 的签名进入模型 Context，并可由模型提交的 `eval` 程序引用；
 - 导出签名、实现和传递性 Effect 集共同纳入 HNS 内容身份，Binding 后不可漂移；
+- 内部 Function 的 Effect 可以推导；导出 Function 必须声明覆盖传递性 Effect 的闭合上界；
+- 只要 Package 包含 Function，Entry 就必须用 `(requires (tools ...))` 显式声明整个函数
+  模块的 Tool 上界；该上界仍必须是 Manifest Tools 的子集；
+- Entry 的 `(types ...)` 是函数模块共享的名义类型定义，同时进入精确绑定
+  `evaluation-profile`；模型调用导出 Function 时无需重复这些定义；
 - 参数和局部绑定不可变，最后一个表达式是返回值；
-- Process 可以组合 `seq/bind/if/fallback/map/call/infer`，但不能绕过 Tool
+- Function 可以组合 `seq/bind/if/fallback/map/call/infer`，但不能绕过 Tool
   的权限、沙箱、租约和 Execution Job；
 - 禁止递归和循环调用，构建静态无环调用图；
 - 限制调用深度、展开节点数、参数大小和静态能力集合；
-- Process 只提供有限函数组合和应用接口，不成为第二套调度器，也不引入通用循环。
+- Function 只提供有限函数组合和应用接口，不成为第二套调度器，也不引入通用循环。
 
-单文件包未来可以直接包含多个 Process；目录包可使用 `processes/*.yao`。两种
+单文件包可以直接包含多个 Function；目录包使用 `functions/*.yao`。两种
 形态仍归一化为同一个 HarnessPackage 和同一张静态调用图。
 
 ### 3.6 `skills/` 与 `validators/`
@@ -822,6 +828,11 @@ Registry。
   Execution Job，再经过 Execution Target、Permission Profile、审批租约、重试安全与
   ownership fence。部署仍可用配置或 `MORPHZ_EVAL_CALLABLE_TOOLS` 收窄名单，显式空值
   会关闭所有树内物理调用。
+- `.hns` 已支持单文件顶层多个 `fn` 与目录 `functions/*.yao`；Analyzer 在任何
+  Effect 前完成具名参数和返回类型检查、静态无环链接、internal/exported 可见性与
+  传递性 Effect 上界校验。Entry `(types ...)` 作为精确绑定的共享名义类型进入
+  `evaluation-profile`，模型只看到 exported 的无函数体接口；完整实现随 Typed Plan IR
+  持久化，重启不重新解析浮动 Registry 或文件。
 - 外部单文件 [`coding.hns`](../morphz-evals/harnesses/coding.hns) 已通过正式
   CLI 安装、Objective 绑定和真实模型执行；对应严格 A/B 评测入口为
   `coding_harness_eval`。
@@ -846,7 +857,6 @@ Registry。
 - 已启动 Objective 是否允许修改默认 Harness（第一版仍禁止；具体 Evaluation
   可以在尚未绑定时自主选择）；
 - package 签名、依赖、migration 与可重建的 Registry Projection；
-- 无递归、静态可解析的包内命名 Process；
 - Action Group 级并行 Plan 节点；
 - Plan 运行时释放父 Activation admission slot 的完全异步 continuation；
 - Edge Target、人工审批和进程崩溃交错下的系统级故障注入；
@@ -885,16 +895,16 @@ Runtime 进程级 fault injection。
 3. 默认 Frame 的只读挂载；
 4. 能力交集、Skill Index 与 validator；
 5. package hash、签名和 migration 预留。
-6. 包内命名 Process、静态调用图与 ProcessCall IR。
+6. 包内命名 Function、静态调用图与 FunctionCall IR。
 
 当前状态：第 1～4 项的最小闭环已完成；第 5 项已完成规范化 package hash，
 签名和 migration 尚未实现。包目录和 Binding 目前以不可变 persisted Event
 持久化，后续可增加可重建 Projection，但不改变其身份语义。顶层
 `eval/infer` 已按 Evaluation Binding 正式分派；Objective 可选默认值的原子
 创建、普通消息显式选择、模型按需发现与精确选择均已完成。本地 package 的
-install/list/show 和外部 Coding Harness 的首个真实 A/B 也已落地。第 6 项是
-本轮新冻结的下一项语言能力，但在实施前仍先扩大样本与任务族，确认哪些重复
-结构真正应进入 Process Library，避免凭想象扩充包格式。
+install/list/show 和外部 Coding Harness 的首个真实 A/B 也已落地。第 6 项的严格
+`fn` v1 已完成；后续用更多任务族验证公共接口，而不在开源前继续扩张到递归、高阶函数
+或函数自有循环。
 
 ### Phase 4：真实对照评测
 

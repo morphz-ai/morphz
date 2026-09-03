@@ -8,9 +8,9 @@
 >
 > Canonical language: English
 >
-> Source baseline: Morphz Runtime as of 2026-09-03
+> Source baseline: Morphz Runtime as of 2026-09-04
 >
-> Date: 2026-09-03
+> Date: 2026-09-04
 >
 > Chinese translation: [zh-CN](zh-CN/hns_package_format_specification_v0_1.md)
 >
@@ -55,6 +55,7 @@ HarnessPackage
 |- Manifest              exactly one
 |- Contract              exactly one
 |- Default Mind          zero or one
+|- HNS Functions         zero or more
 `- Entry Program         exactly one
 ```
 
@@ -87,6 +88,7 @@ The file MUST contain exactly:
 - one `(manifest ...)` top-level artifact;
 - one `(contract ...)` top-level artifact;
 - zero or one `(mind ...)` top-level artifact;
+- zero or more uniquely named `(fn ...)` top-level artifacts;
 - one `(eval ...)` or one `(infer ...)` top-level artifact.
 
 Unknown or duplicate top-level artifacts MUST cause loading to fail. Artifact order in source MAY
@@ -101,6 +103,7 @@ coding.hns/
 |- manifest.yao
 |- contract.yao
 |- mind.yao             optional
+|- functions/           optional; one fn per .yao file
 `- programs/
    `- main.yao          example entry path
 ```
@@ -110,6 +113,8 @@ For HNS Core v0.1:
 - `manifest.yao` MUST exist and contain exactly one `(manifest ...)` artifact;
 - `contract.yao` MUST exist and contain exactly one `(contract ...)` artifact;
 - `mind.yao`, when present, MUST contain exactly one `(mind ...)` artifact;
+- every regular `functions/*.yao` file, when the directory is present, MUST contain exactly one
+  `(fn ...)` artifact, and function names MUST be unique across the Package;
 - the Manifest MUST name one relative Entry Program path;
 - the selected Entry Program file MUST contain exactly one `(eval ...)` or `(infer ...)` artifact.
 
@@ -209,6 +214,8 @@ The Contract:
 
 - MUST be immutable for an exact Package identity;
 - MUST be mounted from the exact bound Package;
+- MUST NOT repeat the Package `version` or declare an independent Contract version; Package
+  evolution is identified by the Manifest version and exact content identity;
 - MUST NOT grant capabilities;
 - MUST NOT assert that an external effect or verification occurred merely by declaring it;
 - SHOULD remain compact enough to mount without forcing all detailed Skills into every Evaluation.
@@ -262,12 +269,55 @@ Profile defines the effective subset; omission MUST NOT mean unrestricted Tool a
 model-owned entry, the actual offered Tool set is the intersection of this upper bound, the
 statically named `(call TOOL ...)` expressions in its complete body, and current authority.
 
+When a Package declares any HNS Function, its Entry Program MUST declare an explicit
+`(requires (tools ...))` upper bound for the complete function module. Every transitive Tool Effect
+reachable from every Function MUST fit within that bound. `(requires (tools))` is valid for a pure
+module. This module bound MUST itself remain a subset of Manifest Tools.
+
 ### 9.3 Execution boundary
 
 The Entry Program MUST execute under the Morphz Harness Specification. In particular, `call` or an
 equivalent effect request MUST be mediated by Runtime authorization and execution, while nested
 `infer` or its equivalent MUST preserve explicit causal identity and a bounded effective capability
 scope.
+
+### 9.4 HNS Function module
+
+An HNS Function is a bounded, package-local Yao function, not an independent process or Evaluation
+Loop. Its v0.1 form is:
+
+```lisp
+(fn NAME
+  (visibility internal|exported)
+  (description "...")
+  (params (ARG TYPE)...)
+  (returns TYPE)
+  (effects EFFECT...)
+  (body EXPR))
+```
+
+`visibility` defaults to `internal`. `params`, `returns`, and `body` are REQUIRED. An exported
+Function additionally requires a non-empty `description` and an explicit closed `effects` upper
+bound; an internal Function MAY omit `effects` and let the Analyzer infer it. Function parameters
+are immutable and MUST NOT be named `runtime`.
+
+Function application uses `(NAME (ARG EXPR)...)`. `call` remains reserved for Runtime Tools.
+Applications MUST use statically known names and named arguments, and their arguments MUST be pure,
+complete, unique, and type-correct. A model-authored Program MAY apply only exported Functions; the
+Package Entry MAY also apply internal Functions.
+
+The Runtime MUST parse and type-check every Function before executing any Entry node, construct a
+static acyclic call graph, infer transitive Effects, reject recursive cycles, enforce finite
+function-count, call-depth, source-size, and linked-IR limits, and statically link each application
+into the admitted typed IR. A durable Plan MUST therefore resume from linked IR without resolving a
+floating Function registry or rereading mutable files.
+
+Nominal `(types ...)` declarations in the Entry Program form the shared type module for bound HNS
+Functions. The Runtime MUST expose those shared declarations and body-free exported Function
+interfaces in the exact bound `evaluation-profile`; internal interfaces and all Function bodies
+MUST remain absent from model-visible Context. Full declarations, shared types, and implementations
+MUST participate in Package content identity. Neither a Function nor its declared Effects grant
+Runtime, Principal, Tool, Execution Target, sandbox, lease, or approval authority.
 
 ## 10. Normalization and content identity
 
@@ -279,7 +329,8 @@ A Loader MUST normalize both physical forms into this logical order:
    lists;
 2. Contract;
 3. Default Mind when present;
-4. selected Entry Program.
+4. HNS Functions sorted by Function name;
+5. selected Entry Program.
 
 Filesystem location, source whitespace, comments, and physical single-file versus directory form
 MUST NOT affect logical Package identity when they parse to the same normalized artifacts.
@@ -317,9 +368,11 @@ A Core v0.1 Loader MUST complete all of the following before Package activation:
 5. resolve the directory Entry without Package escape;
 6. determine explicit Entry ownership;
 7. verify that Entry Program Tool declarations are a subset of Manifest Tool declarations;
-8. normalize the logical Package;
-9. compute and retain content identity;
-10. reject conflicting content for an installed `(id, version)` pair.
+8. parse every HNS Function, enforce unique names, build an acyclic static call graph, type-check
+   signatures, bodies, returns, and transitive Effects, and validate the complete module Tool bound;
+9. normalize the logical Package;
+10. compute and retain content identity;
+11. reject conflicting content for an installed `(id, version)` pair.
 
 All validation that can be performed without external effects SHOULD complete before any Entry
 Program node executes.
@@ -341,7 +394,6 @@ view for human selection, but such a floating reference MUST be resolved before 
 The following Package capabilities are intentionally reserved and are not implied by Core v0.1:
 
 - multiple named Entry Programs;
-- package-local `process` definitions and exported Process interfaces;
 - embedded Skill resources;
 - Verifier declarations and executable validator resources;
 - Package dependencies and lockfiles;
@@ -380,6 +432,8 @@ A Loader MUST fail visibly and without activation for at least:
 - an invalid or escaping directory Entry path;
 - an Entry Program whose root is neither `eval` nor `infer`;
 - a program Tool requirement outside the Manifest Tool set;
+- an invalid, duplicate, recursive, ill-typed, or over-limit HNS Function module;
+- a Function Effect outside its declared Effect bound or the Entry module Tool bound;
 - conflicting content under the same installed ID and version;
 - unavailable required language or Harness compatibility;
 - resource limits exceeded during parsing or normalization.

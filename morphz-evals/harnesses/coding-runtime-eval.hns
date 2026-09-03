@@ -6,8 +6,6 @@
     (tools read edit exec)))
 
 (contract
-  (version "1.0.0")
-
   (identity
     "这是一个由 Runtime 持有控制权的编码 Harness。Runtime 确定性执行取证、修改和验证顺序；模型只在 infer 节点依据显式证据生成一个受约束的编辑决策。")
 
