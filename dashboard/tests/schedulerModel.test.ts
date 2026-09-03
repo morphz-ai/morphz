@@ -33,6 +33,7 @@ test('scheduler detail bounds tolerate an older Runtime snapshot during rolling 
     has_more_signals: false,
     has_more_jobs: false,
     has_more_approvals: false,
+    has_more_schedules: false,
     has_more_thread_groups: false,
   }), false)
   assert.equal(schedulerDetailsTruncated({
@@ -44,6 +45,7 @@ test('scheduler detail bounds tolerate an older Runtime snapshot during rolling 
     has_more_signals: false,
     has_more_jobs: false,
     has_more_approvals: false,
+    has_more_schedules: false,
     has_more_thread_groups: false,
   }), true)
 })
@@ -76,6 +78,7 @@ function fixture(): SchedulerSnapshot {
       has_more_signals: false,
       has_more_jobs: false,
       has_more_approvals: false,
+      has_more_schedules: false,
       has_more_thread_groups: false,
     },
     admission: {
@@ -256,6 +259,19 @@ test('current Schedule projection excludes terminal causal history', () => {
 
   assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1', 'schedule-completed'])
   assert.deepEqual(currentSchedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
+})
+
+test('current Schedule projection uses the Context inventory outside the bounded Thread page', () => {
+  const snapshot = fixture()
+  snapshot.schedules = [{
+    ...snapshot.threads[0].schedules[0],
+    id: 'schedule-from-quiet-owner',
+    thread_id: 'thread-outside-page',
+    status: 'queued',
+  }]
+
+  assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
+  assert.deepEqual(currentSchedulerSchedules(snapshot).map(item => item.id), ['schedule-from-quiet-owner'])
 })
 
 test('attention fingerprints reopen when their source revision changes', () => {

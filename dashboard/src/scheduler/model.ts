@@ -93,7 +93,8 @@ export function schedulerSchedules(snapshot: SchedulerSnapshot | null): Schedule
  * as work that can still wake the Runtime.
  */
 export function currentSchedulerSchedules(snapshot: SchedulerSnapshot | null): ScheduleRecord[] {
-  return schedulerSchedules(snapshot)
+  if (!snapshot) return []
+  return (snapshot.schedules ?? schedulerSchedules(snapshot))
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
 }
 

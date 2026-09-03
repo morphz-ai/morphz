@@ -148,6 +148,7 @@ pub struct SchedulerDetailBounds {
     pub has_more_signals: bool,
     pub has_more_jobs: bool,
     pub has_more_approvals: bool,
+    pub has_more_schedules: bool,
     pub has_more_thread_groups: bool,
 }
 
@@ -164,6 +165,10 @@ pub struct SchedulerSnapshot {
     pub contexts: Vec<CognitiveContextRecord>,
     pub sessions: Vec<SessionRecord>,
     pub objectives: Vec<SchedulerObjectiveSnapshot>,
+    /// Context-wide current Schedule inventory. It is deliberately separate
+    /// from `threads[*].schedules`, whose causal detail is bounded by the
+    /// recent-Thread page.
+    pub schedules: Vec<ScheduleRecord>,
     pub threads: Vec<SchedulerThreadSnapshot>,
     pub thread_groups: Vec<SchedulerThreadGroupSnapshot>,
     pub deliveries: Vec<SchedulerDeliverySnapshot>,

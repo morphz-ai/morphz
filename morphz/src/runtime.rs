@@ -7194,6 +7194,13 @@ impl MorphzRuntime {
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        let mut schedules = self
+            .inner
+            .store
+            .list_context_active_schedules_bounded(context_id, detail_fetch_limit)
+            .await?;
+        let has_more_schedules = schedules.len() > limit || exact_active_schedules > limit;
+        schedules.truncate(limit);
         let mut context_threads = self
             .inner
             .store
@@ -7888,6 +7895,7 @@ impl MorphzRuntime {
                 has_more_signals,
                 has_more_jobs,
                 has_more_approvals,
+                has_more_schedules,
                 has_more_thread_groups,
             },
             admission: SchedulerAdmissionSnapshot {
@@ -7904,6 +7912,7 @@ impl MorphzRuntime {
             contexts: vec![context],
             sessions,
             objectives: objective_snapshots,
+            schedules,
             threads,
             thread_groups,
             deliveries,
@@ -16163,8 +16172,9 @@ mod tests {
             })
             .await
             .unwrap();
+        let mut created_threads = Vec::new();
         for index in 0..3 {
-            runtime
+            let thread = runtime
                 .inner
                 .store
                 .ensure_thread(crate::memory::NewThread {
@@ -16182,7 +16192,24 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            created_threads.push(thread);
         }
+        let quiet_owner = &created_threads[0];
+        let schedule = runtime
+            .inner
+            .store
+            .ensure_schedule(crate::memory::NewSchedule {
+                id: "schedule-scheduler-bounds".to_string(),
+                thread_id: quiet_owner.id.clone(),
+                source_turn_id: quiet_owner.root_turn_id.clone(),
+                intent: "remain visible outside the bounded Thread page".to_string(),
+                model_alias: None,
+                not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
 
         let snapshot = runtime
             .scheduler_snapshot(
@@ -16198,6 +16225,13 @@ mod tests {
         assert_eq!(snapshot.threads.len(), 1);
         assert_eq!(snapshot.detail_bounds.limit, 1);
         assert!(snapshot.detail_bounds.has_more_threads);
+        assert_eq!(snapshot.summary.active_schedules, 1);
+        assert_eq!(snapshot.schedules.len(), 1);
+        assert_eq!(snapshot.schedules[0].id, schedule.id);
+        assert!(snapshot
+            .threads
+            .iter()
+            .all(|thread| thread.thread.id != quiet_owner.id));
     }
 
     #[tokio::test]

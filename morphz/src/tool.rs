@@ -11880,7 +11880,22 @@ Body
         let database = NamedTempFile::new().unwrap();
         let store = scheduler_store_with_threads(&database, &[]).await;
         let objective_id = "objective-scheduled-interrupt";
-        let generation = 3;
+        let objective = store
+            .create_objective(NewObjective {
+                id: objective_id.to_string(),
+                agent_id: "agent-scheduler-test".to_string(),
+                context_id: "context-scheduler-test".to_string(),
+                coordinator_session_id: "session-scheduler-test".to_string(),
+                delivery_session_id: "session-scheduler-test".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-objective-scheduled-interrupt".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "Dispatch one supervised interrupt".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let generation = objective.generation;
         let root = crate::memory::objective_primary_execution_root_id(objective_id, generation);
         let thread_id = stable_thread_id(&root);
         store
@@ -11927,6 +11942,119 @@ Body
         assert_eq!(event.payload["wake_source"], "schedule-enqueue");
         assert_eq!(event.payload["objective_id"], objective_id);
         assert_eq!(event.payload["objective_generation"], generation);
+    }
+
+    #[tokio::test]
+    async fn paused_objective_atomically_fences_its_queued_schedules() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(&database, &[]).await;
+        let objective = store
+            .create_objective(NewObjective {
+                id: "objective-paused-schedule".to_string(),
+                agent_id: "agent-scheduler-test".to_string(),
+                context_id: "context-scheduler-test".to_string(),
+                coordinator_session_id: "session-scheduler-test".to_string(),
+                delivery_session_id: "session-scheduler-test".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-objective-paused-schedule".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "Run a recurring supervised schedule".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let thread_id = "thread-objective-paused-schedule";
+        store
+            .ensure_thread(NewThread {
+                id: thread_id.to_string(),
+                agent_id: "agent-scheduler-test".to_string(),
+                context_id: "context-scheduler-test".to_string(),
+                session_id: "session-scheduler-test".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-objective-paused-schedule".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::objective_primary_execution(
+                    &objective.id,
+                    objective.generation,
+                ),
+            })
+            .await
+            .unwrap();
+        let schedule = store
+            .ensure_schedule(NewSchedule {
+                id: "schedule-paused-objective".to_string(),
+                thread_id: thread_id.to_string(),
+                source_turn_id: "source-schedule-paused-objective".to_string(),
+                intent: "tick only while the Objective is active".to_string(),
+                model_alias: None,
+                not_before: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                interval_seconds: Some(2),
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (scheduler, timers) = build_test_scheduler(bus, Arc::clone(&store));
+        scheduler.arm(schedule.clone()).await.unwrap();
+
+        let paused = store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Paused,
+                None,
+                Some("operator pause"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            paused,
+            crate::memory::ObjectiveMutation::Updated(_)
+        ));
+
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        assert!(receiver.try_recv().is_err());
+        assert!(store
+            .query(QueryFilter {
+                topic: Some("chat/schedule_due".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+        let fenced = store.get_schedule(&schedule.id).await.unwrap().unwrap();
+        assert_eq!(fenced.status, ScheduleStatus::Cancelled);
+        assert_eq!(fenced.revision, schedule.revision + 1);
+
+        let immediate = store
+            .ensure_schedule(NewSchedule {
+                id: "schedule-paused-objective-immediate".to_string(),
+                thread_id: thread_id.to_string(),
+                source_turn_id: "source-schedule-paused-objective-immediate".to_string(),
+                intent: "immediate work must share the same Objective fence".to_string(),
+                model_alias: None,
+                not_before: None,
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .claim_schedule(&immediate.id, immediate.revision, None)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

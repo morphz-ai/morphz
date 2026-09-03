@@ -7472,6 +7472,35 @@ pub trait ScheduleStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded operator inventory of every currently controllable Schedule in
+    /// a Context. This projection is independent of the bounded recent-Thread
+    /// page: a quiet owner Thread must not make a live timer disappear from
+    /// the control surface.
+    async fn list_context_active_schedules_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut schedules = self
+            .list_context_schedules(context_id)
+            .await?
+            .into_iter()
+            .filter(|schedule| {
+                matches!(
+                    schedule.status,
+                    ScheduleStatus::Queued | ScheduleStatus::Paused
+                )
+            })
+            .collect::<Vec<_>>();
+        schedules.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        schedules.truncate(limit);
+        Ok(schedules)
+    }
     async fn count_context_active_schedules(
         &self,
         context_id: &str,
@@ -7518,8 +7547,14 @@ pub trait ScheduleStore: Send + Sync {
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
     ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    /// Atomically advances a due schedule occurrence and appends the wake Event.
-    /// The caller must use EventBus::dispatch_persisted after commit.
+    /// Atomically advances a Schedule only while its durable Thread owner is
+    /// still admissible. Objective-supervised owners must belong to the active
+    /// Objective generation; an earlier process-local read is not a sufficient
+    /// fence against a concurrent operator pause/cancel/resume.
+    ///
+    /// `commit_scheduled_dispatch` additionally appends the due Event and its
+    /// Thread Signal in the same transaction. The caller must use
+    /// EventBus::dispatch_persisted only after that transaction commits.
     async fn commit_scheduled_dispatch(
         &self,
         id: &str,

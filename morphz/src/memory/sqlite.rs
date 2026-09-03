@@ -17848,6 +17848,26 @@ impl ScheduleStore for SqliteStore {
         )?)
     }
 
+    async fn list_context_active_schedules_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT schedules.* FROM schedules
+               INNER JOIN threads ON threads.id = schedules.thread_id
+               WHERE threads.context_id = ? AND threads.status = 'open'
+                 AND schedules.status IN ('queued', 'paused')
+               ORDER BY schedules.updated_at DESC, schedules.id
+               LIMIT ?"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(schedule_from_row).collect()
+    }
+
     async fn list_thread_schedules(
         &self,
         context_id: &str,
@@ -17922,7 +17942,22 @@ impl ScheduleStore for SqliteStore {
         };
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let result = sqlx::query(
-            "UPDATE schedules SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
+            r#"UPDATE schedules
+               SET revision = revision + 1, status = ?,
+                   not_before = COALESCE(?, not_before), updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'queued'
+                 AND EXISTS (
+                   SELECT 1 FROM threads
+                   LEFT JOIN objectives ON objectives.id = threads.supervisor_id
+                   WHERE threads.id = schedules.thread_id
+                     AND (
+                       threads.supervisor_kind <> 'objective'
+                       OR (
+                         objectives.status = 'active'
+                         AND objectives.generation = threads.supervision_generation
+                       )
+                     )
+                 )"#,
         )
         .bind(next_status.as_str())
         .bind(next_not_before)
@@ -17961,7 +17996,22 @@ impl ScheduleStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "UPDATE schedules SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
+            r#"UPDATE schedules
+               SET revision = revision + 1, status = ?,
+                   not_before = COALESCE(?, not_before), updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'queued'
+                 AND EXISTS (
+                   SELECT 1 FROM threads
+                   LEFT JOIN objectives ON objectives.id = threads.supervisor_id
+                   WHERE threads.id = schedules.thread_id
+                     AND (
+                       threads.supervisor_kind <> 'objective'
+                       OR (
+                         objectives.status = 'active'
+                         AND objectives.generation = threads.supervision_generation
+                       )
+                     )
+                 )"#,
         )
         .bind(next_status.as_str())
         .bind(next_not_before)
@@ -20134,6 +20184,24 @@ impl ObjectiveStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
+            if status != ObjectiveStatus::Active {
+                sqlx::query(
+                    r#"UPDATE schedules
+                       SET status = 'cancelled', revision = revision + 1, updated_at = ?
+                       WHERE status IN ('queued', 'paused')
+                         AND thread_id IN (
+                           SELECT id FROM threads
+                           WHERE supervisor_kind = 'objective'
+                             AND supervisor_id = ?
+                             AND supervision_generation = ?
+                         )"#,
+                )
+                .bind(&now)
+                .bind(id)
+                .bind(i64::try_from(current.generation)?)
+                .execute(&mut *tx)
+                .await?;
+            }
             if wait_changed {
                 cancel_objective_wait_dependencies_in_transaction(
                     &mut tx,

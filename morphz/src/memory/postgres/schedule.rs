@@ -1185,6 +1185,26 @@ impl ScheduleStore for PostgresStore {
         )?)
     }
 
+    async fn list_context_active_schedules_bounded(
+        &self,
+        context_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ScheduleRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT schedules.* FROM schedules
+               INNER JOIN threads ON threads.id = schedules.thread_id
+               WHERE threads.context_id = $1 AND threads.status = 'open'
+                 AND schedules.status IN ('queued', 'paused')
+               ORDER BY schedules.updated_at DESC, schedules.id
+               LIMIT $2"#,
+        )
+        .bind(context_id)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(schedule_from_row).collect()
+    }
+
     async fn list_thread_schedules(
         &self,
         context_id: &str,
@@ -1249,6 +1269,18 @@ impl ScheduleStore for PostgresStore {
             r#"UPDATE schedules SET revision = revision + 1, status = $1,
                not_before = COALESCE($2, not_before), updated_at = $3
                WHERE id = $4 AND revision = $5 AND status = 'queued'
+                 AND EXISTS (
+                   SELECT 1 FROM threads
+                   LEFT JOIN objectives ON objectives.id = threads.supervisor_id
+                   WHERE threads.id = schedules.thread_id
+                     AND (
+                       threads.supervisor_kind <> 'objective'
+                       OR (
+                         objectives.status = 'active'
+                         AND objectives.generation = threads.supervision_generation
+                       )
+                     )
+                 )
                RETURNING *"#,
         )
         .bind(next_status.as_str())
@@ -1281,6 +1313,18 @@ impl ScheduleStore for PostgresStore {
             r#"UPDATE schedules SET revision = revision + 1, status = $1,
                not_before = COALESCE($2, not_before), updated_at = $3
                WHERE id = $4 AND revision = $5 AND status = 'queued'
+                 AND EXISTS (
+                   SELECT 1 FROM threads
+                   LEFT JOIN objectives ON objectives.id = threads.supervisor_id
+                   WHERE threads.id = schedules.thread_id
+                     AND (
+                       threads.supervisor_kind <> 'objective'
+                       OR (
+                         objectives.status = 'active'
+                         AND objectives.generation = threads.supervision_generation
+                       )
+                     )
+                 )
                RETURNING *"#,
         )
         .bind(next_status.as_str())

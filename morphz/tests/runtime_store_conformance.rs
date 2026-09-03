@@ -3254,7 +3254,14 @@ where
 
 async fn assert_schedule_store_conformance<S>(store: Arc<S>)
 where
-    S: ScheduleStore + ThreadStore + ActivationStore + EventStore + Send + Sync + 'static,
+    S: ScheduleStore
+        + ThreadStore
+        + ActivationStore
+        + EventStore
+        + ObjectiveStore
+        + Send
+        + Sync
+        + 'static,
 {
     for (id, kind) in [
         ("conformance-schedule-thread", ThreadKind::Execution),
@@ -3568,6 +3575,76 @@ where
         .unwrap()
         .iter()
         .any(|schedule| schedule.id == "conformance-schedule-dispatch"));
+
+    let objective = store
+        .create_objective(NewObjective {
+            id: "conformance-schedule-objective".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            coordinator_session_id: "conformance-session".to_string(),
+            delivery_session_id: "conformance-session".to_string(),
+            parent_objective_id: None,
+            source_event_id: "conformance-schedule-objective-source".to_string(),
+            initiating_principal_id: None,
+            stated_objective: "fence supervised schedules on pause".to_string(),
+            token_budget: None,
+        })
+        .await
+        .unwrap();
+    let objective_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-schedule-objective-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: "conformance-schedule-objective-root".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective(
+                &objective.id,
+                "conformance-schedule-evaluation",
+                objective.generation,
+                None,
+            ),
+        })
+        .await
+        .unwrap();
+    let supervised = store
+        .ensure_schedule(morphz::memory::NewSchedule {
+            id: "conformance-schedule-objective-timer".to_string(),
+            thread_id: objective_thread.id,
+            source_turn_id: objective_thread.root_turn_id,
+            intent: "must close with its Objective generation".to_string(),
+            model_alias: None,
+            not_before: None,
+            interval_seconds: Some(2),
+            dependency_thread_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Paused,
+                None,
+                Some("store conformance pause"),
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Updated(_)
+    ));
+    let supervised = store.get_schedule(&supervised.id).await.unwrap().unwrap();
+    assert_eq!(supervised.status, ScheduleStatus::Cancelled);
+    assert!(store
+        .claim_schedule(&supervised.id, supervised.revision, None)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 async fn assert_delivery_ingress_conformance<S>(store: Arc<S>)

@@ -6880,6 +6880,24 @@ impl ObjectiveStore for PostgresStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
+            if status != ObjectiveStatus::Active {
+                sqlx::query(
+                    r#"UPDATE schedules
+                       SET status = 'cancelled', revision = revision + 1, updated_at = $1
+                       WHERE status IN ('queued', 'paused')
+                         AND thread_id IN (
+                           SELECT id FROM threads
+                           WHERE supervisor_kind = 'objective'
+                             AND supervisor_id = $2
+                             AND supervision_generation = $3
+                         )"#,
+                )
+                .bind(&now)
+                .bind(id)
+                .bind(i64::try_from(current.generation)?)
+                .execute(&mut *tx)
+                .await?;
+            }
             if wait_changed {
                 cancel_objective_wait_dependencies_in_tx(&mut tx, id, current.generation, &now)
                     .await?;

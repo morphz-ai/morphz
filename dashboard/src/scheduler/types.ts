@@ -266,6 +266,7 @@ export interface SchedulerDetailBounds {
   has_more_signals: boolean
   has_more_jobs: boolean
   has_more_approvals: boolean
+  has_more_schedules: boolean
   has_more_thread_groups: boolean
 }
 
@@ -380,6 +381,7 @@ export interface SchedulerSnapshot {
   contexts: SchedulerContextRecord[]
   sessions: SchedulerSessionRecord[]
   objectives: SchedulerObjectiveSnapshot[]
+  schedules?: ScheduleRecord[]
   threads: SchedulerThreadSnapshot[]
   thread_groups: SchedulerThreadGroupSnapshot[]
   deliveries: SchedulerDeliverySnapshot[]
