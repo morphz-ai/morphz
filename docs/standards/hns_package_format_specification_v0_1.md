@@ -8,9 +8,9 @@
 >
 > Canonical language: English
 >
-> Source baseline: Morphz Runtime as of 2026-08-21
+> Source baseline: Morphz Runtime as of 2026-09-03
 >
-> Date: 2026-08-21
+> Date: 2026-09-03
 >
 > Chinese translation: [zh-CN](zh-CN/hns_package_format_specification_v0_1.md)
 >
@@ -22,14 +22,16 @@ This specification defines the `.hns` distribution profile for a portable Morphz
 It defines physical forms, logical artifacts, cardinality, manifest fields, entry ownership,
 normalization, content identity, path safety, and loading behavior.
 
-The `.hns` suffix identifies a Harness Package. The `.yao` suffix identifies Yao source files
-inside a directory Package. `.hns` is not the name of the source language, Evaluation Loop, SDK, or
-Cognitive Application category.
+The `.hns` suffix identifies a Harness Package and, in the atomic HNS profile, a minimal Cognitive
+Application Package. The `.yao` suffix identifies Yao source files inside a directory Package.
+`.hns` is not the name of the source language, Evaluation Loop, or SDK.
 
-One HNS Package MAY realize the execution content of a minimal Cognitive Application. HNS Core
-v0.1 packages exactly one Primary Harness and does not define a complete Application Manifest,
-multiple Harnesses, user interface, marketplace metadata, commercial policy, or external service
-bundle. Cognitive Application, Harness, and HNS Package are therefore not synonyms.
+Each HNS Package is a minimal Cognitive Application that packages exactly one Primary Harness.
+HNS Core v0.1 does not define a composite Application Manifest, multiple Harnesses, user interface,
+marketplace metadata, commercial policy, or external service bundle. Cognitive Application and
+Harness are not synonyms: the former is the identifiable program presented to an Agent, while the
+latter is its bounded execution-semantic core. The HNS Package is the atomic distribution form
+that carries both roles.
 
 This Draft standardizes the minimum Package currently implemented and separates reserved future
 artifacts from active requirements.
@@ -339,7 +341,7 @@ view for human selection, but such a floating reference MUST be resolved before 
 The following Package capabilities are intentionally reserved and are not implied by Core v0.1:
 
 - multiple named Entry Programs;
-- package-local `process` definitions;
+- package-local `process` definitions and exported Process interfaces;
 - embedded Skill resources;
 - Verifier declarations and executable validator resources;
 - Package dependencies and lockfiles;
@@ -353,10 +355,10 @@ The following Package capabilities are intentionally reserved and are not implie
 An experimental implementation MAY support these features under a namespaced extension. It MUST
 NOT present them as HNS Core v0.1 behavior.
 
-### 13.1 Reserved Cognitive Application package layer
+### 13.1 Reserved composite Cognitive Application package layer
 
-**COA** and `.coa` are reserved candidate names for a future Cognitive Application Package layer
-above HNS. A future Profile may define:
+**COA** and `.coa` are reserved candidate names for a future composite Cognitive Application
+Package layer above atomic HNS. A future Profile may define:
 
 - an Application Manifest and application identity;
 - references to one or more exact HNS Package identities;

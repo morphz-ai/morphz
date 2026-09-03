@@ -8,9 +8,9 @@
 >
 > 规范文本语言：英文
 >
-> 源码基线：截至 2026-08-21 的 Morphz Runtime 与 `.hns` Loader
+> 源码基线：截至 2026-09-03 的 Morphz Runtime 与 `.hns` Loader
 >
-> 日期：2026-08-21
+> 日期：2026-09-03
 >
 > 规范文本：[English](../morphz_harness_specification_v0_1.md)
 >
@@ -27,9 +27,11 @@ Harness 是挂载到一次 Evaluation 上的带版本认知程序与实践契约
 如何推理、调用工具、收集证据、验证结果并形成 Outcome。Runtime 继续对身份、调度、
 事务、权限、物理副作用、因果、持久化和恢复拥有权威控制权。
 
-Harness 是 Cognitive Application（认知应用）管理一次 Evaluation 时使用的执行核心。
-认知应用是面向产品与生态的单元，把可复用认知实践提供给既有 Agent。二者不是同义词：
-Application 可以包含额外资源和集成，Harness 则始终是有边界的执行语义单元。
+Harness 是 Cognitive Application（认知应用）的执行语义核心。认知应用是面向产品与生态
+的单元，把可复用认知实践提供给既有 Agent。在原子 HNS Profile 中，一个 HNS Package
+本身就是最小认知应用，因为它打包了一个可独立识别且带版本的认知程序。Harness 与
+Cognitive Application 仍是不同术语：Harness 指有边界的执行语义，Cognitive Application
+指承载这些语义、面向用户与生态的程序。更大的认知应用可以组合额外 Harness、资源与集成。
 
 本规范在不绑定单一源语言或文件系统布局的前提下定义 Harness 语义。配套的 HNS 包格式
 规范定义可移植 `.hns` 分发 Profile。Yao 是该 Profile 使用的源语言，不是 Harness 的
@@ -115,21 +117,24 @@ Outcome 是一次 Evaluation 声明的终态结果。Verifier 是一项声明的
 
 ### 3.11 Cognitive Application（认知应用）
 
-Cognitive Application 是可独立识别、带版本且面向产品与生态的单元，把可复用认知实践
-提供给稳定 Agent。它通过至少一个 Harness 实现；当相应 Profile 定义这些内容时，还可以
-包含 Skill、Verifier、默认认知材料、交互界面、领域资源、评测资产与外部集成。
+Cognitive Application 是可独立识别且带版本的认知程序，把可复用认知实践提供给稳定
+Agent。HNS Profile 规范的最小形态，是一个承载一个 Primary Harness 的 HNS Package。
+当相应 Profile 定义这些内容时，更大的认知应用还可以包含多个 Harness、Skill、Verifier、
+默认认知材料、交互界面、领域资源、评测资产与外部集成。
 
-认知应用不是 Agent、Session、Harness、HNS Package 或外部 SDK Client。安装、选择或绑定
+认知应用不是 Agent、Session、Runtime 或外部 SDK Client。HNS Package 既是一个 Primary
+Harness 的分发制品，也是把该 Harness 提供给既有 Agent 的最小认知应用。Harness 仍然是
+Package 承载的抽象执行语义单元，并非 Application 或其物理编码的同义词。安装、选择或绑定
 认知应用，不得隐式创建、替换、克隆或合并 Agent 身份。仅完成安装不会授予 Runtime
 Capability 或执行权威。
 
-Harness Core v0.1 只规范每次 Evaluation 的一个 Primary Harness Binding；它尚不定义完整
-Cognitive Application Manifest、多 Harness 组合、用户界面、Marketplace、商业策略或
-Cognitive Application 一致性声明。一个 HNS Package 可以实现最小认知应用的执行内容，
-但不会因此让两个术语等价。
+Harness Core v0.1 规范原子 HNS Cognitive Application，以及每次 Evaluation 的一个 Primary
+Harness Binding；它尚不定义多 Harness 组合、复合 Application Manifest、用户界面、
+Marketplace、商业策略或复合 Cognitive Application 一致性声明。这些缺失限制的是当前
+Package Profile，而不是 HNS 作为最小认知应用的身份。
 
-**COA** 与 `.coa` 被保留为 HNS 之上的未来 Cognitive Application Package Profile 候选
-名称与后缀。该 Profile 将来可以定义 Application Manifest，引用一个或多个精确 HNS
+**COA** 与 `.coa` 被保留为原子 HNS 之上的未来复合 Cognitive Application Package Profile
+候选名称与后缀。该 Profile 将来可以定义 Application Manifest，引用一个或多个精确 HNS
 Package 身份，并打包应用层 Skill、Verifier、交互界面、评测资产、领域资源与外部集成。
 这一保留不定义具体格式，不要求 Runtime 支持，也不会在 Harness Core v0.1 中建立兼容性
 声明。

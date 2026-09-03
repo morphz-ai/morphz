@@ -6,7 +6,7 @@
 >
 > 规范文本语言：英文
 >
-> 最后更新：2026-08-25
+> 最后更新：2026-09-03
 >
 > 规范文本：[English](../README.md)
 
@@ -26,9 +26,10 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 - **Cognitive Application（认知应用）**是面向产品与生态的单元，把可复用的认知实践
   提供给既有 Agent；挂载认知应用不会创建或替换 Agent 身份；
 - **Harness** 是《Morphz Harness 规范》定义的可移植 Evaluation Loop 与实践契约抽象；
-- **HNS** 是 `.hns` Harness Package 分发 Profile；**Yao** 是其当前源语言；
-- **COA** 与 `.coa` 是 HNS 之上的未来 Cognitive Application Package Profile 保留候选名；
-  当前 Draft 不定义该格式，也不允许作出 `.coa` 兼容性声明；
+- **HNS** 是原子 `.hns` Package Profile：一个 HNS Package 是承载一个 Primary Harness
+  的最小 Cognitive Application；**Yao** 是其当前源语言；
+- **COA** 与 `.coa` 是原子 HNS 之上的未来复合 Cognitive Application Package Profile
+  保留候选名；当前 Draft 不定义该格式，也不允许作出 `.coa` 兼容性声明；
 - **Morphz Runtime** 是新变元的官方参考实现，不是标准本身；
 - **Morphz SC Compatible** 是保留的未来兼容性标识，只有在商标政策发布且取得符合要求
   的一致性证据后才能使用。

@@ -8,9 +8,9 @@
 >
 > 规范文本语言：英文
 >
-> 源码基线：截至 2026-08-21 的 Morphz Runtime
+> 源码基线：截至 2026-09-03 的 Morphz Runtime
 >
-> 日期：2026-08-21
+> 日期：2026-09-03
 >
 > 规范文本：[English](../hns_package_format_specification_v0_1.md)
 >
@@ -23,13 +23,15 @@
 本规范定义可移植 Morphz Harness Package 的 `.hns` 分发 Profile，包括物理形态、逻辑
 Artifact、基数、Manifest 字段、入口控制权、归一化、内容身份、路径安全和加载行为。
 
-`.hns` 后缀标识 Harness Package；`.yao` 后缀标识目录 Package 内的 Yao 源文件。`.hns`
-不是源语言、Evaluation Loop、SDK 或 Cognitive Application 类别的名称。
+`.hns` 后缀标识 Harness Package，并在原子 HNS Profile 中标识最小 Cognitive Application
+Package；`.yao` 后缀标识目录 Package 内的 Yao 源文件。`.hns` 不是源语言、Evaluation
+Loop 或 SDK 的名称。
 
-一个 HNS Package 可以实现最小认知应用的执行内容。HNS Core v0.1 只打包一个 Primary
-Harness，不定义完整 Application Manifest、多个 Harness、用户界面、Marketplace 元数据、
-商业策略或外部服务 Bundle。因此，Cognitive Application、Harness 与 HNS Package 不是
-同义词。
+每个 HNS Package 都是打包一个 Primary Harness 的最小认知应用。HNS Core v0.1 不定义
+复合 Application Manifest、多个 Harness、用户界面、Marketplace 元数据、商业策略或
+外部服务 Bundle。Cognitive Application 与 Harness 不是同义词：前者是提供给 Agent 的
+可识别程序，后者是它的有边界执行语义核心；HNS Package 是同时承载这两个角色的原子
+分发形态。
 
 本 Draft 规范当前已经实现的最小 Package，并将保留的未来 Artifact 与现行要求明确分开。
 
@@ -315,7 +317,7 @@ Evaluation Binding 必须使用精确 ID、版本与内容身份。Binding 选�
 以下 Package 能力被有意保留，不由 Core v0.1 隐含支持：
 
 - 多个命名 Entry Program；
-- Package 内部 `process` 定义；
+- Package 内部 `process` 定义与导出 Process 接口；
 - 嵌入式 Skill 资源；
 - Verifier 声明与可执行 Validator 资源；
 - Package 依赖与 Lockfile；
@@ -328,10 +330,10 @@ Evaluation Binding 必须使用精确 ID、版本与内容身份。Binding 选�
 
 实验实现可以通过带命名空间扩展支持这些特性，但不得把它们表示为 HNS Core v0.1 行为。
 
-### 13.1 保留的 Cognitive Application 包层
+### 13.1 保留的复合 Cognitive Application 包层
 
-**COA** 与 `.coa` 被保留为 HNS 之上的未来 Cognitive Application Package 层候选名称与
-后缀。未来 Profile 可以定义：
+**COA** 与 `.coa` 被保留为原子 HNS 之上的未来复合 Cognitive Application Package 层候选
+名称与后缀。未来 Profile 可以定义：
 
 - Application Manifest 与应用身份；
 - 对一个或多个精确 HNS Package 身份的引用；

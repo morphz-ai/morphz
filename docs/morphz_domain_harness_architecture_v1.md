@@ -167,8 +167,10 @@ Harness 可以给出领域调度建议和默认策略，但 Objective、Evaluati
 7. **Skill Index（技能索引）**：紧凑描述可发现的 Skill，具体内容按需加载。
 8. **Evidence / Validator Adapter（证据与校验适配）**：把测试、编译、渲染或业务验证结果转换为具有来源的 Observation。
 9. **Process Library（过程库，规划中）**：用无递归、静态可解析的 Yao
-   `process` 复用有限领域过程；它降低为 SubPlan，不能绕过 Runtime Tool
-   边界，也不负责开放式长期循环。
+   `process` 复用有限领域过程；HNS 可以把其中一部分导出为认知应用的类型化函数接口。
+   当前绑定 HNS 的导出签名可以进入 `evaluation-profile`，模型通过固定 `eval` 表面引用，
+   Runtime 按精确 Binding 链接函数体并降低为 SubPlan。它不创建动态 LLM Tool Definition，
+   不能绕过 Runtime Tool 边界，也不负责开放式长期循环。
 10. **Presentation Metadata（可选展示元数据）**：帮助 Dashboard 或 CLI 展示领域对象，但不能成为 Runtime 正确性的依赖。
 11. **Migration（迁移规则）**：Harness 契约升级时处理其命名空间内的 Projection 和默认 Frame。
 
@@ -283,7 +285,7 @@ Harness 契约可以使用 SExpr 提供结构，同时在基础算子和领域�
           (goal "根据仓库证据制定修改方案")
           (repository repository))))
 
-    (call apply-plan
+    (apply-plan
       (plan plan))
 
     (call run-tests)))
@@ -314,9 +316,12 @@ Evaluation + Harness
 加入通用 `while/until`；已知集合使用 `map`，每轮有限步骤由 Harness 组织，
 下一轮是否继续由模型依据最新事实和 Objective 状态判断。
 
-当前 `call` 只调用 Runtime 注册 Tool。未来的包内 `process` 将复用同一表面
-调用形式，但在加载期静态解析并 lowering 为 SubPlan；Process 与 Tool 禁止
-同名，且第一版禁止递归。这一能力用于模块复用，不会成为第二套调度器。
+`call` 只调用 Runtime 注册 Tool。未来的包内 `process` 使用普通的 Yao 函数应用
+`(PROCESS ARG...)`，并在加载或 Program 准入期依据精确 Harness Binding 静态解析、lowering
+为 SubPlan。Process 与 Tool 位于不同符号空间，第一版 Process 禁止递归。导出 Process 的
+类型化签名进入当前 HNS 的 Context，完整函数体仍保留在内容寻址 Package 内。这一能力既
+用于模块复用，也为认知应用提供不依赖动态 LLM Tool Definition 的局部函数接口，但不会
+成为第二套调度器。
 
 显式并行若经评测证明确有必要，候选算子为与 `seq` 对称的 `par`，并直接
 lowering 为已有 Action Group。它目前只是保留方向，不属于已实现 v1。

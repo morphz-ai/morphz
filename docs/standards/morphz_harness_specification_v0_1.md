@@ -8,9 +8,9 @@
 >
 > Canonical language: English
 >
-> Source baseline: Morphz Runtime and `.hns` loader as of 2026-08-21
+> Source baseline: Morphz Runtime and `.hns` loader as of 2026-09-03
 >
-> Date: 2026-08-21
+> Date: 2026-09-03
 >
 > Chinese translation: [zh-CN](zh-CN/morphz_harness_specification_v0_1.md)
 >
@@ -27,10 +27,13 @@ Loop. A Harness can determine how an Evaluation reasons, calls tools, gathers ev
 results, and reaches an outcome. The Runtime remains authoritative for identity, scheduling,
 transactions, permissions, physical effects, causality, durability, and recovery.
 
-A Harness is the execution core through which a Cognitive Application can govern an Evaluation.
-Cognitive Application is the product- and ecosystem-level unit that packages reusable cognitive
-practice for an existing Agent. The terms are not synonyms: an Application may include additional
-resources and integrations, while a Harness remains the bounded execution-semantic unit.
+A Harness is the execution-semantic core of a Cognitive Application. Cognitive Application is the
+product- and ecosystem-level unit that packages reusable cognitive practice for an existing Agent.
+In the atomic HNS profile, one HNS Package is itself a minimal Cognitive Application because it
+packages one independently identifiable and versioned cognitive program. The terms Harness and
+Cognitive Application remain distinct: Harness names the bounded execution semantics, while
+Cognitive Application names the user- and ecosystem-facing program that carries those semantics.
+Larger Cognitive Applications may compose additional Harnesses, resources, and integrations.
 
 This specification defines Harness semantics independently from one source language or filesystem
 layout. The companion HNS Package Format Specification defines the portable `.hns` distribution
@@ -126,25 +129,32 @@ evidence. A Verifier result is evidence; it does not silently rewrite Agent beli
 
 ### 3.11 Cognitive Application
 
-A Cognitive Application is an independently identifiable and versioned product- and ecosystem-level
-unit that packages reusable cognitive practice for a stable Agent. It is realized through at least
-one Harness and MAY additionally include Skills, Verifiers, default cognitive material, interfaces,
+A Cognitive Application is an independently identifiable and versioned cognitive program that
+packages reusable cognitive practice for a stable Agent. The minimum form standardized by the HNS
+profile is one HNS Package carrying one Primary Harness. A larger Cognitive Application MAY
+additionally include multiple Harnesses, Skills, Verifiers, default cognitive material, interfaces,
 domain resources, evaluation assets, and integrations when corresponding Profiles define them.
 
-A Cognitive Application is not an Agent, Session, Harness, HNS Package, or external SDK client.
-Installing, selecting, or binding one MUST NOT implicitly create, replace, clone, or merge Agent
-identity. Installation alone grants no Runtime capability or execution authority.
+A Cognitive Application is not an Agent, Session, Runtime, or external SDK client. An HNS Package
+is both the distribution artifact for one Primary Harness and the minimal Cognitive Application
+that presents that Harness to an existing Agent. Harness remains the abstract execution-semantic
+unit carried by the Package rather than a synonym for the Application or its physical encoding.
+Installing, selecting, or binding a Cognitive Application MUST NOT implicitly create, replace,
+clone, or merge Agent identity. Installation alone grants no Runtime capability or execution
+authority.
 
-Harness Core v0.1 standardizes one Primary Harness Binding per Evaluation. It does not yet define a
-complete Cognitive Application Manifest, multi-Harness composition, user interface, marketplace,
-commercial policy, or Cognitive Application conformance claim. One HNS Package MAY realize the
-execution content of a minimal Cognitive Application without making the two terms equivalent.
+Harness Core v0.1 standardizes one atomic HNS Cognitive Application and one Primary Harness Binding
+per Evaluation. It does not yet define multi-Harness composition, a composite Application Manifest,
+user interface, marketplace, commercial policy, or composite Cognitive Application conformance.
+Those omissions limit the current package profile, not the status of HNS as the minimal Cognitive
+Application.
 
-The candidate name **COA** and suffix `.coa` are reserved for a future Cognitive Application
-Package Profile above HNS. Such a Profile may define an Application Manifest that references one
-or more exact HNS Package identities and packages application-level Skills, Verifiers, interfaces,
-evaluation assets, domain resources, and integrations. This reservation does not define a format,
-require Runtime support, or establish a compatibility claim in Harness Core v0.1.
+The candidate name **COA** and suffix `.coa` are reserved for a future composite Cognitive
+Application Package Profile above atomic HNS. Such a Profile may define an Application Manifest
+that references one or more exact HNS Package identities and packages application-level Skills,
+Verifiers, interfaces, evaluation assets, domain resources, and integrations. This reservation
+does not define a format, require Runtime support, or establish a compatibility claim in Harness
+Core v0.1.
 
 ## 4. Control and authority boundary
 

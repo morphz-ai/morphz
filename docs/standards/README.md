@@ -6,7 +6,7 @@
 >
 > Canonical language: English
 >
-> Last updated: 2026-08-25
+> Last updated: 2026-09-03
 >
 > 中文翻译：[zh-CN](zh-CN/README.md)
 
@@ -28,9 +28,11 @@ Harness execution, Yao, and Mind Frame Exchange.
   cognitive practice for an existing Agent; mounting one does not create or replace Agent identity.
 - **Harness** is the portable Evaluation Loop and practice-contract abstraction defined by the
   Morphz Harness Specification.
-- **HNS** is the `.hns` Harness Package distribution profile; **Yao** is its current source language.
-- **COA** and `.coa` are reserved candidate names for a future Cognitive Application Package
-  Profile above HNS. No current Draft defines that format or permits a `.coa` compatibility claim.
+- **HNS** is the atomic `.hns` package profile: one HNS Package is a minimal Cognitive Application
+  carrying one Primary Harness; **Yao** is its current source language.
+- **COA** and `.coa` are reserved candidate names for a future composite Cognitive Application
+  Package Profile above atomic HNS. No current Draft defines that format or permits a `.coa`
+  compatibility claim.
 - **Morphz Runtime** is Newvar's official reference implementation, not the definition of the
   standard.
 - **Morphz SC Compatible** is a reserved future compatibility mark whose use will require a

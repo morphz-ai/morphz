@@ -30,11 +30,11 @@ Morphz 采用以下命名边界：
 - **结构化上下文（Structured Context）**：实现无关的技术类别；
 - **Morphz 结构化上下文**：由新变元维护的标准族；
 - **Agent Trajectory（Agent 执行轨迹）**：Agent 经验的可移植因果状态转换记录；
-- **Cognitive Application（认知应用）**：把可复用认知实践提供给既有 Agent 的产品与
-  生态单元；Harness 是其执行核心，二者不是同义词；
-- **Harness / HNS**：Harness 是认知应用的执行语义单元，HNS 是当前 `.hns` Harness
-  Package 分发 Profile；
-- **COA / `.coa`**：未来完整 Cognitive Application Package Profile 的保留候选名，当前
+- **Cognitive Application（认知应用）**：把可复用认知实践提供给既有 Agent 的可识别、
+  带版本认知程序；Harness 是其执行语义核心；
+- **Harness / HNS**：Harness 是认知应用的执行语义单元；HNS 是当前原子 `.hns` Package
+  Profile，一个 HNS Package 就是承载一个 Primary Harness 的最小认知应用；
+- **COA / `.coa`**：未来复合 Cognitive Application Package Profile 的保留候选名，当前
   Loader 不识别该格式，也不存在 `.coa` 兼容性声明；
 - **Morphz Runtime**：官方参考实现；
 - **Morphz 参考环境**：使用版本化任务、工具、权限、fixture 和验证器运行可复现实践的环境；
@@ -262,11 +262,12 @@ Reward Policy 是对结果事实的特定用途映射。SC-Core 保存和传递�
 
 Provider、Harness、SDK、UI、Eval 和领域包继续作为模块化扩展发展。经过多个实现验证、影响跨模块互操作的语义，可以通过 MEP 提议进入标准 Profile。
 
-认知应用在当前阶段通过一个或多个组件共同实现，其中最小实现可以只包含一个 HNS
-Package。项目将在存在真实组合需求后，再通过独立 MEP 讨论 COA Profile 与 `.coa` 包格式；
+认知应用当前的原子实现就是一个 HNS Package。项目将在存在真实组合需求后，再通过独立
+MEP 讨论复合 COA Profile 与 `.coa` 包格式；
 候选范围包括 Application Manifest、多 HNS 引用、Skill、Verifier、交互界面、评测资产、
 领域资源、外部集成以及依赖、签名、升级和权利元数据。在该 Profile 进入规范流程前，
-`.hns` 继续只表示 Harness Package，`.coa` 不进入当前 Loader。
+`.hns` 继续表示承载一个 Primary Harness 的原子认知应用 Package，`.coa` 不进入当前
+Loader。
 
 ## 10. 独立实现与互操作
 
