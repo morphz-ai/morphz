@@ -3046,6 +3046,7 @@ fn antigravity_user_agent_version(user_agent: &str) -> &str {
 
 impl AntigravityOAuthAdapter {
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn with_test_endpoints(
         auth_url: impl Into<String>,
         token_url: impl Into<String>,

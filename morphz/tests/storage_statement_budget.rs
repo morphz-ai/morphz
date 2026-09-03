@@ -15,10 +15,12 @@ use morphz::memory::{MindProjectionStore, NewMindProjection};
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
+use tracing::Instrument;
 use tracing::{Event as TracingEvent, Subscriber};
 use tracing_subscriber::layer::Context as LayerContext;
 use tracing_subscriber::prelude::*;
@@ -50,9 +52,22 @@ struct SqlStatementCounter {
 
 impl<S> Layer<S> for SqlStatementCounter
 where
-    S: Subscriber,
+    S: Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
 {
-    fn on_event(&self, event: &TracingEvent<'_>, _context: LayerContext<'_, S>) {
+    fn on_event(&self, event: &TracingEvent<'_>, context: LayerContext<'_, S>) {
+        // SQLite workers execute on separate OS threads and may outlive the
+        // setup call that submitted their work. Attribute only events carrying
+        // the measured operation's propagated tracing span; wall-clock counter
+        // resets can otherwise charge unrelated pool work to the next query on
+        // a slower runner.
+        let belongs_to_measurement = context.event_scope(event).is_some_and(|scope| {
+            scope
+                .from_root()
+                .any(|span| span.metadata().name() == "sqlite_statement_budget_measurement")
+        });
+        if !belongs_to_measurement {
+            return;
+        }
         match event.metadata().target() {
             "sqlx::query" => {
                 self.statements.fetch_add(1, Ordering::Relaxed);
@@ -63,6 +78,15 @@ where
             _ => {}
         }
     }
+}
+
+async fn measure_sql<F>(future: F) -> F::Output
+where
+    F: Future,
+{
+    future
+        .instrument(tracing::info_span!("sqlite_statement_budget_measurement"))
+        .await
 }
 
 /// This test deliberately lives in its own integration-test binary. SQLx's
@@ -83,7 +107,8 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             pool_acquires: Arc::clone(&pool_acquires),
         }
         .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-            matches!(metadata.target(), "sqlx::query" | "sqlx::pool::acquire")
+            metadata.name() == "sqlite_statement_budget_measurement"
+                || matches!(metadata.target(), "sqlx::query" | "sqlx::pool::acquire")
         })),
     );
     tracing::subscriber::set_global_default(subscriber).unwrap();
@@ -134,8 +159,8 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
 
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        let snapshot = store
-            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+        let snapshot = measure_sql(store.read_context_runtime_directory_snapshot(
+            &ContextRuntimeDirectoryRequest {
                 context_id: "statement-budget-context".to_string(),
                 active_session_id: "statement-budget-session".to_string(),
                 active_after: chrono::Utc::now() - chrono::Duration::hours(24),
@@ -143,8 +168,9 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
                 max_metadata_sessions: 50,
                 known_context_state_revision: None,
                 session_filter: ContextRuntimeSessionFilter::default(),
-            })
-            .await
+            },
+        ))
+        .await
             .unwrap()
             .unwrap();
         assert_eq!(snapshot.sessions.len(), 1);
@@ -209,8 +235,9 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
 
             statements.store(0, Ordering::Relaxed);
             pool_acquires.store(0, Ordering::Relaxed);
-            let context_db_snapshot = context_db_store
-                .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+            let context_db_snapshot = measure_sql(
+                context_db_store.read_context_runtime_directory_snapshot(
+                    &ContextRuntimeDirectoryRequest {
                     context_id: "context-db-statement-budget-context".to_string(),
                     active_session_id: "context-db-statement-budget-session".to_string(),
                     active_after: chrono::Utc::now() - chrono::Duration::hours(24),
@@ -218,8 +245,10 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
                     max_metadata_sessions: 50,
                     known_context_state_revision: None,
                     session_filter: ContextRuntimeSessionFilter::default(),
-                })
-                .await
+                    },
+                ),
+            )
+            .await
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -326,8 +355,8 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             .unwrap();
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        let bounded = store
-            .read_context_runtime_directory_snapshot(&ContextRuntimeDirectoryRequest {
+        let bounded = measure_sql(store.read_context_runtime_directory_snapshot(
+            &ContextRuntimeDirectoryRequest {
                 context_id: "statement-budget-context".to_string(),
                 active_session_id: "statement-budget-session".to_string(),
                 active_after: chrono::Utc::now() - chrono::Duration::hours(24),
@@ -335,8 +364,9 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
                 max_metadata_sessions: 3,
                 known_context_state_revision: None,
                 session_filter: ContextRuntimeSessionFilter::default(),
-            })
-            .await
+            },
+        ))
+        .await
             .unwrap()
             .unwrap();
         assert_eq!(bounded.sessions.len(), 7);
@@ -409,13 +439,12 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         assert!(matches!(
-            store
-                .claim_message(
+            measure_sql(store.claim_message(
                     "statement-budget-session",
                     "statement-budget-client-message",
                     &message,
                     MessageDispatchMode::Parallel,
-                )
+                ))
                 .await
                 .unwrap(),
             MessageClaim::Accepted { .. }
@@ -437,13 +466,12 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         assert!(matches!(
-            store
-                .claim_message(
+            measure_sql(store.claim_message(
                     "statement-budget-session",
                     "statement-budget-client-message",
                     &message,
                     MessageDispatchMode::Parallel,
-                )
+                ))
                 .await
                 .unwrap(),
             MessageClaim::Existing { .. }
@@ -463,13 +491,12 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         assert!(matches!(
-            store
-                .claim_message(
+            measure_sql(store.claim_message(
                     "statement-budget-session",
                     "statement-budget-client-message",
                     &conflicting_message,
                     MessageDispatchMode::Parallel,
-                )
+                ))
                 .await
                 .unwrap(),
             MessageClaim::Conflict { .. }
@@ -483,9 +510,13 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
 
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        let scheduler = store
-            .read_context_runtime_scheduler_snapshot("statement-budget-context", &[], 20, 32)
-            .await
+        let scheduler = measure_sql(store.read_context_runtime_scheduler_snapshot(
+            "statement-budget-context",
+            &[],
+            20,
+            32,
+        ))
+        .await
             .unwrap();
         assert_eq!(scheduler.threads.len(), 1);
         assert_eq!(scheduler.thread_signals.len(), 1);
@@ -534,13 +565,12 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
 
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        let causality = store
-            .read_context_activation_causality_snapshot(
+        let causality = measure_sql(store.read_context_activation_causality_snapshot(
                 "statement-budget-context",
                 "statement-budget-activation",
                 &thread.root_turn_id,
                 &signal.event_id,
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(causality.activation_signals.len(), 1);
@@ -559,13 +589,12 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
 
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        let execution_resources = store
-            .read_context_execution_resources_snapshot(
+        let execution_resources = measure_sql(store.read_context_execution_resources_snapshot(
                 "statement-budget-context",
                 Some("statement-budget-principal"),
                 16,
                 1_000,
-            )
+            ))
             .await
             .unwrap();
         assert!(execution_resources.background_jobs.is_empty());
@@ -609,12 +638,11 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             .unwrap();
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        engine
-            .build_context_encoding(
+        measure_sql(engine.build_context_encoding(
                 "statement-budget-context",
                 "statement-budget-session",
                 &HashSet::new(),
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(
@@ -633,12 +661,11 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         let mut context_samples = Vec::with_capacity(STEADY_CONTEXT_SAMPLES);
         for _ in 0..STEADY_CONTEXT_SAMPLES {
             let started_at = Instant::now();
-            engine
-                .build_context_encoding(
+            measure_sql(engine.build_context_encoding(
                     "statement-budget-context",
                     "statement-budget-session",
                     &HashSet::new(),
-                )
+                ))
                 .await
                 .unwrap();
             context_samples.push(started_at.elapsed());
@@ -681,12 +708,11 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             .unwrap();
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
-        engine
-            .build_context_encoding_for_activation(
+        measure_sql(engine.build_context_encoding_for_activation(
                 "statement-budget-context",
                 &activation,
                 &HashSet::new(),
-            )
+            ))
             .await
             .unwrap();
         assert_eq!(
