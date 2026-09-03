@@ -126,6 +126,13 @@ impl ToolSignature {
 pub trait AnalysisProfile {
     fn tool_signature(&self, name: &str) -> Option<ToolSignature>;
 
+    /// Explains why a tool known to the host is intentionally absent from this
+    /// analysis profile. Returning `None` means the name is genuinely unknown.
+    /// This distinction is diagnostic only and never grants authority.
+    fn unavailable_tool_reason(&self, _name: &str) -> Option<String> {
+        None
+    }
+
     fn host_signature(&self, _name: &str) -> Option<ToolSignature> {
         None
     }
@@ -1668,6 +1675,9 @@ impl<'a> Analyzer<'a> {
             ));
         }
         let Some(signature) = self.profile.tool_signature(tool) else {
+            if let Some(reason) = self.profile.unavailable_tool_reason(tool) {
+                return Err(diag(DiagnosticCode::EffectEscape, reason, tool_expr.span()));
+            }
             return Err(diag(
                 DiagnosticCode::UnknownName,
                 format!("unknown tool '{tool}'"),

@@ -764,6 +764,12 @@ Registry。
   工具面校验；Runtime-owned 顶层 `(eval ...)` 仍按独立
   `eval_callable_tools` 安全白名单校验。两者都只能收窄能力，不能扩大沙箱、
   审批、阶段或租约权限。
+- `eval_callable_tools` 的默认值覆盖 Morphz 核心物理工具
+  `read/write/edit/list_files/search/exec/transfer`。该名单只决定 Yao 是否能静态命名
+  工具，不授予实际权限；每个参数已经求值的 `call` 仍先原子创建 durable
+  Execution Job，再经过 Execution Target、Permission Profile、审批租约、重试安全与
+  ownership fence。部署仍可用配置或 `MORPHZ_EVAL_CALLABLE_TOOLS` 收窄名单，显式空值
+  会关闭所有树内物理调用。
 - 外部单文件 [`coding.hns`](../morphz-evals/harnesses/coding.hns) 已通过正式
   CLI 安装、Objective 绑定和真实模型执行；对应严格 A/B 评测入口为
   `coding_harness_eval`。

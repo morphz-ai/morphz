@@ -1478,6 +1478,11 @@ impl MorphzRuntimeBuilder {
         } else {
             None
         };
+        let eval_callable_tools = if self.tool_policy.context_only {
+            Vec::new()
+        } else {
+            self.config.orchestrator.eval_callable_tools.clone()
+        };
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
             context_engine: &context_engine,
@@ -1501,6 +1506,13 @@ impl MorphzRuntimeBuilder {
         for tool in self.extra_tools {
             registry.register(tool);
         }
+        // Register eval only after the complete default and extension Registry
+        // exists. Registry snapshots Tool definitions at registration time, so
+        // this keeps its advertised callable surface identical to admission.
+        registry.register(Arc::new(crate::sexpr_eval::EvalTool::new(
+            Arc::clone(&registry),
+            eval_callable_tools,
+        )));
         registry.register(Arc::new(crate::execution_target::ListTargetsTool::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
         )));
@@ -1849,13 +1861,6 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
             ),
         ));
     }
-    // The evaluator reaches other tools through the same Registry it is
-    // registered in, so it is constructed with a handle to it rather than with
-    // a private tool table that could drift.
-    registry.register(Arc::new(crate::sexpr_eval::EvalTool::new(
-        Arc::clone(registry),
-        config.orchestrator.eval_callable_tools.clone(),
-    )));
     registry.register(Arc::new(HarnessListTool::new(Arc::clone(harness_registry))));
     registry.register(Arc::new(HarnessSelectTool::new(
         Arc::clone(harness_registry),
@@ -11582,6 +11587,18 @@ mod tests {
         observed_plan_result: Arc<AtomicBool>,
     }
 
+    struct DurableMutatingEvalClient {
+        calls: AtomicU64,
+        write_path: String,
+        observed_plan_result: Arc<AtomicBool>,
+    }
+
+    struct DurableApprovalEvalClient {
+        calls: AtomicU64,
+        write_path: String,
+        observed_plan_result: Arc<AtomicBool>,
+    }
+
     struct HarnessEntryClient {
         calls: AtomicU64,
         objective_id: String,
@@ -13909,6 +13926,101 @@ mod tests {
                     Ok(text_response("durable-eval-complete"))
                 }
                 _ => Err("durable eval 产生了冗余模型求值".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for DurableMutatingEvalClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    let eval = tools
+                        .iter()
+                        .find(|tool| tool.name == "eval")
+                        .ok_or("eval Tool was not offered")?;
+                    assert!(eval.description.contains("write"));
+                    assert!(eval.description.contains("exec"));
+                    let quoted_path = serde_json::to_string(&self.write_path)?;
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "durable-mutating-eval".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "eval".to_string(),
+                            arguments: json!({
+                                "program": format!(
+                                    "(eval (requires (tools write exec)) (seq (bind created (call write (path {quoted_path}) (content \"created-by-yao\") (mode \"create\"))) (call exec (command \"echo yao-exec-complete\"))))"
+                                )
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let observed = messages.iter().any(|message| {
+                        message.role == "tool" && message.content.contains("yao-exec-complete")
+                    });
+                    self.observed_plan_result.store(observed, Ordering::SeqCst);
+                    if !observed {
+                        return Err(
+                            "the model did not observe the mutating durable Plan result".into()
+                        );
+                    }
+                    Ok(text_response("durable-mutating-eval-complete"))
+                }
+                _ => Err("mutating durable eval caused a redundant model evaluation".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for DurableApprovalEvalClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    let eval = tools
+                        .iter()
+                        .find(|tool| tool.name == "eval")
+                        .ok_or("eval Tool was not offered")?;
+                    assert!(eval.description.contains("write"));
+                    let quoted_path = serde_json::to_string(&self.write_path)?;
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "durable-approval-eval".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "eval".to_string(),
+                            arguments: json!({
+                                "program": format!(
+                                    "(eval (requires (tools write)) (call write (path {quoted_path}) (content \"approved-by-yao\") (mode \"create\") (approval_scope \"once\")))"
+                                )
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let observed = messages.iter().any(|message| {
+                        message.role == "tool" && message.content.contains("approved-by-yao")
+                    });
+                    self.observed_plan_result.store(observed, Ordering::SeqCst);
+                    if !observed {
+                        return Err(
+                            "the model did not observe the approved Yao write result".into()
+                        );
+                    }
+                    Ok(text_response("durable-approval-eval-complete"))
+                }
+                _ => Err("approved durable eval caused a redundant model evaluation".into()),
             }
         }
     }
@@ -16735,6 +16847,196 @@ mod tests {
             .unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn eval_write_and_exec_use_durable_jobs_end_to_end() {
+        let database = NamedTempFile::new().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let output_path = workspace.path().join("created-by-yao.txt");
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::FullAccess;
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        let observed_plan_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(DurableMutatingEvalClient {
+            calls: AtomicU64::new(0),
+            write_path: output_path.to_string_lossy().into_owned(),
+            observed_plan_result: Arc::clone(&observed_plan_result),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-durable-mutating-eval".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Durable mutating eval".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+
+        session
+            .send(
+                "write a fixture and run a command through eval",
+                "User-Test",
+                Some("client-durable-mutating-eval".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(reply.payload["text"], "durable-mutating-eval-complete");
+        assert!(observed_plan_result.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read_to_string(&output_path).unwrap(),
+            "created-by-yao"
+        );
+        let plans = runtime
+            .inner
+            .store
+            .list_plan_executions(crate::memory::PlanExecutionFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].status,
+            crate::memory::PlanExecutionStatus::Succeeded
+        );
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            jobs.iter()
+                .map(|job| job.tool_name.as_str())
+                .collect::<Vec<_>>(),
+            ["write", "exec"]
+        );
+        assert!(jobs
+            .iter()
+            .all(|job| job.status == crate::memory::ExecutionJobStatus::Succeeded));
+        assert!(jobs.iter().all(|job| job.result_event_id.is_some()));
+    }
+
+    #[tokio::test]
+    async fn eval_write_outside_workspace_waits_for_the_normal_approval_boundary() {
+        let database = NamedTempFile::new().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let output_path = external.path().join("approved-by-yao.txt");
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::AutoReview;
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        let observed_plan_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(DurableApprovalEvalClient {
+            calls: AtomicU64::new(0),
+            write_path: output_path.to_string_lossy().into_owned(),
+            observed_plan_result: Arc::clone(&observed_plan_result),
+        });
+        let provider = Arc::new(StaticApprovalProvider {
+            decision: ApprovalDecision::AllowOnce {
+                rationale: "approve the exact external Yao write".to_string(),
+                risk_tags: vec!["test-yao-write".to_string()],
+            },
+            delay: std::time::Duration::ZERO,
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .approval_provider(provider.clone())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-durable-approval-eval".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Durable approval eval".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+
+        session
+            .send(
+                "write outside the workspace through an approved eval",
+                "User-Test",
+                Some("client-durable-approval-eval".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(reply.payload["text"], "durable-approval-eval-complete");
+        assert!(observed_plan_result.load(Ordering::SeqCst));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read_to_string(&output_path).unwrap(),
+            "approved-by-yao"
+        );
+        let approvals = runtime
+            .inner
+            .store
+            .list_approvals(ApprovalFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].status, crate::memory::ApprovalStatus::Allowed);
+        assert!(approvals[0].grant_consumed_at.is_some());
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].tool_name, "write");
+        assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+        assert!(jobs[0].result_event_id.is_some());
     }
 
     #[tokio::test]

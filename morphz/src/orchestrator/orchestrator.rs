@@ -20388,13 +20388,13 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
         // The deployment gate is the outer bound; a program's declaration can
         // only narrow it further. Both cuts are applied here so the model is
         // never shown a tool that execution below would refuse.
-        let callable = orchestrator
-            .orchestrator_config
-            .eval_callable_tools
-            .iter()
-            .filter(|name| declared.is_none_or(|list| list.iter().any(|tool| tool == *name)))
-            .cloned()
-            .collect::<Vec<_>>();
+        let callable = crate::sexpr_eval::effective_callable_tools(
+            orchestrator.registry.as_ref(),
+            &orchestrator.orchestrator_config.eval_callable_tools,
+        )
+        .into_iter()
+        .filter(|name| declared.is_none_or(|list| list.iter().any(|tool| tool == name)))
+        .collect::<Vec<_>>();
         let tools = orchestrator
             .registry
             .definitions()

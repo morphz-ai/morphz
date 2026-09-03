@@ -614,11 +614,26 @@ struct MorphzAnalysisProfile<'a> {
 
 impl crate::yao::AnalysisProfile for MorphzAnalysisProfile<'_> {
     fn tool_signature(&self, name: &str) -> Option<crate::yao::ToolSignature> {
-        if !self.gate.is_callable(name) {
+        let tool = self.registry.get(name)?;
+        if !self.gate.is_callable(name)
+            || tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob
+        {
             return None;
         }
-        let definition = self.registry.get(name)?.definition();
+        let definition = tool.definition();
         Some(tool_signature_from_json_schema(&definition.parameters))
+    }
+
+    fn unavailable_tool_reason(&self, name: &str) -> Option<String> {
+        let tool = self.registry.get(name)?;
+        if !self.gate.is_callable(name) {
+            return Some(self.gate.describe_refusal(name));
+        }
+        (tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob).then(|| {
+            format!(
+                "tool '{name}' is a Runtime control tool and cannot be called from a durable Yao physical Plan"
+            )
+        })
     }
 
     fn implicit_binding(&self, name: &str) -> Option<crate::yao::Type> {
@@ -2812,20 +2827,42 @@ tokio::task_local! {
     pub static CURRENT_PLAN_EXECUTOR: Option<Arc<dyn RuntimePlanExecutor>>;
 }
 
-/// Tools an `eval` program may call when nothing is configured.
+/// Core physical tools an `eval` program may call when nothing is configured.
 ///
-/// Read-only and in-workspace only, for a reason that outlives v1: the tree is
-/// admitted as a whole, before evaluation discovers the paths a `map` will
-/// reach. A write or an out-of-boundary path found mid-evaluation could not
-/// have been part of what was admitted, so the program is refused rather than
-/// escalated. Individual tools still run their own jail and path checks.
+/// Whole-program admission grants none of these tools authority. Each concrete
+/// effect is lowered to a durable ExecutionJob after its arguments are known,
+/// then independently rechecks Target support, Permission Profile, approval,
+/// retry safety and ownership fencing before crossing a reality boundary.
 ///
 /// An operator may widen or narrow this deployment gate through configuration.
 /// `call` reads the gate directly. A nested `infer` receives only the tools in
 /// its statically referenced `call` effects, intersected with this gate. A
 /// model-owned top-level `(infer ...)` Harness likewise narrows the ordinary
 /// Function Calling surface and never executes through `EvalTool`.
-pub const DEFAULT_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
+pub const DEFAULT_CALLABLE_TOOLS: [&str; 7] = [
+    "read",
+    "write",
+    "edit",
+    "list_files",
+    "search",
+    "exec",
+    "transfer",
+];
+
+/// Resolves one deployment allow-list against the live Registry and the Yao
+/// physical-Plan boundary. Preserve configuration order so descriptions and
+/// nested inference expose the exact same deterministic surface.
+pub fn effective_callable_tools(registry: &Registry, configured: &[String]) -> Vec<String> {
+    configured
+        .iter()
+        .filter(|name| {
+            registry.get(name.as_str()).is_some_and(|tool| {
+                tool.execution_class() == crate::tool::ToolExecutionClass::PhysicalJob
+            })
+        })
+        .cloned()
+        .collect()
+}
 
 pub struct EvalTool {
     registry: Arc<Registry>,
@@ -2847,6 +2884,10 @@ impl EvalTool {
                 .map(|name| (*name).to_string())
                 .collect(),
         )
+    }
+
+    fn effective_callable_tools(&self) -> Vec<String> {
+        effective_callable_tools(&self.registry, &self.callable)
     }
 
     /// Deployment-specific boundary only. The language surface itself is
@@ -2886,9 +2927,10 @@ impl crate::tool::Tool for EvalTool {
     }
 
     fn definition(&self) -> crate::llm::ToolDefinition {
+        let callable = self.effective_callable_tools();
         crate::llm::ToolDefinition {
             name: "eval".to_string(),
-            description: Self::description(&self.callable),
+            description: Self::description(&callable),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2907,7 +2949,7 @@ impl crate::tool::Tool for EvalTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: EvalArgs = serde_json::from_str(arguments)?;
-        let gate = AllowList::new(self.callable.clone());
+        let gate = AllowList::new(self.effective_callable_tools());
         let program = validate(&args.program, &self.registry, &gate)?;
         if program.owner() != EvaluationOwner::Runtime {
             return Err("eval Tool accepts only a Runtime-owned (eval ...) root; Runtime creates a formal Evaluation for (infer ...)".into());
@@ -3547,12 +3589,12 @@ mod tests {
     async fn the_tool_refuses_a_program_before_running_any_of_it() {
         use crate::tool::Tool;
 
-        let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
-        let tool = EvalTool::with_default_tools(Arc::clone(&registry));
-        // `exec` is outside the read-only gate, and it sits after a legitimate
-        // read: nothing may run if the tree as a whole is not admissible.
+        let (registry, calls) = fixture(&[("read", JsonValue::Null), ("write", JsonValue::Null)]);
+        let tool = EvalTool::new(Arc::clone(&registry), vec!["read".to_string()]);
+        // A registered but deployment-hidden write sits after a legitimate
+        // read: whole-tree validation must reject it before either call runs.
         let arguments = serde_json::json!({
-            "program": r#"(eval (seq (call read (path "a")) (call exec (command "rm -rf /"))))"#
+            "program": r#"(eval (seq (call read (path "a")) (call write (input "x"))))"#
         })
         .to_string();
         let error = CURRENT_INFERENCE
@@ -3560,7 +3602,10 @@ mod tests {
             .await
             .expect_err("an inadmissible tree is refused whole")
             .to_string();
-        assert!(error.contains("unknown tool 'exec'"), "got: {error}");
+        assert!(
+            error.contains("not callable from an eval program"),
+            "got: {error}"
+        );
         assert!(
             calls.lock().unwrap().is_empty(),
             "validation must precede every side effect"
@@ -3600,7 +3645,7 @@ mod tests {
     async fn the_configured_gate_replaces_the_default_one() {
         use crate::tool::Tool;
 
-        let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
+        let (registry, calls) = fixture(&[("read", JsonValue::Null), ("search", JsonValue::Null)]);
         // A deployment that narrows the set must actually narrow it, and the
         // description has to say so rather than advertise the default.
         let tool = EvalTool::new(Arc::clone(&registry), vec!["search".to_string()]);
@@ -3618,16 +3663,84 @@ mod tests {
             .await
             .expect_err("a tool outside the configured gate is refused")
             .to_string();
-        assert!(error.contains("unknown tool 'read'"), "got: {error}");
+        assert!(
+            error.contains("not callable from an eval program"),
+            "got: {error}"
+        );
         assert!(calls.lock().unwrap().is_empty());
     }
 
     #[test]
     fn an_absent_configuration_keeps_the_default_gate() {
-        // Nothing configured must mean the read-only default, not an empty gate
-        // that would silently disable every `call` in every program.
+        // Nothing configured must mean the core physical-tool default, not an
+        // empty gate that would silently disable every `call` in every program.
         let configured = crate::config::OrchestratorConfig::default().eval_callable_tools;
         assert_eq!(configured, DEFAULT_CALLABLE_TOOLS);
+    }
+
+    #[test]
+    fn the_default_gate_admits_every_core_physical_tool() {
+        let replies = DEFAULT_CALLABLE_TOOLS
+            .iter()
+            .map(|name| (*name, JsonValue::Null))
+            .collect::<Vec<_>>();
+        let (registry, _) = fixture(&replies);
+        let configured = DEFAULT_CALLABLE_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let source = format!(
+            "(eval (requires (tools {})) (seq {}))",
+            DEFAULT_CALLABLE_TOOLS.join(" "),
+            DEFAULT_CALLABLE_TOOLS
+                .iter()
+                .enumerate()
+                .map(|(index, name)| format!(
+                    "(bind result-{index} (call {name} (input \"{name}\")))"
+                ))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+
+        let program = validate(&source, &registry, &AllowList::new(configured)).unwrap();
+        let mut expected = DEFAULT_CALLABLE_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(program.tools(), expected);
+    }
+
+    #[test]
+    fn admission_distinguishes_a_hidden_registered_tool_from_an_unknown_name() {
+        let registry = fixture(&[("write", JsonValue::Null)]).0;
+        let hidden = validate(
+            r#"(eval (call write (input "x")))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            hidden.diagnostic.as_deref().map(|error| error.code),
+            Some(crate::yao::DiagnosticCode::EffectEscape)
+        );
+        assert!(
+            hidden.message.contains("not callable from an eval program"),
+            "{}",
+            hidden.message
+        );
+
+        let unknown = validate(
+            r#"(eval (call missing (input "x")))"#,
+            &registry,
+            &AllowList::new(["missing"]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            unknown.diagnostic.as_deref().map(|error| error.code),
+            Some(crate::yao::DiagnosticCode::UnknownName)
+        );
+        assert!(unknown.message.contains("unknown tool 'missing'"));
     }
 
     #[test]

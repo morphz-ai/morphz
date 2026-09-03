@@ -404,9 +404,11 @@ pub struct OrchestratorConfig {
     /// produced after `map`, so out-of-scope tools discovered during evaluation are rejected rather
     /// than escalated for approval. Separate lists would let this invariant drift with configuration.
     ///
-    /// If omitted, a default read-only set is used. An explicit empty list disables all in-tree
-    /// tool calls, leaving only structure and `infer` in `eval`. Tools outside this list remain
-    /// available through ordinary Function Calling, and their own jail and path checks still apply.
+    /// If omitted, Morphz core physical tools are available. This list grants no authority: every
+    /// concrete call still crosses the normal Execution Target, Permission Profile, approval,
+    /// retry-safety and ownership boundaries. An explicit empty list disables all in-tree tool
+    /// calls, leaving only structure and `infer` in `eval`. Tools outside this list remain available
+    /// through ordinary Function Calling.
     pub eval_callable_tools: Vec<String>,
 }
 
