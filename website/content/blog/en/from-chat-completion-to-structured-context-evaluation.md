@@ -41,6 +41,7 @@ A conceptual Morphz Context looks like this:
 ```lisp
 (context
   (protocol ...)
+  (evaluation-profile none)
   (inbox ...)
   (observation-state ...)
   (mind ...)
@@ -50,7 +51,9 @@ A conceptual Morphz Context looks like this:
   (evaluate ...))
 ```
 
-The `inbox` carries Observations that still require interpretation. `observation-state` describes their current projection attributes. `mind` contains cognitive Frames formed and maintained by the Agent. `session-directory` describes the Sessions inside Context and their current projections. `kernel` contains Runtime-owned facts such as identity, authority, versions, budgets, and execution state. The final and sole `evaluate` expression identifies the current responsibility.
+This is not an illustrative list in an arbitrary order. It is the fixed physical order used by the current implementation. `protocol` defines the Context protocol and state-transition contract. `evaluation-profile` mounts the content-addressed Harness definition and is explicitly `none` when no Harness is bound. `inbox` carries persisted Observations in event-sequence order. `observation-state` contains only mutable projection attributes keyed by Observation reference; it cannot override immutable provenance, causality, or content in `inbox`.
+
+`mind` contains cognitive Frames, relations, and checkpoints formed and maintained by the Agent. `session-directory` describes the Sessions inside the Context and their projection for this Evaluation. `kernel` contains authoritative Runtime facts about identity, versions, Threads, Objectives, Execution Targets, and Context pressure. When Context-level capabilities are bound, an optional `cognitive-capabilities` region appears between `kernel` and `evaluation-environment`. `evaluation-environment` carries the current model and Harness bindings, Runtime directives, and local time. The final and sole `evaluate` expression selects the input and authorized line of work for this Evaluation.
 
 These regions do not have equal ownership. The model can interpret Runtime facts but cannot forge them. It owns cognitive meaning, but it modifies cognitive state through versioned transactions. The Runtime does not decide domain truth for the model; it preserves provenance, ordering, authority, and commit boundaries.
 

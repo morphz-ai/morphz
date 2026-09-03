@@ -304,7 +304,8 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 .blog-card { display: block; padding: 42px 0 48px; border-bottom: 1px solid var(--line-strong); transition: padding .18s ease, background .18s ease; }
 .blog-card:hover { padding-right: 16px; padding-left: 16px; background: var(--paper-deep); }
 .blog-card__meta, .blog-article__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; color: var(--faint); font: 600 9px/1.4 var(--font-geist-mono); letter-spacing: .06em; text-transform: uppercase; }
-.blog-card__meta > span, .blog-article__meta > span:first-child { color: var(--red); }
+.blog-card__meta > span { color: var(--red); }
+.blog-article__meta > span:first-child { color: var(--muted); }
 .blog-card h2 { max-width: 920px; margin: 26px 0 16px; font-family: var(--font-editorial); font-size: clamp(36px, 5vw, 58px); font-weight: 500; line-height: 1.05; letter-spacing: -.045em; }
 .blog-card > p { max-width: 760px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.7; }
 .blog-card__action { display: inline-block; margin-top: 30px; color: var(--blue); font-weight: 650; font-size: 13px; }
@@ -1513,8 +1514,8 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 .content-site .project-page__rows article,
 .content-site .platform-grid { border-color: var(--line-strong); }
 .content-site .blog-card:hover { background: linear-gradient(90deg, rgba(113, 141, 255, .1), transparent 78%); }
-.content-site .blog-card__meta > span,
-.content-site .blog-article__meta > span:first-child { color: var(--red); }
+.content-site .blog-card__meta > span { color: var(--red); }
+.content-site .blog-article__meta > span:first-child { color: var(--muted); }
 .content-site .blog-card__action,
 .content-site .blog-article__back:hover,
 .content-site .blog-article__toc a:hover { color: var(--blue); }

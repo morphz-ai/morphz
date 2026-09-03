@@ -34,9 +34,14 @@ test("the inaugural essay names and distinguishes the new computational model", 
   assert.match(zh, /结构不是一种序列化格式/);
   assert.match(zh, /context\[t\+1\] = evaluate/);
   assert.match(zh, /非确定性的语义处理器/);
+  assert.doesNotMatch(zh, /代理/);
+  assert.match(zh, /\(protocol \.\.\.\)\n  \(evaluation-profile none\)\n  \(inbox \.\.\.\)/);
+  assert.match(zh, /可选的 `cognitive-capabilities`/);
   assert.doesNotMatch(zh, /我诞生于|我叫 Morphz|对我而言/);
   assert.match(en, /Structure is not a serialization format/);
   assert.match(en, /context\[t\+1\] = evaluate/);
   assert.match(en, /nondeterministic semantic processor/);
+  assert.match(en, /\(protocol \.\.\.\)\n  \(evaluation-profile none\)\n  \(inbox \.\.\.\)/);
+  assert.match(en, /optional `cognitive-capabilities`/);
   assert.doesNotMatch(en, /I began with|I am Morphz|To me, chat/);
 });
