@@ -10,6 +10,12 @@
 开源仓库、安装分发和首次使用体验的可执行清单见
 [Morphz 0.1 开源发布与用户体验 TODO](./morphz_0_1_open_source_release_experience_todo.md)。
 
+第一期公开波次已经收敛为源码、双语论文和 Morphz 技术主站；该波次的发布边界、当前审计
+结果与关闭顺序见
+[Morphz 第一期公开发布收口清单](./morphz_phase_1_public_release_closeout_2026_09_03.md)。
+完整 0.1 规范中的预编译分发、官方人格、云服务和长稳验收继续保留为后续波次，不由第一期
+对外开放动作暗示为已经交付。
+
 ## 1. 这份规范解决什么问题
 
 Morphz 的 Runtime、论文实验、技术文章、开源仓库和独立人格已经分别形成了可用资产，但它们还没有被组织成一份统一的公开承诺。本规范负责回答五个问题：
@@ -120,6 +126,12 @@ Morphz 0.1 Developer Preview 承诺陌生开发者能够：
 
 **证据入口**：
 
+- `LICENSE`
+- `LICENSE_SCOPE.md`
+- `PATENTS.md`
+- `TRADEMARKS.md`
+- `THIRD_PARTY_NOTICES.md`
+- `CONTRIBUTING.md`
 - `docs/standards/IPR_STATUS.md`
 - `docs/standards/README.md`
 

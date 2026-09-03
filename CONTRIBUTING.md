@@ -11,10 +11,36 @@ The Draft standard workspace is indexed at
 [docs/standards/README.md](docs/standards/README.md). Until a document reaches Final status, the
 current source code and contract tests remain authoritative for claims about implemented behavior.
 
-Before contributing specification text, conformance fixtures, or code intended to implement the
-Draft standard, read the provisional
-[IPR Status Notice](docs/standards/IPR_STATUS.md). A contribution does not create an unrecorded
-patent, trademark, or certification promise.
+Before contributing specification text, conformance fixtures, or code intended to implement a
+Draft standard, read the active [IPR Status Notice](docs/standards/IPR_STATUS.md), the repository
+[license scope](LICENSE_SCOPE.md), and the [patent policy](PATENTS.md). Licensing source code or
+specification text does not grant a trademark, compatibility-mark, or certification right.
+
+## Contribution license and provenance
+
+Unless a submission is conspicuously marked `Not a Contribution` or a separate written agreement
+applies, every contribution intentionally submitted for inclusion in Apache-2.0 material is
+provided under the [Apache License, Version 2.0](LICENSE), including the copyright and patent grants
+in Sections 2, 3, and 5.
+
+Contributors must have the right to submit the material and make those grants. Contributions must
+not contain third-party code, data, model weights, confidential information, or patent-restricted
+material unless their provenance and compatible license are recorded in the pull request and
+accepted by a Maintainer.
+
+Morphz uses the [Developer Certificate of Origin 1.1](https://developercertificate.org/) as a
+lightweight provenance attestation. Sign each commit with:
+
+```text
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+`git commit -s` adds the line automatically. The sign-off certifies the DCO; it does not transfer
+copyright ownership to Newvar. Corporate contributors are responsible for confirming that the
+signer is authorized to contribute on the organization's behalf.
+
+A contributor who knows that a submission may be covered by a patent application or patent they
+control must follow the disclosure process in [PATENTS.md](PATENTS.md).
 
 ## Source language
 

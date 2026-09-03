@@ -1,57 +1,68 @@
-# Morphz Draft Standards IPR Status Notice
+# Morphz Standards IPR Status Notice
 
-> Status: Provisional Draft notice; not a final license or patent policy
+> Status: Active repository licensing policy; specification maturity remains document-specific
 >
 > Steward: Newvar
 >
 > Canonical language: English
 >
-> Date: 2026-08-25
+> Effective: 2026-09-03
 >
 > Chinese translation: [zh-CN](zh-CN/IPR_STATUS.md)
 
 ## 1. Purpose
 
-This notice states what readers and contributors may and may not infer while the Morphz technical
-standards remain Drafts. It covers the Structured Context, Agent Trajectory, Harness, HNS, Yao, and
-Mind Frame Exchange Draft documents unless a particular file states otherwise. It is intended to
-prevent accidental promises before Newvar adopts final source-code, specification-text, patent,
-contribution, and trademark policies.
+This notice records the copyright, patent, contribution, trademark, and compatibility boundaries
+for the Morphz standards workspace. It covers the Structured Context, Agent Trajectory, Harness,
+HNS, Yao, and Mind Frame Exchange documents unless a more specific notice accompanies a file.
 
-This notice is not legal advice and is not a substitute for the final policies or professional
-legal review.
+Draft, Candidate, and Final identify technical maturity. They do not change the copyright license
+that applies to a published version.
 
-## 2. Current status
+## 2. Copyright license
 
-Unless a particular file states otherwise:
+Original specification text, examples, schemas, and public conformance fixtures in this workspace
+are licensed under the [Apache License, Version 2.0](../../LICENSE), subject to the repository
+[license scope](../../LICENSE_SCOPE.md). A file or separately distributed artifact with a more
+specific license notice remains subject to that notice.
 
-- this Draft does not declare a repository-wide source-code license or a specification-text
-  license;
-- rights are reserved to the applicable copyright holders;
-- publication for review does not create an express or implied patent license, patent
-  non-assertion promise, covenant, or essential-claims commitment;
-- availability of Morphz Runtime source code does not by itself grant rights beyond the license
-  expressly attached to that source;
-- Morphz, Newvar, compatibility marks, logos, and other project identifiers are governed separately
-  from copyright and patent permissions;
-- submitting a contribution does not create an additional patent promise beyond a separately
-  adopted written contribution policy.
+## 3. Patent position
 
-Newvar or contributors may own or control patent applications or patents relevant to an
-implementation. This Draft makes no representation about whether any claim is essential, valid,
-enforceable, infringed, or licensed.
+Apache-2.0 Section 3 supplies the patent grant for Contributions to Apache-2.0 material. The grant
+is limited to patent claims licensable by a Contributor that are necessarily infringed by that
+Contributor's Contribution, alone or in combination with the Work to which it was submitted. See
+the project [patent policy](../../PATENTS.md).
 
-## 3. Required decisions before Candidate status
+The current policy does not add a separate standards-essential patent covenant for independent
+implementations beyond rights actually granted by Apache-2.0. Before a specification advances to a
+status that invites independent production implementations or formal compatibility claims, Newvar
+will determine whether a separate essential-claims commitment is needed and subject any such
+commitment to explicit adoption and legal review.
 
-Before inviting public compatibility claims or independent production implementations, Newvar
-SHOULD publish and cross-reference:
+## 4. Contributions
 
-1. the source-code license for Morphz Runtime and the public conformance runner;
-2. the license for normative specification text and test fixtures;
-3. a patent policy covering essential claims, disclosures, exclusions, and contribution effects;
-4. a contribution agreement or inbound-equals-outbound policy consistent with those licenses;
-5. a trademark and compatibility-mark policy;
-6. a legal review of how pending or future patent applications interact with open implementation.
+Contributions intentionally submitted for inclusion in Apache-2.0 material are governed by
+Apache-2.0 Section 5 unless conspicuously marked `Not a Contribution` or covered by a separate
+written agreement. Contributors also provide the Section 3 patent grant within its stated scope and
+must satisfy the provenance rules in [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
-Until those decisions are adopted in writing, no reader or contributor should assume permissions
-that this notice does not expressly grant.
+## 5. Trademarks and compatibility claims
+
+Copyright and patent permissions do not grant rights to Morphz, Yao, Newvar, associated logos,
+official compatibility marks, or certification claims. Accurate nominative references and the
+precise versioned statements permitted by a conformance specification remain subject to the
+[trademark policy](../../TRADEMARKS.md).
+
+Passing a public conformance suite is technical evidence. It does not by itself authorize an
+official logo, a general certification claim, or representation as an official Morphz release.
+
+## 6. Review before stronger standards commitments
+
+Before a specification advances beyond Draft to a maturity level that invites independent
+production implementations, the project SHOULD record:
+
+1. the exact specification, suite, and profile versions covered;
+2. whether an additional standards-essential patent commitment is adopted;
+3. the compatibility statement and any mark that successful implementations may use;
+4. the contribution and disclosure rules applicable to that release; and
+5. the outcome of legal review for known relevant patent applications and third-party material.

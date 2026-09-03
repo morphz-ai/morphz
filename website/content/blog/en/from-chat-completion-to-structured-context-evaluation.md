@@ -134,4 +134,4 @@ If agents are to become durable actors, they need cognitive state they can conti
 
 In this computational model, chat is input and output. Cognition is not a by-product of conversation; it is a structure that can be held, evaluated, committed, and continued. Morphz is a reference implementation of this model and remains subject to continued engineering and empirical validation.
 
-[Read the core concepts](/en/docs/core-concepts), or inspect the implementation on [GitHub](https://github.com/yaowenai/morphz).
+[Read the core concepts](/en/docs/core-concepts), or inspect the implementation on [GitHub](https://github.com/morphz-ai/morphz).

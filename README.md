@@ -2,6 +2,13 @@
 
 Morphz 是一台由 Rust Runtime 承载、运行在大语言模型上的 **S-Expression Cognitive Machine（S 表达式认知机）**。LLM 是可替换的非确定性语义处理器，负责理解、推理与提出认知或行动；Runtime 是确定性事务内核，负责结构、事务、版本、权限、资源边界、持久化与恢复。Agent 是认知机加载身份、Context、能力与行为策略后的实例，不是 Morphz 的基础机器定义。
 
+## 许可证
+
+Morphz 的原创源码、测试、开发工具、技术文档、规范文本和公开一致性测试夹具默认采用
+[Apache License 2.0](LICENSE)。论文、专利文件、网站编辑内容、品牌素材和第三方材料适用
+独立条款；完整边界见[许可证适用范围](LICENSE_SCOPE.zh-CN.md)、[专利政策](PATENTS.zh-CN.md)、
+[商标政策](TRADEMARKS.zh-CN.md)与[第三方声明](THIRD_PARTY_NOTICES.md)。
+
 当前核心能力、验证边界和仍未成熟的方向，统一以 [Morphz Runtime 核心实现状态总览 v1](docs/morphz_runtime_core_implementation_status_v1.md) 为索引。历史设计文档保留演进过程；若其中的旧实施状态与当前源码不一致，以该状态总览和最新专项文档为准。
 
 当前 Agent-Owned Context v1 将状态分成：

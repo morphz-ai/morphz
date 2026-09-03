@@ -15,7 +15,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     title: post.title,
     description: post.description,
     authors: [{ name: post.author }],
-    alternates: { languages: { "zh-CN": `/blog/${slug}`, en: `/en/blog/${slug}` } },
+    alternates: { canonical: `/en/blog/${slug}`, languages: { "zh-CN": `/blog/${slug}`, en: `/en/blog/${slug}` } },
     openGraph: {
       type: "article",
       title: post.title,

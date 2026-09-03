@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     siteName: "Morphz",
     title: "Morphz — S-Expression Cognitive Machine",
     description: "From chat completion to structured Context evaluation.",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Morphz Agent Runtime" }],
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Morphz S-Expression Cognitive Machine" }],
   },
   twitter: {
     card: "summary_large_image",

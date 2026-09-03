@@ -446,6 +446,42 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+.not-found-shell {
+  min-height: 100vh;
+  background: var(--paper);
+}
+.not-found-page {
+  width: min(calc(100% - 40px), 1180px);
+  min-height: 64vh;
+  margin: 0 auto;
+  padding: clamp(110px, 16vw, 190px) 0 100px;
+}
+.not-found-page__code {
+  margin-bottom: 34px;
+  color: var(--red);
+  font: 600 12px/1 var(--font-geist-mono);
+  letter-spacing: .12em;
+}
+.not-found-page h1 {
+  max-width: 850px;
+  font-size: clamp(48px, 8vw, 104px);
+  font-weight: 520;
+  line-height: .98;
+  letter-spacing: -.06em;
+}
+.not-found-page > p:not(.not-found-page__code) {
+  max-width: 620px;
+  margin-top: 32px;
+  color: var(--muted);
+  font-size: clamp(17px, 2vw, 22px);
+}
+.not-found-page__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 46px;
+}
+
 /* --------------------------------------------------------------------------
    Landing experience v2 — kinetic Context evaluation
    The documentation keeps the paper/specification language above. The home
@@ -637,7 +673,7 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 }
 
 .hero-immersive__lead {
-  width: min(610px, 54vw);
+  width: min(540px, 40vw);
   margin: 34px 0 0;
   color: var(--night-muted);
   font-size: clamp(16px, 1.45vw, 19px);

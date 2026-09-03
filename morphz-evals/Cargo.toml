@@ -3,6 +3,9 @@ name = "morphz-evals"
 version = "0.1.0"
 edition = "2021"
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 context-db = ["morphz/context-db"]

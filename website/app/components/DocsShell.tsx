@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { docHref, docsFor, otherLocaleHref, sectionLabels, type DocRecord, type DocSection, type Locale } from "@/lib/docs";
 import { renderMarkdown } from "@/lib/markdown";
+import { SITE_LINKS } from "@/lib/site";
 import { DocSearch } from "./DocSearch";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
@@ -64,7 +65,7 @@ export function DocArticle({ locale, doc }: { locale: Locale; doc: DocRecord }) 
         <div className="doc-article__meta"><span>{sectionLabels[locale][doc.section]}</span><span className="status-badge">{doc.status === "current" ? (locale === "zh" ? "当前实现" : "Current behavior") : (locale === "zh" ? "预览" : "Preview")}</span></div>
         <h1>{doc.title}</h1><p className="doc-article__description">{doc.description}</p>
         <div className="doc-prose" dangerouslySetInnerHTML={{ __html: html }} />
-        <div className="doc-article__footer"><strong>{locale === "zh" ? "发现文档与实际行为不一致？" : "Found a mismatch between docs and behavior?"}</strong><a href="https://github.com/yaowenai/morphz/issues">{locale === "zh" ? "提交问题" : "Open an issue"} →</a></div>
+        <div className="doc-article__footer"><strong>{locale === "zh" ? "发现文档与实际行为不一致？" : "Found a mismatch between docs and behavior?"}</strong><a href={SITE_LINKS.issues}>{locale === "zh" ? "提交问题" : "Open an issue"} →</a></div>
       </article>
     </DocsShell>
   );

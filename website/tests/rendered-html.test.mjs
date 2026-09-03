@@ -22,9 +22,11 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(zh, /认知上下文持有认知/);
   assert.doesNotMatch(zh, /Context-owned cognition|让 Agent 拥有/);
   assert.match(en, /Durable cognition/);
+  assert.match(en, /aria-label="Context is no longer a transcript\."/);
   for (const html of [zh, en]) {
     assert.match(html, /Morphz/);
-    assert.match(html, /github\.com\/yaowenai\/morphz/);
+    assert.match(html, /github\.com\/morphz-ai\/morphz/);
+    assert.doesNotMatch(html, /github\.com\/yaowenai\/morphz/);
     assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
   }
 });
@@ -103,9 +105,27 @@ test("keeps the technical main site separate from the live persona product", asy
 test("returns not found for an unknown documentation slug", async () => {
   const response = await render("/docs/not-a-real-page");
   assert.equal(response.status, 404);
+  assert.match(await response.text(), /UNRESOLVED REFERENCE/);
 });
 
 test("returns not found for an unknown journal slug", async () => {
   const response = await render("/blog/not-a-real-essay");
   assert.equal(response.status, 404);
+});
+
+test("publishes crawler discovery files", async () => {
+  const [robotsResponse, sitemapResponse] = await Promise.all([
+    render("/robots.txt"),
+    render("/sitemap.xml"),
+  ]);
+  assert.equal(robotsResponse.status, 200);
+  assert.equal(sitemapResponse.status, 200);
+  const [robots, sitemap] = await Promise.all([
+    robotsResponse.text(),
+    sitemapResponse.text(),
+  ]);
+  assert.match(robots, /Sitemap: https:\/\/morphz\.ai\/sitemap\.xml/);
+  assert.match(sitemap, /https:\/\/morphz\.ai\/en\/docs\/core-concepts/);
+  assert.match(sitemap, /hreflang="zh-CN"/);
+  assert.match(sitemap, /hreflang="en"/);
 });

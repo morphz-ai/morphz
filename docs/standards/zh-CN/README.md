@@ -87,7 +87,8 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 
 [项目治理](../../../GOVERNANCE.zh-CN.md)与
 [MEP-0001](../../meps/zh-CN/MEP-0001-specification-governance.md)定义全部标准与官方实现如何演进。
-[知识产权状态说明](IPR_STATUS.md)记录 Draft 阶段临时的著作权、专利、贡献和商标边界。
+现行[知识产权状态说明](IPR_STATUS.md)记录著作权、专利、贡献、商标与兼容性边界。Draft 状态
+描述技术成熟度，并不会暂停已经公开的许可证。
 
 ## 权威顺序
 

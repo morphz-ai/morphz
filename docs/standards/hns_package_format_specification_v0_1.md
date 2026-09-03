@@ -425,9 +425,9 @@ multi-entry profiles. This section is informative and is not a conformance claim
 
 ## 18. Intellectual-property status
 
-This Draft is governed by the provisional [IPR Status Notice](IPR_STATUS.md). Publication for review
-does not create an express or implied patent license, non-assertion promise, trademark license, or
-certification right.
+This Draft is licensed and governed by the active [IPR Status Notice](IPR_STATUS.md). Apache-2.0
+provides its stated copyright and patent grants; trademark, compatibility-mark, and certification
+rights remain separate.
 
 ## 19. Errata and interpretations
 

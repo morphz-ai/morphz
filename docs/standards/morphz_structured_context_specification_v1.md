@@ -366,10 +366,10 @@ implementation's overall security.
 
 ## 15. Intellectual-property status
 
-This Draft is governed by the provisional [IPR Status Notice](IPR_STATUS.md). Publication for review
-does not create an express or implied patent license, non-assertion promise, trademark license, or
-certification right. Implementers MUST NOT infer such rights from this Draft or from the availability
-of Morphz Runtime source code.
+This Draft is licensed and governed by the active [IPR Status Notice](IPR_STATUS.md). Apache-2.0
+provides its stated copyright and patent grants; trademark, compatibility-mark, and certification
+rights remain separate. Implementers MUST NOT infer a broader standards-essential patent
+commitment than the rights actually granted by Apache-2.0.
 
 ## 16. Errata and interpretations
 

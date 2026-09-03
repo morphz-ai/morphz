@@ -149,10 +149,10 @@ export function LandingPage({ locale }: { locale: Locale }) {
         </div>
         <div className="hero-immersive__copy" data-reveal>
           <p className="eyebrow">{t.eyebrow}</p>
-          <h1>
+          <h1 aria-label={t.title.join(" ")}>
             {t.title.map((line, index) => (
               <span className={index === 2 ? "hero-immersive__accent" : ""} key={line}>
-                {line}
+                {line}{index < t.title.length - 1 ? " " : null}
               </span>
             ))}
           </h1>

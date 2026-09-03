@@ -231,8 +231,8 @@ An implementation loses an official claim when:
 - a material security or semantic defect invalidates the result.
 
 The compatibility mark and the Morphz name are governed separately from source-code and
-specification-text licenses. The provisional [IPR Status Notice](IPR_STATUS.md) grants no mark or
-certification right.
+specification-text licenses. The active [IPR Status Notice](IPR_STATUS.md) and project trademark
+policy grant no general mark or certification right.
 
 ## 9. Current implementation mapping
 
@@ -251,8 +251,8 @@ claiming SC-Core v1 conformance, Newvar MUST:
    sufficient;
 3. publish at least one external adapter boundary;
 4. produce a clean signed report against a released Morphz Runtime artifact;
-5. publish final source-code, specification-text, patent, contribution, compatibility, and trademark
-   policies.
+5. ship the active licensing package with the release and record the essential-patent and
+   compatibility-mark decisions required for the selected specification maturity.
 
 ## 10. Suite evolution and errata
 

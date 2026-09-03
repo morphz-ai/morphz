@@ -22,6 +22,9 @@ default-members = ["morphz"]
 # file pins and the only one the suite is actually run against. Keep it in
 # step with `rust-toolchain.toml`.
 rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/morphz-ai/morphz"
+homepage = "https://morphz.ai"
 
 [workspace.lints]
 

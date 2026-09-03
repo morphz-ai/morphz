@@ -98,8 +98,9 @@ category and conformance semantics implementation-independent.
 
 [Project governance](../../GOVERNANCE.md) and
 [MEP-0001](../meps/MEP-0001-specification-governance.md) define how all standards and the official
-implementation evolve. The [IPR Status Notice](IPR_STATUS.md) records the provisional copyright,
-patent, contribution, and trademark position while the documents remain Drafts.
+implementation evolve. The active [IPR Status Notice](IPR_STATUS.md) records the copyright,
+patent, contribution, trademark, and compatibility boundaries. Draft status describes technical
+maturity; it does not suspend the published license.
 
 ## Authority order
 

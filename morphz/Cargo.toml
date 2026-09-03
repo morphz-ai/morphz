@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 rust-version.workspace = true
 default-run = "morphz"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = ["context-db"]

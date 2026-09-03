@@ -134,4 +134,4 @@ Morphz 仍处于活跃开发阶段。我们公开当前可以验证的行为，�
 
 在这一计算模型中，聊天是一种输入输出；认知不是聊天的副产品，而是一种可以被持有、求值、提交并继续的结构。Morphz 是这套模型的参考实现，也是一项仍需通过工程实现和实验结果持续验证的工作。
 
-[阅读 Morphz 的核心概念](/docs/core-concepts)，或者在 [GitHub](https://github.com/yaowenai/morphz) 上审视它的实现。
+[阅读 Morphz 的核心概念](/docs/core-concepts)，或者在 [GitHub](https://github.com/morphz-ai/morphz) 上审视它的实现。
