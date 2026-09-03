@@ -4,6 +4,13 @@ import test from 'node:test'
 
 const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const indexCss = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8')
+const mainSource = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8')
+const dashboardViewportSource = readFileSync(
+  new URL('../src/app/dashboardViewport.ts', import.meta.url),
+  'utf8',
+)
 const threadCausalCardSource = readFileSync(
   new URL('../src/pages/ThreadCausalCard.tsx', import.meta.url),
   'utf8',
@@ -190,8 +197,8 @@ test('context budget control opens above the clipped composer status row', () =>
   )
   assert.match(
     appCss,
-    /\.context-budget-popover\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto;[^}]*max-height:\s*calc\(100dvh - 24px\)/s,
-    'the context budget editor must use viewport coordinates and remain bounded on small displays',
+    /\.context-budget-popover\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*auto;[^}]*max-height:\s*calc\(var\(--morphz-visual-height,\s*100dvh\) - 24px\)/s,
+    'the context budget editor must use measured visual-viewport coordinates and remain bounded on small displays',
   )
 })
 
@@ -618,11 +625,40 @@ test('composer separates stable policy controls from read-only telemetry', () =>
     /@media \(max-width:\s*820px\)[\s\S]*?\.composer-footer-row\s*\{\s*display:\s*none;\s*\}/s,
     'phone layouts remove the complete desktop footer row instead of hiding shortcuts while retaining an empty layout track',
   )
+})
+
+test('mobile shell follows the usable visual viewport without a scrollable root gap', () => {
+  assert.match(indexHtml, /viewport-fit=cover/)
+  assert.match(indexHtml, /interactive-widget=resizes-content/)
+  assert.match(
+    indexCss,
+    /html,[\s\S]*?body,[\s\S]*?#root\s*\{[^}]*height:\s*100%[^}]*overflow:\s*hidden/s,
+  )
+  assert.match(
+    indexCss,
+    /body\s*\{[^}]*position:\s*fixed[^}]*top:\s*var\(--morphz-visual-top[^}]*height:\s*var\(--morphz-visual-height[^}]*overscroll-behavior:\s*none/s,
+  )
   assert.match(
     appCss,
-    /\.morphz-shell\s*\{[\s\S]*?height:\s*100vh;\s*height:\s*100dvh;/s,
-    'the shell uses the dynamic mobile viewport while retaining a legacy fallback',
+    /\.morphz-shell\s*\{[\s\S]*?height:\s*100vh;\s*height:\s*100dvh;\s*height:\s*var\(--morphz-visual-height,\s*100dvh\)[\s\S]*?padding-top:\s*var\(--morphz-safe-top\)/s,
+    'the shell must use the measured visual viewport and reserve the top device safe area',
   )
+  assert.match(
+    appCss,
+    /@media \(hover:\s*none\) and \(pointer:\s*coarse\)\s*\{\s*\.composer-footer-row\s*\{\s*display:\s*none;/s,
+    'touch phones using a desktop-sized CSS viewport must still hide the desktop telemetry row',
+  )
+  assert.match(appCss, /max\(5px,\s*var\(--morphz-safe-bottom\)\)/)
+  assert.match(
+    appCss,
+    /\.dashboard-auth-shell\s*\{[^}]*height:\s*100%[^}]*padding:\s*var\(--morphz-safe-top\)[^}]*var\(--morphz-safe-bottom\)/s,
+    'the authentication surface must use the same visual viewport and device safe areas',
+  )
+  assert.match(mainSource, /installDashboardViewportGuard\(\)/)
+  assert.match(dashboardViewportSource, /visualViewport/)
+  assert.match(dashboardViewportSource, /viewport\.offsetTop/)
+  assert.match(dashboardViewportSource, /target\.scrollTo\(0, 0\)/)
+  assert.match(dashboardViewportSource, /focusout/)
 })
 
 test('composer activity dots cannot collapse under long task text', () => {

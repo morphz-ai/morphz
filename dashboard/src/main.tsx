@@ -6,6 +6,13 @@ import './index.css'
 import App from './App.tsx'
 import { DashboardAuthGate } from './DashboardAuthGate.tsx'
 import { DASHBOARD_BASE_PATH } from './api/deployment.ts'
+import { installDashboardViewportGuard } from './app/dashboardViewport.ts'
+
+const disposeDashboardViewportGuard = installDashboardViewportGuard()
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(disposeDashboardViewportGuard)
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
