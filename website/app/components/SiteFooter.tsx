@@ -4,29 +4,27 @@ import { sitePath, SITE_LINKS } from "@/lib/site";
 
 const copy = {
   zh: {
-    statement: "从聊天补全走向结构化上下文求值。",
+    statement: "让一个智能体在同一认知上下文中维护认知，并发推进多个目标。",
     maintained: "由新变元创造并维护。",
-    technical: "技术产品",
+    technical: "产品与研究",
     ecosystem: "项目与团队",
     essay: "技术文章",
     paper: "研究论文",
     docs: "公开文档",
     download: "下载与运行",
     source: "GitHub 源码",
-    live: "实时人格",
     company: "新变元",
   },
   en: {
-    statement: "From chat completion to Structured Context evaluation.",
+    statement: "One Agent maintains cognition and advances concurrent objectives inside one Context.",
     maintained: "Created and maintained by Newvar.",
-    technical: "Technical product",
+    technical: "Product and research",
     ecosystem: "Project and company",
     essay: "Technical essay",
     paper: "Research paper",
     docs: "Documentation",
     download: "Download and run",
     source: "GitHub source",
-    live: "Live agent",
     company: "Newvar",
   },
 } as const;
@@ -61,7 +59,6 @@ export function SiteFooter({ locale }: { locale: Locale }) {
           <span>{t.ecosystem}</span>
           <div className="site-footer__links">
             <a href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
-            <a href={SITE_LINKS.liveAgent}>{t.live}<span aria-hidden="true">↗</span></a>
             <a href={SITE_LINKS.company}>{t.company}<span aria-hidden="true">↗</span></a>
           </div>
         </section>

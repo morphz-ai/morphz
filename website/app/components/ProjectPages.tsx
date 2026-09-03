@@ -6,24 +6,24 @@ import { SiteHeader } from "./SiteHeader";
 
 const paperCopy = {
   zh: {
-    eyebrow: "MORPHZ / PREPRINT / 2026",
+    eyebrow: "预印本 · 2026",
     title: "结构化上下文上的非确定性认知符号求值",
     byline: "Raymond Ren · 双语预印本",
-    lead: "论文给出 Morphz 计算模型的形式定义、实现边界与分层实验：大语言模型在 Agent 自有的结构化上下文上求值认知符号，确定性运行时保留对权限、版本、真实观察与权威状态提交的控制。",
+    lead: "论文给出 Morphz 计算模型的形式定义、实现边界与分层实验：大语言模型在智能体自有的结构化上下文上求值认知符号，确定性运行时保留对权限、版本、真实观察与权威状态提交的控制。",
     read: "阅读中文 PDF",
-    other: "English PDF",
-    record: "检查研究记录",
-    questionLabel: "核心问题",
+    other: "英文 PDF",
+    record: "查看实验材料",
+    questionLabel: "计算模型",
     question: "能否把大语言模型组织为结构化、持久上下文上的非确定性认知符号求值器，同时让现实副作用和权威状态继续由运行时控制？",
-    contributionsLabel: "论文建立的三层边界",
+    contributionsLabel: "主要内容",
     contributions: [
       ["01", "计算身份", "模型不是消息补全器，而是受输入结构、算子说明和输出契约约束的非确定性认知求值器。"],
       ["02", "结果回流", "程序、认知对象和求值结果共享递归表示；结果能够进入当前绑定或成为后续任务引用的持久对象。"],
       ["03", "权威提交", "候选认知与现实状态分离，运行时负责校验、权限、版本、事务、调度和可恢复执行。"],
     ],
-    evidenceLabel: "证据范围",
-    evidence: "论文依次验证机制可执行性、跨模型适用性、经验迁移和复杂终端任务中的系统级外部效度。每类实验的协议、失败样本与结论边界均保留在研究记录中。",
-    related: "先读面向更广泛读者的技术文章",
+    evidenceLabel: "实验与结果",
+    evidence: "分层实验覆盖机制可执行性、跨模型适用性、经验迁移和复杂终端任务中的系统级外部效度。实验协议、运行数据与失败样本随研究材料公开。",
+    related: "阅读计算模型的技术介绍",
   },
   en: {
     eyebrow: "MORPHZ / PREPRINT / 2026",
@@ -32,42 +32,42 @@ const paperCopy = {
     lead: "The paper defines the Morphz computational model, its implementation boundary, and layered experiments: an LLM evaluates cognitive symbols over agent-owned Structured Context while a deterministic runtime retains authority over capabilities, versions, real observations, and committed state.",
     read: "Read the English PDF",
     other: "中文 PDF",
-    record: "Inspect the research record",
-    questionLabel: "Research question",
+    record: "View experiment materials",
+    questionLabel: "Computational model",
     question: "Can an LLM be organized as a nondeterministic cognitive-symbol evaluator over durable Structured Context while real-world effects and authoritative state remain under runtime control?",
-    contributionsLabel: "Three boundaries established by the paper",
+    contributionsLabel: "Main contributions",
     contributions: [
       ["01", "Computational identity", "The model is not merely a message completer. It is a nondeterministic cognitive evaluator constrained by input structure, operator semantics, and output contracts."],
       ["02", "Result re-entry", "Programs, cognitive objects, and evaluation results share a recursive representation, allowing results to enter bindings or become durable objects referenced by later work."],
       ["03", "Authoritative commit", "Candidate cognition is separated from reality. The runtime owns validation, capabilities, versions, transactions, scheduling, and recoverable execution."],
     ],
-    evidenceLabel: "Evidence scope",
-    evidence: "The paper evaluates mechanism executability, cross-model applicability, experience transfer, and system-level external validity on complex terminal tasks. Protocols, failures, and claim boundaries remain available in the research record.",
-    related: "Read the broader technical essay first",
+    evidenceLabel: "Experiments and results",
+    evidence: "Layered experiments cover mechanism executability, cross-model applicability, experience transfer, and system-level external validity on complex terminal tasks. Protocols, run data, and failure samples are published with the research materials.",
+    related: "Read the technical introduction to the computational model",
   },
 } as const;
 
 const downloadCopy = {
   zh: {
-    eyebrow: "MORPHZ / NATIVE RUNTIME",
+    eyebrow: "原生运行",
     title: "在你的机器上运行 Morphz。",
-    lead: "Morphz 是本地优先的原生运行时。macOS、Linux 和 Windows 共享同一套 Context、调度、Provider 与恢复语义；Dashboard 随 Runtime 一同提供。",
+    lead: "Morphz 是本地优先的原生运行时。macOS、Linux 和 Windows 共享同一套认知上下文、调度、模型服务与恢复语义；控制台随 Morphz 一同提供。",
     releases: "查看预编译版本",
     source: "从源码构建",
     current: "当前发布方式",
-    currentBody: "源码构建是当前权威路径；与版本标签绑定的预编译归档将在 GitHub Releases 中提供。任何安装包都不改变本地数据与权限边界。",
+    currentBody: "源码构建是当前权威路径；与版本标签绑定的预编译归档将在 GitHub 发布页中提供。任何安装包都不改变本地数据与权限边界。",
     platformsLabel: "原生平台",
     platforms: [
       ["macOS", "Apple Silicon · Intel", "cargo build --release\n./target/release/morphz setup", "原生沙箱与系统钥匙串"],
       ["Linux", "x86_64", "cargo build --release\n./target/release/morphz setup", "Bubblewrap 原生隔离"],
       ["Windows", "x86_64 · Native", "cargo build --release\n.\\target\\release\\morphz.exe setup", "ConPTY 与 Windows 原生沙箱"],
     ],
-    windows: "Windows 版是原生程序，WSL 只是可选运行方式，不是首选入口。发布归档同时包含 Morphz、Edge 与 Windows 沙箱辅助程序。",
+    windows: "Windows 版是原生程序，WSL 只是可选运行方式，不是首选入口。发布归档同时包含 Morphz、边缘节点与 Windows 沙箱辅助程序。",
     afterLabel: "安装之后",
     after: [
-      ["01", "连接模型服务", "Setup 支持 API 密钥以及 Runtime 已实现的订阅 OAuth 登录流程。"],
+      ["01", "连接模型服务", "设置向导支持 API 密钥以及 Morphz 已实现的订阅 OAuth 登录流程。"],
       ["02", "验证真实响应", "先运行诊断，再完成一次真正到达模型服务的请求。"],
-      ["03", "选择使用界面", "在 TUI 中直接工作，或通过 Dashboard 检查 Context、线程、任务与执行目标。"],
+      ["03", "选择使用界面", "在终端界面中直接工作，或通过控制台检查认知上下文、线程、任务与执行节点。"],
     ],
     guide: "打开完整安装指南",
   },
@@ -100,7 +100,7 @@ export function PaperPage({ locale }: { locale: Locale }) {
   const t = paperCopy[locale];
   const otherLocale = locale === "zh" ? "en" : "zh";
   return (
-    <main>
+    <main className="content-site">
       <SiteHeader locale={locale} otherLanguageHref={sitePath(otherLocale, "/paper")} />
       <article className="project-page paper-page">
         <header className="project-page__header">
@@ -147,7 +147,7 @@ export function DownloadPage({ locale }: { locale: Locale }) {
   const t = downloadCopy[locale];
   const otherLocale = locale === "zh" ? "en" : "zh";
   return (
-    <main>
+    <main className="content-site">
       <SiteHeader locale={locale} otherLanguageHref={sitePath(otherLocale, "/download")} />
       <article className="project-page download-page">
         <header className="project-page__header">

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 
 async function render(path = "/") {
@@ -18,15 +18,60 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.equal(zhResponse.status, 200);
   assert.equal(enResponse.status, 200);
   const [zh, en] = await Promise.all([zhResponse.text(), enResponse.text()]);
-  assert.match(zh, /让代理拥有/);
-  assert.match(zh, /认知上下文持有认知/);
-  assert.doesNotMatch(zh, /Context-owned cognition|让 Agent 拥有/);
-  assert.match(en, /Durable cognition/);
-  assert.match(en, /aria-label="Context is no longer a transcript\."/);
+  assert.match(zh, /一个智能体。/);
+  assert.match(zh, /为长期并发工作而生/);
+  assert.match(zh, /查看功能/);
+  assert.match(zh, /核心功能/);
+  assert.match(zh, /认知上下文自我维护/);
+  assert.match(zh, /认知上下文不被自动有损压缩/);
+  assert.match(zh, /认知帧通过证据持续修订/);
+  assert.match(zh, /当前与近期会话进入上下文/);
+  assert.match(zh, /最近 24 小时内至多 50 个近期会话/);
+  assert.match(zh, /智能体工作时，仍能继续对话/);
+  assert.match(zh, /执行节点/);
+  assert.match(zh, /认知应用/);
+  assert.match(zh, /智能体运行的/);
+  assert.match(zh, /新范式。/);
+  assert.match(zh, /Morphz 是一款面向长期并发工作的开源智能体/);
+  assert.match(zh, /认知操作系统内核/);
+  assert.match(zh, /会话多路输入输出/);
+  assert.match(zh, /认知帧 · 会话换入 \/ 换出/);
+  assert.match(zh, /线程与目标调度/);
+  assert.match(zh, /能力约束的执行接口/);
+  assert.doesNotMatch(zh, /home-cognitive-os__paren/);
+  assert.match(zh, /认知上下文编码/);
+  assert.match(zh, /查看源码/);
+  assert.match(zh, /aria-label="切换到英文"[^>]*>EN<\/a>/);
+  assert.match(en, /aria-label="Switch to Chinese"[^>]*>CN<\/a>/);
+  assert.match(zh, /class="context-preview__brackets"/);
+  assert.match(zh, /preserveAspectRatio="none"/);
+  assert.doesNotMatch(zh, /开发者预览|MORPHZ \/ DEVELOPER PREVIEW|CONTEXT ENCODING|CONTEXT SELF-MAINTENANCE|SESSION WORKING SET|检视源码|一个 Agent/);
+  assert.doesNotMatch(zh, /会话结束，/);
+  assert.doesNotMatch(zh, /Mind 不被压缩|NO MIND COMPACTION|挂载同一 Context|已同步|证据路径|先看结果|再追问|为什么能做到|不会被包装|论文实验继续运行|准备开源发布/);
+  assert.match(en, /One Agent\./);
+  assert.match(en, /A new operating/);
+  assert.match(en, /model for agents\./);
+  assert.match(en, /Morphz is an open-source agent for long-running, concurrent work/);
+  assert.match(en, /cognitive operating-system core/);
+  assert.match(en, /Frame · Session swap in \/ swap out/);
+  assert.doesNotMatch(en, /Frame · Context swap in \/ swap out|Frame and Context working-set swapping/);
+  assert.match(en, /CONTEXT SELF-MAINTENANCE/);
+  assert.match(en, /No automatic lossy Context compaction/);
+  assert.match(en, /Current and recent Sessions enter Context/);
+  assert.match(en, /up to 50 Sessions active within the last 24 hours/);
+  assert.match(en, /Keep talking while the Agent works/);
+  assert.match(en, /Execution Targets/);
+  assert.match(en, /COGNITIVE APPLICATIONS/);
+  assert.match(en, /CONTEXT ENCODING/);
+  assert.doesNotMatch(en, /DEVELOPER PREVIEW/i);
+  assert.doesNotMatch(en, /NO MIND COMPACTION|compacting the Mind|Sessions mounted in one Context|synced|EVIDENCE PATH|See the behavior|ask how it holds|WHY IT WORKS|not presented as a production promise|Keep the paper experiment|Prepare the open-source release/i);
   for (const html of [zh, en]) {
     assert.match(html, /Morphz/);
     assert.match(html, /github\.com\/morphz-ai\/morphz/);
     assert.doesNotMatch(html, /github\.com\/yaowenai\/morphz/);
+    assert.doesNotMatch(html, /共享认知 Agent|Shared-Mind Agent/);
+    assert.doesNotMatch(html, /实时人格|Live agent/);
+    assert.doesNotMatch(html, /S 表达式认知机|S-Expression Cognitive Machine/);
     assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
   }
 });
@@ -44,6 +89,51 @@ test("renders documentation indexes and bilingual article routes", async () => {
   assert.doesNotMatch(html[4], /Context、认知帧与 Recall/);
   assert.match(html[2], /当前实现/);
   assert.match(html[3], /Current behavior/);
+  assert.match(html[2], /会话是认知上下文中的一等交互与执行对象/);
+  assert.match(html[2], /认知上下文不被自动有损压缩/);
+  assert.match(html[3], /A Session is a first-class interaction and execution object inside Context/);
+  assert.match(html[3], /does not let the Runtime silently rewrite the entire Context/);
+});
+
+test("uses the Dashboard electric-cyan palette across the public site", async () => {
+  const css = await readFile(new URL("../app/clean-theme.css", import.meta.url), "utf8");
+  assert.match(css, /--accent: #168997;/);
+  assert.match(css, /--accent-strong: #08636e;/);
+  assert.match(css, /--accent-bright: #56d0de;/);
+  assert.doesNotMatch(css, /#315bea|#2448ca|#edf1ff/i);
+});
+
+test("keeps mobile navigation separate from the language switch", async () => {
+  const header = await readFile(new URL("../app/components/SiteHeader.tsx", import.meta.url), "utf8");
+  assert.match(header, /<details className="site-menu">[\s\S]*?<div className="site-header__meta">/);
+  assert.match(header, /site-menu__icon/);
+  assert.match(header, /aria-label=\{t\.menu\}/);
+  assert.doesNotMatch(header, /<summary>\{t\.menu\}<span aria-hidden="true">\+<\/span><\/summary>/);
+});
+
+test("ships scroll motion as accessible progressive enhancement", async () => {
+  const [motion, layout, controller] = await Promise.all([
+    readFile(new URL("../app/motion.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/SiteMotion.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(layout, /<SiteMotion \/>/);
+  assert.match(controller, /IntersectionObserver/);
+  assert.match(controller, /prefers-reduced-motion: reduce/);
+  assert.match(controller, /--signature-left-x/);
+  assert.match(controller, /--signature-progress/);
+  assert.match(controller, /--card-drift/);
+  assert.match(controller, /home-mechanism__steps.*visibleProgress/);
+  assert.match(motion, /home-capability-domain__signature/);
+  assert.match(motion, /--row-indent/);
+  assert.match(motion, /home-capability-domain__signature\.is-visible \.home-capability-signature__main/);
+  assert.match(motion, /@keyframes signatureSweep/);
+  assert.match(motion, /signature-concurrency__rays/);
+  assert.match(motion, /signature-concurrency__center/);
+  assert.match(motion, /signature-execution-commands/);
+  assert.match(motion, /--command-progress/);
+  assert.match(motion, /clip-path/);
+  assert.match(motion, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test("renders the bilingual journal and its first essay", async () => {
@@ -52,8 +142,8 @@ test("renders the bilingual journal and its first essay", async () => {
   const responses = await Promise.all(routes.map(render));
   for (const response of responses) assert.equal(response.status, 200);
   const html = await Promise.all(responses.map((response) => response.text()));
-  assert.match(html[0], /代理认知与运行时的技术说明/);
-  assert.match(html[1], /Technical notes on agent cognition and runtimes/);
+  assert.match(html[0], /Morphz 技术文章/);
+  assert.match(html[1], /Morphz technical articles/);
   assert.match(html[2], /从聊天补全到结构化上下文求值/);
   assert.match(html[2], /聊天历史不是认知状态/);
   assert.match(html[2], /作者/);
@@ -91,12 +181,13 @@ test("renders the bilingual paper and native distribution pages", async () => {
   }
 });
 
-test("keeps the technical main site separate from the live persona product", async () => {
+test("does not advertise the unpublished online Morphz instance", async () => {
   const response = await render("/");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /chat\.morphz\.ai/);
-  assert.match(html, /实时人格/);
+  assert.doesNotMatch(html, /chat\.morphz\.ai/);
+  assert.doesNotMatch(html, /与 Morphz 对话|在线实例/);
+  assert.doesNotMatch(html, /实时人格/);
   assert.match(html, /论文/);
   assert.match(html, /下载/);
   assert.doesNotMatch(html, /创建我的 Agent|私有 Agent|个人 Agent/);

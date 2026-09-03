@@ -29,8 +29,8 @@ export function CognitiveField() {
     if (!context) return;
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const particles: Particle[] = Array.from({ length: 58 }, (_, index) => ({
-      angle: (index / 58) * Math.PI * 2 + Math.random() * 0.3,
+    const particles: Particle[] = Array.from({ length: 34 }, (_, index) => ({
+      angle: (index / 34) * Math.PI * 2 + Math.random() * 0.3,
       radius: 0.18 + Math.random() * 0.42,
       speed: 0.000035 + Math.random() * 0.000075,
       size: 0.7 + Math.random() * 1.8,
@@ -83,25 +83,12 @@ export function CognitiveField() {
       const cy = height * (width < 820 ? 0.32 : 0.44) + pointerY * 22 - scroll * 28;
       const scale = Math.min(width, height);
 
-      const haze = context.createRadialGradient(cx, cy, 0, cx, cy, scale * 0.42);
-      haze.addColorStop(0, "rgba(91, 128, 255, .18)");
-      haze.addColorStop(0.28, "rgba(91, 128, 255, .055)");
+      const haze = context.createRadialGradient(cx, cy, 0, cx, cy, scale * 0.38);
+      haze.addColorStop(0, "rgba(91, 128, 255, .1)");
+      haze.addColorStop(0.28, "rgba(91, 128, 255, .035)");
       haze.addColorStop(1, "rgba(91, 128, 255, 0)");
       context.fillStyle = haze;
       context.fillRect(0, 0, width, height);
-
-      context.save();
-      context.translate(pointerX * -12, pointerY * -10);
-      for (let ring = 0; ring < 5; ring += 1) {
-        const radiusX = scale * (0.105 + ring * 0.054);
-        const radiusY = radiusX * (0.45 + ring * 0.025);
-        context.beginPath();
-        context.ellipse(cx, cy, radiusX, radiusY, -0.28 + ring * 0.11, 0, Math.PI * 2);
-        context.strokeStyle = `rgba(143, 164, 255, ${0.13 - ring * 0.015})`;
-        context.lineWidth = 0.8;
-        context.stroke();
-      }
-      context.restore();
 
       particles.forEach((particle, index) => {
         const motion = reduceMotion ? 0 : time * particle.speed;
@@ -109,22 +96,6 @@ export function CognitiveField() {
         const radius = particle.radius * scale;
         const px = cx + Math.cos(angle) * radius * (1.22 + particle.layer * 0.13) + pointerX * (8 + particle.layer * 9);
         const py = cy + Math.sin(angle) * radius * 0.53 + pointerY * (8 + particle.layer * 7);
-        const nearCore = index % 5 === 0;
-
-        if (nearCore) {
-          context.beginPath();
-          context.moveTo(px, py);
-          context.quadraticCurveTo(
-            (px + cx) / 2 + Math.sin(angle) * 45,
-            (py + cy) / 2 - Math.cos(angle) * 35,
-            cx,
-            cy,
-          );
-          context.strokeStyle = `rgba(118, 145, 255, ${particle.alpha * 0.16})`;
-          context.lineWidth = 0.7;
-          context.stroke();
-        }
-
         context.beginPath();
         context.arc(px, py, particle.size, 0, Math.PI * 2);
         context.fillStyle = index % 11 === 0
@@ -134,14 +105,14 @@ export function CognitiveField() {
       });
 
       const pulse = reduceMotion ? 0.5 : (Math.sin(time * 0.0022) + 1) / 2;
-      const core = context.createRadialGradient(cx, cy, 0, cx, cy, 46 + pulse * 12);
-      core.addColorStop(0, "rgba(245, 248, 255, .98)");
-      core.addColorStop(0.08, "rgba(170, 190, 255, .9)");
-      core.addColorStop(0.24, "rgba(82, 116, 255, .35)");
+      const core = context.createRadialGradient(cx, cy, 0, cx, cy, 34 + pulse * 8);
+      core.addColorStop(0, "rgba(245, 248, 255, .72)");
+      core.addColorStop(0.08, "rgba(170, 190, 255, .56)");
+      core.addColorStop(0.24, "rgba(82, 116, 255, .2)");
       core.addColorStop(1, "rgba(63, 96, 230, 0)");
       context.fillStyle = core;
       context.beginPath();
-      context.arc(cx, cy, 58 + pulse * 8, 0, Math.PI * 2);
+      context.arc(cx, cy, 42 + pulse * 6, 0, Math.PI * 2);
       context.fill();
 
       if (!reduceMotion) frame = requestAnimationFrame(draw);

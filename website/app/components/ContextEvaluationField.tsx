@@ -2,74 +2,83 @@ import type { Locale } from "@/lib/docs";
 
 const copy = {
   zh: {
-    title: "一次上下文求值",
-    status: "运行时已提交",
-    input: "会话输入",
-    inputBody: "继续昨天没有完成的发布准备。",
-    structure: "结构选择",
-    frame: "认知帧",
-    objective: "目标",
-    recall: "召回",
-    operator: "模型求值",
-    commit: "持久状态",
-    commitBody: "修订后的认知与下一步行动被事务性提交。",
-    continuity: "同一认知上下文 · 新会话可继续",
+    eyebrow: "认知上下文编码",
+    title: "一个认知上下文，承载对话、目标与执行。",
+    mode: "求值",
+    rows: [
+      ["认知帧", "保留、修订、退役与恢复都经过显式事务", "版本化"],
+      ["目标 · 线程", "长期目标与因果工作线分别推进", "可持续"],
+      ["执行节点", "任务路由到具备相应能力的节点", "有边界"],
+    ],
+    transaction: "上下文事务",
+    transactionBody: "智能体提出认知变换，运行时校验版本、权限、因果与提交边界。",
+    operations: "derive · revise · retire · restore",
   },
   en: {
-    title: "One context evaluation",
-    status: "runtime committed",
-    input: "Session input",
-    inputBody: "Continue the release work left unfinished yesterday.",
-    structure: "Structure selected",
-    frame: "Frame",
-    objective: "Objective",
-    recall: "Recall",
-    operator: "Model evaluation",
-    commit: "Durable state",
-    commitBody: "Revised cognition and the next action are committed transactionally.",
-    continuity: "same Context · another Session can continue",
+    eyebrow: "CONTEXT ENCODING",
+    title: "One Context carries dialogue, goals, and execution.",
+    mode: "EVALUATE",
+    rows: [
+      ["SESSION WORKING SET", "Sessions swap in or out for this Evaluation", "FULL / META"],
+      ["OBJECTIVE · THREAD", "Durable goals and causal work advance separately", "DURABLE"],
+      ["EXECUTION TARGET", "Work routes to a node with the required capabilities", "SCOPED"],
+    ],
+    transaction: "Context Transaction",
+    transactionBody: "The Agent proposes cognitive change; the Runtime validates version, authority, causality, and commit boundaries.",
+    operations: "derive · revise · retire · restore",
   },
 } as const;
 
 export function ContextEvaluationField({ locale }: { locale: Locale }) {
   const t = copy[locale];
+
   return (
-    <figure className="evaluation-field evaluation-field--kinetic" aria-labelledby="evaluation-field-title">
-      <figcaption className="evaluation-field__caption">
-        <span id="evaluation-field-title">{t.title}</span>
-        <span className="evaluation-field__status"><i aria-hidden="true" />{t.status}</span>
+    <figure className="context-preview" aria-labelledby="context-preview-title">
+      <figcaption>
+        <span>{t.eyebrow}</span>
+        <small>{t.mode}</small>
       </figcaption>
-      <div className="evaluation-field__kinetic-body">
-        <div className="evaluation-field__source">
-          <span>01 · {t.input}</span>
-          <p>{t.inputBody}</p>
-        </div>
-        <div className="evaluation-field__expression" aria-label={t.operator}>
-          <div className="evaluation-field__expression-meta">
-            <span>02 · {t.structure}</span>
-            <span>03 · {t.operator}</span>
+      <h2 id="context-preview-title" className="context-preview__title">{t.title}</h2>
+      <div className="context-preview__expression">
+        <svg
+          className="context-preview__brackets"
+          viewBox="0 0 1000 600"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id={`context-bracket-${locale}`} x1="0" y1="0" x2="0" y2="600" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stopColor="var(--accent)" stopOpacity="0.18" />
+              <stop offset="0.28" stopColor="var(--accent)" stopOpacity="0.76" />
+              <stop offset="0.72" stopColor="var(--accent)" stopOpacity="0.76" />
+              <stop offset="1" stopColor="var(--accent)" stopOpacity="0.18" />
+            </linearGradient>
+          </defs>
+          <g className="context-preview__bracket-echo">
+            <path d="M 78 62 C 35 158, 35 442, 78 538" />
+            <path d="M 922 62 C 965 158, 965 442, 922 538" />
+          </g>
+          <g className="context-preview__bracket-main" fill={`url(#context-bracket-${locale})`}>
+            <path d="M 58 42 C 8 144, 8 456, 58 558 C 63 560, 67 554, 62 546 C 30 448, 30 152, 62 54 C 67 46, 63 40, 58 42 Z" />
+            <path d="M 942 42 C 992 144, 992 456, 942 558 C 937 560, 933 554, 938 546 C 970 448, 970 152, 938 54 C 933 46, 937 40, 942 42 Z" />
+          </g>
+        </svg>
+        <div className="context-preview__body">
+          <div className="context-preview__rows">
+            {t.rows.map(([label, description, projection], index) => (
+              <article key={label}>
+                <span>0{index + 1}</span>
+                <div><small>{label}</small><strong>{description}</strong></div>
+                <i>{projection}</i>
+              </article>
+            ))}
           </div>
-          <pre aria-label="S-expression context evaluation"><code>
-            <span className="sexpr-row sexpr-row--root"><b>(</b><strong>evaluate</strong></span>
-            <span className="sexpr-row sexpr-row--depth-1"><b>(</b><em>context</em></span>
-            <span className="sexpr-row sexpr-row--depth-2"><b>(</b><span>frame</span><i>f.12</i><b>)</b></span>
-            <span className="sexpr-row sexpr-row--depth-2"><b>(</b><span>objective</span><i>o.03</i><b>)</b></span>
-            <span className="sexpr-row sexpr-row--depth-2"><b>(</b><span>recall</span><i>r.27</i><b>))</b></span>
-            <span className="sexpr-row sexpr-row--depth-1"><b>(</b><em>observation</em><i>evt.84</i><b>))</b></span>
-          </code></pre>
-          <div className="evaluation-field__expression-progress" aria-hidden="true"><i /></div>
-        </div>
-        <div className="evaluation-field__commit">
-          <span>04 · {t.commit}</span>
-          <p>{t.commitBody}</p>
         </div>
       </div>
-      <div className="evaluation-field__continuity">
-        <span aria-hidden="true">context[t]</span>
-        <i aria-hidden="true" />
-        <strong>{t.continuity}</strong>
-        <i aria-hidden="true" />
-        <span aria-hidden="true">context[t+1]</span>
+      <div className="context-preview__result">
+        <div><span aria-hidden="true">tx</span><strong>{t.transaction}</strong></div>
+        <p>{t.transactionBody}</p>
+        <small>{t.operations}</small>
       </div>
     </figure>
   );

@@ -4,9 +4,9 @@ export const SITE_LINKS = {
   source: "https://github.com/morphz-ai/morphz",
   releases: "https://github.com/morphz-ai/morphz/releases",
   issues: "https://github.com/morphz-ai/morphz/issues",
+  standards: "https://github.com/morphz-ai/morphz/tree/main/docs/standards",
   research:
     "https://github.com/morphz-ai/morphz/tree/main/docs/research/paper_evaluation",
-  liveAgent: "https://chat.morphz.ai",
   company: "https://newvar.ai",
 } as const;
 

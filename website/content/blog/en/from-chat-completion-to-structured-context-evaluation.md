@@ -8,9 +8,9 @@ category: Technical Note
 
 Large language model agents can now work for hours, continue across sessions, and pursue several objectives concurrently. Yet in most agent systems, every model request must still reconstruct the agent's current state as a chat transcript.
 
-This article examines the mismatch between that foundational computational model and the requirements of durable agents. It explains why Morphz defines structured Context itself as the object evaluated by a language model.
+This article defines Structured Context Evaluation and explains how it supports durable cognition, concurrent work, and deterministic state commits.
 
-Chat completion made large language models usable as a general interface. It is simple, natural, and remarkably open-ended. A person says something; a model produces what comes next. A tool call is merely a special kind of response within that exchange. There is nothing wrong with this computational model. The problem is that we gradually asked it to carry responsibilities far beyond conversation.
+Chat completion made large language models usable as a general interface. It is simple, natural, and remarkably open-ended. A person says something; a model produces what comes next. A tool call is merely a special kind of response within that exchange. There is nothing wrong with this computational model, but today's agent systems require it to carry responsibilities far beyond conversation.
 
 Agents now have tools, memory, workflows, subagents, schedules, permissions, and durable state. Their runtimes are no longer chat windows. Yet what the model usually sees remains a linear sequence of messages that must be extended, compressed, and rewritten over time.
 
@@ -40,13 +40,17 @@ A conceptual Morphz Context looks like this:
 
 ```lisp
 (context
-  (kernel ...)
-  (mind ...)
+  (protocol ...)
   (inbox ...)
+  (observation-state ...)
+  (mind ...)
+  (session-directory ...)
+  (kernel ...)
+  (evaluation-environment ...)
   (evaluate ...))
 ```
 
-The `kernel` contains Runtime-owned facts such as identity, authority, versions, budgets, and execution state. The `mind` contains cognitive Frames formed and maintained by the agent. The `inbox` carries Observations that still require interpretation. The `evaluate` expression identifies the current responsibility, causal scope, and available capabilities.
+The `inbox` carries Observations that still require interpretation. `observation-state` describes their current projection attributes. `mind` contains cognitive Frames formed and maintained by the Agent. `session-directory` describes the Sessions inside Context and their current projections. `kernel` contains Runtime-owned facts such as identity, authority, versions, budgets, and execution state. The final and sole `evaluate` expression identifies the current responsibility.
 
 These regions do not have equal ownership. The model can interpret Runtime facts but cannot forge them. It owns cognitive meaning, but it modifies cognitive state through versioned transactions. The Runtime does not decide domain truth for the model; it preserves provenance, ordering, authority, and commit boundaries.
 
@@ -84,13 +88,15 @@ Determinism belongs on the other side of the boundary. The Runtime validates str
 
 Once cognitive state is independent of message history, several capabilities that look unrelated begin to follow from the same abstraction.
 
-A Session is a communication connection between an agent and a person or system, not a memory container. Several Sessions can share one Context without creating several mutually forgetful copies of the agent.
+A Session is a first-class interaction and execution object inside Context, not an external memory container. For each Evaluation, the Runtime compiles a bounded Session Working Set. The current Session receives a full projection; other Sessions may be fully projected, represented as metadata only, or swapped out of the current Context Encoding. Swapping out does not delete the Session or Event History.
 
 A Thread is a causal path of work, not the conversation as a whole. While an older task waits for a tool, a new dialogue can continue. The result returns only to the path that requested it instead of leaking into another Evaluation.
 
 An Objective is a durable control structure spanning Evaluations, waits, and execution Threads. It does not need to survive as one more reminder hidden somewhere in the transcript.
 
-Concurrency no longer means only running several copies of a conversation. Different Evaluations can work against one shared cognitive Context and modify independent Frames through versioned transactions. The Runtime can safely rebase independent changes and reject genuine conflicts.
+Concurrency no longer means only running several copies of a conversation. Different Evaluations can work against the same Context and modify independent Frames through versioned transactions. The Runtime can safely rebase independent changes and reject genuine conflicts.
+
+Context capacity does not depend on summaries generated automatically by the Runtime. The Runtime measures physical Token pressure. The Agent explicitly maintains cognition through `derive`, `revise`, `retire`, `restore`, and `protect`; the Session Working Set separately controls which Sessions receive full projections in the current Encoding. Semantic maintenance, physical projection, and historical preservation therefore keep distinct boundaries.
 
 All of this still requires substantial engineering. The difference is that these capabilities no longer depend on unrelated patches. They share one state model.
 
@@ -100,15 +106,15 @@ Parentheses are not magic. Morphz does not use S-expressions because JSON cannot
 
 Their value is that data, protocol, and executable programs can share one minimal representation. Nesting is explicit. Composition does not require a new message envelope at every layer. The same tree can represent cognitive state, the current Evaluation entry point, and a Yao program.
 
-More importantly, S-expressions keep the underlying idea visible: the model is not reading a formatted document. It is operating as the semantic processor of a cognitive machine, presented with that machine's current state and an expression to evaluate.
+More importantly, S-expressions make the computational object explicit: the current state of a cognitive machine and an expression to evaluate, rather than a formatted document.
 
 Structured Context Evaluation does not depend on one parenthesized syntax. It depends on stable semantics. Another encoding that preserves the same identity, ownership, transaction, and evaluation contracts could implement the same paradigm. Morphz chooses S-expressions because they give those semantics a language foundation that can continue to grow.
 
-## This may change what models learn
+## Training for Structured Context
 
 Agent post-training today is still largely organized around answers, reasoning traces, and tool calls. Even as runtimes improve, training helps them indirectly: the model becomes better at conversation and tool use, and an external system assembles those abilities into an agent.
 
-If structured Context becomes the native object of evaluation, the training objective can change as well. A model could directly learn:
+When structured Context becomes the native object of evaluation, post-training can directly target the following capabilities:
 
 - how to revise cognition in response to evidence instead of merely appending text;
 - how to distinguish transient Observations, durable knowledge, and Runtime facts;
@@ -116,15 +122,15 @@ If structured Context becomes the native object of evaluation, the training obje
 - how to propose verifiable, reversible, provenance-bearing state transitions;
 - how to organize its own Context under a finite budget.
 
-Morphz does not have a specially trained native model today, and this is not a near-term promise. It is simply the training direction implied by the computational model: from teaching a model to complete a conversation toward teaching it to evaluate a structured world.
+This training direction is independent of the Morphz 0.1 runtime. Existing models can use Morphz through structured inputs and output contracts; training specifically for Structured Context can further improve evaluation quality and efficiency.
 
-## This is not a finished answer
+## Operating boundaries and engineering cost
 
-Structured Context has costs. A changing cognitive state can reduce prefix-cache reuse. Today's models are trained primarily for natural-language conversation. Correct protocols, transactions, and scheduling require far more engineering than a prompt. Yao has not yet become the complete language we intend it to be.
+Structured Context has explicit costs. A changing cognitive state can reduce prefix-cache reuse. Today's models are trained primarily for natural-language conversation. Protocols, transactions, and scheduling require independent implementation and verification.
 
-More fundamentally, a new abstraction does not win because it appears elegant from the inside. It must show, under the same model, task, and comparable budget, that long-running work forgets less, concurrent work interferes less, cognition genuinely transfers across Sessions, and the cost of maintaining those properties is acceptable.
+Structured Context should be evaluated under the same model, task, and comparable budget across information retention in long-running work, interference between concurrent workstreams, cognition transfer across Sessions, and the resource cost of maintaining those properties.
 
-Morphz remains under active development. We publish behavior that can be verified today and keep the unanswered questions visible. Structured Context is not a slogan to believe. It is a hypothesis to implement, measure, and criticize.
+Morphz publishes its current implementation through source code, product documentation, tests, and experiment materials. Developer Preview functionality is defined by the product documentation and release notes.
 
 ## Conclusion
 
@@ -132,6 +138,6 @@ This article does not argue for eliminating chat. Conversation remains one of th
 
 If agents are to become durable actors, they need cognitive state they can continuously own. If they are to face many people and objectives at once, they need causality and concurrency semantics stronger than message order. If they are to learn, they need to revise, relate, protect, and retire knowledge instead of accumulating everything ever said.
 
-In this computational model, chat is input and output. Cognition is not a by-product of conversation; it is a structure that can be held, evaluated, committed, and continued. Morphz is a reference implementation of this model and remains subject to continued engineering and empirical validation.
+In this computational model, chat is input and output. Cognition is not a by-product of conversation; it is a structure that can be held, evaluated, committed, and continued. Morphz is an open-source implementation of this model.
 
 [Read the core concepts](/en/docs/core-concepts), or inspect the implementation on [GitHub](https://github.com/morphz-ai/morphz).

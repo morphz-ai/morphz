@@ -14,11 +14,17 @@ An Agent is an instance of the machine with a loaded identity, cognitive policy,
 
 ## Context
 
-A Context is the long-lived cognitive scope owned by an Agent. It holds current cognition, cognitive frames, observations, relations, and a recallable event history. Multiple Sessions may share one Context, so starting a new Session does not imply amnesia.
+A Context is first-class state owned by an Agent: persistent, versioned, and directly evaluable. A model call receives a **Context Encoding** compiled by the Runtime. Its fixed structure includes protocol, Inbox, Observation State, Mind, Session Directory, Kernel, Evaluation Environment, and the sole `evaluate` entry. Event History remains distinct from current cognition and provides recallable evidence through stable references.
 
 ## Session
 
-A Session is an ordered communication stream between a user, an Agent, or an external channel. It provides message order and a delivery destination, but it does not own the Context. Archiving a Session does not delete cognition already formed in the Context.
+A Session is a first-class interaction and execution object inside Context. It records message order, delivery destination, current work, and causal origin, and appears in Context Encoding through the Session Directory.
+
+Each Evaluation compiles a bounded Session Working Set. The current Session always receives a full projection. Other Sessions may be fully projected, represented as metadata only, or swapped out of that Encoding according to the activity window, count limit, and Token Budget. Swapping out changes only what the model sees in that Evaluation; it does not delete the Session or Event History. The Agent can Recall its evidence, and a new directed event can bring it back into the working set.
+
+## Context capacity and self-maintenance
+
+Morphz does not let the Runtime silently rewrite the entire Context into an automatically generated lossy summary. The Runtime measures Token pressure, preserves physical facts, and enforces resource boundaries. The Agent decides semantic value and uses an explicit Context Transaction to `derive`, `revise`, `retire`, `restore`, or `protect` cognition. Capacity control, cognitive evolution, and audit therefore use the same state-transition mechanism.
 
 ## Cognitive frame
 
@@ -41,7 +47,7 @@ A Provider defines where and how requests are sent; an auth account defines the 
 ```text
 User message
   → Session ingress
-  → Context encoding
+  → Session Working Set and Context Encoding compilation
   → Thread Activation
   → Model Attempt
   → Runtime validation of text or tools

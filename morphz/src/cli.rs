@@ -890,13 +890,13 @@ fn edge_command(locale: Locale) -> Command {
                         "target-id",
                         "target-id",
                         "ID",
-                        locale.text("Published Target ID", "发布的执行目标标识"),
+                        locale.text("Published Target ID", "发布的执行节点标识"),
                     ))
                     .arg(local_value_arg(
                         "target-name",
                         "target-name",
                         "NAME",
-                        locale.text("Published Target display name", "发布的执行目标名称"),
+                        locale.text("Published Target display name", "发布的执行节点名称"),
                     ))
                     .arg(local_value_arg(
                         "workers",
@@ -924,7 +924,7 @@ fn edge_command(locale: Locale) -> Command {
             Command::new("status")
                 .about(locale.text(
                     "Show the paired Node credential and local Target identity",
-                    "显示已配对节点和本地执行目标身份",
+                    "显示已配对节点和本地执行节点身份",
                 ))
                 .arg(local_value_arg(
                     "credential-file",
@@ -960,7 +960,7 @@ fn execution_command(locale: Locale) -> Command {
                     "target-id",
                     "target-id",
                     "ID",
-                    locale.text("Filter by Execution Target", "按执行目标筛选"),
+                    locale.text("Filter by Execution Target", "按执行节点筛选"),
                 ))
                 .arg(local_switch_arg(
                     "include-terminal",
@@ -1031,57 +1031,57 @@ fn target_command(locale: Locale) -> Command {
     Command::new("target")
         .about(locale.text(
             "Inspect and administer Execution Targets",
-            "检查和管理执行目标",
+            "检查和管理执行节点",
         ))
         .subcommands([
             Command::new("list").about(locale.text(
                 "List Targets visible to the current Principal",
-                "列出当前身份可见的执行目标",
+                "列出当前身份可见的执行节点",
             )),
             Command::new("show")
-                .about(locale.text("Inspect one Target", "查看一个执行目标"))
+                .about(locale.text("Inspect one Target", "查看一个执行节点"))
                 .arg(
                     prompt_arg("TARGET_ID", 1, Some(1))
-                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                        .help(locale.text("Execution Target ID", "执行节点标识")),
                 ),
             Command::new("enable")
-                .about(locale.text("Enable one Target", "启用一个执行目标"))
+                .about(locale.text("Enable one Target", "启用一个执行节点"))
                 .arg(
                     prompt_arg("TARGET_ID", 1, Some(1))
-                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                        .help(locale.text("Execution Target ID", "执行节点标识")),
                 )
                 .arg(
                     local_value_arg(
                         "revision",
                         "revision",
                         "N",
-                        locale.text("Expected Target revision", "预期的执行目标版本"),
+                        locale.text("Expected Target revision", "预期的执行节点版本"),
                     )
                     .required(true),
                 ),
             Command::new("disable")
-                .about(locale.text("Disable one Target", "禁用一个执行目标"))
+                .about(locale.text("Disable one Target", "禁用一个执行节点"))
                 .arg(
                     prompt_arg("TARGET_ID", 1, Some(1))
-                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                        .help(locale.text("Execution Target ID", "执行节点标识")),
                 )
                 .arg(
                     local_value_arg(
                         "revision",
                         "revision",
                         "N",
-                        locale.text("Expected Target revision", "预期的执行目标版本"),
+                        locale.text("Expected Target revision", "预期的执行节点版本"),
                     )
                     .required(true),
                 ),
             Command::new("authorize")
                 .about(locale.text(
                     "Restrict a Target to an Agent, Context or Thread scope",
-                    "将执行目标限制到代理、上下文或线程范围",
+                    "将执行节点限制到代理、上下文或线程范围",
                 ))
                 .arg(
                     prompt_arg("TARGET_ID", 1, Some(1))
-                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                        .help(locale.text("Execution Target ID", "执行节点标识")),
                 )
                 .arg(
                     local_value_arg(
@@ -1108,20 +1108,20 @@ fn target_command(locale: Locale) -> Command {
             Command::new("authorizations")
                 .about(locale.text(
                     "List scoped Target authorizations",
-                    "列出执行目标的范围授权",
+                    "列出执行节点的范围授权",
                 ))
                 .arg(
                     prompt_arg("TARGET_ID", 0, Some(1))
-                        .help(locale.text("Optional Execution Target ID", "可选的执行目标标识")),
+                        .help(locale.text("Optional Execution Target ID", "可选的执行节点标识")),
                 ),
             Command::new("revoke-authorization")
                 .about(locale.text(
                     "Revoke one scoped Target authorization",
-                    "撤销一个执行目标范围授权",
+                    "撤销一个执行节点范围授权",
                 ))
                 .arg(
                     prompt_arg("AUTHORIZATION_ID", 1, Some(1)).help(
-                        locale.text("Scoped Target authorization ID", "执行目标范围授权标识"),
+                        locale.text("Scoped Target authorization ID", "执行节点范围授权标识"),
                     ),
                 )
                 .arg(
@@ -1146,7 +1146,7 @@ fn capability_lease_command(locale: Locale) -> Command {
     Command::new("lease")
         .about(locale.text(
             "Inspect and revoke Target capability leases",
-            "检查和撤销执行目标能力租约",
+            "检查和撤销执行节点能力租约",
         ))
         .subcommands([
             Command::new("list")
@@ -1155,7 +1155,7 @@ fn capability_lease_command(locale: Locale) -> Command {
                     "target-id",
                     "target-id",
                     "ID",
-                    locale.text("Filter by Target", "按执行目标筛选"),
+                    locale.text("Filter by Target", "按执行节点筛选"),
                 ))
                 .arg(local_value_arg(
                     "thread-id",
@@ -1820,8 +1820,8 @@ fn scheduler_thread_command(locale: Locale) -> Command {
 fn session_command(locale: Locale) -> Command {
     Command::new("session")
         .about(locale.text(
-            "Manage Session identities and Context mounts",
-            "管理会话身份和上下文挂载",
+            "Manage Sessions within a Context",
+            "管理上下文中的会话",
         ))
         .subcommands([
             output_examples(
@@ -1852,8 +1852,8 @@ fn session_command(locale: Locale) -> Command {
                 locale,
                 Command::new("create")
                     .about(locale.text(
-                        "Create a Session mounted in a selected Context",
-                        "创建挂载到指定上下文的会话",
+                        "Create a Session within a selected Context",
+                        "在指定上下文中创建会话",
                     ))
                     .arg(local_value_arg(
                         "id",

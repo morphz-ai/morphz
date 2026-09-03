@@ -9,9 +9,9 @@ import { SiteHeader } from "./SiteHeader";
 const copy = {
   zh: {
     eyebrow: "MORPHZ · 技术文章",
-    title: "代理认知与运行时的技术说明",
-    lead: "记录 Morphz 的设计原理、实现边界、实验方法与开放问题。",
-    first: "首篇技术文章",
+    title: "Morphz 技术文章",
+    lead: "介绍 Morphz 的计算模型、核心机制、系统架构与工程实现。",
+    first: "技术文章",
     read: "阅读全文",
     back: "返回全部文章",
     contents: "本文内容",
@@ -19,13 +19,13 @@ const copy = {
     author: "作者",
   },
   en: {
-    eyebrow: "MORPHZ · TECHNICAL NOTES",
-    title: "Technical notes on agent cognition and runtimes",
-    lead: "Design principles, implementation boundaries, experimental methods, and open questions from the Morphz project.",
-    first: "FIRST TECHNICAL NOTE",
-    read: "Read the essay",
-    back: "Back to all essays",
-    contents: "IN THIS ESSAY",
+    eyebrow: "MORPHZ · TECHNICAL ARTICLES",
+    title: "Morphz technical articles",
+    lead: "The computational model, core mechanisms, system architecture, and implementation of Morphz.",
+    first: "TECHNICAL ARTICLE",
+    read: "Read the article",
+    back: "Back to all articles",
+    contents: "IN THIS ARTICLE",
     minute: "min read",
     author: "By",
   },
@@ -51,7 +51,7 @@ export function BlogIndex({ locale }: { locale: Locale }) {
   const t = copy[locale];
   const posts = blogsFor(locale);
   return (
-    <main>
+    <main className="content-site">
       <SiteHeader locale={locale} otherLanguageHref={otherBlogLocaleHref(locale)} />
       <section className="blog-index">
         <header className="blog-index__header">
@@ -82,7 +82,7 @@ export function BlogArticle({ locale, post }: { locale: Locale; post: BlogRecord
   const t = copy[locale];
   const { html, headings } = renderMarkdown(post.body);
   return (
-    <main>
+    <main className="content-site">
       <SiteHeader locale={locale} otherLanguageHref={otherBlogLocaleHref(locale, post.slug)} />
       <article className="blog-article">
         <header className="blog-article__header">

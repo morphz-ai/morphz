@@ -75,10 +75,10 @@ source: generated-cli-schema
 | `morphz context list` | List Cognitive Contexts |
 | `morphz context show` | Show one Cognitive Context |
 | `morphz context status` | Show Context state, Sessions and active work |
-| `morphz context audit` | Verify the Context Mind projection against its event history |
+| `morphz context audit` | Verify the Context Mind projection by replaying Events |
 | `morphz context recall-index` | Inspect or rebuild the derived lexical Recall index |
 | `morphz context recall-index inspect` | Show Recall index capability and document counts |
-| `morphz context recall-index rebuild` | Rebuild the derived Recall index from Event History and Mind |
+| `morphz context recall-index rebuild` | Rebuild the derived Recall index from Events and Mind |
 | `morphz context recall` | Search Context memory or traverse one Mind Frame lineage |
 | `morphz context recall search` | Search indexed Event and Mind Frame documents |
 | `morphz context recall frame` | Traverse Mind Frame sources and relations |
@@ -88,11 +88,12 @@ source: generated-cli-schema
 | `morphz scheduler thread show` | Show one Thread causal chain and structured Outcome |
 | `morphz scheduler thread pause` | Pause a Thread |
 | `morphz scheduler thread resume` | Resume a Thread |
-| `morphz scheduler thread close` | Close a Thread |
-| `morphz session` | Manage Session identities and Context mounts |
+| `morphz scheduler thread cancel` | Cancel a Thread |
+| `morphz scheduler thread supersede` | Cancel the current generation and continue with a corrected intent |
+| `morphz session` | Manage Sessions within a Context |
 | `morphz session list` | List Sessions |
 | `morphz session show` | Show one Session |
-| `morphz session create` | Create a Session mounted in a selected Context |
+| `morphz session create` | Create a Session within a selected Context |
 | `morphz session resume` | Reattach an existing or recently active Session |
 | `morphz agent` | Manage persistent Agents |
 | `morphz agent list` | List Agents |
@@ -110,6 +111,15 @@ source: generated-cli-schema
 | `morphz objective pause` | Pause an Objective |
 | `morphz objective resume` | Resume an Objective |
 | `morphz objective cancel` | Cancel an Objective |
+| `morphz trajectory` | Export and verify portable Agent Trajectory Bundles |
+| `morphz trajectory export` | Export authoritative Runtime facts as an Agent Trajectory Bundle |
+| `morphz trajectory verify` | Validate an untrusted Agent Trajectory Bundle |
+| `morphz trajectory episode` | Derive a permission-checked training Episode |
+| `morphz storage` | Inspect and migrate Runtime storage authority |
+| `morphz storage migrate-cognitive-store` | Explicitly synchronize cognitive state into the selected Store |
+| `morphz experiment` | Inspect and verify explicitly gated experimental features |
+| `morphz experiment list` | List compiled and enabled experimental features |
+| `morphz experiment check` | Require one experiment to be compiled and enabled |
 | `morphz job` | Inspect or cancel delegated Sub Agent jobs |
 | `morphz job list` | List delegated jobs |
 | `morphz job cancel` | Cancel a delegated job and its descendants |
@@ -161,13 +171,19 @@ Commands:
   scheduler
           Inspect authoritative Scheduler state
   session
-          Manage Session identities and Context mounts
+          Manage Sessions within a Context
   agent
           Manage persistent Agents
   harness
           Install and inspect versioned Harness packages
   objective
           Manage long-lived Objectives
+  trajectory
+          Export and verify portable Agent Trajectory Bundles
+  storage
+          Inspect and migrate Runtime storage authority
+  experiment
+          Inspect and verify explicitly gated experimental features
   job
           Inspect or cancel delegated Sub Agent jobs
   config
@@ -229,7 +245,7 @@ Options:
           [possible values: human, ask, auto, auto-review, never, deny]
 
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
 
       --network[=<BOOL>]
           Allow sandboxed commands to access the network
@@ -256,6 +272,9 @@ Options:
           Select management-command output format
 
           [possible values: human, json]
+
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
 
       --tui
           Force the fullscreen terminal UI
@@ -316,7 +335,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -329,6 +348,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -403,7 +424,7 @@ Options:
           [possible values: human, ask, auto, auto-review, never, deny]
 
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
 
       --network[=<BOOL>]
           Allow sandboxed commands to access the network
@@ -430,6 +451,9 @@ Options:
           Select management-command output format
 
           [possible values: human, json]
+
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
 
       --tui
           Force the fullscreen terminal UI
@@ -469,6 +493,9 @@ Options:
       --config-file <FILE>
           Load an explicit trusted configuration file
 
+      --coordination-mesh <SOURCE>
+          Join a Coordination Mesh from static:URL,URL or file:PATH
+
   -p, --profile <NAME>
           Load a named configuration profile
 
@@ -506,7 +533,7 @@ Options:
           [possible values: human, ask, auto, auto-review, never, deny]
 
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
 
       --network[=<BOOL>]
           Allow sandboxed commands to access the network
@@ -534,6 +561,9 @@ Options:
 
           [possible values: human, json]
 
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
+
       --tui
           Force the fullscreen terminal UI
 
@@ -549,6 +579,8 @@ Options:
 Examples:
   morphz serve
   morphz serve --bind=127.0.0.1:9090
+  morphz serve --coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080
+  morphz serve --coordination-mesh=file:/etc/morphz/mesh.toml
   MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:8080
 ```
 
@@ -611,7 +643,7 @@ Options:
           [possible values: human, ask, auto, auto-review, never, deny]
 
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
 
       --network[=<BOOL>]
           Allow sandboxed commands to access the network
@@ -638,6 +670,9 @@ Options:
           Select management-command output format
 
           [possible values: human, json]
+
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
 
       --tui
           Force the fullscreen terminal UI
@@ -714,7 +749,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -727,6 +762,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -790,7 +827,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -803,6 +840,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -856,7 +895,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -869,6 +908,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -926,7 +967,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -939,6 +980,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1008,7 +1051,7 @@ Options:
           [possible values: human, ask, auto, auto-review, never, deny]
 
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
 
       --network[=<BOOL>]
           Allow sandboxed commands to access the network
@@ -1035,6 +1078,9 @@ Options:
           Select management-command output format
 
           [possible values: human, json]
+
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
 
       --tui
           Force the fullscreen terminal UI
@@ -1103,7 +1149,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1116,6 +1162,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1175,7 +1223,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1188,6 +1236,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1245,7 +1295,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1258,6 +1308,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1287,7 +1339,7 @@ Commands:
   status
           Show Context state, Sessions and active work
   audit
-          Verify the Context Mind projection against its event history
+          Verify the Context Mind projection by replaying Events
   recall-index
           Inspect or rebuild the derived lexical Recall index
   recall
@@ -1321,7 +1373,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1334,6 +1386,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1389,7 +1443,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1402,6 +1456,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1416,10 +1472,10 @@ Run `morphz scheduler <COMMAND> --help` for command-specific help.
 
 ### `morphz session`
 
-Manage Session identities and Context mounts
+Manage Sessions within a Context
 
 ```text
-Manage Session identities and Context mounts
+Manage Sessions within a Context
 
 Usage: morphz session [OPTIONS] [COMMAND]
 
@@ -1429,7 +1485,7 @@ Commands:
   show
           Show one Session
   create
-          Create a Session mounted in a selected Context
+          Create a Session within a selected Context
   resume
           Reattach an existing or recently active Session
   help
@@ -1461,7 +1517,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1474,6 +1530,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1531,7 +1589,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1544,6 +1602,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1601,7 +1661,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1614,6 +1674,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1679,7 +1741,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1692,6 +1754,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1702,6 +1766,214 @@ Options:
           Print version
 
 Run `morphz objective <COMMAND> --help` for command-specific help.
+```
+
+### `morphz trajectory`
+
+Export and verify portable Agent Trajectory Bundles
+
+```text
+Export and verify portable Agent Trajectory Bundles
+
+Usage: morphz trajectory [OPTIONS] [COMMAND]
+
+Commands:
+  export
+          Export authoritative Runtime facts as an Agent Trajectory Bundle
+  verify
+          Validate an untrusted Agent Trajectory Bundle
+  episode
+          Derive a permission-checked training Episode
+  help
+          Print this message or the help of the given subcommand(s)
+
+Options:
+  -C, --cwd <DIR>
+          Change working directory before loading configuration
+      --config-file <FILE>
+          Load an explicit trusted configuration file
+  -p, --profile <NAME>
+          Load a named configuration profile
+      --provider <ID>
+          Override the configured model provider
+  -m, --model <MODEL>
+          Override the configured model
+      --reasoning-effort <LEVEL>
+          Set model reasoning effort [possible values: default, auto, none, off, low, medium, high, max]
+      --agent <ID>
+          Select an Agent
+      --context <ID>
+          Select or mount a Cognitive Context
+      --session <ID>
+          Reattach an existing Session
+      --harness <ID@VERSION>
+          Select an exact installed Harness for the initial Evaluation
+  -s, --sandbox <MODE>
+          Set the command sandbox mode [possible values: workspace-write, full-access, danger-full-access]
+  -a, --approval <MODE>
+          Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
+      --add-dir <DIR>
+          Add an additional readable and writable Workspace directory
+      --network[=<BOOL>]
+          Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
+  -c, --set <KEY=VALUE>
+          Override one configuration value
+      --log-level <FILTER>
+          Override the tracing filter
+      --theme <THEME>
+          Select the TUI color theme [possible values: system, mono, iris, cyan, coral, no-color]
+      --language <LANGUAGE>
+          Select the user-interface language [possible values: auto, en, zh-CN]
+      --format <FORMAT>
+          Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
+      --tui
+          Force the fullscreen terminal UI
+      --plain
+          Use the classic line-oriented terminal
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
+### `morphz storage`
+
+Inspect and migrate Runtime storage authority
+
+```text
+Inspect and migrate Runtime storage authority
+
+Usage: morphz storage [OPTIONS] [COMMAND]
+
+Commands:
+  migrate-cognitive-store
+          Explicitly synchronize cognitive state into the selected Store
+  help
+          Print this message or the help of the given subcommand(s)
+
+Options:
+  -C, --cwd <DIR>
+          Change working directory before loading configuration
+      --config-file <FILE>
+          Load an explicit trusted configuration file
+  -p, --profile <NAME>
+          Load a named configuration profile
+      --provider <ID>
+          Override the configured model provider
+  -m, --model <MODEL>
+          Override the configured model
+      --reasoning-effort <LEVEL>
+          Set model reasoning effort [possible values: default, auto, none, off, low, medium, high, max]
+      --agent <ID>
+          Select an Agent
+      --context <ID>
+          Select or mount a Cognitive Context
+      --session <ID>
+          Reattach an existing Session
+      --harness <ID@VERSION>
+          Select an exact installed Harness for the initial Evaluation
+  -s, --sandbox <MODE>
+          Set the command sandbox mode [possible values: workspace-write, full-access, danger-full-access]
+  -a, --approval <MODE>
+          Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
+      --add-dir <DIR>
+          Add an additional readable and writable Workspace directory
+      --network[=<BOOL>]
+          Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
+  -c, --set <KEY=VALUE>
+          Override one configuration value
+      --log-level <FILTER>
+          Override the tracing filter
+      --theme <THEME>
+          Select the TUI color theme [possible values: system, mono, iris, cyan, coral, no-color]
+      --language <LANGUAGE>
+          Select the user-interface language [possible values: auto, en, zh-CN]
+      --format <FORMAT>
+          Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
+      --tui
+          Force the fullscreen terminal UI
+      --plain
+          Use the classic line-oriented terminal
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+
+Runtime startup never migrates cognitive state implicitly.
+```
+
+### `morphz experiment`
+
+Inspect and verify explicitly gated experimental features
+
+```text
+Inspect and verify explicitly gated experimental features
+
+Usage: morphz experiment [OPTIONS] [COMMAND]
+
+Commands:
+  list
+          List compiled and enabled experimental features
+  check
+          Require one experiment to be compiled and enabled
+  help
+          Print this message or the help of the given subcommand(s)
+
+Options:
+  -C, --cwd <DIR>
+          Change working directory before loading configuration
+      --config-file <FILE>
+          Load an explicit trusted configuration file
+  -p, --profile <NAME>
+          Load a named configuration profile
+      --provider <ID>
+          Override the configured model provider
+  -m, --model <MODEL>
+          Override the configured model
+      --reasoning-effort <LEVEL>
+          Set model reasoning effort [possible values: default, auto, none, off, low, medium, high, max]
+      --agent <ID>
+          Select an Agent
+      --context <ID>
+          Select or mount a Cognitive Context
+      --session <ID>
+          Reattach an existing Session
+      --harness <ID@VERSION>
+          Select an exact installed Harness for the initial Evaluation
+  -s, --sandbox <MODE>
+          Set the command sandbox mode [possible values: workspace-write, full-access, danger-full-access]
+  -a, --approval <MODE>
+          Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
+      --add-dir <DIR>
+          Add an additional readable and writable Workspace directory
+      --network[=<BOOL>]
+          Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
+  -c, --set <KEY=VALUE>
+          Override one configuration value
+      --log-level <FILTER>
+          Override the tracing filter
+      --theme <THEME>
+          Select the TUI color theme [possible values: system, mono, iris, cyan, coral, no-color]
+      --language <LANGUAGE>
+          Select the user-interface language [possible values: auto, en, zh-CN]
+      --format <FORMAT>
+          Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
+      --tui
+          Force the fullscreen terminal UI
+      --plain
+          Use the classic line-oriented terminal
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+
+Experiments are disabled by default and carry no stability promise.
 ```
 
 ### `morphz job`
@@ -1747,7 +2019,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1760,6 +2032,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1819,7 +2093,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1832,6 +2106,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1879,7 +2155,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1892,6 +2168,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -1944,7 +2222,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -1957,6 +2235,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain
@@ -2005,7 +2285,7 @@ Options:
   -a, --approval <MODE>
           Set the approval policy [possible values: human, ask, auto, auto-review, never, deny]
       --add-dir <DIR>
-          Add a readable and writable directory
+          Add an additional readable and writable Workspace directory
       --network[=<BOOL>]
           Allow sandboxed commands to access the network [possible values: true, false, 1, 0, yes, no, on, off]
   -c, --set <KEY=VALUE>
@@ -2018,6 +2298,8 @@ Options:
           Select the user-interface language [possible values: auto, en, zh-CN]
       --format <FORMAT>
           Select management-command output format [possible values: human, json]
+      --enable-experimental <FEATURE>
+          Enable one compiled experimental feature for this process
       --tui
           Force the fullscreen terminal UI
       --plain

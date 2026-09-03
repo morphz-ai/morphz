@@ -9,9 +9,8 @@ const copy = {
     docs: "文档",
     download: "下载",
     source: "源码",
-    live: "实时人格",
-    language: "English",
-    runtime: "S 表达式认知机",
+    language: "切换到英文",
+    languageShort: "EN",
     home: "Morphz 首页",
     navigation: "主要导航",
     menu: "导航",
@@ -22,9 +21,8 @@ const copy = {
     docs: "Docs",
     download: "Download",
     source: "Source",
-    live: "Live agent",
-    language: "中文",
-    runtime: "S-Expression Cognitive Machine",
+    language: "Switch to Chinese",
+    languageShort: "CN",
     home: "Morphz home",
     navigation: "Primary navigation",
     menu: "Menu",
@@ -63,7 +61,6 @@ export function SiteHeader({
             <span>Morphz</span>
             <span className="brand__paren" aria-hidden="true">)</span>
           </span>
-          <small>{t.runtime}</small>
         </Link>
 
         <nav className="site-nav" aria-label={t.navigation}>
@@ -71,17 +68,19 @@ export function SiteHeader({
           <a href={SITE_LINKS.source}>{t.source}</a>
         </nav>
 
+        <details className="site-menu">
+          <summary aria-label={t.menu}>
+            <span className="site-menu__label">{t.menu}</span>
+            <span className="site-menu__icon" aria-hidden="true"><i /><i /><i /></span>
+          </summary>
+          <nav className="site-menu__panel" aria-label={t.navigation}>
+            {navigation.map(([href, label]) => <Link href={href} key={href}>{label}</Link>)}
+            <a href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
+          </nav>
+        </details>
+
         <div className="site-header__meta">
-          <a className="site-header__live" href={SITE_LINKS.liveAgent}>{t.live}<span aria-hidden="true">↗</span></a>
-          <Link className="language-switch" href={otherLanguage}>{t.language}</Link>
-          <details className="site-menu">
-            <summary>{t.menu}<span aria-hidden="true">+</span></summary>
-            <nav className="site-menu__panel" aria-label={t.navigation}>
-              {navigation.map(([href, label]) => <Link href={href} key={href}>{label}</Link>)}
-              <a href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
-              <a href={SITE_LINKS.liveAgent}>{t.live}<span aria-hidden="true">↗</span></a>
-            </nav>
-          </details>
+          <Link className="language-switch" href={otherLanguage} aria-label={t.language}>{t.languageShort}</Link>
         </div>
       </div>
     </header>

@@ -6,19 +6,20 @@ order: 110
 status: current
 ---
 
-A Context does not keep every historical byte in every prompt. The runtime maintains an active working set while preserving the complete Event History. The Agent can Recall authoritative evidence when it becomes relevant.
+Context does not mean sending every historical byte to the model on every call. The Runtime compiles a bounded Context Encoding for the current Evaluation while preserving complete events in a distinct Event History. The Agent can Recall authoritative evidence when it becomes relevant.
 
 ## What the model sees
 
 Each model request receives a Context Encoding compiled for that moment. It may include:
 
 - Messages from the current Session;
+- The Session Directory, plus full or metadata-only projections of other Sessions in the Session Working Set;
 - Active cognitive frames;
 - Current observations and previews of tool results;
 - Objective, Thread, and permission metadata;
 - Stable references to recallable source text.
 
-Leaving the active working set does not mean deletion. The source may still exist in the immutable Event History or in a retired frame.
+Swapping out a Session, removing an Observation from the current projection, or retiring a cognitive frame does not mean physical deletion. Content absent from this Encoding may still exist in immutable Event History or recallable cognitive state.
 
 ## Recall modes
 

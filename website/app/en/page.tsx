@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { LandingPage } from "../components/LandingPage";
 
 export const metadata: Metadata = {
-  title: "From chat completion to structured Context evaluation",
+  title: "One Agent. Many Objectives. Advancing in Parallel.",
   description:
-    "Morphz is an S-Expression Cognitive Machine: the model handles nondeterministic semantics while the runtime owns facts, authority, state, and execution.",
+    "Morphz is an open-source agent for long-running, concurrent work, built on persistent cognitive state, multiplexed Session I/O, durable scheduling, and governed execution.",
   alternates: { canonical: "/en", languages: { "zh-CN": "/", en: "/en" } },
 };
 

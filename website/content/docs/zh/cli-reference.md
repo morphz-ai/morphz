@@ -26,16 +26,16 @@ source: generated-cli-schema
 | `morphz edge pair` | 将此设备与 Morphz 网关配对 |
 | `morphz edge run` | 运行经过认证的主动出站边缘执行器 |
 | `morphz edge rotate-key` | 轮换此执行节点的设备身份密钥 |
-| `morphz edge status` | 显示已配对节点和本地执行目标身份 |
-| `morphz target` | 检查和管理执行目标 |
-| `morphz target list` | 列出当前身份可见的执行目标 |
-| `morphz target show` | 查看一个执行目标 |
-| `morphz target enable` | 启用一个执行目标 |
-| `morphz target disable` | 禁用一个执行目标 |
-| `morphz target authorize` | 将执行目标限制到代理、上下文或线程范围 |
-| `morphz target authorizations` | 列出执行目标的范围授权 |
-| `morphz target revoke-authorization` | 撤销一个执行目标范围授权 |
-| `morphz lease` | 检查和撤销执行目标能力租约 |
+| `morphz edge status` | 显示已配对节点和本地执行节点身份 |
+| `morphz target` | 检查和管理执行节点 |
+| `morphz target list` | 列出当前身份可见的执行节点 |
+| `morphz target show` | 查看一个执行节点 |
+| `morphz target enable` | 启用一个执行节点 |
+| `morphz target disable` | 禁用一个执行节点 |
+| `morphz target authorize` | 将执行节点限制到代理、上下文或线程范围 |
+| `morphz target authorizations` | 列出执行节点的范围授权 |
+| `morphz target revoke-authorization` | 撤销一个执行节点范围授权 |
+| `morphz lease` | 检查和撤销执行节点能力租约 |
 | `morphz lease list` | 列出有效的能力租约 |
 | `morphz lease revoke` | 撤销一个能力租约 |
 | `morphz execution` | 检查和控制持久化物理执行任务 |
@@ -75,10 +75,10 @@ source: generated-cli-schema
 | `morphz context list` | 列出认知上下文 |
 | `morphz context show` | 显示一个认知上下文 |
 | `morphz context status` | 显示上下文状态、会话和活跃工作 |
-| `morphz context audit` | 对照事件历史验证上下文的认知投影 |
+| `morphz context audit` | 通过事件回放验证上下文的认知投影 |
 | `morphz context recall-index` | 检查或重建派生的词法召回索引 |
 | `morphz context recall-index inspect` | 显示召回索引能力与文档数量 |
-| `morphz context recall-index rebuild` | 根据事件历史与认知重建派生的召回索引 |
+| `morphz context recall-index rebuild` | 根据持久化事件与认知重建派生的召回索引 |
 | `morphz context recall` | 搜索上下文记忆或遍历一个认知帧的血缘 |
 | `morphz context recall search` | 搜索已索引的事件与认知帧文档 |
 | `morphz context recall frame` | 遍历认知帧的来源与关系 |
@@ -88,11 +88,12 @@ source: generated-cli-schema
 | `morphz scheduler thread show` | 显示一条线程的因果链和结构化结果 |
 | `morphz scheduler thread pause` | 暂停线程 |
 | `morphz scheduler thread resume` | 继续线程 |
-| `morphz scheduler thread close` | 关闭线程 |
-| `morphz session` | 管理会话身份和上下文挂载 |
+| `morphz scheduler thread cancel` | 取消线程 |
+| `morphz scheduler thread supersede` | 取消当前代次并按修订后的要求继续 |
+| `morphz session` | 管理上下文中的会话 |
 | `morphz session list` | 列出会话 |
 | `morphz session show` | 显示一个会话 |
-| `morphz session create` | 创建挂载到指定上下文的会话 |
+| `morphz session create` | 在指定上下文中创建会话 |
 | `morphz session resume` | 重新连接现有或最近活跃的会话 |
 | `morphz agent` | 管理持久代理 |
 | `morphz agent list` | 列出代理 |
@@ -110,6 +111,15 @@ source: generated-cli-schema
 | `morphz objective pause` | 暂停目标 |
 | `morphz objective resume` | 继续目标 |
 | `morphz objective cancel` | 取消目标 |
+| `morphz trajectory` | 导出和校验可移植的代理执行轨迹包 |
+| `morphz trajectory export` | 将运行时权威事实导出为代理执行轨迹包 |
+| `morphz trajectory verify` | 校验不可信的代理执行轨迹包 |
+| `morphz trajectory episode` | 派生经过权限校验的训练片段 |
+| `morphz storage` | 检查并迁移运行时存储权威 |
+| `morphz storage migrate-cognitive-store` | 将认知状态显式同步到选定存储引擎 |
+| `morphz experiment` | 检查并验证显式门控的实验功能 |
+| `morphz experiment list` | 列出实验功能的编译与启用状态 |
+| `morphz experiment check` | 确认一个实验功能已经编译并启用 |
 | `morphz job` | 检查或取消子代理委派 |
 | `morphz job list` | 列出子代理委派 |
 | `morphz job cancel` | 取消子代理委派及其后代 |
@@ -125,9 +135,9 @@ source: generated-cli-schema
 ## 顶层命令帮助
 
 ```text
-Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，Runtime 是确定性事务内核。
+Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 S 表达式认知机。语言模型是它的非确定性语义处理器，运行时是确定性事务内核。
 
-不带子命令输入的文本会直接发送给所选 Agent 实例。
+不带子命令输入的文本会直接发送给所选代理实例。
 
 用法：morphz [OPTIONS] [PROMPT]... [COMMAND]
 
@@ -143,9 +153,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   edge
           配对并运行主动出站的执行节点
   target
-          检查和管理执行目标
+          检查和管理执行节点
   lease
-          检查和撤销执行目标能力租约
+          检查和撤销执行节点能力租约
   execution
           检查和控制持久化物理执行任务
   setup
@@ -161,13 +171,19 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   scheduler
           检查权威调度器状态
   session
-          管理会话身份和上下文挂载
+          管理上下文中的会话
   agent
           管理持久代理
   harness
           安装和查看版本化领域程序包
   objective
           管理长期目标
+  trajectory
+          导出和校验可移植的代理执行轨迹包
+  storage
+          检查并迁移运行时存储权威
+  experiment
+          检查并验证显式门控的实验功能
   job
           检查或取消子代理委派
   config
@@ -219,7 +235,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置权限审批策略
 
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
 
       --network[=<BOOL>]
           允许沙箱命令访问网络
@@ -238,6 +254,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
       --format <FORMAT>
           选择管理命令输出格式
+
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
 
       --tui
           强制使用全屏终端界面
@@ -299,7 +318,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -312,6 +331,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -380,7 +401,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置权限审批策略
 
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
 
       --network[=<BOOL>]
           允许沙箱命令访问网络
@@ -399,6 +420,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
       --format <FORMAT>
           选择管理命令输出格式
+
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
 
       --tui
           强制使用全屏终端界面
@@ -435,6 +459,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --config-file <FILE>
           加载指定的可信配置文件
 
+      --coordination-mesh <SOURCE>
+          使用 static:URL,URL 或 file:PATH 加入 Coordination Mesh
+
   -h, --help
           显示帮助
 
@@ -469,7 +496,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置权限审批策略
 
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
 
       --network[=<BOOL>]
           允许沙箱命令访问网络
@@ -489,6 +516,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
       --format <FORMAT>
           选择管理命令输出格式
 
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
+
       --tui
           强制使用全屏终端界面
 
@@ -501,6 +531,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 示例：
   morphz serve
   morphz serve --bind=127.0.0.1:9090
+  morphz serve --coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080
+  morphz serve --coordination-mesh=file:/etc/morphz/mesh.toml
   MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:8080
 ```
 
@@ -560,7 +592,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置权限审批策略
 
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
 
       --network[=<BOOL>]
           允许沙箱命令访问网络
@@ -579,6 +611,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
       --format <FORMAT>
           选择管理命令输出格式
+
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
 
       --tui
           强制使用全屏终端界面
@@ -622,7 +657,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   rotate-key
           轮换此执行节点的设备身份密钥
   status
-          显示已配对节点和本地执行目标身份
+          显示已配对节点和本地执行节点身份
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -651,7 +686,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -664,6 +699,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -674,28 +711,28 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 ### `morphz target`
 
-检查和管理执行目标
+检查和管理执行节点
 
 ```text
-检查和管理执行目标
+检查和管理执行节点
 
 用法：morphz target [OPTIONS] [COMMAND]
 
 命令：
   list
-          列出当前身份可见的执行目标
+          列出当前身份可见的执行节点
   show
-          查看一个执行目标
+          查看一个执行节点
   enable
-          启用一个执行目标
+          启用一个执行节点
   disable
-          禁用一个执行目标
+          禁用一个执行节点
   authorize
-          将执行目标限制到代理、上下文或线程范围
+          将执行节点限制到代理、上下文或线程范围
   authorizations
-          列出执行目标的范围授权
+          列出执行节点的范围授权
   revoke-authorization
-          撤销一个执行目标范围授权
+          撤销一个执行节点范围授权
 选项：
   -C, --cwd <DIR>
           在加载配置前更改工作目录
@@ -724,7 +761,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -737,6 +774,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -747,10 +786,10 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 ### `morphz lease`
 
-检查和撤销执行目标能力租约
+检查和撤销执行节点能力租约
 
 ```text
-检查和撤销执行目标能力租约
+检查和撤销执行节点能力租约
 
 用法：morphz lease [OPTIONS] [COMMAND]
 
@@ -787,7 +826,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -800,6 +839,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -854,7 +895,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -867,6 +908,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -931,7 +974,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           设置权限审批策略
 
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
 
       --network[=<BOOL>]
           允许沙箱命令访问网络
@@ -950,6 +993,9 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
       --format <FORMAT>
           选择管理命令输出格式
+
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
 
       --tui
           强制使用全屏终端界面
@@ -1014,7 +1060,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1027,6 +1073,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1083,7 +1131,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1096,6 +1144,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1150,7 +1200,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1163,6 +1213,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1190,7 +1242,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   status
           显示上下文状态、会话和活跃工作
   audit
-          对照事件历史验证上下文的认知投影
+          通过事件回放验证上下文的认知投影
   recall-index
           检查或重建派生的词法召回索引
   recall
@@ -1223,7 +1275,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1236,6 +1288,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1288,7 +1342,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1301,6 +1355,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1313,10 +1369,10 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
 
 ### `morphz session`
 
-管理会话身份和上下文挂载
+管理上下文中的会话
 
 ```text
-管理会话身份和上下文挂载
+管理上下文中的会话
 
 用法：morphz session [OPTIONS] [COMMAND]
 
@@ -1326,7 +1382,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   show
           显示一个会话
   create
-          创建挂载到指定上下文的会话
+          在指定上下文中创建会话
   resume
           重新连接现有或最近活跃的会话
 选项：
@@ -1357,7 +1413,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1370,6 +1426,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1424,7 +1482,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1437,6 +1495,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1491,7 +1551,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1504,6 +1564,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1566,7 +1628,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1579,6 +1641,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1587,6 +1651,205 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           显示版本
 
 运行 `morphz objective <COMMAND> --help` 查看具体命令的帮助。
+```
+
+### `morphz trajectory`
+
+导出和校验可移植的代理执行轨迹包
+
+```text
+导出和校验可移植的代理执行轨迹包
+
+用法：morphz trajectory [OPTIONS] [COMMAND]
+
+命令：
+  export
+          将运行时权威事实导出为代理执行轨迹包
+  verify
+          校验不可信的代理执行轨迹包
+  episode
+          派生经过权限校验的训练片段
+选项：
+  -C, --cwd <DIR>
+          在加载配置前更改工作目录
+      --config-file <FILE>
+          加载指定的可信配置文件
+  -p, --profile <NAME>
+          加载具名配置方案
+  -h, --help
+          显示帮助
+      --provider <ID>
+          覆盖已配置的模型服务商
+  -m, --model <MODEL>
+          覆盖已配置的模型
+      --reasoning-effort <LEVEL>
+          设置模型推理强度
+      --agent <ID>
+          选择代理
+      --context <ID>
+          选择或挂载认知上下文
+      --session <ID>
+          重新连接现有会话
+      --harness <ID@VERSION>
+          为首次求值选择已安装领域程序包的精确版本
+  -s, --sandbox <MODE>
+          设置命令沙箱模式
+  -a, --approval <MODE>
+          设置权限审批策略
+      --add-dir <DIR>
+          添加额外的可读写工作区目录
+      --network[=<BOOL>]
+          允许沙箱命令访问网络
+  -c, --set <KEY=VALUE>
+          覆盖单个配置值
+      --log-level <FILTER>
+          覆盖日志过滤器
+      --theme <THEME>
+          选择终端界面颜色主题
+      --language <LANGUAGE>
+          选择用户界面语言
+      --format <FORMAT>
+          选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
+      --tui
+          强制使用全屏终端界面
+      --plain
+          使用经典行式终端
+  -V, --version
+          显示版本
+```
+
+### `morphz storage`
+
+检查并迁移运行时存储权威
+
+```text
+检查并迁移运行时存储权威
+
+用法：morphz storage [OPTIONS] [COMMAND]
+
+命令：
+  migrate-cognitive-store
+          将认知状态显式同步到选定存储引擎
+选项：
+  -C, --cwd <DIR>
+          在加载配置前更改工作目录
+      --config-file <FILE>
+          加载指定的可信配置文件
+  -h, --help
+          显示帮助
+  -p, --profile <NAME>
+          加载具名配置方案
+      --provider <ID>
+          覆盖已配置的模型服务商
+  -m, --model <MODEL>
+          覆盖已配置的模型
+      --reasoning-effort <LEVEL>
+          设置模型推理强度
+      --agent <ID>
+          选择代理
+      --context <ID>
+          选择或挂载认知上下文
+      --session <ID>
+          重新连接现有会话
+      --harness <ID@VERSION>
+          为首次求值选择已安装领域程序包的精确版本
+  -s, --sandbox <MODE>
+          设置命令沙箱模式
+  -a, --approval <MODE>
+          设置权限审批策略
+      --add-dir <DIR>
+          添加额外的可读写工作区目录
+      --network[=<BOOL>]
+          允许沙箱命令访问网络
+  -c, --set <KEY=VALUE>
+          覆盖单个配置值
+      --log-level <FILTER>
+          覆盖日志过滤器
+      --theme <THEME>
+          选择终端界面颜色主题
+      --language <LANGUAGE>
+          选择用户界面语言
+      --format <FORMAT>
+          选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
+      --tui
+          强制使用全屏终端界面
+      --plain
+          使用经典行式终端
+  -V, --version
+          显示版本
+
+运行时启动不会隐式迁移认知状态。
+```
+
+### `morphz experiment`
+
+检查并验证显式门控的实验功能
+
+```text
+检查并验证显式门控的实验功能
+
+用法：morphz experiment [OPTIONS] [COMMAND]
+
+命令：
+  list
+          列出实验功能的编译与启用状态
+  check
+          确认一个实验功能已经编译并启用
+选项：
+  -C, --cwd <DIR>
+          在加载配置前更改工作目录
+      --config-file <FILE>
+          加载指定的可信配置文件
+  -h, --help
+          显示帮助
+  -p, --profile <NAME>
+          加载具名配置方案
+      --provider <ID>
+          覆盖已配置的模型服务商
+  -m, --model <MODEL>
+          覆盖已配置的模型
+      --reasoning-effort <LEVEL>
+          设置模型推理强度
+      --agent <ID>
+          选择代理
+      --context <ID>
+          选择或挂载认知上下文
+      --session <ID>
+          重新连接现有会话
+      --harness <ID@VERSION>
+          为首次求值选择已安装领域程序包的精确版本
+  -s, --sandbox <MODE>
+          设置命令沙箱模式
+  -a, --approval <MODE>
+          设置权限审批策略
+      --add-dir <DIR>
+          添加额外的可读写工作区目录
+      --network[=<BOOL>]
+          允许沙箱命令访问网络
+  -c, --set <KEY=VALUE>
+          覆盖单个配置值
+      --log-level <FILTER>
+          覆盖日志过滤器
+      --theme <THEME>
+          选择终端界面颜色主题
+      --language <LANGUAGE>
+          选择用户界面语言
+      --format <FORMAT>
+          选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
+      --tui
+          强制使用全屏终端界面
+      --plain
+          使用经典行式终端
+  -V, --version
+          显示版本
+
+实验功能默认关闭，不提供稳定性承诺。
 ```
 
 ### `morphz job`
@@ -1631,7 +1894,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1644,6 +1907,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1700,7 +1965,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1713,6 +1978,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1760,7 +2027,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1773,6 +2040,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1824,7 +2093,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1837,6 +2106,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
@@ -1885,7 +2156,7 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
   -a, --approval <MODE>
           设置权限审批策略
       --add-dir <DIR>
-          添加可读写目录
+          添加额外的可读写工作区目录
       --network[=<BOOL>]
           允许沙箱命令访问网络
   -c, --set <KEY=VALUE>
@@ -1898,6 +2169,8 @@ Morphz 是一台具有持久上下文、会话、目标和全屏终端界面的 
           选择用户界面语言
       --format <FORMAT>
           选择管理命令输出格式
+      --enable-experimental <FEATURE>
+          为当前进程启用一个已编译的实验功能
       --tui
           强制使用全屏终端界面
       --plain
