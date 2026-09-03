@@ -55,6 +55,24 @@ test('runtime overview uses Chinese product language consistently', () => {
   }
 })
 
+test('the initial Runtime loader resolves localized copy instead of raw i18n keys', () => {
+  const en = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/en.json', import.meta.url),
+    'utf8',
+  )) as { runtime: { loading?: string, loadingHint?: string }, eventHistory: Record<string, unknown> }
+  const zh = JSON.parse(readFileSync(
+    new URL('../src/i18n/locales/zh.json', import.meta.url),
+    'utf8',
+  )) as { runtime: { loading?: string, loadingHint?: string }, eventHistory: Record<string, unknown> }
+
+  assert.equal(en.runtime.loading, 'Connecting to Morphz Runtime')
+  assert.equal(en.runtime.loadingHint, 'Loading Agents, Contexts, Sessions and authoritative Projections…')
+  assert.equal(zh.runtime.loading, '正在连接 Morphz 运行时')
+  assert.equal(zh.runtime.loadingHint, '读取代理、上下文、会话与权威投影…')
+  assert.equal('loading' in en.eventHistory, false)
+  assert.equal('loading' in zh.eventHistory, false)
+})
+
 test('Mind Frame uses the canonical product term in both languages', () => {
   const zh = JSON.parse(readFileSync(
     new URL('../src/i18n/locales/zh.json', import.meta.url),
