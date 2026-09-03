@@ -18208,7 +18208,11 @@ impl Orchestrator {
                     .scope(task_harness_types, async move {
                         crate::sexpr_eval::CURRENT_HARNESS_FUNCTIONS
                             .scope(task_harness_functions, async move {
-                crate::sexpr_eval::CURRENT_PLAN_EXECUTOR
+                // HNS added two more task-local scopes to this already deep
+                // execution chain. Keep the remaining concrete Future behind
+                // a heap boundary so ordinary tool calls fit the default Rust
+                // test-worker stack on every supported platform.
+                Box::pin(crate::sexpr_eval::CURRENT_PLAN_EXECUTOR
                     .scope(plan_executor, async move {
                 crate::sexpr_eval::CURRENT_INFERENCE
                     .scope(inference_channel, async move {
@@ -18623,7 +18627,7 @@ impl Orchestrator {
                     .await
                     })
                     .await
-                    })
+                    }))
                     .await
                     })
                     .await
