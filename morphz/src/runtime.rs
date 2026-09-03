@@ -21469,8 +21469,10 @@ mod tests {
             .await
             .unwrap();
         // Over a hundred model evaluations, so this needs more headroom than a
-        // wait for a single reply.
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), replies.recv())
+        // wait for a single reply. The whole workspace runs many SQLite-heavy
+        // tests concurrently; this timeout is a deadlock guard, not a latency
+        // contract for one isolated Objective.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(120), replies.recv())
             .await
             .unwrap()
             .unwrap();

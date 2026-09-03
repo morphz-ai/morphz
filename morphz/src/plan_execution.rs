@@ -4544,7 +4544,10 @@ mod tests {
                     "disposition".to_string(),
                     serde_json::json!("complete_internal_evaluation"),
                 ),
-                ("text".to_string(), serde_json::json!("done")),
+                // A typed String infer result crosses the model boundary as
+                // JSON transport, so the payload must itself be a JSON string
+                // literal rather than an unquoted model utterance.
+                ("text".to_string(), serde_json::json!("\"done\"")),
             ]),
         );
         let child_activation = match store

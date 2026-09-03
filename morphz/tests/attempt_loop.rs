@@ -8452,7 +8452,9 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
             eval_response(&program),
             // Inside the infer, the model wants evidence before answering.
             read_call_response("infer-read", &probe_path),
-            text_reply_response("Rust"),
+            // The infer result is typed as String by `(decode String ...)`,
+            // so the model boundary must return its JSON transport.
+            text_reply_response("\"Rust\""),
             text_reply_response("已确认"),
         ],
         morphz::config::OrchestratorConfig::default(),
