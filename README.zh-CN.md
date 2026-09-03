@@ -33,33 +33,40 @@ Morphz 已经拥有 macOS、Linux 和 Windows 的原生沙箱实现，但 0.1 �
 - **经验可以成为可移植证据。** Agent Trajectory 与 Mind Frame Exchange 规范定义了跨实现的
   可审计记录与选择性认知交换。
 
-## 构建与运行
+## 安装与运行
 
 ### 前置条件
 
-- 使用 [`rust-toolchain.toml`](rust-toolchain.toml) 固定的 Rust 工具链（当前为 Rust 1.97.1）；
 - 可以访问至少一个受支持的模型服务；
 - 对交给 Agent 的工作目录具有读写权限。
 
-在仓库根目录构建：
+在 macOS 或 Linux 上安装预编译版本：
 
 ```bash
-cargo build --release
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
-配置模型服务并启动 Morphz：
+Windows PowerShell：
+
+```powershell
+irm https://morphz.ai/install.ps1 | iex
+```
+
+安装器会选择对应的 GitHub Release 原生制品并校验 SHA-256。打开一个新终端后，配置模型
+服务并启动 Morphz：
 
 ```bash
-./target/release/morphz setup
-./target/release/morphz doctor
-./target/release/morphz
+morphz setup
+morphz doctor
+morphz
 ```
 
 `setup` 默认打开内嵌的控制台向导。在 SSH 主机或没有浏览器的机器上使用 `setup --tui`；
 只需要输出控制台地址而不打开浏览器时，使用 `setup --no-open`。
 
-Morphz 的启动目录可能成为 Agent 的工作目录。正式使用时，请把二进制复制到独立的可执行
-位置，或用显式的 `--cwd` 启动；不要无意中把源码 checkout 的写权限交给实验中的 Agent。
+Morphz 的启动目录可能成为 Agent 的工作目录；必要时用显式的 `--cwd` 启动，不要无意中
+把源码 checkout 的写权限交给实验中的 Agent。开发者仍可使用
+[`rust-toolchain.toml`](rust-toolchain.toml) 固定的工具链从源码构建。
 
 完整首次运行流程见[快速开始](https://morphz.ai/docs/getting-started)。
 

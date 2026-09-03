@@ -41,6 +41,10 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.doesNotMatch(zh, /home-cognitive-os__paren/);
   assert.match(zh, /认知上下文编码/);
   assert.match(zh, /查看源码/);
+  assert.match(zh, /启动 Morphz。/);
+  assert.doesNotMatch(zh, /启动一个 Morphz/);
+  assert.match(zh, /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
+  assert.doesNotMatch(zh, /cargo build --release/);
   assert.match(zh, /aria-label="切换到英文"[^>]*>EN<\/a>/);
   assert.match(en, /aria-label="Switch to Chinese"[^>]*>CN<\/a>/);
   assert.match(zh, /class="context-preview__brackets"/);
@@ -61,6 +65,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /up to 50 Sessions active within the last 24 hours/);
   assert.match(en, /Keep talking while the Agent works/);
   assert.match(en, /Execution Targets/);
+  assert.match(en, /Run Morphz/);
+  assert.match(en, /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
   assert.match(en, /COGNITIVE APPLICATIONS/);
   assert.match(en, /CONTEXT ENCODING/);
   assert.doesNotMatch(en, /DEVELOPER PREVIEW/i);
@@ -171,6 +177,9 @@ test("renders the bilingual paper and native distribution pages", async () => {
   assert.match(html[2], /Windows/);
   assert.match(html[2], /Windows 版是原生程序/);
   assert.match(html[3], /The Windows build is native/);
+  assert.match(html[2], /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
+  assert.match(html[2], /irm https:\/\/morphz\.ai\/install\.ps1 \| iex/);
+  assert.match(html[3], /GitHub Releases/);
 
   for (const filename of [
     "morphz_nondeterministic_cognitive_symbol_evaluation_preprint_zh.pdf",
@@ -179,6 +188,20 @@ test("renders the bilingual paper and native distribution pages", async () => {
     const paper = await stat(new URL(`../public/paper/${filename}`, import.meta.url));
     assert.ok(paper.size > 100_000, `${filename} is missing or unexpectedly small`);
   }
+});
+
+test("publishes installers that resolve verified GitHub Release assets", async () => {
+  const [shellSource, shellPublic, powershellSource, powershellPublic] = await Promise.all([
+    readFile(new URL("../../scripts/install.sh", import.meta.url), "utf8"),
+    readFile(new URL("../public/install.sh", import.meta.url), "utf8"),
+    readFile(new URL("../../scripts/install.ps1", import.meta.url), "utf8"),
+    readFile(new URL("../public/install.ps1", import.meta.url), "utf8"),
+  ]);
+  assert.equal(shellPublic, shellSource);
+  assert.equal(powershellPublic, powershellSource);
+  assert.match(shellSource, /github\.com\/\$repository\/releases\/latest\/download/);
+  assert.match(shellSource, /sha256sum|shasum/);
+  assert.match(powershellSource, /Get-FileHash -Algorithm SHA256/);
 });
 
 test("does not advertise the unpublished online Morphz instance", async () => {

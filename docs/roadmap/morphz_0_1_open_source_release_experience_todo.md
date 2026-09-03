@@ -33,7 +33,7 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 最先阻断发布的不是视觉细节，而是四个边界：
 
 1. **法律授权尚未建立**：仓库没有正式 `LICENSE`；现有 IPR Notice 明确说明权利保留、尚未授予仓库级源码许可。
-2. **没有真正的发行物**：CI 能构建源码，但没有跨平台 Release workflow、下载制品、checksum、签名、SBOM 或安装器；Quick Start 仍要求用户安装 Rust 并自行编译。
+2. **发行链路尚待真实标签验收**：跨平台 Release workflow、下载制品、checksum 与一条命令安装器已经实现；签名、SBOM、真实 `v*` 标签发布以及三平台全新环境安装仍未验收。
 3. **支持范围还没有被完整冻结**：macOS、Linux 与 Windows 已有原生 sandbox 实现和对应 CI 门禁，但 Windows 原生门禁尚未在本变更提交后实际执行，README、Docker 与 Quick Start 也还没有在入口处给出统一支持矩阵。
 4. **首次诊断仍可能失效**：审查中 `morphz doctor --language=en` 在 macOS 系统代理探测路径发生 panic；设置 `MORPHZ_HTTP_PROXY_MODE=direct` 后可运行，但在“未配置 Provider”时仍以退出码 0 结束。
 
@@ -85,34 +85,34 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 
 **证据**：Linux 已在 Debian/Rust 原生容器完成编译、专属测试和 Clippy；CI 新增 Ubuntu Bubblewrap 真实攻击任务与 Windows Restricted Token/ACL/WFP/Job Object 真实攻击任务；Windows 安全结论仍以原生 Runner 首次通过为准。
 
-### OSR-003 `[!]` 建立可下载、可验证的 Release 制品
+### OSR-003 `[!] [~]` 建立可下载、可验证的 Release 制品
 
 **目标**：普通用户不安装 Rust、不 clone 仓库也能获得可信的 `morphz` 和 `morphz-edge`。
 
 **TODO**：
 
 - [ ] 建立 `v0.1.0-rc.N` 与正式 SemVer tag 规则；
-- [ ] GitHub Release workflow 同时构建 `morphz` 和 `morphz-edge`；
-- [ ] 为 OS/arch 产出统一命名的 `.tar.gz`/`.zip`；
-- [ ] 产出 SHA-256 checksum manifest；
+- [x] GitHub Release workflow 同时构建 `morphz` 和 `morphz-edge`；
+- [x] 为当前首发 OS/arch 产出统一命名的 `.tar.gz`/`.zip`；
+- [x] 产出逐制品 SHA-256 checksum；
 - [ ] 选择并实施签名/证明机制（例如 Sigstore provenance）；
 - [ ] 生成 SBOM，并记录 Rust、npm 和系统动态依赖；
 - [ ] Release Notes 列出兼容范围、Experimental 功能、迁移与已知问题；
-- [ ] 让 Release workflow 从干净 tag 构建，并在产物中写入准确版本与 commit；
-- [ ] 为制品安装后的 `--version`、`--help`、`doctor` 和首次启动建立 smoke。
+- [~] Release workflow 已限定从 `v*` tag 构建，并由现有构建元数据写入版本与 commit；待首个真实 RC tag 验收；
+- [~] Unix 安装器已有本地归档与真实 release 二进制 `--version` smoke；仍需补齐各平台的 `--help`、`doctor` 和首次启动 smoke。
 
 **验收**：新用户只通过 Release 页面即可下载、校验、安装并完成首次响应；`morphz --version` 与 tag/commit 一致；两个二进制都包含在发行清单中。
 
-**证据**：当前 CI 的 release job 只执行 `cargo build --release --workspace`，没有上传 artifact、checksum、签名、SBOM 或 release；当前 tag 主要是实验冻结标签，没有公开 SemVer Release 标签。
+**证据**：`.github/workflows/release.yml` 已按 `v*` tag 构建 macOS Apple Silicon/Intel、Linux x86_64 和 Windows x86_64 制品，发布 `morphz`、`morphz-edge`、Windows sandbox helpers、安装器与 SHA-256；`scripts/test_install.sh` 和本机真实 aarch64 Release 归档安装 smoke 已通过。尚无公开 SemVer Release 标签，签名、SBOM 和三平台全新环境验收仍是关闭条件。
 
-### OSR-004 `[!]` 建立 10 分钟 Fresh Install 路径
+### OSR-004 `[!] [~]` 建立 10 分钟 Fresh Install 路径
 
 **目标**：没有历史 Morphz 配置的陌生用户可以从下载页完成第一次真实模型响应。
 
 **TODO**：
 
-- [ ] 为支持平台提供一条复制即可运行的安装命令；
-- [ ] 提供不需要管理员权限的安装位置，以及显式 `--prefix`/目标目录；
+- [x] 为当前首发支持平台提供一条复制即可运行的安装命令；
+- [~] 默认安装到用户目录且不需要管理员权限；安装目标可通过环境变量覆盖，仍需补充公开说明；
 - [ ] 提供卸载说明，区分二进制、用户配置、凭证和数据；
 - [ ] Quick Start 首屏先给最短成功路径，再链接概念和架构；
 - [ ] Dashboard Setup 与 `setup --tui` 各做一次全新用户验收；
@@ -145,7 +145,7 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 
 **审查复现**：默认系统代理路径运行 `morphz doctor --language=en` 在 macOS SystemConfiguration 发生 `Attempted to create a NULL object` panic；设 `MORPHZ_HTTP_PROXY_MODE=direct` 后运行成功，但未配置 Provider 时仍退出 0。
 
-### OSR-006 `[!]` 统一公开文档与真实默认行为
+### OSR-006 `[!] [~]` 统一公开文档与真实默认行为
 
 **目标**：README、`.env.example`、网站文档、CLI Help 和实际代码不互相矛盾。
 
@@ -154,7 +154,7 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 - [ ] 把根 README 重写为简短双语入口：一句定位、支持平台、安装、5 分钟 Quick Start、截图/演示、文档、限制、贡献与许可证；
 - [ ] 将长篇架构与实验历史移到 docs 索引，不挡住首次运行；
 - [ ] 修正 `.env.example`：工作目录 `.env` 不会隐式加载；默认 proxy mode 是 `system`；Provider/Auth/Route 以当前 setup/catalog 为准；
-- [ ] 更新中英文 Getting Started，优先使用 Release 制品而不是源码编译；
+- [x] 更新中英文 Getting Started，优先使用 Release 制品而不是源码编译；
 - [ ] 将 `morphz-edge` 安装、配对、运行、服务管理和权限边界加入公开中英文网站；
 - [ ] 新增当前支持矩阵、Known Limitations、升级/降级与数据目录说明；
 - [ ] 生成并校验 CLI reference，避免 Help 与网站漂移；
@@ -409,7 +409,7 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 
 1. **作出 OSR-001 的许可证/IPR 决定**，否则“开源发布”在法律上尚未发生；
 2. **取得 OSR-002 三平台原生 CI 证据并发布统一能力矩阵**，避免安装器和文档超出实际验证范围；
-3. **建立 OSR-003 的最小 RC Release workflow**，先让两个二进制能够被下载和校验；
+3. **用首个私有 RC tag 验收 OSR-003 Release workflow**，确认三平台制品能够被下载、校验和一条命令安装；
 4. **修复 OSR-005 的 Doctor panic 与退出码**，让排障入口先可靠；
 5. **关闭 OSR-006 的 `.env`/proxy/安装文档矛盾**，为第一次陌生用户演练准备唯一正确路径。
 
@@ -420,3 +420,4 @@ Morphz 已具备较强的 Runtime、恢复、双存储、Dashboard、TUI、双�
 | 日期 | 任务 | 状态变化 | Commit/证据 | 验收人 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | 2026-08-31 | 初始统一审查 | 新建 | 基线 `9e3015a` | 待定 | 记录当前发布阻断、已有基础与建议执行波次 |
+| 2026-09-03 | 首发安装策略 | OSR-003/004/006 进入实现验收 | Release workflow、Unix/Windows 安装器、安装 smoke、双语公开入口 | 待定 | 普通用户默认一条命令安装预编译制品；源码构建仅作为开发与独立复现路径 |

@@ -38,34 +38,41 @@ the verified boundary between implemented, validated, experimental, and planned 
 - **Experience is portable evidence.** Agent Trajectory and Mind Frame Exchange specifications
   define auditable records and selected cognitive exchange beyond one implementation.
 
-## Build and run
+## Install and run
 
 ### Prerequisites
 
-- The Rust toolchain pinned by [`rust-toolchain.toml`](rust-toolchain.toml) (currently Rust 1.97.1);
 - access to at least one supported model service;
 - read and write access to the working directory you give the Agent.
 
-Build from the repository root:
+Install a prebuilt release on macOS or Linux:
 
 ```bash
-cargo build --release
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
-Configure a model service and start Morphz:
+On Windows PowerShell:
+
+```powershell
+irm https://morphz.ai/install.ps1 | iex
+```
+
+The installers select the native GitHub Release asset and verify its SHA-256 checksum. Open a new
+terminal, then configure a model service and start Morphz:
 
 ```bash
-./target/release/morphz setup
-./target/release/morphz doctor
-./target/release/morphz
+morphz setup
+morphz doctor
+morphz
 ```
 
 `setup` opens the embedded Dashboard wizard by default. Use `setup --tui` on an SSH host or a
 machine without a browser, or `setup --no-open` to print the Dashboard URL without opening it.
 
-The directory from which Morphz runs may become the Agent's working directory. For real use, copy
-the binary to a separate executable location or start it with an explicit `--cwd`; do not grant an
-experimental Agent write access to a source checkout unintentionally.
+The directory from which Morphz runs may become the Agent's working directory. Use an explicit
+`--cwd` when necessary; do not grant an experimental Agent write access to a source checkout
+unintentionally. Developers can still build from source with the toolchain pinned by
+[`rust-toolchain.toml`](rust-toolchain.toml).
 
 For the complete first-run path, read [Getting started](https://morphz.ai/en/docs/getting-started).
 

@@ -1,47 +1,53 @@
 ---
 title: Getting started
-description: Build Morphz, configure a model path, and receive the first real response.
+description: Install Morphz, configure a model path, and receive the first real response.
 section: start
 order: 10
 status: current
 ---
 
-Morphz currently ships as a Rust binary with the Dashboard embedded. A first run is complete only after a request reaches a real model service and returns a response.
+Morphz ships as a prebuilt native binary with the Dashboard embedded. A first run is complete only after a request reaches a real model service and returns a response.
 
 ## Prerequisites
 
-- The Rust toolchain pinned by `rust-toolchain.toml`;
+- macOS on Apple Silicon or Intel, x86_64 Linux, or x86_64 Windows;
 - Access to at least one model service;
 - Read and write access to the working directory.
 
-## Build
+## Install with one command
 
-From the repository root:
+macOS and Linux:
 
 ```bash
-cargo build --release
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
-The binary is written to `target/release/morphz`. Run it there or copy it to your executable path.
+Windows PowerShell:
+
+```powershell
+irm https://morphz.ai/install.ps1 | iex
+```
+
+The installer detects the current platform, downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs into the user path without requiring root or administrator access. Open a new terminal before continuing with Setup.
 
 ## Complete Setup
 
 Setup opens the Dashboard wizard by default:
 
 ```bash
-./target/release/morphz setup
+morphz setup
 ```
 
 Use the full-screen terminal wizard on SSH hosts or systems without a browser:
 
 ```bash
-./target/release/morphz setup --tui
+morphz setup --tui
 ```
 
 To print the Dashboard URL without opening a browser:
 
 ```bash
-./target/release/morphz setup --no-open
+morphz setup --no-open
 ```
 
 A successful Setup persists a complete model service, auth account, and model route. An unfinished OAuth attempt does not become a selectable account.
@@ -51,7 +57,7 @@ A successful Setup persists a complete model service, auth account, and model ro
 Run the structural diagnostics first:
 
 ```bash
-./target/release/morphz doctor
+morphz doctor
 ```
 
 Then open Model Services in the Dashboard and test the account. A useful test result names the account, physical model, elapsed time, and any provider error. “Authenticated” only means credentials exist; it does not prove that a model request succeeds.
@@ -61,16 +67,26 @@ Then open Model Services in the Dashboard and test the account. A useful test re
 Launch the interactive interface:
 
 ```bash
-./target/release/morphz
+morphz
 ```
 
 Or provide a prompt directly:
 
 ```bash
-./target/release/morphz inspect this project and explain what you can access
+morphz inspect this project and explain what you can access
 ```
 
 The first run is complete when a model response appears. If only user messages are visible, use [Operations and troubleshooting](/en/docs/operations) instead of creating more sessions.
+
+## Build from source
+
+For development, review, or independent reproduction, use the Rust toolchain pinned by `rust-toolchain.toml` from the repository root:
+
+```bash
+cargo build --release
+```
+
+The resulting binary is `target/release/morphz`. Source builds are not the default installation path for ordinary users.
 
 ## Next steps
 

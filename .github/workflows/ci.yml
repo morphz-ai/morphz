@@ -33,6 +33,10 @@ jobs:
         run: perl scripts/check-diagnostic-logs.pl
       - name: Signed Edge installer contract
         run: sh scripts/edge/test_install.sh
+      - name: Main release installer contract
+        run: |
+          cmp scripts/install.sh website/public/install.sh
+          sh scripts/test_install.sh
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -151,19 +155,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Parse the PowerShell Edge installer
+      - name: Parse the PowerShell installers
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path "scripts/edge/install.ps1"),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | Format-List | Out-String | Write-Error
-            exit 1
+          foreach ($installer in @("scripts/install.ps1", "website/public/install.ps1", "scripts/edge/install.ps1")) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $installer),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+          if ((Get-FileHash scripts/install.ps1).Hash -ne (Get-FileHash website/public/install.ps1).Hash) {
+            throw "The website PowerShell installer is out of sync with scripts/install.ps1."
           }
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

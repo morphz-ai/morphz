@@ -81,11 +81,12 @@ const content = {
       ["文档", "产品文档", "安装、配置、核心概念与运行说明。", "docs"],
     ],
     runIndex: "06 / 第一次运行",
-    runTitle: "在自己的机器上，\n启动一个 Morphz。",
-    runLead: "设置向导连接模型服务；控制台展示认知上下文、会话、目标、线程、认知与执行状态。",
-    copyLabel: "构建 / 设置 / 运行",
-    preview: "本地优先",
-    previewBody: "包含核心运行时、终端界面与控制台，支持在 macOS、Linux 和 Windows 上从源码构建。",
+    runTitle: "在自己的机器上，\n启动 Morphz。",
+    runLead: "一条命令安装预编译版本；随后通过设置向导连接模型服务并启动 Morphz。",
+    copyLabel: "一条命令安装",
+    runPlatforms: "macOS · Linux",
+    preview: "GitHub Release",
+    previewBody: "安装脚本识别当前平台、校验下载内容并安装到用户目录；Windows 原生版本在下载页提供。",
     docsTitle: "产品文档",
     docsCards: [
       ["快速开始", "从构建到第一次真实模型响应。", "getting-started"],
@@ -169,11 +170,12 @@ const content = {
       ["DOCS", "Product documentation", "Installation, configuration, concepts, and operation.", "docs"],
     ],
     runIndex: "06 / FIRST RUN",
-    runTitle: "Start a Morphz\non your own machine.",
-    runLead: "Setup connects a model service. The Dashboard exposes Context, Sessions, Objectives, Threads, Mind, and execution state.",
-    copyLabel: "BUILD / SETUP / RUN",
-    preview: "Local-first",
-    previewBody: "Includes the core Runtime, terminal interface, and Dashboard, with source builds for macOS, Linux, and Windows.",
+    runTitle: "Run Morphz\non your own machine.",
+    runLead: "Install a prebuilt release with one command, then connect a model service through Setup and start Morphz.",
+    copyLabel: "ONE-COMMAND INSTALL",
+    runPlatforms: "macOS · Linux",
+    preview: "GITHUB RELEASE",
+    previewBody: "The installer detects the platform, verifies the download, and installs to the user path. Native Windows installation is on the download page.",
     docsTitle: "Product documentation",
     docsCards: [
       ["Getting started", "Build Morphz and receive the first real model response.", "getting-started"],
@@ -335,8 +337,8 @@ export function LandingPage({ locale }: { locale: Locale }) {
           <Link className="home-button home-button--primary" href={download}>{t.start}<b aria-hidden="true">→</b></Link>
         </div>
         <div className="home-run__command" aria-label={t.copyLabel}>
-          <header><span>{t.copyLabel}</span><small>macOS · Linux · Windows</small></header>
-          <pre><code>cargo build --release{"\n"}./target/release/morphz setup{"\n"}./target/release/morphz</code></pre>
+          <header><span>{t.copyLabel}</span><small>{t.runPlatforms}</small></header>
+          <pre><code>curl -fsSL https://morphz.ai/install.sh | sh</code></pre>
           <footer><strong>{t.preview}</strong><span>{t.previewBody}</span></footer>
         </div>
       </section>

@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  MORPHZ_BUILD_GIT_COMMIT: ${{ github.sha }}
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Match tag to Cargo package version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' morphz/Cargo.toml | head -n 1)"
+          test -n "$package_version"
+          test "$RELEASE_TAG" = "v$package_version"
+
+  unix-bundles:
+    name: ${{ matrix.asset }}
+    needs: validate-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: morphz-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: morphz-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: morphz-macos-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
+      - name: Package release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bundle
+          cp "target/${{ matrix.target }}/release/morphz" dist/bundle/
+          cp "target/${{ matrix.target }}/release/morphz-edge" dist/bundle/
+          cp LICENSE NOTICE dist/bundle/
+          archive="${{ matrix.asset }}.tar.gz"
+          tar -czf "dist/$archive" -C dist/bundle morphz morphz-edge LICENSE NOTICE
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "$archive" > "$archive.sha256")
+          else
+            (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}.tar.gz
+            dist/${{ matrix.asset }}.tar.gz.sha256
+          if-no-files-found: error
+
+  windows-bundle:
+    name: morphz-windows-x86_64
+    needs: validate-tag
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Build release binaries and sandbox helpers
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p morphz --bin morphz --bin morphz-edge --bin morphz-windows-sandbox-runner
+          cargo build --locked --release -p morphz-windows-sandbox --bins
+      - name: Package release bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundle = "dist/bundle"
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+          @(
+            "morphz.exe",
+            "morphz-edge.exe",
+            "morphz-windows-sandbox-runner.exe",
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe"
+          ) | ForEach-Object {
+            Copy-Item "target/release/$_" "$bundle/$_" -Force
+          }
+          Copy-Item LICENSE, NOTICE $bundle -Force
+          $archive = "morphz-windows-x86_64.zip"
+          Compress-Archive -Path "$bundle/*" -DestinationPath "dist/$archive" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -NoNewline "dist/$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: morphz-windows-x86_64
+          path: |
+            dist/morphz-windows-x86_64.zip
+            dist/morphz-windows-x86_64.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [unix-bundles, windows-bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Add installers
+        run: |
+          cp scripts/install.sh dist/install.sh
+          cp scripts/install.ps1 dist/install.ps1
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
