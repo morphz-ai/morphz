@@ -7197,7 +7197,11 @@ impl MorphzRuntime {
         let mut schedules = self
             .inner
             .store
-            .list_context_active_schedules_bounded(context_id, detail_fetch_limit)
+            .list_context_schedule_inventory_bounded(
+                context_id,
+                include_terminal,
+                detail_fetch_limit,
+            )
             .await?;
         let has_more_schedules = schedules.len() > limit || exact_active_schedules > limit;
         schedules.truncate(limit);
@@ -16210,6 +16214,21 @@ mod tests {
             })
             .await
             .unwrap();
+        runtime
+            .inner
+            .store
+            .update_thread(
+                &quiet_owner.id,
+                quiet_owner.revision,
+                None,
+                Some(crate::memory::ThreadLifecycle::Completed),
+                Some("template Thread completed while its timer remains active"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
 
         let snapshot = runtime
             .scheduler_snapshot(
@@ -16221,13 +16240,17 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(snapshot.summary.open_threads, 3);
+        assert_eq!(snapshot.summary.open_threads, 2);
         assert_eq!(snapshot.threads.len(), 1);
         assert_eq!(snapshot.detail_bounds.limit, 1);
         assert!(snapshot.detail_bounds.has_more_threads);
         assert_eq!(snapshot.summary.active_schedules, 1);
         assert_eq!(snapshot.schedules.len(), 1);
         assert_eq!(snapshot.schedules[0].id, schedule.id);
+        assert_eq!(
+            snapshot.schedules[0].status,
+            crate::memory::ScheduleStatus::Queued
+        );
         assert!(snapshot
             .threads
             .iter()

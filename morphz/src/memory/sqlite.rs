@@ -17839,7 +17839,7 @@ impl ScheduleStore for SqliteStore {
             sqlx::query_scalar::<_, i64>(
                 r#"SELECT COUNT(*) FROM schedules
                    INNER JOIN threads ON threads.id = schedules.thread_id
-                   WHERE threads.context_id = ? AND threads.status = 'open'
+                   WHERE threads.context_id = ?
                      AND schedules.status IN ('queued', 'paused')"#,
             )
             .bind(context_id)
@@ -17848,23 +17848,27 @@ impl ScheduleStore for SqliteStore {
         )?)
     }
 
-    async fn list_context_active_schedules_bounded(
+    async fn list_context_schedule_inventory_bounded(
         &self,
         context_id: &str,
+        include_terminal: bool,
         limit: usize,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let rows = sqlx::query(
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
             r#"SELECT schedules.* FROM schedules
                INNER JOIN threads ON threads.id = schedules.thread_id
-               WHERE threads.context_id = ? AND threads.status = 'open'
-                 AND schedules.status IN ('queued', 'paused')
-               ORDER BY schedules.updated_at DESC, schedules.id
-               LIMIT ?"#,
-        )
-        .bind(context_id)
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?;
+               WHERE threads.context_id = "#,
+        );
+        query.push_bind(context_id);
+        if !include_terminal {
+            query.push(" AND schedules.status IN ('queued', 'paused')");
+        }
+        query
+            .push(
+                " ORDER BY CASE WHEN schedules.status IN ('queued', 'paused') THEN 0 ELSE 1 END, schedules.updated_at DESC, schedules.id LIMIT ",
+            )
+            .push_bind(i64::try_from(limit)?);
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(schedule_from_row).collect()
     }
 

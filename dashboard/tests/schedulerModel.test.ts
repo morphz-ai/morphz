@@ -16,6 +16,7 @@ import {
   schedulerAttentionCount,
   schedulerDetailsTruncated,
   schedulerJobs,
+  schedulerScheduleInventory,
   schedulerSchedules,
   threadCarriesExecution,
   retryableDialogueThread,
@@ -259,6 +260,7 @@ test('current Schedule projection excludes terminal causal history', () => {
 
   assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1', 'schedule-completed'])
   assert.deepEqual(currentSchedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
+  assert.deepEqual(schedulerScheduleInventory(snapshot).map(item => item.id), ['schedule-1', 'schedule-completed'])
 })
 
 test('current Schedule projection uses the Context inventory outside the bounded Thread page', () => {
@@ -272,6 +274,7 @@ test('current Schedule projection uses the Context inventory outside the bounded
 
   assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
   assert.deepEqual(currentSchedulerSchedules(snapshot).map(item => item.id), ['schedule-from-quiet-owner'])
+  assert.deepEqual(schedulerScheduleInventory(snapshot).map(item => item.id), ['schedule-from-quiet-owner'])
 })
 
 test('attention fingerprints reopen when their source revision changes', () => {

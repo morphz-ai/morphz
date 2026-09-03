@@ -7472,13 +7472,15 @@ pub trait ScheduleStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    /// Bounded operator inventory of every currently controllable Schedule in
-    /// a Context. This projection is independent of the bounded recent-Thread
-    /// page: a quiet owner Thread must not make a live timer disappear from
-    /// the control surface.
-    async fn list_context_active_schedules_bounded(
+    /// Bounded operator inventory of Schedules in a Context. Active rows are
+    /// always returned independently of the bounded recent-Thread page: a
+    /// quiet or terminal template Thread must not make a live timer disappear
+    /// from the control surface. `include_terminal` adds recent history so an
+    /// operator can explain and audit work already emitted by a timer.
+    async fn list_context_schedule_inventory_bounded(
         &self,
         context_id: &str,
+        include_terminal: bool,
         limit: usize,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let mut schedules = self
@@ -7486,10 +7488,12 @@ pub trait ScheduleStore: Send + Sync {
             .await?
             .into_iter()
             .filter(|schedule| {
-                matches!(
-                    schedule.status,
-                    ScheduleStatus::Queued | ScheduleStatus::Paused
-                )
+                include_terminal || {
+                    matches!(
+                        schedule.status,
+                        ScheduleStatus::Queued | ScheduleStatus::Paused
+                    )
+                }
             })
             .collect::<Vec<_>>();
         schedules.sort_by(|left, right| {

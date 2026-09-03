@@ -87,15 +87,21 @@ export function schedulerSchedules(snapshot: SchedulerSnapshot | null): Schedule
   return snapshot.threads.flatMap(thread => thread.schedules)
 }
 
-/**
- * The task board represents current control state. Terminal Schedule history
- * remains available inside the owning causal Thread instead of masquerading
- * as work that can still wake the Runtime.
- */
 export function currentSchedulerSchedules(snapshot: SchedulerSnapshot | null): ScheduleRecord[] {
   if (!snapshot) return []
   return (snapshot.schedules ?? schedulerSchedules(snapshot))
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
+}
+
+/**
+ * The Schedule control surface is an operator inventory, not a projection of
+ * the bounded Thread page. A Runtime may return terminal history when it was
+ * requested so operators can explain prior wakeups without making those rows
+ * actionable again.
+ */
+export function schedulerScheduleInventory(snapshot: SchedulerSnapshot | null): ScheduleRecord[] {
+  if (!snapshot) return []
+  return snapshot.schedules ?? schedulerSchedules(snapshot)
 }
 
 export function activeSchedulerThreads(snapshot: SchedulerSnapshot | null): SchedulerThreadSnapshot[] {

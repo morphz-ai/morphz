@@ -79,11 +79,11 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
-  currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
   schedulerDetailsTruncated,
+  schedulerScheduleInventory,
   threadCarriesExecution,
   retryableDialogueThread,
 } from './scheduler/model'
@@ -5781,9 +5781,7 @@ export default function App() {
     )
     return streamingAttempts.filter(attempt => activationIds.has(attempt.activationId))
   }, [streamingAttempts, threadDetail])
-  // Terminal Schedule history remains available inside each causal Thread;
-  // this board and the composer status describe only present control state.
-  const schedules = currentSchedulerSchedules(schedulerSnapshot)
+  const schedules = schedulerScheduleInventory(schedulerSnapshot)
   const actionableJobRows = actionableSchedulerJobs(schedulerSnapshot)
   const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
   const pendingApprovalJobs = new Map(
@@ -8949,7 +8947,7 @@ export default function App() {
                       <div className="schedule-actions">
                         {schedule.status === 'queued' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'pause')}>{t('work.schedules.pause')}</button>}
                         {schedule.status === 'paused' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'resume')}>{t('work.schedules.resume')}</button>}
-                        {!['completed', 'cancelled'].includes(schedule.status) && <button className="danger" disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'cancel')}>{t('work.schedules.cancel')}</button>}
+                        {['queued', 'paused'].includes(schedule.status) && <button className="danger" disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'cancel')}>{t('work.schedules.cancel')}</button>}
                       </div>
                     </article>
                   ))}
