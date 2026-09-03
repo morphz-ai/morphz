@@ -293,7 +293,8 @@ assistant/tool transcript，形成了第二套模型可见上下文结构。该�
 ### 2.4 最终实验设计：canonical Context + Structured ContextDelta blocks
 
 最终实现由 Provider 中立的编译特性 `experimental-structured-context-delta-cache` 控制，默认构建
-不包含该能力；旧名称 `experimental-openai-chatgpt-structured-cache` 仅保留为兼容别名。
+不包含该能力。早期实验构建使用过绑定特定 Provider 的名称；该旧名称不再作为可选编译特性
+暴露，所有 Provider 统一使用上述中立名称。
 即使编译进 Runtime，也不会根据 Adapter 名字或 URL 猜测端点身份；Dashboard 只在 Runtime
 公布该实验能力时显示开关，并由用户对具体 Provider/物理模型显式选择
 `experimental-structured-deltas`。这使 API Proxy、反向代理和自定义域名都能被准确配置。

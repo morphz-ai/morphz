@@ -58,7 +58,7 @@ probe, set `MORPHZ_PROMPT_CACHE_STRATEGY` to `implicit-prefix`,
 `experimental-structured-deltas`, `explicit-content-boundaries`, or `disabled`.
 `implicit-prefix` is the ordinary canonical text path. The
 `experimental-structured-deltas` strategy exists only in a Runtime built with
-`--features experimental-openai-chatgpt-structured-cache`; it emits one User
+`--features experimental-structured-context-delta-cache`; it emits one User
 message whose first `input_text` block is a complete closed canonical Context and
 whose later blocks are ordered Structured ContextDelta forms. It rebases the seed
 after a Context transaction, seed Observation retirement, attachment, or

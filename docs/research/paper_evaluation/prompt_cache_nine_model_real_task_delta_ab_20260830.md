@@ -100,8 +100,8 @@ DeepSeek Flash 的 delta 轨迹在预热后仍有一次整段 miss；Grok 的前
 
 ## 实现边界
 
-通用编译特性名为 `experimental-structured-context-delta-cache`；旧名称
-`experimental-openai-chatgpt-structured-cache` 保留为向后兼容别名。编译特性只把能力加入
+通用编译特性名为 `experimental-structured-context-delta-cache`。早期实验构建使用过绑定特定
+Provider 的名称，但该旧名称已停止暴露。编译特性只把能力加入
 Runtime，Dashboard 仍要求用户在具体 Provider/物理模型上选择
 `experimental-structured-deltas`。OpenAI Responses、OpenAI Chat、Anthropic Messages 和
 Gemini Content Adapter 都保留原生多 text block 形状；本次真实 A/B 覆盖 Morphz→Proxy 的

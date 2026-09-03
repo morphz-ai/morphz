@@ -17,9 +17,6 @@ context-db = []
 # same block boundaries in their native content representation. The experiment
 # remains compile-time opt-in so default Context semantics stay untouched.
 experimental-structured-context-delta-cache = []
-# Backward-compatible alias for builds created before the transport became a
-# provider-neutral experiment.
-experimental-openai-chatgpt-structured-cache = ["experimental-structured-context-delta-cache"]
 
 [[example]]
 name = "context_db_sqlite_benchmark"
