@@ -23218,6 +23218,7 @@ mod tests {
             provider_adapter: "fixture".to_string(),
             provider_adapter_version: "1".to_string(),
             endpoint: "https://provider.invalid/v1".to_string(),
+            request_session_id: Some("session-1".to_string()),
             capabilities: Vec::new(),
             model_input_limits: Default::default(),
         };

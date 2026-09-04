@@ -34,8 +34,8 @@ const CLAUDE_ADAPTER_ID: &str = "claude-oauth";
 const ANTIGRAVITY_ADAPTER_ID: &str = "antigravity-oauth";
 const ANTIGRAVITY_NODE_API_CLIENT_UA: &str = "google-api-nodejs-client/10.3.0";
 const ANTIGRAVITY_GOOG_API_CLIENT_UA: &str = "gl-node/22.21.1";
-const CLAUDE_CLI_VERSION: &str = "2.1.220";
-const CLAUDE_OAUTH_BETAS: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,effort-2025-11-24,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11";
+pub(crate) const CLAUDE_CLI_VERSION: &str = "2.1.258";
+const CLAUDE_SDK_VERSION: &str = "0.112.1";
 const XAI_GROK_CLIENT_VERSION: &str = "0.2.120";
 const CODEX_ACCOUNT_PROBE_TIMEOUT_SECS: u64 = 20;
 
@@ -2682,15 +2682,30 @@ impl ClaudeOAuthAdapter {
     fn token_set(
         &self,
         response: ClaudeTokenResponse,
-        previous_refresh: Option<String>,
+        previous: Option<&OAuthTokenSet>,
     ) -> Result<OAuthTokenSet, String> {
         if response.access_token.trim().is_empty() {
             return Err("Claude OAuth Token Endpoint returned an empty Access Token".to_string());
         }
-        let mut metadata = BTreeMap::new();
+        let mut metadata = previous
+            .map(|token| token.metadata.clone())
+            .unwrap_or_default();
         if !response.organization.name.trim().is_empty() {
             metadata.insert("organization_name".to_string(), response.organization.name);
         }
+        let previous_refresh = previous.and_then(|token| token.refresh_token.clone());
+        let subject = (!response.account.uuid.trim().is_empty())
+            .then_some(response.account.uuid.clone())
+            .or_else(|| previous.and_then(|token| token.subject.clone()));
+        let account_id = (!response.organization.uuid.trim().is_empty())
+            .then_some(response.organization.uuid)
+            .or_else(|| previous.and_then(|token| token.account_id.clone()));
+        let email = (!response.account.email_address.trim().is_empty())
+            .then_some(response.account.email_address)
+            .or_else(|| previous.and_then(|token| token.email.clone()));
+        let device_id = previous
+            .and_then(|token| token.device_id.clone())
+            .or_else(|| random_hex(32).ok());
         Ok(OAuthTokenSet {
             adapter_id: CLAUDE_ADAPTER_ID.to_string(),
             adapter_version: self.version().to_string(),
@@ -2709,13 +2724,10 @@ impl ClaudeOAuthAdapter {
             ],
             expires_at: (response.expires_in > 0)
                 .then(|| Utc::now() + ChronoDuration::seconds(response.expires_in)),
-            subject: (!response.account.uuid.trim().is_empty())
-                .then_some(response.account.uuid.clone()),
-            account_id: (!response.organization.uuid.trim().is_empty())
-                .then_some(response.organization.uuid),
-            email: (!response.account.email_address.trim().is_empty())
-                .then_some(response.account.email_address),
-            device_id: None,
+            subject,
+            account_id,
+            email,
+            device_id,
             metadata,
         })
     }
@@ -2728,7 +2740,7 @@ impl AuthAdapter for ClaudeOAuthAdapter {
     }
 
     fn version(&self) -> &'static str {
-        "cliproxyapi-compatible-2026-09-03"
+        "cliproxyapi-compatible-2026-09-04"
     }
 
     fn flow(&self) -> OAuthFlowKind {
@@ -2744,7 +2756,7 @@ impl AuthAdapter for ClaudeOAuthAdapter {
     }
 
     fn last_verified_on(&self) -> Option<&'static str> {
-        Some("2026-09-03")
+        Some("2026-09-04")
     }
 
     async fn start_login(&self) -> Result<AdapterLoginStart, String> {
@@ -2856,13 +2868,15 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                 "refresh_token": refresh,
             }))
             .await?;
-        self.token_set(response, Some(refresh.to_string()))
+        self.token_set(response, Some(current))
     }
 
     fn materialize(&self, token: &OAuthTokenSet) -> Result<RequestAuthorization, String> {
         if token.access_token.trim().is_empty() {
             return Err("Claude OAuth Access Token is empty".to_string());
         }
+        let account_uuid = claude_stable_account_uuid(token);
+        let device_id = claude_stable_device_id(token);
         Ok(RequestAuthorization {
             bearer_token: token.access_token.clone(),
             headers: BTreeMap::from([
@@ -2871,7 +2885,6 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                     format!("Bearer {}", token.access_token),
                 ),
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
-                ("anthropic-beta".to_string(), CLAUDE_OAUTH_BETAS.to_string()),
                 (
                     "user-agent".to_string(),
                     format!("claude-cli/{CLAUDE_CLI_VERSION} (external, cli)"),
@@ -2886,7 +2899,7 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                 ("x-stainless-lang".to_string(), "js".to_string()),
                 (
                     "x-stainless-package-version".to_string(),
-                    "0.94.0".to_string(),
+                    CLAUDE_SDK_VERSION.to_string(),
                 ),
                 (
                     "x-stainless-runtime-version".to_string(),
@@ -2894,10 +2907,63 @@ impl AuthAdapter for ClaudeOAuthAdapter {
                 ),
                 ("x-stainless-os".to_string(), "MacOS".to_string()),
                 ("x-stainless-arch".to_string(), "arm64".to_string()),
+                ("x-stainless-timeout".to_string(), "600".to_string()),
             ]),
-            request_context: BTreeMap::new(),
+            request_context: BTreeMap::from([
+                ("account_uuid".to_string(), account_uuid),
+                ("device_id".to_string(), device_id),
+            ]),
         })
     }
+}
+
+fn claude_stable_account_uuid(token: &OAuthTokenSet) -> String {
+    token
+        .subject
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            stable_uuid_from_bytes(
+                b"morphz-claude-account-v1",
+                token
+                    .refresh_token
+                    .as_deref()
+                    .unwrap_or(token.access_token.as_str())
+                    .as_bytes(),
+            )
+        })
+}
+
+fn claude_stable_device_id(token: &OAuthTokenSet) -> String {
+    token
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"morphz-claude-device-v1\0");
+            hasher.update(claude_stable_account_uuid(token).as_bytes());
+            format!("{:x}", hasher.finalize())
+        })
+}
+
+fn stable_uuid_from_bytes(namespace: &[u8], value: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(namespace);
+    hasher.update([0]);
+    hasher.update(value);
+    let mut bytes: [u8; 16] = hasher.finalize()[..16].try_into().unwrap_or([0; 16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    )
 }
 
 #[derive(Clone)]
@@ -3980,7 +4046,7 @@ mod tests {
             "https://platform.claude.com/v1/oauth/token"
         );
         assert_eq!(claude.client_id, "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
-        assert_eq!(claude.last_verified_on(), Some("2026-09-03"));
+        assert_eq!(claude.last_verified_on(), Some("2026-09-04"));
 
         let xai = XaiOAuthAdapter::default();
         assert_eq!(
@@ -4615,32 +4681,72 @@ mod tests {
                 .map(String::as_str),
             Some("2023-06-01")
         );
+        assert!(authorization.headers.get("anthropic-beta").is_none());
         assert_eq!(
             authorization
-                .headers
-                .get("anthropic-beta")
+                .request_context
+                .get("account_uuid")
                 .map(String::as_str),
-            Some(CLAUDE_OAUTH_BETAS)
+            Some("claude-user")
         );
-        assert!(!authorization
-            .headers
-            .get("anthropic-beta")
-            .is_some_and(|value| value.contains("token-efficient-tools")));
+        assert!(authorization
+            .request_context
+            .get("device_id")
+            .is_some_and(|value| value.len() == 64));
         assert_eq!(
             authorization.headers.get("x-app").map(String::as_str),
             Some("cli")
         );
         assert_eq!(
             authorization.headers.get("user-agent").map(String::as_str),
-            Some("claude-cli/2.1.220 (external, cli)")
+            Some("claude-cli/2.1.258 (external, cli)")
         );
         assert_eq!(
             authorization
                 .headers
                 .get("x-stainless-package-version")
                 .map(String::as_str),
-            Some("0.94.0")
+            Some("0.112.1")
         );
+    }
+
+    #[test]
+    fn claude_refresh_preserves_credential_identity_when_rotation_omits_profile() {
+        let adapter = ClaudeOAuthAdapter::default();
+        let current = OAuthTokenSet {
+            adapter_id: CLAUDE_ADAPTER_ID.to_string(),
+            adapter_version: adapter.version().to_string(),
+            access_token: "old-access".to_string(),
+            refresh_token: Some("stable-refresh".to_string()),
+            id_token: None,
+            token_type: Some("Bearer".to_string()),
+            scopes: Vec::new(),
+            expires_at: None,
+            subject: Some("account-uuid".to_string()),
+            account_id: Some("organization-uuid".to_string()),
+            email: Some("claude@example.test".to_string()),
+            device_id: Some("a".repeat(64)),
+            metadata: BTreeMap::from([("organization_name".to_string(), "Org".to_string())]),
+        };
+        let refreshed = adapter
+            .token_set(
+                ClaudeTokenResponse {
+                    access_token: "new-access".to_string(),
+                    refresh_token: String::new(),
+                    token_type: "Bearer".to_string(),
+                    expires_in: 3600,
+                    organization: ClaudeOrganization::default(),
+                    account: ClaudeAccount::default(),
+                },
+                Some(&current),
+            )
+            .unwrap();
+
+        assert_eq!(refreshed.refresh_token, current.refresh_token);
+        assert_eq!(refreshed.subject, current.subject);
+        assert_eq!(refreshed.account_id, current.account_id);
+        assert_eq!(refreshed.email, current.email);
+        assert_eq!(refreshed.device_id, current.device_id);
     }
 
     async fn antigravity_token_endpoint(Form(form): Form<HashMap<String, String>>) -> Json<Value> {

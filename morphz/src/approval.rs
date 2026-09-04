@@ -1099,6 +1099,7 @@ mod tests {
                 provider_adapter: "test".to_string(),
                 provider_adapter_version: "1".to_string(),
                 endpoint: "test://review".to_string(),
+                request_session_id: Some(request.session_id.clone()),
                 capabilities: Vec::new(),
                 model_input_limits: crate::llm::ModelInputLimits::default(),
             })

@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 pub mod auth;
+mod claude_oauth;
 pub mod control;
 pub mod routing;
 
@@ -1485,6 +1486,9 @@ impl ProtocolClient {
         let endpoint = match self.protocol_for_model(model) {
             ModelProtocol::OpenaiResponses => format!("{}/responses", self.base_url),
             ModelProtocol::OpenaiChat => format!("{}/chat/completions", self.base_url),
+            ModelProtocol::AnthropicMessages if self.adapter == "claude-code" => {
+                format!("{}/messages?beta=true", self.base_url)
+            }
             ModelProtocol::AnthropicMessages => format!("{}/messages", self.base_url),
             ModelProtocol::GeminiContent => {
                 let mut url = reqwest::Url::parse(&self.base_url)?;
@@ -1523,7 +1527,7 @@ impl ProtocolClient {
             tools,
             self.prompt_cache_wire_mode(model),
         );
-        self.adapt_request(model, request)
+        self.adapt_request(model, request, tools)
     }
 
     fn record_prompt_cache_wire_audit(
@@ -1677,9 +1681,12 @@ impl ProtocolClient {
         self.request_for_model_with_reasoning(model, messages, tools, None)
     }
 
-    fn adapt_request(&self, model: &str, request: Value) -> Value {
+    fn adapt_request(&self, model: &str, request: Value, tools: &[ToolDefinition]) -> Value {
         if self.adapter == "openai-codex" {
             return adapt_codex_request(request);
+        }
+        if self.adapter == "claude-code" {
+            return claude_oauth::adapt_request(model, &self.request_context, tools, request).0;
         }
         if self.adapter != "google-antigravity" {
             return request;
@@ -1743,17 +1750,57 @@ impl ProtocolClient {
         request
     }
 
+    fn authorize_request(
+        &self,
+        protocol: ModelProtocol,
+        request: reqwest::RequestBuilder,
+        body: &Value,
+    ) -> reqwest::RequestBuilder {
+        let mut request = self.authorize(protocol, request);
+        if self.adapter == "claude-code" && protocol == ModelProtocol::AnthropicMessages {
+            request = request
+                .header("anthropic-beta", claude_oauth::betas(body))
+                .header("x-client-request-id", claude_oauth::fresh_request_id());
+            if let Some(session_id) = claude_oauth::session_id(body) {
+                request = request.header("x-claude-code-session-id", session_id);
+            }
+        }
+        request
+    }
+
+    fn finalize_request_body(&self, body: Value) -> Result<Value, ProviderError> {
+        if self.adapter == "claude-code" {
+            return claude_oauth::finalize_body(body).map_err(Into::into);
+        }
+        Ok(body)
+    }
+
+    fn claude_tool_aliases(
+        &self,
+        tools: &[ToolDefinition],
+    ) -> Option<claude_oauth::ClaudeOAuthToolAliases> {
+        (self.adapter == "claude-code").then(|| {
+            let device_id = self
+                .request_context
+                .get("device_id")
+                .map(String::as_str)
+                .unwrap_or_default();
+            claude_oauth::ClaudeOAuthToolAliases::for_tools(tools, device_id)
+        })
+    }
+
     async fn send(&self, model: &str, body: &Value) -> Result<Value, ProviderError> {
         let protocol = self.protocol_for_model(model);
         let endpoint = self.endpoint_for(false, model)?;
+        let body = self.finalize_request_body(body.clone())?;
         let mut attempt = 0;
         let mut backoff = Duration::from_secs(self.initial_backoff_secs);
         loop {
             attempt += 1;
             let mut retry_after = None;
-            let request = self.authorize(protocol, self.http.post(&endpoint));
+            let request = self.authorize_request(protocol, self.http.post(&endpoint), &body);
             let send_result =
-                match tokio::time::timeout(self.stream_idle_timeout, request.json(body).send())
+                match tokio::time::timeout(self.stream_idle_timeout, request.json(&body).send())
                     .await
                 {
                     Ok(Ok(response)) => Ok(response),
@@ -1847,6 +1894,7 @@ impl ProtocolClient {
         body: &Value,
         measurement: Option<&PromptTokenCount>,
         stream: &ModelStreamSender,
+        claude_aliases: Option<&claude_oauth::ClaudeOAuthToolAliases>,
     ) -> Result<Response, ProviderError> {
         let protocol = self.protocol_for_model(model);
         let endpoint = self.endpoint_for(true, model)?;
@@ -1857,6 +1905,7 @@ impl ProtocolClient {
         if protocol == ModelProtocol::OpenaiChat {
             streaming_body["stream_options"] = json!({"include_usage": true});
         }
+        streaming_body = self.finalize_request_body(streaming_body)?;
         let prompt_cache_wire_audit = self.record_prompt_cache_wire_audit(model, &streaming_body);
 
         // Retrying is safe until a successful response is accepted and stream
@@ -1867,7 +1916,8 @@ impl ProtocolClient {
         let response = loop {
             attempt += 1;
             let mut retry_after = None;
-            let request = self.authorize(protocol, self.http.post(&endpoint));
+            let request =
+                self.authorize_request(protocol, self.http.post(&endpoint), &streaming_body);
             let send_result = match tokio::time::timeout(
                 self.first_byte_timeout,
                 request.json(&streaming_body).send(),
@@ -1981,11 +2031,11 @@ impl ProtocolClient {
             pending.extend_from_slice(&chunk);
             while let Some((frame, consumed)) = take_sse_frame(&pending) {
                 pending.drain(..consumed);
-                self.apply_sse_frame(protocol, &frame, &mut accumulator, stream)?;
+                self.apply_sse_frame(protocol, &frame, &mut accumulator, stream, claude_aliases)?;
             }
         }
         if !pending.is_empty() {
-            self.apply_sse_frame(protocol, &pending, &mut accumulator, stream)?;
+            self.apply_sse_frame(protocol, &pending, &mut accumulator, stream, claude_aliases)?;
         }
         let actual_prompt_tokens = accumulator.prompt_tokens;
         let actual_usage = accumulator.usage.clone();
@@ -2006,6 +2056,7 @@ impl ProtocolClient {
         frame: &[u8],
         accumulator: &mut StreamAccumulator,
         stream: &ModelStreamSender,
+        claude_aliases: Option<&claude_oauth::ClaudeOAuthToolAliases>,
     ) -> Result<(), ProviderError> {
         let frame = parse_sse_frame(frame)?;
         if frame.event.as_deref() == Some("error") {
@@ -2039,9 +2090,12 @@ impl ProtocolClient {
                 "received [DONE] before the native protocol terminal event",
             ));
         }
-        let event: Value = serde_json::from_str(&data).map_err(|error| {
+        let mut event: Value = serde_json::from_str(&data).map_err(|error| {
             provider_protocol_failure(protocol, format!("SSE event is not valid JSON: {error}"))
         })?;
+        if let Some(aliases) = claude_aliases {
+            aliases.restore_event(&mut event);
+        }
         accumulator.apply(protocol, self.normalize_response(event), stream)
     }
 
@@ -2504,15 +2558,21 @@ impl Client for ProtocolClient {
         let protocol = self.protocol_for_model(&model);
         let messages = self.prepare_prompt_cache_messages(&model, messages, &tools, None, true)?;
         let request = self.request_for_model(&model, &messages, &tools);
+        let claude_aliases = self.claude_tool_aliases(&tools);
         if self.adapter == "openai-codex" {
             // ChatGPT's Codex backend only accepts Responses requests in its
             // streaming form. Aggregate that stream here for callers using
             // the non-streaming Client API, matching the official client and
             // CLIProxyAPI compatibility boundary.
             let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
-            return self.send_stream(&model, &request, None, &stream).await;
+            return self
+                .send_stream(&model, &request, None, &stream, None)
+                .await;
         }
-        let response = self.send(&model, &request).await?;
+        let mut response = self.send(&model, &request).await?;
+        if let Some(aliases) = claude_aliases.as_ref() {
+            aliases.restore_event(&mut response);
+        }
         parse_response(protocol, self.normalize_response(response))
     }
 
@@ -2527,8 +2587,15 @@ impl Client for ProtocolClient {
         let model = self.model_snapshot();
         let messages = self.prepare_prompt_cache_messages(&model, messages, &tools, None, true)?;
         let request = self.request_for_model(&model, &messages, &tools);
+        let claude_aliases = self.claude_tool_aliases(&tools);
         match self
-            .send_stream(&model, &request, measurement.as_ref(), &stream)
+            .send_stream(
+                &model,
+                &request,
+                measurement.as_ref(),
+                &stream,
+                claude_aliases.as_ref(),
+            )
             .await
         {
             Ok(response) => {
@@ -2572,8 +2639,15 @@ impl Client for ProtocolClient {
             &tools,
             options.reasoning_effort,
         );
+        let claude_aliases = self.claude_tool_aliases(&tools);
         match self
-            .send_stream(&model, &request, measurement.as_ref(), &stream)
+            .send_stream(
+                &model,
+                &request,
+                measurement.as_ref(),
+                &stream,
+                claude_aliases.as_ref(),
+            )
             .await
         {
             Ok(response) => {
@@ -2597,42 +2671,26 @@ impl Client for ProtocolClient {
         const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
         let model = self.model_snapshot();
         let protocol = self.protocol_for_model(&model);
-        let mut messages = Vec::with_capacity(2);
-        // Claude subscription OAuth assigns bare Messages requests and normal
-        // agent requests to different usage paths.  A probe without any
-        // system instruction can therefore return a persistent HTTP 429 even
-        // while the same account has usable interactive quota.  Keep this
-        // probe independent from application Context, but make its diagnostic
-        // purpose explicit so it exercises the same request class as a real
-        // Morphz agent turn.
-        if self.adapter == "claude-code" {
-            messages.push(Message {
-                role: "system".to_string(),
-                content: "This is a Morphz Provider health probe. Return only the requested plain-text marker.".to_string(),
-                name: None,
-                tool_call_id: None,
-                tool_calls: None,
-            });
-        }
-        messages.push(Message {
+        let messages = vec![Message {
             role: "user".to_string(),
             content: "Reply with the plain text MORPHZ_OK.".to_string(),
             name: None,
             tool_call_id: None,
             tool_calls: None,
-        });
+        }];
         // This request is intentionally independent from every Activation and
         // never carries Context, tools, configured long reasoning, or the
         // application's output budget.
         let body = self.adapt_request(
             &model,
             build_request(protocol, &model, Some(64), None, &messages, &[]),
+            &[],
         );
         if self.adapter == "openai-codex" {
             let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
             return tokio::time::timeout(
                 HEALTH_PROBE_TIMEOUT,
-                self.send_stream(&model, &body, None, &stream),
+                self.send_stream(&model, &body, None, &stream, None),
             )
             .await
             .map_err(|_| {
@@ -2644,9 +2702,10 @@ impl Client for ProtocolClient {
             .map(|_| ());
         }
         let endpoint = self.endpoint_for(false, &model)?;
+        let body = self.finalize_request_body(body)?;
         let response = tokio::time::timeout(
             HEALTH_PROBE_TIMEOUT,
-            self.authorize(protocol, self.http.post(&endpoint))
+            self.authorize_request(protocol, self.http.post(&endpoint), &body)
                 .json(&body)
                 .send(),
         )
@@ -5414,7 +5473,7 @@ mod tests {
 
         let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
         let error = client
-            .send_stream("grok-4.5", &json!({}), None, &stream)
+            .send_stream("grok-4.5", &json!({}), None, &stream, None)
             .await
             .unwrap_err();
         let failure = error.downcast_ref::<ModelFailure>().unwrap();
@@ -5468,7 +5527,7 @@ mod tests {
 
         let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
         let error = client
-            .send_stream("test-model", &json!({}), None, &stream)
+            .send_stream("test-model", &json!({}), None, &stream, None)
             .await
             .unwrap_err();
         let failure = error.downcast_ref::<ModelFailure>().unwrap();
@@ -7986,30 +8045,47 @@ mod tests {
     async fn claude_subscription_probe_uses_agent_request_class_without_context() {
         let app = Router::new().route(
             "/messages",
-            post(|Json(body): Json<Value>| async move {
-                assert_eq!(body.get("model"), Some(&json!("claude-sonnet-test")));
-                assert_eq!(body.get("max_tokens"), Some(&json!(64)));
-                assert_eq!(body.get("tools"), None);
-                assert_eq!(
-                    body.get("system").and_then(Value::as_str),
-                    Some(
-                        "This is a Morphz Provider health probe. Return only the requested plain-text marker."
-                    )
-                );
-                assert_eq!(
-                    body.pointer("/messages/0/content/0/text")
-                        .and_then(Value::as_str),
-                    Some("Reply with the plain text MORPHZ_OK.")
-                );
-                Json(json!({
-                    "id": "msg-health",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "MORPHZ_OK"}],
-                    "stop_reason": "end_turn",
-                    "usage": {"input_tokens": 8, "output_tokens": 2}
-                }))
-            }),
+            post(
+                |headers: axum::http::HeaderMap, Json(body): Json<Value>| async move {
+                    assert_eq!(body.get("model"), Some(&json!("claude-sonnet-test")));
+                    assert_eq!(body.get("max_tokens"), Some(&json!(64)));
+                    assert_eq!(body.get("tools"), None);
+                    assert!(body
+                        .pointer("/system/0/text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text
+                            .starts_with("x-anthropic-billing-header: cc_version=2.1.258.")
+                            && text.contains("cch=")
+                            && !text.contains("cch=00000;")));
+                    assert_eq!(
+                        body.pointer("/system/1/text").and_then(Value::as_str),
+                        Some("You are Claude Code, Anthropic's official CLI for Claude.")
+                    );
+                    assert_eq!(
+                        body.pointer("/messages/0/content/1/text")
+                            .and_then(Value::as_str),
+                        Some("Reply with the plain text MORPHZ_OK.")
+                    );
+                    assert!(headers
+                        .get("anthropic-beta")
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| {
+                            value.contains("oauth-2025-04-20")
+                                && value.contains("mid-conversation-system-2026-04-07")
+                                && !value.contains("advanced-tool-use-2025-11-20")
+                        }));
+                    assert!(headers.get("x-claude-code-session-id").is_some());
+                    assert!(headers.get("x-client-request-id").is_some());
+                    Json(json!({
+                        "id": "msg-health",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "MORPHZ_OK"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 8, "output_tokens": 2}
+                    }))
+                },
+            ),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -8018,6 +8094,16 @@ mod tests {
             &ProviderConfig {
                 protocol: ModelProtocol::AnthropicMessages,
                 base_url: format!("http://{address}"),
+                headers: BTreeMap::from([
+                    (
+                        "user-agent".to_string(),
+                        "claude-cli/2.1.258 (external, cli)".to_string(),
+                    ),
+                    (
+                        "x-stainless-package-version".to_string(),
+                        "0.112.1".to_string(),
+                    ),
+                ]),
                 ..ProviderConfig::default()
             },
             "claude-code",
@@ -8028,6 +8114,86 @@ mod tests {
         .unwrap();
 
         client.probe_health().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn claude_subscription_stream_uses_mcp_alias_and_restores_runtime_tool_name() {
+        let app = Router::new().route(
+            "/messages",
+            post(|headers: axum::http::HeaderMap, Json(body): Json<Value>| async move {
+                let upstream_name = body["tools"][0]["name"].as_str().unwrap().to_string();
+                assert!(upstream_name.starts_with("mcp__"));
+                assert_ne!(upstream_name, "read");
+                assert!(headers
+                    .get("anthropic-beta")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.contains("advanced-tool-use-2025-11-20")));
+                let body = format!(
+                    concat!(
+                        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":4}}}}}}\n\n",
+                        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":{0:?},\"input\":{{}}}}}}\n\n",
+                        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{{\\\"path\\\":\\\"README.md\\\"}}\"}}}}\n\n",
+                        "event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n",
+                        "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":4}}}}\n\n",
+                        "event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+                    ),
+                    upstream_name
+                );
+                AxumResponse::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(body))
+                    .unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new_with_adapter_and_context(
+            &ProviderConfig {
+                protocol: ModelProtocol::AnthropicMessages,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "claude-code",
+            "claude-opus-5".to_string(),
+            None,
+            &LlmConfig::default(),
+            BTreeMap::from([
+                ("device_id".to_string(), "a".repeat(64)),
+                (
+                    "account_uuid".to_string(),
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+                ),
+                ("session_id".to_string(), "session-1".to_string()),
+            ]),
+        )
+        .unwrap();
+        let tool = ToolDefinition {
+            name: "read".to_string(),
+            description: "Read a file".to_string(),
+            parameters: json!({"type": "object"}),
+        };
+        let (stream, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let response = client
+            .create_completion_measured_stream(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "Read README.md".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                vec![tool],
+                None,
+                stream,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.tool_calls[0].func_name, "read");
+        assert!(std::iter::from_fn(|| events.try_recv().ok()).any(|event| {
+            matches!(event, ModelStreamEvent::ToolCallStarted { name, .. } if name == "read")
+        }));
     }
 
     #[tokio::test]

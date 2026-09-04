@@ -517,6 +517,7 @@ impl RoutedClient {
             provider_adapter: provider.adapter.clone(),
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
+            request_session_id: None,
             capabilities: candidate.capabilities,
             model_input_limits,
         }
@@ -1550,6 +1551,14 @@ impl RoutedClient {
                     .keys()
                     .any(|name| name.eq_ignore_ascii_case("authorization"));
                 request_context = authorization.request_context;
+                if let Some(session_id) = binding
+                    .request_session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    request_context.insert("session_id".to_string(), session_id.to_string());
+                }
                 headers.extend(authorization.headers);
                 (!supplies_authorization_header).then_some(authorization.bearer_token)
             }
@@ -1635,6 +1644,8 @@ impl RoutedClient {
             provider_adapter: provider.adapter.clone(),
             provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
             endpoint: provider.base_url.clone(),
+            request_session_id: (!request.session_id.trim().is_empty())
+                .then(|| request.session_id.clone()),
             capabilities: candidate.capabilities,
             model_input_limits,
         })
@@ -2024,6 +2035,7 @@ impl Client for RoutedClient {
                 provider_adapter: provider.adapter.clone(),
                 provider_adapter_version: ROUTE_ADAPTER_VERSION.to_string(),
                 endpoint: provider.base_url.clone(),
+                request_session_id: None,
                 capabilities: Vec::new(),
                 model_input_limits,
             }
@@ -2476,6 +2488,10 @@ mod tests {
 
         assert_eq!(binding.physical_model, "claude-opus-5");
         assert_eq!(binding.protocol, "anthropic-messages");
+        assert_eq!(
+            binding.request_session_id.as_deref(),
+            Some("session-claude")
+        );
     }
 
     #[tokio::test]

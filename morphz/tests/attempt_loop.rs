@@ -144,6 +144,7 @@ fn anthropic_messages_test_binding() -> ModelAttemptBinding {
         provider_adapter: "custom".to_string(),
         provider_adapter_version: "test".to_string(),
         endpoint: "http://127.0.0.1:8317/v1".to_string(),
+        request_session_id: Some("test-session".to_string()),
         capabilities: Vec::new(),
         model_input_limits: Default::default(),
     }
@@ -908,6 +909,7 @@ impl Client for SessionModelSwitchContinuationClient {
             provider_adapter: "test-switching".to_string(),
             provider_adapter_version: "1".to_string(),
             endpoint: "http://127.0.0.1/model-switch".to_string(),
+            request_session_id: None,
             capabilities: Vec::new(),
             model_input_limits: Default::default(),
         })

@@ -851,6 +851,11 @@ pub struct ModelAttemptBinding {
     pub provider_adapter: String,
     pub provider_adapter_version: String,
     pub endpoint: String,
+    /// Durable Session that owns this request. Provider adapters may project
+    /// a stable, opaque derivative for upstream conversation affinity; the
+    /// raw identifier is never added to model-visible prompt text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_session_id: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
     /// Exact limits declared for this physical model. Empty means the service
@@ -1027,7 +1032,7 @@ pub trait Client: Send + Sync {
     /// this to choose a Provider Instance and Auth Account.
     async fn bind_model_attempt(
         &self,
-        _request: &ModelRequestContext,
+        request: &ModelRequestContext,
     ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
         let model = self.model().unwrap_or_else(|| "unknown".to_string());
         Ok(ModelAttemptBinding {
@@ -1041,6 +1046,8 @@ pub trait Client: Send + Sync {
             provider_adapter: "direct-client".to_string(),
             provider_adapter_version: "1".to_string(),
             endpoint: self.provider_resource_key(),
+            request_session_id: (!request.session_id.trim().is_empty())
+                .then(|| request.session_id.clone()),
             capabilities: Vec::new(),
             model_input_limits: ModelInputLimits::default(),
         })
