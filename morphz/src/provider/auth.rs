@@ -4681,7 +4681,7 @@ mod tests {
                 .map(String::as_str),
             Some("2023-06-01")
         );
-        assert!(authorization.headers.get("anthropic-beta").is_none());
+        assert!(!authorization.headers.contains_key("anthropic-beta"));
         assert_eq!(
             authorization
                 .request_context
