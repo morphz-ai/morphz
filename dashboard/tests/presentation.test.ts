@@ -340,9 +340,68 @@ test('entities beyond the curated palette remain tinted without repeating a slot
   const slots = assignTintSlots(ids, new Map())
   assert.equal(slots.size, ids.length)
   assert.equal(new Set(slots.values()).size, ids.length)
-  for (const id of ids.slice(TINT_PALETTE_SIZE)) {
-    assert.match(toneForSlot(slots.get(id))?.color ?? '', /^hsl\(/)
+  const colors = ids.map(id => toneForSlot(slots.get(id))?.color)
+  assert.ok(colors.every(Boolean))
+  assert.equal(new Set(colors).size, ids.length)
+})
+
+test('live threads choose distinguishable hues even after a large history window', () => {
+  for (const historyCount of [0, 30, 60, 120]) {
+    const history = Array.from({ length: historyCount }, (_, index) => `history-${index}`)
+    const historicalSlots = assignTintSlots(history, new Map(), new Set(), [])
+    const live = Array.from({ length: 6 }, (_, index) => `live-${index}`)
+    // Deliberately put history first: caller ordering must not let it consume
+    // all the contrasting tones before new live streams are allocated.
+    const allocation = reconcileTintSlots([...history, ...live], historicalSlots, [], live)
+    const tones = live.map(id => toneForSlot(allocation.slots.get(id))!)
+    for (let left = 0; left < tones.length; left += 1) {
+      for (let right = left + 1; right < tones.length; right += 1) {
+        const distance = tintToneDistance(tones[left], tones[right])
+        assert.ok(distance >= 0.14, `${historyCount} historical threads: distance ${distance}`)
+      }
+    }
+    for (const id of history) assert.equal(allocation.slots.get(id), historicalSlots.get(id))
+    const reordered = reconcileTintSlots(
+      [...live, ...history].reverse(), allocation.slots, [], [...live].reverse(),
+    )
+    for (const [id, slot] of allocation.slots) assert.equal(reordered.slots.get(id), slot)
   }
+})
+
+test('live thread colours remain separated through completion and new arrivals', () => {
+  const history = Array.from({ length: 40 }, (_, index) => `history-${index}`)
+  let live = ['live-0', 'live-1', 'live-2', 'live-3']
+  let allocation = reconcileTintSlots(history, new Map(), [], [])
+  for (let index = 4; index < 20; index += 1) {
+    const previous = allocation.slots
+    allocation = reconcileTintSlots([...history, ...live], previous, allocation.recentlyReleasedSlots, live)
+    for (const id of live) {
+      if (previous.has(id)) assert.equal(allocation.slots.get(id), previous.get(id))
+      for (const peer of live.filter(peer => peer !== id)) {
+        assert.ok(tintToneDistance(
+          toneForSlot(allocation.slots.get(id))!, toneForSlot(allocation.slots.get(peer))!,
+        ) >= 0.14)
+      }
+    }
+    history.push(live[0])
+    live = [...live.slice(1), `live-${index}`]
+  }
+})
+
+test('late Scheduler snapshots allocate live colours before freezing them', () => {
+  const ids = Array.from({ length: 66 }, (_, index) => `thread-${index}`)
+  const history = reconcileTintSlots(ids, new Map(), [], [], [])
+  const live = ids.slice(60)
+  const active = reconcileTintSlots(ids, history.slots, [], live, history.liveIds)
+  const tones = live.map(id => toneForSlot(active.slots.get(id))!)
+  for (let left = 0; left < tones.length; left += 1) {
+    for (let right = left + 1; right < tones.length; right += 1) {
+      assert.ok(tintToneDistance(tones[left], tones[right]) >= 0.14)
+    }
+  }
+  const refreshed = reconcileTintSlots(ids.toReversed(), active.slots, [], live.toReversed(), active.liveIds)
+  for (const id of ids) assert.equal(refreshed.slots.get(id), active.slots.get(id))
+  for (const id of ids.slice(0, 60)) assert.equal(active.slots.get(id), history.slots.get(id))
 })
 
 test('visible tint tones maintain perceptual separation across palette overflow', () => {

@@ -5652,28 +5652,36 @@ export default function App() {
   // colour as soon as execution settles.
   const visibleTintLineages = visibleEventsForObjective.map(event => objectiveLineage.forEvent(event))
   const streamingTintLineages = visibleStreamingAttempts.map(lineageForLiveAttempt)
-  const tintCandidateIds = [...new Set(tintDimension === 'thread'
+  const liveTintIds = [...new Set(tintDimension === 'thread'
     ? [
         ...dialogueActivityThreads.map(snapshot => snapshot.thread.id),
-        ...visibleTintLineages.flatMap(lineage => lineage.threadIds),
         ...streamingTintLineages.flatMap(lineage => lineage.threadIds),
       ]
     : [
         ...dialogueActivityObjectives.map(objective => objective.id),
-        ...visibleTintLineages.flatMap(lineage => lineage.objectiveIds),
         ...streamingTintLineages.flatMap(lineage => lineage.objectiveIds),
+      ])]
+  const tintCandidateIds = [...new Set(tintDimension === 'thread'
+    ? [
+        ...liveTintIds,
+        ...visibleTintLineages.flatMap(lineage => lineage.threadIds),
+      ]
+    : [
+        ...liveTintIds,
+        ...visibleTintLineages.flatMap(lineage => lineage.objectiveIds),
       ])]
   // Slot history has to survive re-renders for a colour to stay put, and the
   // key makes that history explicit rather than hiding it in a ref that is
   // read while rendering.
-  const tintCandidateKey = tintCandidateIds.join('\u0000')
+  const tintCandidateKey = JSON.stringify([tintCandidateIds, liveTintIds])
   const tintScopeKey = [selectedContextId, selectedSessionId, tintDimension].join('\u0000')
   const [tintSlotState, setTintSlotState] = useState<{
     key: string
     scopeKey: string
     slots: ReadonlyMap<string, number>
     recentlyReleasedSlots: readonly number[]
-  }>(() => ({ key: '', scopeKey: '', slots: new Map(), recentlyReleasedSlots: [] }))
+    liveIds: readonly string[]
+  }>(() => ({ key: '', scopeKey: '', slots: new Map(), recentlyReleasedSlots: [], liveIds: [] }))
   const tintSlotAllocation = tintSlotState.key === tintCandidateKey
       && tintSlotState.scopeKey === tintScopeKey
     ? tintSlotState
@@ -5684,6 +5692,8 @@ export default function App() {
           tintCandidateIds,
           tintSlotState.scopeKey === tintScopeKey ? tintSlotState.slots : new Map(),
           tintSlotState.scopeKey === tintScopeKey ? tintSlotState.recentlyReleasedSlots : [],
+          liveTintIds,
+          tintSlotState.scopeKey === tintScopeKey ? tintSlotState.liveIds : [],
         ),
       }
   const tintSlots = tintSlotAllocation.slots

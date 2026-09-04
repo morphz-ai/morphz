@@ -238,16 +238,13 @@ export const TINT_RECENT_SLOT_LIMIT = TINT_PALETTE_SIZE * 2
 export interface TintSlotAllocation {
   slots: Map<string, number>
   recentlyReleasedSlots: number[]
+  liveIds: readonly string[]
 }
 
 /**
- * Allocates a palette slot per live entity.
- *
- * Hashing an id into the palette is what this replaces: with six tones any two
- * concurrent entities could land on the same colour, and for a feature whose
- * only job is telling them apart, a collision does not merely fail to help —
- * it argues that two streams are one. Slots are therefore handed out by
- * occupancy, so entities that are alive at the same time never share a colour.
+ * Keeps visible identities stable, choosing new live colours by their distance
+ * from the other live colours. History retains its slots but does not dictate
+ * the separation of streams that the operator is following now.
  *
  * A slot is held for as long as its entity stays in `activeIds`, which keeps a
  * colour stable while the user is reading. Callers can reserve recently
@@ -263,13 +260,26 @@ export function assignTintSlots(
   activeIds: readonly string[],
   previous: ReadonlyMap<string, number>,
   reservedSlots: ReadonlySet<number> = new Set(),
+  liveIds: readonly string[] = activeIds,
 ): Map<string, number> {
   const next = new Map<string, number>()
   const taken = new Set<number>()
-  const wanted = activeIds.filter(Boolean)
+  const wanted = [...new Set(activeIds.filter(Boolean))]
+  const wantedSet = new Set(wanted)
+  const live = [...new Set(liveIds)].filter(id => wantedSet.has(id))
   for (const id of wanted) {
     const slot = previous.get(id)
     if (slot === undefined || next.has(id) || taken.has(slot)) continue
+    next.set(id, slot)
+    taken.add(slot)
+  }
+  for (const id of live) {
+    if (next.has(id)) continue
+    const peers = live.flatMap(peer => {
+      const slot = next.get(peer)
+      return slot === undefined ? [] : [slot]
+    })
+    const slot = distinctTintSlot(taken, reservedSlots, peers)
     next.set(id, slot)
     taken.add(slot)
   }
@@ -294,6 +304,8 @@ export function reconcileTintSlots(
   activeIds: readonly string[],
   previous: ReadonlyMap<string, number>,
   previousRecentlyReleasedSlots: readonly number[] = [],
+  liveIds: readonly string[] = activeIds,
+  previousLiveIds: readonly string[] = liveIds,
 ): TintSlotAllocation {
   const wanted = [...new Set(activeIds.filter(Boolean))]
   const wantedSet = new Set(wanted)
@@ -314,9 +326,19 @@ export function reconcileTintSlots(
   for (const slot of previousRecentlyReleasedSlots) rememberReleasedSlot(slot)
   recentlyReleasedSlots.splice(TINT_RECENT_SLOT_LIMIT)
 
+  // Events can arrive before the Scheduler/stream identifies a live Thread.
+  // Assign its active colour when that fact arrives, then hold it throughout
+  // execution. Historical pagination must not decide concurrent colours.
+  const previouslyLive = new Set(previousLiveIds)
+  const stablePrevious = new Map(previous)
+  for (const id of liveIds) {
+    if (!previouslyLive.has(id)) stablePrevious.delete(id)
+  }
+
   return {
-    slots: assignTintSlots(wanted, previous, new Set(recentlyReleasedSlots)),
+    slots: assignTintSlots(wanted, stablePrevious, new Set(recentlyReleasedSlots), liveIds),
     recentlyReleasedSlots,
+    liveIds,
   }
 }
 
@@ -366,9 +388,20 @@ function rgbToOklab([red, green, blue]: Rgb): Oklab {
   ]
 }
 
+const toneLabs = new Map<string, Oklab>()
+
+function toneLab(tone: ObjectiveTone): Oklab {
+  let lab = toneLabs.get(tone.color)
+  if (!lab) {
+    lab = rgbToOklab(toneToRgb(tone))
+    toneLabs.set(tone.color, lab)
+  }
+  return lab
+}
+
 export function tintToneDistance(left: ObjectiveTone, right: ObjectiveTone): number {
-  const [leftL, leftA, leftB] = rgbToOklab(toneToRgb(left))
-  const [rightL, rightA, rightB] = rgbToOklab(toneToRgb(right))
+  const [leftL, leftA, leftB] = toneLab(left)
+  const [rightL, rightA, rightB] = toneLab(right)
   return Math.hypot(leftL - rightL, leftA - rightA, leftB - rightB)
 }
 
@@ -380,24 +413,29 @@ const generatedToneCandidates: readonly ObjectiveTone[] = [52, 62, 72].flatMap(l
   ))
 ))
 const generatedTones: ObjectiveTone[] = []
+const generatedCandidateDistances = generatedToneCandidates.map(candidate => (
+  Math.min(...objectiveTones.map(tone => tintToneDistance(candidate, tone)))
+))
 
 function generatedToneForIndex(index: number): ObjectiveTone {
   while (generatedTones.length <= index) {
-    const existing = [...objectiveTones, ...generatedTones]
-    const used = new Set(existing.map(tone => tone.color))
-    let best: ObjectiveTone | undefined
+    let bestIndex = -1
     let bestDistance = -1
-    for (const candidate of generatedToneCandidates) {
-      if (used.has(candidate.color)) continue
-      const distance = Math.min(...existing.map(tone => tintToneDistance(candidate, tone)))
+    for (const [candidateIndex, distance] of generatedCandidateDistances.entries()) {
       if (distance > bestDistance) {
-        best = candidate
+        bestIndex = candidateIndex
         bestDistance = distance
       }
     }
-    generatedTones.push(best ?? {
-      color: `hsl(${Math.round((188 + generatedTones.length * 137.508) % 360)} 70% 60%)`,
-    })
+    const best = generatedToneCandidates[bestIndex] ?? {
+      color: `hsl(${(188 + generatedTones.length * 137.508) % 360} 70% 60%)`,
+    }
+    generatedTones.push(best)
+    for (const [candidateIndex, candidate] of generatedToneCandidates.entries()) {
+      generatedCandidateDistances[candidateIndex] = candidateIndex === bestIndex ? -1 : Math.min(
+        generatedCandidateDistances[candidateIndex], tintToneDistance(candidate, best),
+      )
+    }
   }
   return generatedTones[index]
 }
@@ -410,6 +448,35 @@ export function toneForSlot(slot: number | undefined): ObjectiveTone | undefined
   // allocated before it. Slot uniqueness alone is insufficient: two distinct
   // RGB values that both read as violet still look like the same causal owner.
   return generatedToneForIndex(slot - objectiveTones.length)
+}
+
+function distinctTintSlot(
+  taken: ReadonlySet<number>,
+  reserved: ReadonlySet<number>,
+  peers: readonly number[],
+): number {
+  let bestSlot = 0
+  let bestDistance = -1
+  let candidates = 0
+  const peerLabs = peers.map(slot => toneLab(toneForSlot(slot)!))
+  // A bounded look-ahead allows old history to keep its colours while new
+  // streams choose across the spectrum instead of taking adjacent slots.
+  for (let slot = 0; candidates < 48; slot += 1) {
+    if (taken.has(slot) || reserved.has(slot)) continue
+    if (peers.length === 0) return slot
+    candidates += 1
+    const [l, a, b] = toneLab(toneForSlot(slot)!)
+    const distance = Math.min(...peerLabs.map(([pl, pa, pb]) => (
+      // Thin borders and translucent fills need different hues, not merely
+      // a lighter/darker version of the same hue.
+      Math.hypot((l - pl) * 0.35, a - pa, b - pb)
+    )))
+    if (distance > bestDistance) {
+      bestSlot = slot
+      bestDistance = distance
+    }
+  }
+  return bestSlot
 }
 
 /** The id a message is coloured by, given the dimension in effect. */
