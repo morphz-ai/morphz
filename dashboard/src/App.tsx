@@ -92,6 +92,7 @@ import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/
 import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
 import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
 import { SteeringTarget } from './pages/SteeringTarget'
+import { ObjectiveSteeringButton } from './pages/ObjectiveSteeringButton'
 import {
   clearSessionDraft,
   createDraftClientMessageId,
@@ -1328,7 +1329,7 @@ interface SessionWorkingSet {
   selection: string
 }
 
-interface ObjectiveRecord {
+export interface ObjectiveRecord {
   id: string
   generation: number
   context_id: string
@@ -1950,9 +1951,11 @@ export function DialogueActivityDock({
                         onToggle={() => onObjectiveToggle(objective.id)}
                       />
                     </header>
-                    <strong>{objective.stated_objective}</strong>
-                    {objective.status === 'active' && <button type="button" onClick={() => onSteerObjective(objective)}>{t(objective.wait_condition?.kind === 'user_input' ? 'steering.reply' : 'steering.supplement')}</button>}
-                    <code className="dialogue-objective-id" title={objective.id}>{shortId(objective.id, 22)}</code>
+                    <strong title={objective.stated_objective}>{objective.stated_objective}</strong>
+                    <div className="objective-card-footer">
+                      <code className="dialogue-objective-id" title={objective.id}>{shortId(objective.id)}</code>
+                      <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} onClick={() => onSteerObjective(objective)} />
+                    </div>
                     {expanded && (
                       <div className="objective-card-details">
                         {objective.status_reason && <p>{objective.status_reason}</p>}
@@ -8910,7 +8913,7 @@ export default function App() {
                         <h2>{objective.stated_objective}</h2>
                         {objective.status_reason && <p>{objective.status_reason}</p>}
                         <div className="attention-actions">
-                          <button type="button" onClick={() => steerObjective(objective)}><MessageSquare size={12} /> {t('steering.reply')}</button>
+                          <ObjectiveSteeringButton objective={objective} t={t} onClick={() => steerObjective(objective)} />
                         </div>
                       </article>
                     })}
@@ -9009,8 +9012,10 @@ export default function App() {
                           />
                         </header>
                         <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
-                        {objective.status === 'active' && <button type="button" onClick={() => steerObjective(objective)}>{t(objective.wait_condition?.kind === 'user_input' ? 'steering.reply' : 'steering.supplement')}</button>}
-                        {objective.wait_condition?.kind === 'user_input' && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
+                        <div className="objective-work-input">
+                          <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} onClick={() => steerObjective(objective)} />
+                          {objective.wait_condition?.kind === 'user_input' && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
+                        </div>
                         {expanded && (
                           <div className="objective-work-details">
                             {objective.status_reason && <p title={objective.status_reason}><MarkdownInline>{objective.status_reason}</MarkdownInline></p>}

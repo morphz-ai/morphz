@@ -86,6 +86,42 @@ test('thread counts occupy the upper-right tools area with a localized explanati
   assert.match(zhCatalog, /"threadCounts": "\{\{activations\}\} 次激活/)
 })
 
+test('all Objective steering entry points use a visible, compact shared button', () => {
+  const button = readFileSync(new URL('../src/pages/ObjectiveSteeringButton.tsx', import.meta.url), 'utf8')
+  assert.equal(appSource.match(/<ObjectiveSteeringButton objective=\{objective\}/g)?.length, 3)
+  assert.doesNotMatch(appSource, /<button[^>]*onClick=\{\(\) => (?:onSteerObjective|steerObjective)\(objective\)\}/)
+  assert.match(button, /if \(objective.status !== 'active'\) return null/)
+  assert.match(button, /wait_condition\?\.kind === 'user_input'/)
+  assert.match(button, /'steering.reply' : 'steering.supplement'/)
+  assert.match(button, /disabled=\{disabled\}/)
+  assert.match(button, /onClick=\{onClick\}/)
+  assert.match(button, /aria-hidden="true"/)
+  const style = appCss.match(/button\.objective-steering-button\s*\{([^}]*)\}/)?.[1] ?? ''
+  assert.match(style, /font-size:\s*10px/)
+  assert.match(style, /font-weight:\s*600/)
+  assert.doesNotMatch(style, /var\(--sans\)/)
+  assert.match(style, /min-height:\s*24px/)
+  assert.match(style, /border:\s*1px solid var\(--line-strong\)/)
+  assert.match(style, /cursor:\s*pointer/)
+  assert.match(appCss, /objective-steering-button:focus-visible/)
+  assert.match(appCss, /objective-card-footer[^}]*flex-wrap:\s*wrap/)
+  assert.match(appSource, /<strong title=\{objective.stated_objective\}/)
+  assert.match(appSource, /className="dialogue-objective-id"[^\n]+\{shortId\(objective.id\)\}/)
+  const fixture = readFileSync(new URL('./fixtures/steering-preview.tsx', import.meta.url), 'utf8')
+  assert.match(fixture, /\['active', 'waiting', 'paused', 'completed'\]/)
+  assert.match(fixture, /onSteerObjective=\{selectObjective\}/)
+})
+
+test('Objective steering wording distinguishes a directed message from editing the goal', () => {
+  const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'))
+  const zh = JSON.parse(zhCatalog)
+  assert.equal(zh.steering.supplement, '干预目标')
+  assert.equal(en.steering.supplement, 'Steer objective')
+  assert.match(zh.steering.objectiveInputHint, /不直接修改目标定义/)
+  assert.match(en.steering.objectiveInputHint, /without directly editing/)
+  assert.ok(zh.steering.objectiveReplyHint && en.steering.objectiveReplyHint)
+})
+
 test('Context and Session catalog actions stay clickable above navigation', () => {
   assert.ok(
     zIndexFor('.runtime-header') > zIndexFor('.runtime-navigation-row'),

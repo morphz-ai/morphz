@@ -1368,6 +1368,9 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .dialogue-objective-card.objective-tinted { border-left: 2px solid var(--objective-color); background: linear-gradient(100deg, color-mix(in srgb, var(--objective-color) 10%, var(--surface)), var(--surface) 64%); }
 .dialogue-objective-card.is-selected { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
 .dialogue-objective-id { display: block; overflow: hidden; margin-top: 5px; color: var(--faint); font: 500 8px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.objective-card-footer { display: flex; min-width: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px; }
+.objective-card-footer .dialogue-objective-id { flex: 1 1 110px; min-width: 0; margin-top: 0; }
+.objective-card-footer .objective-steering-button { margin-left: auto; }
 .objective-card-details > p { margin: 8px 0; color: var(--muted); font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; }
 .objective-card-details > footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--faint); font-family: var(--mono); font-size: 8px; }
 .objective-card-details > footer span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1940,6 +1943,8 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .work-card footer { flex-wrap: wrap; gap: 14px; color: var(--faint); font-family: var(--mono); font-size: 9px; }
 .wait-condition { margin-top: 13px; padding: 9px 11px; border-left: 2px solid var(--yellow); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; background: var(--yellow-soft); color: var(--yellow); font-size: 10px; }
 .objective-wait-user { display: inline-flex; align-items: center; gap: 6px; margin: 9px 0 0; padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--yellow) 35%, var(--line)); border-radius: var(--radius-xs); background: var(--yellow-soft); color: var(--yellow); font: 700 9px/1.2 var(--mono); }
+.objective-work-input { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.objective-work-input .objective-wait-user { margin: 0; }
 .work-card.compact h2 { margin-bottom: 12px; }
 .thread-badge { display: grid; grid-template-columns: 16px auto minmax(0, 1fr); align-items: center; gap: 7px; margin: 0 0 12px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; background: var(--accent-soft); color: var(--muted); font-family: var(--mono); font-size: 9px; }
 .thread-badge svg { color: var(--accent); }
@@ -4120,6 +4125,16 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .credential-primary-action { width: 100%; }
   .credential-catalog > div > article { padding-inline: 12px; }
 }
+/* Shared by every Objective input entry point, including attention cards. */
+button.objective-steering-button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 4px; min-height: 24px; max-width: 100%; padding: 3px 7px; border: 1px solid var(--line-strong); border-radius: var(--radius-xs); background: var(--surface-elevated); color: var(--text-soft); font-family: inherit; font-size: 10px; font-weight: 600; line-height: 1.3; text-align: center; cursor: pointer; transition: border-color .15s ease, background .15s ease, color .15s ease; }
+button.objective-steering-button > svg { flex: 0 0 auto; color: var(--accent-strong); }
+button.objective-steering-button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.objective-steering-button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+button.objective-steering-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.objective-steering-button:active:not(:disabled) { background: var(--surface-strong); }
+button.objective-steering-button.is-waiting { border-color: color-mix(in srgb, var(--yellow) 45%, var(--line)); }
+button.objective-steering-button.is-waiting > svg { color: var(--yellow); }
+button.objective-steering-button:disabled { cursor: default; opacity: .45; }
 /* Intent stays secondary to the card title. Full text lives in its native
    title tooltip; long requests must never change the card's row count. */
 .thread-assignment { display: block; min-width: 0; max-width: 100%; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
