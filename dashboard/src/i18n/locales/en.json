@@ -1,5 +1,6 @@
 {
   "steering": {
+    "threadCounts": "{{activations}} Activations · {{jobs}} Execution Jobs (not a thread count)",
     "menu": "Choose work to steer or a Session to reference",
     "intervene": "Steer thread",
     "supplement": "Supplement objective",

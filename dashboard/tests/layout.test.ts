@@ -49,6 +49,43 @@ function zIndexFor(selector: string): number {
   return Number(value)
 }
 
+test('message-adjacent thread cards do not repeat the message intent', () => {
+  const reference = appSource.slice(appSource.indexOf('export function MessageThreadReference('), appSource.indexOf('function ', appSource.indexOf('export function MessageThreadReference(') + 40))
+  assert.ok(reference.includes('message-thread-capsule'))
+  assert.doesNotMatch(reference, /thread-assignment|threadAssignment\(snapshot\)/)
+  assert.match(reference, /threadKindLabel\(snapshot\.thread\.kind, t\)/)
+  assert.match(reference, /conversation\.threadJobs/)
+  assert.match(reference, /<code title=\{snapshot\.thread\.id\}/)
+  assert.doesNotMatch(appCss, /\.message-thread-capsule code\s*\{[^}]*display:\s*none/)
+})
+
+test('standalone thread intent and directed composer metadata stay compact with full hover text', () => {
+  const intent = appCss.match(/\.thread-assignment\s*\{([^}]*)\}/)?.[1] ?? ''
+  assert.match(intent, /white-space:\s*nowrap/)
+  assert.match(intent, /text-overflow:\s*ellipsis/)
+  assert.match(intent, /font-size:\s*10px/)
+  assert.match(appSource, /className="thread-assignment" title=\{threadAssignment\(/)
+  const chip = readFileSync(new URL('../src/pages/SteeringTarget.tsx', import.meta.url), 'utf8')
+  assert.match(chip, /className="composer-steering-chip" title=\{tooltip\}/)
+  assert.match(chip, /<code>@\{compactId\}<\/code>/)
+  assert.doesNotMatch(chip, /composer-steering-label|\{summary\}/)
+  assert.match(chip, /const tooltip = `\$\{selection\.label\}\\n\$\{id\}`/)
+  assert.match(chip, /showHint && <small/)
+  assert.match(chip, /aria-expanded=\{showHint\}/)
+  assert.match(chip, /onClick=\{onClear\}/)
+  assert.match(appSource, /<SteeringTarget selection=\{inputSelection\}/)
+  assert.match(appSource, /<SteeringTarget[^\n]+\n\s*<span className="composer-prompt"/)
+  assert.match(appCss, /\.composer > \.composer-steering\s*\{\s*flex:\s*0 0 100%/)
+})
+
+test('thread counts occupy the upper-right tools area with a localized explanation', () => {
+  assert.match(appSource, /className="dialogue-thread-card-tools">\s*<span className="dialogue-thread-counts" title=\{t\('steering.threadCounts'/s)
+  assert.match(appCss, /\.dialogue-thread-card-tools\s*\{[^}]*align-self:\s*start;[^}]*justify-items:\s*end/s)
+  const summary = appSource.match(/className="dialogue-thread-summary"[\s\S]*?<\/button>/)?.[0] ?? ''
+  assert.doesNotMatch(summary, /dialogue-thread-counts/)
+  assert.match(zhCatalog, /"threadCounts": "\{\{activations\}\} 次激活/)
+})
+
 test('Context and Session catalog actions stay clickable above navigation', () => {
   assert.ok(
     zIndexFor('.runtime-header') > zIndexFor('.runtime-navigation-row'),

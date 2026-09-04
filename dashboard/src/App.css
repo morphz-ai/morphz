@@ -1383,7 +1383,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .activity-status.failed i, .activity-status.lost i, .activity-status.cancelled i { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
 .dialogue-thread-card-header { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto 28px; align-items: center; transition: background .15s ease; }
 .dialogue-thread-card-header:hover { background: var(--surface-elevated); }
-.dialogue-thread-summary { display: grid; width: 100%; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 10px 4px 10px 10px; text-align: left; }
+.dialogue-thread-summary { display: grid; width: 100%; min-width: 0; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; padding: 10px 4px 10px 10px; text-align: left; }
 .dialogue-thread-disclosure { display: inline-flex; width: 28px; height: 100%; min-height: 44px; align-items: center; justify-content: center; color: var(--faint); }
 .dialogue-thread-disclosure:hover { color: var(--accent-strong); }
 .dialogue-thread-disclosure svg { transition: transform .15s ease; }
@@ -1393,7 +1393,10 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .dialogue-thread-identity small { display: flex; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 8px; white-space: nowrap; }
 .dialogue-thread-identity small code { flex: 0 0 auto; color: var(--faint); font: inherit; }
 .dialogue-thread-identity small span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.dialogue-thread-counts { color: var(--faint); font-family: var(--mono); font-size: 8px; white-space: nowrap; }
+.dialogue-thread-card-tools { display: grid; align-self: start; justify-items: end; gap: 3px; padding-top: 7px; }
+.dialogue-thread-counts { display: inline-flex; align-items: center; gap: 6px; padding-right: 4px; color: var(--muted); font: 500 8px/1.3 var(--mono); white-space: nowrap; }
+.dialogue-thread-counts > span { display: inline-flex; align-items: baseline; gap: 2px; }
+.dialogue-thread-counts small { color: var(--faint); font: inherit; }
 .dialogue-thread-origin { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 9px 25px; color: var(--faint); font-family: var(--mono); font-size: 8px; }
 .dialogue-thread-origin code { min-width: 0; overflow: hidden; color: var(--objective-color, var(--faint)); font: 600 7px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .dialogue-thread-card-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; padding: 0 2px 0 4px; }
@@ -3963,8 +3966,8 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .provider-attempt-list article > div { grid-template-columns: 1fr; }
   .message-thread-capsules { justify-items: stretch; }
   .message-thread-reference { width: 100%; }
-  .message-thread-capsule { grid-template-columns: 26px minmax(0, 1fr) auto; gap: 8px; }
-  .message-thread-capsule code { display: none; }
+  .message-thread-capsule { grid-template-columns: 26px minmax(0, 1fr) auto auto; gap: 8px; }
+  .message-thread-capsule code { max-width: 126px; font-size: 8px; }
   .message-thread-toolchain { width: min(420px, calc(100vw - 24px)); }
   .runtime-header {
     grid-template-columns: minmax(76px, 1fr) auto;
@@ -4117,8 +4120,23 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .credential-primary-action { width: 100%; }
   .credential-catalog > div > article { padding-inline: 12px; }
 }
-/* Assignment is durable intent, distinct from the live tool/status line. */
-.thread-assignment { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: .85rem; font-weight: 400; line-height: 1.45; }
-.composer-steering { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; min-width: 0; padding: .4rem 0; }
-.composer-steering strong { max-width: min(100%, 40rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.composer-steering small { flex-basis: 100%; opacity: .7; line-height: 1.4; }
+/* Intent stays secondary to the card title. Full text lives in its native
+   title tooltip; long requests must never change the card's row count. */
+.thread-assignment { display: block; min-width: 0; max-width: 100%; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.dialogue-thread-identity .thread-assignment,
+.dialogue-history-card .thread-assignment { font-size: 9px; }
+.composer.has-steering { flex-wrap: wrap; row-gap: 4px; }
+.composer > .composer-steering { flex: 0 0 100%; }
+.composer-steering { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; max-width: 100%; padding: 0 0 4px; }
+.composer-steering-chip { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: min(calc(100% - 30px), 440px); align-items: center; gap: 6px; padding: 2px 4px 2px 8px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: var(--radius-xs); background: var(--accent-soft); color: var(--accent-strong); }
+.composer-steering-chip > svg { flex: 0 0 auto; }
+.composer-steering-chip code { flex: 0 0 auto; max-width: 140px; overflow: hidden; font: 500 9px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.composer-steering-chip button, .composer-steering-info { display: inline-flex; flex: 0 0 24px; width: 24px; height: 24px; align-items: center; justify-content: center; border-radius: var(--radius-xs); color: var(--muted); }
+.composer-steering-chip button:hover { background: var(--red-soft); color: var(--red); }
+.composer-steering-info:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.composer-steering button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.composer-steering .composer-steering-hint { flex-basis: 100%; padding: 4px 8px; border-left: 2px solid var(--accent); color: var(--muted); font-size: 10px; line-height: 1.5; }
+@media (max-width: 520px) {
+  .composer-steering-chip button, .composer-steering-info { flex-basis: 28px; width: 28px; height: 28px; }
+  .composer-steering-chip { max-width: calc(100% - 32px); }
+}

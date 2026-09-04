@@ -91,6 +91,7 @@ import { findTurnSettlement } from './turnSettlement'
 import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/modelSelection'
 import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
 import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
+import { SteeringTarget } from './pages/SteeringTarget'
 import {
   clearSessionDraft,
   createDraftClientMessageId,
@@ -251,7 +252,7 @@ function CausalIdentifierBadges({
   )
 }
 
-function MessageThreadReference({
+export function MessageThreadReference({
   snapshot,
   objectiveIds,
   tintStyleFor,
@@ -361,12 +362,11 @@ function MessageThreadReference({
         type="button"
         onClick={onOpen}
         aria-describedby={previewId}
-        aria-label={`${threadKindLabel(snapshot.thread.kind, t)} · ${statusLabel(displayState, t)} · ${t('conversation.threadJobs', { count: jobs.length })}`}
+        aria-label={`${threadKindLabel(snapshot.thread.kind, t)} · ${shortId(snapshot.thread.id, 18)} · ${statusLabel(displayState, t)} · ${t('conversation.threadJobs', { count: jobs.length })}`}
       >
         <span className="message-thread-mark" aria-hidden="true"><GitBranch size={13} /></span>
         <span className="message-thread-copy">
           <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
-          <span className="thread-assignment" title={threadAssignment(snapshot)}>{threadAssignment(snapshot) ?? t('steering.intentUnknown')}</span>
           <small><i className={`thread-state-dot ${displayState}`} />{statusLabel(displayState, t)} · {t('conversation.threadJobs', { count: jobs.length })}</small>
           {objectiveIds.length > 0 && (
             <em className="message-thread-objective" title={objectiveIds.join(', ')}>
@@ -374,7 +374,7 @@ function MessageThreadReference({
             </em>
           )}
         </span>
-        <code>{shortId(snapshot.thread.id, 18)}</code>
+        <code title={snapshot.thread.id}>{shortId(snapshot.thread.id, 18)}</code>
         <ChevronRight className="message-thread-open" size={13} aria-hidden="true" />
       </button>
 
@@ -1717,7 +1717,7 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
   )
 })
 
-function DialogueActivityDock({
+export function DialogueActivityDock({
   onSteerThread,
   onSteerObjective,
   open,
@@ -2029,19 +2029,24 @@ function DialogueActivityDock({
                             )}
                           </small>
                         </span>
-                        <span className="dialogue-thread-counts">{effective.activations.length}A · {jobs.length}J</span>
                       </button>
-                      {effective.thread.lifecycle === 'open' && (
-                        <div className="dialogue-thread-card-actions">
-                          {canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.intervene')} onClick={() => onSteerThread(effective)}><MessageSquare size={12} /></button>}
-                          {effective.thread.control_state === 'paused' ? (
-                            <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
-                          ) : (
-                            <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.pauseThread')} aria-label={t('work.causal.pauseThread')} onClick={() => onThreadControl(effective.thread, 'pause')}><Pause size={12} /></button>
-                          )}
-                          <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.cancelThread')} aria-label={t('work.causal.cancelThread')} onClick={() => onThreadControl(effective.thread, 'cancel')}><X size={12} /></button>
-                        </div>
-                      )}
+                      <div className="dialogue-thread-card-tools">
+                        <span className="dialogue-thread-counts" title={t('steering.threadCounts', { activations: effective.activations.length, jobs: jobs.length })} aria-label={t('steering.threadCounts', { activations: effective.activations.length, jobs: jobs.length })}>
+                          <span>{effective.activations.length}<small>A</small></span>
+                          <span>{jobs.length}<small>J</small></span>
+                        </span>
+                        {effective.thread.lifecycle === 'open' && (
+                          <div className="dialogue-thread-card-actions">
+                            {canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.intervene')} onClick={() => onSteerThread(effective)}><MessageSquare size={12} /></button>}
+                            {effective.thread.control_state === 'paused' ? (
+                              <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
+                            ) : (
+                              <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.pauseThread')} aria-label={t('work.causal.pauseThread')} onClick={() => onThreadControl(effective.thread, 'pause')}><Pause size={12} /></button>
+                            )}
+                            <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.cancelThread')} aria-label={t('work.causal.cancelThread')} onClick={() => onThreadControl(effective.thread, 'cancel')}><X size={12} /></button>
+                          </div>
+                        )}
+                      </div>
                       <button
                         className="dialogue-thread-disclosure"
                         type="button"
@@ -3053,7 +3058,7 @@ export const Composer = memo(function Composer({
 
   return (
     <div
-      className={`composer ${draggingFiles ? 'dragging-files' : ''} ${readOnly ? 'read-only' : ''}`}
+      className={`composer ${draggingFiles ? 'dragging-files' : ''} ${readOnly ? 'read-only' : ''} ${inputSelection ? 'has-steering' : ''}`}
       onDragEnter={event => {
         if (event.dataTransfer.types.includes('Files')) {
           event.preventDefault()
@@ -3072,13 +3077,9 @@ export const Composer = memo(function Composer({
         void addFiles(event.dataTransfer.files)
       }}
     >
+      {inputSelection && <SteeringTarget selection={inputSelection} onClear={() => { setInputSelection(undefined); setDraftClientMessageId(createDraftClientMessageId()) }} />}
       <span className="composer-prompt">›</span>
       <div className="composer-input-area">
-        {inputSelection && <div className="composer-steering" role="status">
-          <strong title={inputSelection.destination.kind === 'thread' ? inputSelection.destination.thread_id : inputSelection.destination.objective_id}>@{inputSelection.label}</strong>
-          <button type="button" title={t('steering.clear')} aria-label={t('steering.clear')} onClick={() => { setInputSelection(undefined); setDraftClientMessageId(createDraftClientMessageId()) }}><X size={12} /></button>
-          <small>{t('steering.safeBoundary')}</small>
-        </div>}
         {sessionReferences.length > 0 && (
           <div className="composer-session-references" aria-label={t('composer.sessionReferences.selected')}>
             {sessionReferences.map(reference => (

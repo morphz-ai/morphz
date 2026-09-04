@@ -1,5 +1,6 @@
 {
   "steering": {
+    "threadCounts": "{{activations}} 次激活 · {{jobs}} 个执行作业（并非线程数量）",
     "menu": "选择工作对象或引用会话",
     "intervene": "干预线程",
     "supplement": "补充目标",
