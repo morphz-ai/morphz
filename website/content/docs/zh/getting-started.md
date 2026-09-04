@@ -10,7 +10,7 @@ Morphz 以预编译的原生二进制交付，控制台嵌入在主程序中。�
 
 ## 前置条件
 
-- macOS（Apple Silicon 或 Intel）、x86_64 Linux，或 x86_64 Windows；
+- macOS（Apple Silicon 或 Intel）、ARM64 或 x86_64 Linux，或 x86_64 Windows；
 - 可访问至少一个模型服务；
 - 对当前工作目录具有读写权限。
 
@@ -19,7 +19,7 @@ Morphz 以预编译的原生二进制交付，控制台嵌入在主程序中。�
 macOS 与 Linux：
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh -s -- setup
 ```
 
 Windows PowerShell：
@@ -28,7 +28,7 @@ Windows PowerShell：
 irm https://morphz.ai/install.ps1 | iex
 ```
 
-安装器识别当前平台，从 GitHub Releases 下载对应归档并校验 SHA-256，然后安装到用户目录，不要求 root 或管理员权限。打开一个新终端后继续设置。
+安装器会显示检测、下载、校验、安装与命令路径配置的进度，从 GitHub Releases 下载对应归档并校验 SHA-256，然后安装到用户目录，不要求 root 权限。`setup` 参数会让安装器直接进入设置向导；后续新终端可直接运行 `morphz`。
 
 更新由用户显式触发，并复用同一组经过校验的 GitHub Release 资产：
 

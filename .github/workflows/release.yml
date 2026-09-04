@@ -38,6 +38,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: morphz-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: morphz-linux-aarch64
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: morphz-macos-aarch64

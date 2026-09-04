@@ -10,7 +10,7 @@ Morphz ships as a prebuilt native binary with the Dashboard embedded. The first-
 
 ## Prerequisites
 
-- macOS on Apple Silicon or Intel, x86_64 Linux, or x86_64 Windows;
+- macOS on Apple Silicon or Intel, ARM64 or x86_64 Linux, or x86_64 Windows;
 - Access to at least one model service;
 - Read and write access to the working directory.
 
@@ -19,7 +19,7 @@ Morphz ships as a prebuilt native binary with the Dashboard embedded. The first-
 macOS and Linux:
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh -s -- setup
 ```
 
 Windows PowerShell:
@@ -28,7 +28,7 @@ Windows PowerShell:
 irm https://morphz.ai/install.ps1 | iex
 ```
 
-The installer detects the current platform, downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs into the user path without requiring root or administrator access. Open a new terminal before continuing with Setup.
+The installer shows its detection, download, verification, installation, and PATH configuration stages. It downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs into the user directory without requiring root access. The `setup` argument starts Setup directly from the installer; new terminals can invoke `morphz` directly.
 
 Updates are explicit and reuse the same verified GitHub Release assets:
 

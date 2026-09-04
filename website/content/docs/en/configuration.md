@@ -66,13 +66,15 @@ local_enabled = false
 
 SQLite is the default physical store and suits local or single-instance deployments:
 
+The default database is `~/.morphz/morphz.db`, so Morphz uses the same local state when launched from different working directories. Configure an absolute path when another location is required:
+
 ```toml
 [storage]
 backend = "sqlite"
 cognitive_store = "context_db"
 
 [storage.sqlite]
-path = "morphz.db"
+path = "/absolute/path/to/morphz.db"
 max_connections = 8
 ```
 

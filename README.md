@@ -8,6 +8,14 @@ English · [简体中文](README.zh-CN.md)
 
 > **From Chat Completion to Structured Context Evaluation.**
 
+<p align="center">
+  <a href="https://morphz.ai/en/#demo">
+    <img src="website/public/video/morphz-concept-demo-poster.jpg" alt="See Morphz in 74 seconds" width="960">
+  </a>
+</p>
+
+<p align="center"><a href="https://morphz.ai/en/#demo"><strong>See Morphz in 74 seconds →</strong></a></p>
+
 Morphz is an **S-Expression Cognitive Machine** built for durable agents. It makes structured
 Context—not a growing chat transcript—the object a language model evaluates directly. The model
 handles nondeterministic semantics; a deterministic transaction kernel owns facts, authority,
@@ -52,7 +60,7 @@ the verified boundary between implemented, validated, experimental, and planned 
 Install a prebuilt release on macOS or Linux:
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh -s -- setup
 ```
 
 On Windows PowerShell:
@@ -61,11 +69,11 @@ On Windows PowerShell:
 irm https://morphz.ai/install.ps1 | iex
 ```
 
-The installers select the native GitHub Release asset and verify its SHA-256 checksum. Open a new
-terminal, then configure a model service and start Morphz:
+The installers select the native GitHub Release asset, show each installation stage, verify its
+SHA-256 checksum, and add the user-level binary directory to future shell sessions. The `setup`
+argument starts Setup directly from the installer. In a new terminal, continue with:
 
 ```bash
-morphz setup
 morphz doctor
 morphz
 ```

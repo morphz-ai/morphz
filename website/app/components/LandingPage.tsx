@@ -11,9 +11,12 @@ const content = {
     eyebrow: "为长期并发工作而生",
     title: ["一个智能体。", "多个目标。", "并发推进。"],
     lead: "Morphz 让一个智能体在同一认知上下文中维护多个会话、目标与线程。对话不必等待任务结束，认知变化经过事务提交，执行可以安全抵达不同目标节点。",
-    idea: "查看功能",
+    idea: "观看演示",
     start: "运行 Morphz",
     source: "查看源码",
+    demoTitle: "自主维护上下文。\n多个目标并发推进。\n执行安全可控。",
+    demoLead: "在 Morphz 中，智能体依据新的观察，显式决定如何保留、修订和退役长期认知；运行时保障结构、版本与事务边界。多个目标持续并发推进，真实执行始终受身份、权限和因果轨迹约束。",
+    demoFallback: "你的浏览器暂不支持视频播放。",
     capabilitiesLabel: "核心功能",
     capabilitiesTitle: "让智能体维护认知、并发推进工作，并安全触达真实环境。",
     capabilitiesLead: "结构化认知上下文、显式事务、持久调度与执行节点，共同构成 Morphz 的长期工作能力。",
@@ -99,9 +102,12 @@ const content = {
     eyebrow: "Built for durable work and concurrent execution",
     title: ["One Agent.", "Many Objectives.", "Advancing in parallel."],
     lead: "Morphz lets one Agent maintain multiple Sessions, Objectives, and Threads inside one Context. Conversation does not wait for long-running work, cognitive changes commit through transactions, and execution can safely reach different target nodes.",
-    idea: "Explore",
+    idea: "Watch the demo",
     start: "Run Morphz",
     source: "Inspect the source",
+    demoTitle: "Autonomous Context maintenance.\nObjectives advance concurrently.\nExecution stays governed.",
+    demoLead: "In Morphz, the Agent uses new observations to explicitly preserve, revise, and retire long-term cognition while the Runtime enforces structure, versions, and transaction boundaries. Objectives keep advancing concurrently, and identity, authority, and causal trajectories govern every real-world action.",
+    demoFallback: "Your browser does not support video playback.",
     capabilitiesLabel: "Core capabilities",
     capabilitiesTitle: "Let an Agent maintain its Context, advance concurrent work, and safely reach real environments.",
     capabilitiesLead: "Context Encoding, explicit transactions, durable scheduling, and Execution Targets work together as the foundation for long-running Agent work.",
@@ -213,7 +219,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
           </h1>
           <p className="home-hero__lead">{t.lead}</p>
           <div className="home-actions">
-            <a className="home-button home-button--primary" href="#capabilities">{t.idea}<span aria-hidden="true">↓</span></a>
+            <a className="home-button home-button--primary" href="#demo">{t.idea}<span aria-hidden="true">↓</span></a>
             <Link className="home-button" href={download}>{t.start}<span aria-hidden="true">→</span></Link>
             <a className="home-link" href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
           </div>
@@ -221,6 +227,25 @@ export function LandingPage({ locale }: { locale: Locale }) {
         <div className="home-hero__preview">
           <ContextEvaluationField locale={locale} />
         </div>
+      </section>
+
+      <section className="home-demo" id="demo" aria-labelledby="home-demo-title">
+        <header className="home-demo__copy">
+          <h2 id="home-demo-title">{t.demoTitle}</h2>
+          <span>{t.demoLead}</span>
+        </header>
+        <figure className="home-demo__frame">
+          <video
+            controls
+            playsInline
+            preload="metadata"
+            poster="/video/morphz-concept-demo-poster.jpg"
+          >
+            <source src="/video/morphz-concept-demo-v1.mp4" type="video/mp4" />
+            <track kind="captions" src="/video/morphz-concept-demo-en.vtt" srcLang="en" label="English sound captions" />
+            {t.demoFallback}
+          </video>
+        </figure>
       </section>
 
       <section className="home-capabilities" id="capabilities">

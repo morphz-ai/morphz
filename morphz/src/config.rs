@@ -3387,9 +3387,14 @@ fn resolve_config_with_homes(
         layers.push(loaded);
     }
 
-    let config = merged
+    let mut config = merged
         .try_into::<AppConfig>()
         .map_err(|error| format!("merged Morphz configuration is invalid: {error}"))?;
+    if !sources.contains_key("storage.sqlite.path") {
+        if let Some(home) = morphz_home.as_ref() {
+            config.storage.sqlite.path = home.join("morphz.db").to_string_lossy().into_owned();
+        }
+    }
     Ok(ResolvedConfig {
         config,
         layers,
@@ -4187,10 +4192,19 @@ mod tests {
         std::fs::write(&explicit, "[llm]\nmodel='explicit'\n").unwrap();
 
         let resolved =
-            resolve_config_with_home(&child, Some(&explicit), Some("dev"), Some(home)).unwrap();
+            resolve_config_with_home(&child, Some(&explicit), Some("dev"), Some(home.clone()))
+                .unwrap();
 
         assert_eq!(resolved.config.llm.model, "explicit");
         assert_eq!(resolved.config.llm.max_retries, 2);
+        assert_eq!(
+            resolved.config.storage.sqlite.path,
+            home.join("morphz.db").to_string_lossy()
+        );
+        assert_eq!(
+            resolved.source_for("storage.sqlite.path"),
+            "built-in-default"
+        );
         assert!(resolved.source_for("llm.model").starts_with("explicit:"));
         let model_history = resolved.source_history_for("llm.model");
         assert_eq!(model_history.first(), Some(&"built-in-default"));
@@ -4211,6 +4225,53 @@ mod tests {
             resolved.source_for("orchestrator.model_provider_max_in_flight"),
             "built-in-default"
         );
+    }
+
+    #[test]
+    fn default_sqlite_path_is_stable_across_launch_directories() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        let first_resolved =
+            resolve_config_with_home(&first, None, None, Some(home.clone())).unwrap();
+        let second_resolved =
+            resolve_config_with_home(&second, None, None, Some(home.clone())).unwrap();
+        let expected = home.join("morphz.db").to_string_lossy().into_owned();
+
+        assert_eq!(first_resolved.config.storage.sqlite.path, expected);
+        assert_eq!(second_resolved.config.storage.sqlite.path, expected);
+    }
+
+    #[test]
+    fn configured_sqlite_path_overrides_the_user_level_default() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        let home = temp.path().join("home");
+        let configured = temp.path().join("data").join("custom.db");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("morphz.toml"),
+            format!(
+                "[storage.sqlite]\npath = {:?}\n",
+                configured.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let resolved = resolve_config_with_home(&root, None, None, Some(home)).unwrap();
+
+        assert_eq!(
+            resolved.config.storage.sqlite.path,
+            configured.to_string_lossy()
+        );
+        assert!(resolved
+            .source_for("storage.sqlite.path")
+            .starts_with("user:"));
     }
 
     #[test]

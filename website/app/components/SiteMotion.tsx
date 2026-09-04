@@ -5,6 +5,8 @@ import { useEffect } from "react";
 const revealSelector = [
   ".home-hero__copy > *",
   ".home-hero__preview",
+  ".home-demo__copy > *",
+  ".home-demo__frame",
   ".home-section-heading > *",
   ".home-capability-domain",
   ".home-capability-domain__intro > *",

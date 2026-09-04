@@ -4,6 +4,7 @@ $repository = if ($env:MORPHZ_GITHUB_REPOSITORY) { $env:MORPHZ_GITHUB_REPOSITORY
 $version = if ($env:MORPHZ_VERSION) { $env:MORPHZ_VERSION } else { "latest" }
 $installDir = if ($env:MORPHZ_INSTALL_DIR) { $env:MORPHZ_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Morphz\bin" }
 
+Write-Host "[1/5] Detecting system"
 if (-not [Environment]::Is64BitOperatingSystem) {
   throw "Morphz requires 64-bit Windows."
 }
@@ -27,15 +28,18 @@ $unpacked = Join-Path $temporary "unpacked"
 
 try {
   New-Item -ItemType Directory -Force $temporary | Out-Null
+  Write-Host "[2/5] Downloading $asset"
   Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$asset" -OutFile $archive
   Invoke-WebRequest -UseBasicParsing -Uri "$releaseBase/$asset.sha256" -OutFile $checksumFile
 
+  Write-Host "[3/5] Verifying SHA-256 checksum"
   $expected = ((Get-Content -Raw $checksumFile).Trim() -split "\s+")[0].ToLowerInvariant()
   $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
   if (-not $expected -or $expected -ne $actual) {
     throw "Downloaded release checksum does not match."
   }
 
+  Write-Host "[4/5] Installing to $installDir"
   Expand-Archive -LiteralPath $archive -DestinationPath $unpacked -Force
   $binary = Join-Path $unpacked "morphz.exe"
   if (-not (Test-Path -LiteralPath $binary)) {
@@ -56,6 +60,7 @@ try {
     Copy-Item -LiteralPath $component -Destination $installDir -Force
   }
 
+  Write-Host "[5/5] Configuring the command path"
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $pathEntries = @($userPath -split ";" | Where-Object { $_ })
   if ($pathEntries -notcontains $installDir) {
@@ -66,8 +71,10 @@ try {
     $env:Path = "$installDir;$env:Path"
   }
 
-  Write-Host "Morphz installed in $installDir"
-  Write-Host "Open a new terminal, then run: morphz setup"
+  Write-Host ""
+  Write-Host "Morphz is installed."
+  Write-Host "Run now: & `"$installDir\morphz.exe`" setup"
+  Write-Host "New terminals can run: morphz setup"
 } finally {
   if (Test-Path -LiteralPath $temporary) {
     Remove-Item -LiteralPath $temporary -Recurse -Force

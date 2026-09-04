@@ -4,6 +4,14 @@
 
 > **从聊天补全走向结构化上下文求值。**
 
+<p align="center">
+  <a href="https://morphz.ai/#demo">
+    <img src="website/public/video/morphz-concept-demo-poster.jpg" alt="用 74 秒了解 Morphz" width="960">
+  </a>
+</p>
+
+<p align="center"><a href="https://morphz.ai/#demo"><strong>用 74 秒了解 Morphz →</strong></a></p>
+
 Morphz 是一台面向持久 Agent 的 **S 表达式认知机（S-Expression Cognitive Machine）**。
 它让结构化 Context，而不是不断增长的聊天记录，成为大语言模型直接求值的对象。模型负责
 非确定性语义处理；确定性事务内核负责事实、权限、状态、执行与恢复。
@@ -43,7 +51,7 @@ Morphz 已经拥有 macOS、Linux 和 Windows 的原生沙箱实现，但 0.1 �
 在 macOS 或 Linux 上安装预编译版本：
 
 ```bash
-curl -fsSL https://morphz.ai/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh -s -- setup
 ```
 
 Windows PowerShell：
@@ -52,11 +60,10 @@ Windows PowerShell：
 irm https://morphz.ai/install.ps1 | iex
 ```
 
-安装器会选择对应的 GitHub Release 原生制品并校验 SHA-256。打开一个新终端后，配置模型
-服务并启动 Morphz：
+安装器会显示各安装阶段，选择对应的 GitHub Release 原生制品、校验 SHA-256，并为后续
+终端配置用户级命令路径。`setup` 参数会让安装器直接启动设置；打开新终端后可继续：
 
 ```bash
-morphz setup
 morphz doctor
 morphz
 ```

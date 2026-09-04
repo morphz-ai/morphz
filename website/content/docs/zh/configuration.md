@@ -66,13 +66,15 @@ local_enabled = false
 
 SQLite 是默认物理存储，适合本机与单实例部署：
 
+默认数据库位于 `~/.morphz/morphz.db`，因此从不同工作目录启动 Morphz 时仍会使用同一份本机状态。需要改用其他位置时，请配置绝对路径：
+
 ```toml
 [storage]
 backend = "sqlite"
 cognitive_store = "context_db"
 
 [storage.sqlite]
-path = "morphz.db"
+path = "/absolute/path/to/morphz.db"
 max_connections = 8
 ```
 

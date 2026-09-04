@@ -20,7 +20,13 @@ test("renders the finished Chinese and English home pages", async () => {
   const [zh, en] = await Promise.all([zhResponse.text(), enResponse.text()]);
   assert.match(zh, /一个智能体。/);
   assert.match(zh, /为长期并发工作而生/);
-  assert.match(zh, /查看功能/);
+  assert.match(zh, /观看演示/);
+  assert.match(zh, /id="demo"/);
+  assert.match(zh, /morphz-concept-demo-v1\.mp4/);
+  assert.match(zh, /morphz-concept-demo-poster\.jpg/);
+  assert.match(zh, /自主维护上下文/);
+  assert.match(zh, /多个目标并发推进/);
+  assert.match(zh, /执行安全可控/);
   assert.match(zh, /核心功能/);
   assert.match(zh, /认知自进化/);
   assert.match(zh, /将长期记忆组织为可持久、可版本化、可求值的认知状态/);
@@ -61,6 +67,11 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.doesNotMatch(zh, /会话结束，/);
   assert.doesNotMatch(zh, /Mind 不被压缩|NO MIND COMPACTION|挂载同一 Context|已同步|证据路径|先看结果|再追问|为什么能做到|不会被包装|论文实验继续运行|准备开源发布/);
   assert.match(en, /One Agent\./);
+  assert.match(en, /Watch the demo/);
+  assert.match(en, /Autonomous Context maintenance/);
+  assert.match(en, /Objectives advance concurrently/);
+  assert.match(en, /Execution stays governed/);
+  assert.match(en, /morphz-concept-demo-v1\.mp4/);
   assert.match(en, /A new operating/);
   assert.match(en, /model for agents\./);
   assert.match(en, /Morphz is an open-source agent for long-running, concurrent work/);
@@ -252,6 +263,7 @@ test("renders the bilingual paper and native distribution pages", async () => {
   assert.match(html[1], /morphz_nondeterministic_cognitive_symbol_evaluation_preprint_en\.pdf/);
   assert.match(html[2], /macOS/);
   assert.match(html[2], /Linux/);
+  assert.match(html[2], /ARM64/);
   assert.match(html[2], /Windows/);
   assert.doesNotMatch(html[2], /独立执行节点客户端/);
   assert.doesNotMatch(html[3], /standalone Execution Target client/);

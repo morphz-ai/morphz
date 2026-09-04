@@ -5,11 +5,36 @@ repository="${MORPHZ_GITHUB_REPOSITORY:-morphz-ai/morphz}"
 version="${MORPHZ_VERSION:-latest}"
 install_dir="${MORPHZ_INSTALL_DIR:-${HOME}/.local/bin}"
 
+progress() {
+  printf '[%s/5] %s\n' "$1" "$2"
+}
+
 fail() {
   printf '%s\n' "morphz installer: $*" >&2
   exit 1
 }
 
+usage() {
+  printf '%s\n' 'Usage: install.sh [setup [SETUP_OPTIONS...]]'
+}
+
+post_install_action=""
+case "${1:-}" in
+  "") ;;
+  setup)
+    post_install_action="setup"
+    shift
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    fail "unknown action: $1"
+    ;;
+esac
+
+progress 1 "Detecting system"
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 
@@ -26,7 +51,7 @@ case "$(uname -m)" in
 esac
 
 case "$platform-$architecture" in
-  macos-aarch64|macos-x86_64|linux-x86_64) ;;
+  macos-aarch64|macos-x86_64|linux-aarch64|linux-x86_64) ;;
   *) fail "no Morphz release is published for $platform/$architecture" ;;
 esac
 
@@ -46,17 +71,19 @@ download() {
   source_url="$1"
   destination="$2"
   case "$source_url" in
-    https://*) curl --proto '=https' --tlsv1.2 -fsSL "$source_url" -o "$destination" ;;
+    https://*) curl --proto '=https' --tlsv1.2 --fail --location --show-error --progress-bar "$source_url" -o "$destination" ;;
     *)
       [ -n "${MORPHZ_RELEASE_BASE_URL:-}" ] || fail "release downloads must use HTTPS"
-      curl -fsSL "$source_url" -o "$destination"
+      curl --fail --location --show-error --progress-bar "$source_url" -o "$destination"
       ;;
   esac
 }
 
+progress 2 "Downloading $asset"
 download "$release_base/$asset" "$temporary/$asset"
 download "$release_base/$asset.sha256" "$temporary/$asset.sha256"
 
+progress 3 "Verifying SHA-256 checksum"
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "$temporary" && sha256sum -c "$asset.sha256") >/dev/null
 elif command -v shasum >/dev/null 2>&1; then
@@ -65,6 +92,7 @@ else
   fail "sha256sum or shasum is required to verify the release"
 fi
 
+progress 4 "Installing to $install_dir"
 mkdir -p "$temporary/unpacked"
 tar -xzf "$temporary/$asset" -C "$temporary/unpacked"
 [ -f "$temporary/unpacked/morphz" ] || fail "release archive does not contain morphz"
@@ -72,11 +100,75 @@ tar -xzf "$temporary/$asset" -C "$temporary/unpacked"
 mkdir -p "$install_dir"
 install -m 0755 "$temporary/unpacked/morphz" "$install_dir/morphz"
 
-printf '%s\n' "Morphz installed in $install_dir"
+progress 5 "Configuring the command path"
+path_file=""
+path_status="available"
 case ":${PATH}:" in
-  *":$install_dir:"*) printf '%s\n' "Run: morphz setup" ;;
+  *":$install_dir:"*) ;;
   *)
-    printf '%s\n' "Add $install_dir to PATH, then run: morphz setup"
-    printf '%s\n' "For zsh:  export PATH=\"$install_dir:\$PATH\""
+    path_status="manual"
+    if [ "$install_dir" = "${HOME}/.local/bin" ] && [ "${MORPHZ_NO_MODIFY_PATH:-0}" != "1" ]; then
+      shell_name="$(basename "${SHELL:-sh}")"
+      case "$shell_name" in
+        fish)
+          path_file="${XDG_CONFIG_HOME:-${HOME}/.config}/fish/conf.d/morphz.fish"
+          path_line='fish_add_path --global "$HOME/.local/bin"'
+          ;;
+        zsh)
+          path_file="${HOME}/.zshrc"
+          path_line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+        bash)
+          if [ "$platform" = "macos" ]; then
+            path_file="${HOME}/.bash_profile"
+          else
+            path_file="${HOME}/.bashrc"
+          fi
+          path_line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+        *)
+          path_file="${HOME}/.profile"
+          path_line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+      esac
+
+      mkdir -p "$(dirname "$path_file")"
+      if [ ! -f "$path_file" ] || ! grep -F "$path_line" "$path_file" >/dev/null 2>&1; then
+        printf '\n%s\n%s\n' '# Added by the Morphz installer' "$path_line" >> "$path_file"
+      fi
+      path_status="configured"
+    fi
     ;;
 esac
+
+printf '\n%s\n' "Morphz is installed."
+case "$path_status" in
+  available)
+    if [ -z "$post_install_action" ]; then
+      printf '%s\n' "Run now: morphz setup"
+    fi
+    ;;
+  configured)
+    printf '%s\n' "Added $install_dir to PATH in $path_file"
+    if [ -z "$post_install_action" ]; then
+      printf '%s\n' "Run now: $install_dir/morphz setup"
+    fi
+    printf '%s\n' "New terminals can run: morphz setup"
+    ;;
+  manual)
+    printf '%s\n' "$install_dir is not on PATH."
+    if [ -z "$post_install_action" ]; then
+      printf '%s\n' "Run now: $install_dir/morphz setup"
+    fi
+    printf '%s\n' "Add this directory to your shell PATH for future terminals."
+    ;;
+esac
+
+if [ "$post_install_action" = "setup" ]; then
+  printf '\n%s\n' "Starting Morphz Setup"
+  if ( : </dev/tty ) 2>/dev/null; then
+    "$install_dir/morphz" setup "$@" </dev/tty
+  else
+    "$install_dir/morphz" setup "$@"
+  fi
+fi
