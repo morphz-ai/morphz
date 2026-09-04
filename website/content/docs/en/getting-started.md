@@ -37,7 +37,7 @@ morphz update status
 morphz update
 ```
 
-A successful update retains the previous main binary; use `morphz update rollback` when needed. The standalone `morphz-edge` Execution Target client follows a separate installation and update flow.
+A successful update retains the previous main binary; use `morphz update rollback` when needed.
 
 ## Complete Setup
 

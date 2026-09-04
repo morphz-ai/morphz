@@ -37,7 +37,7 @@ morphz update status
 morphz update
 ```
 
-更新成功后会保留上一个主程序二进制；需要时可运行 `morphz update rollback` 回滚。独立的执行节点客户端 `morphz-edge` 使用单独的安装与更新流程。
+更新成功后会保留上一个主程序二进制；需要时可运行 `morphz update rollback` 回滚。
 
 ## 完成设置
 
