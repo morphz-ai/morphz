@@ -13,3 +13,11 @@ if [[ -n "$rsa_paths" ]]; then
 fi
 
 cargo audit --ignore RUSTSEC-2023-0071
+
+# GitHub scans every committed lock file, including isolated test fixtures.
+# Audit those files with the advisory database fetched by the workspace scan so
+# a stale nested lock cannot silently reintroduce an alert.
+while IFS= read -r lockfile; do
+  [[ "$lockfile" == "Cargo.lock" ]] && continue
+  cargo audit --no-fetch --file "$lockfile"
+done < <(git ls-files '*Cargo.lock')
