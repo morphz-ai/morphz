@@ -2494,6 +2494,27 @@ pub async fn probe_provider(
     }
     let credential = resolve_provider_credential(app, provider)?;
     let client = ProtocolClient::new(provider, selected_model.to_string(), credential, &app.llm)?;
+    probe_protocol_client(
+        provider_id,
+        provider,
+        &client,
+        models,
+        catalog_error,
+        selected_model_available,
+    )
+    .await
+}
+
+/// Setup can verify an in-memory credential without persisting or exporting it.
+/// Reuse the same streamed text/tool handshake as the operator's provider test.
+pub(crate) async fn probe_protocol_client(
+    provider_id: &str,
+    provider: &ProviderConfig,
+    client: &ProtocolClient,
+    models: Vec<String>,
+    catalog_error: Option<String>,
+    selected_model_available: Option<bool>,
+) -> Result<ProviderProbe, ProviderError> {
     let probe_message = |content: &str| Message {
         role: "user".to_string(),
         content: content.to_string(),

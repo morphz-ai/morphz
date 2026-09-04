@@ -163,8 +163,11 @@ async fn main() -> Result<(), AppError> {
     // database/runtime initialization and, most importantly, before a model
     // credential exists.
     if invocation.command_path() == ["setup"] && tui_mode {
-        let result =
-            morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
+        let result = morphz::setup::run_interactive_setup_with_theme(
+            resolved.config.ui.language.resolve(),
+            resolved.config.tui.theme,
+        )
+        .await?;
         setup_oauth_account = result.oauth_account;
         if setup_oauth_account.is_none() {
             return Ok(());
@@ -186,12 +189,15 @@ async fn main() -> Result<(), AppError> {
         &resolved.config,
         interactive_terminal,
     ) {
-        println!(
-            "尚未配置模型 Provider，正在进入首次启动设置。\n\
-             （Morphz 不会自动读取工作目录中的 .env；凭证将保存到用户级配置。）\n"
-        );
-        let result =
-            morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
+        println!("{}", resolved.config.ui.language.resolve().text(
+            "No model service is configured. Opening first-run setup.\nMorphz does not automatically load a workspace .env; credentials use user-level configuration.\n",
+            "尚未配置模型服务，正在进入首次启动设置。\nMorphz 不会自动读取工作目录中的 .env；凭证使用用户级配置。\n",
+        ));
+        let result = morphz::setup::run_interactive_setup_with_theme(
+            resolved.config.ui.language.resolve(),
+            resolved.config.tui.theme,
+        )
+        .await?;
         setup_oauth_account = result.oauth_account;
         // The setup wizard writes the managed user layer. Re-resolve all
         // layers so this very invocation can continue into the TUI without a

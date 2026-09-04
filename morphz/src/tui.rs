@@ -49,7 +49,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 type TuiError = Box<dyn std::error::Error + Send + Sync>;
 
-const USER_MESSAGE_PREFIX: &str = "❨ᴍ❩ ";
+pub(crate) const USER_MESSAGE_PREFIX: &str = "❨ᴍ❩ ";
 const COMPOSER_PREFIX: &str = "❯ ";
 const THEME_COLOR_MORPH_TICKS: usize = 8;
 const COGNITIVE_PULSE_TICKS_PER_FRAME: usize = 2;
@@ -97,7 +97,7 @@ fn interpolate_color(start: Color, end: Color, step: usize, last_step: usize) ->
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalAppearance {
+pub(crate) enum TerminalAppearance {
     Light,
     Dark,
 }
@@ -152,7 +152,7 @@ fn parse_terminal_rgb_component(component: &str) -> Option<u8> {
 }
 
 #[cfg(unix)]
-fn query_terminal_appearance() -> Option<TerminalAppearance> {
+pub(crate) fn query_terminal_appearance() -> Option<TerminalAppearance> {
     use nix::poll::{poll, PollFd, PollFlags};
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
@@ -196,7 +196,7 @@ fn query_terminal_appearance() -> Option<TerminalAppearance> {
 }
 
 #[cfg(not(unix))]
-fn query_terminal_appearance() -> Option<TerminalAppearance> {
+pub(crate) fn query_terminal_appearance() -> Option<TerminalAppearance> {
     None
 }
 
@@ -213,7 +213,7 @@ fn drain_terminal_probe_events() {
     }
 }
 
-fn detect_terminal_appearance() -> TerminalAppearance {
+pub(crate) fn detect_terminal_appearance() -> TerminalAppearance {
     std::env::var("MORPHZ_TUI_APPEARANCE")
         .ok()
         .as_deref()
@@ -254,26 +254,26 @@ fn system_appearance() -> Option<TerminalAppearance> {
 /// Semantic colors for the terminal UI. Components consume roles instead of
 /// choosing their own accents, which keeps the interface coherent as it grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Theme {
-    border_subtle: Color,
+pub(crate) struct Theme {
+    pub(crate) border_subtle: Color,
     border_strong: Color,
     text_primary: Color,
     text_secondary: Color,
-    text_muted: Color,
-    brand: Color,
+    pub(crate) text_muted: Color,
+    pub(crate) brand: Color,
     motion_palette: [Color; 3],
     wordmark_start: Color,
     wordmark_end: Color,
     focus: Color,
     user: Color,
     tool: Color,
-    success: Color,
-    warning: Color,
-    error: Color,
+    pub(crate) success: Color,
+    pub(crate) warning: Color,
+    pub(crate) error: Color,
 }
 
 impl Theme {
-    fn for_appearance(kind: TuiTheme, appearance: TerminalAppearance) -> Self {
+    pub(crate) fn for_appearance(kind: TuiTheme, appearance: TerminalAppearance) -> Self {
         let terminal_native = Self {
             // Named ANSI colors are resolved by the user's terminal theme.
             // Morphz deliberately never paints a background.
