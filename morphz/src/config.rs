@@ -822,7 +822,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            bind: "127.0.0.1:8080".to_string(),
+            bind: "127.0.0.1:18804".to_string(),
             broadcast_capacity: 1000,
             identity: ServerIdentityConfig::default(),
         }
@@ -4565,7 +4565,7 @@ mod tests {
     #[test]
     fn test_app_config_defaults() {
         let cfg = AppConfig::default();
-        assert_eq!(cfg.server.bind, "127.0.0.1:8080");
+        assert_eq!(cfg.server.bind, "127.0.0.1:18804");
         assert_eq!(cfg.server.identity.mode, ServerIdentityMode::Default);
         assert_eq!(cfg.server.identity.provider_id, "morphz-site");
         assert_eq!(cfg.server.identity.service_token_env, "MORPHZ_API_TOKEN");
@@ -4737,7 +4737,7 @@ mod tests {
         assert_eq!(cfg.orchestrator.event_bus.max_in_flight, 12);
         assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 7);
         assert_eq!(cfg.orchestrator.tool_timeout_secs, 30);
-        assert_eq!(cfg.server.bind, "127.0.0.1:8080");
+        assert_eq!(cfg.server.bind, "127.0.0.1:18804");
     }
 
     #[test]

@@ -5927,7 +5927,7 @@ mod tests {
         assert!(help.contains("Usage: morphz serve"));
         assert!(help.contains("--bind <ADDR>"));
         assert!(help.contains("MORPHZ_DASHBOARD_TOKEN"));
-        assert!(help.contains("0.0.0.0:8080"));
+        assert!(help.contains("0.0.0.0:18804"));
         assert!(!help.contains("Manage Sessions"));
     }
 
@@ -5939,16 +5939,16 @@ mod tests {
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second);
         assert_eq!(
-            dashboard_browser_url("0.0.0.0:8080", &first).unwrap(),
-            format!("http://127.0.0.1:8080/#token={first}")
+            dashboard_browser_url("0.0.0.0:18804", &first).unwrap(),
+            format!("http://127.0.0.1:18804/#token={first}")
         );
         assert_eq!(
             dashboard_browser_url("[::]:9090", &first).unwrap(),
             format!("http://[::1]:9090/#token={first}")
         );
         assert_eq!(
-            dashboard_setup_browser_url("0.0.0.0:8080", &first).unwrap(),
-            format!("http://127.0.0.1:8080/providers/setup#token={first}")
+            dashboard_setup_browser_url("0.0.0.0:18804", &first).unwrap(),
+            format!("http://127.0.0.1:18804/providers/setup#token={first}")
         );
 
         let error = morphz_command_line_parser()
@@ -5956,7 +5956,7 @@ mod tests {
             .unwrap_err();
         let help = error.to_string();
         assert!(help.contains("cryptographically random temporary authentication token"));
-        assert!(help.contains("morphz dashboard --bind=0.0.0.0:8080"));
+        assert!(help.contains("morphz dashboard --bind=0.0.0.0:18804"));
 
         let setup_help = morphz_command_line_parser()
             .parse(["setup", "--help"])

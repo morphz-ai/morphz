@@ -9,7 +9,7 @@
 
 Morphz 是异步会话 Runtime。调用方应：
 
-1. 启动服务：`morphz serve`，默认地址 `http://127.0.0.1:8080`。
+1. 启动服务：`morphz serve`，默认地址 `http://127.0.0.1:18804`。
 2. 创建或选择一个 Session。
 3. 为每条用户消息生成唯一且可重试复用的 `client_message_id`。
 4. 有文件时先流式上传到 `/attachment-stages`；随后
@@ -31,7 +31,7 @@ Morphz 是异步会话 Runtime。调用方应：
 
 ### Base URL 与内容类型
 
-- 默认 Base URL：`http://127.0.0.1:8080`
+- 默认 Base URL：`http://127.0.0.1:18804`
 - JSON 请求使用 `Content-Type: application/json`
 - 时间是 RFC 3339/ISO 8601 UTC 字符串
 - ID 长度为 `1..=128`，只允许 ASCII 字母、数字、`.`、`-`、`_`、`:`
@@ -498,7 +498,7 @@ GET /api/sessions/{session_id}/events?before_sequence=1000&limit=200
 ### WebSocket 实时事件
 
 ```text
-ws://127.0.0.1:8080/ws?session_id=session_123
+ws://127.0.0.1:18804/ws?session_id=session_123
 ```
 
 服务器发送的每个 text frame 都是一个完整 Event JSON。连接建立时可能先发送 `runtime/model_attempt_state` 快照，随后发送实时事件。
@@ -761,7 +761,7 @@ Rust SDK 对应方法：
 ## 5. 最小调用示例
 
 ```bash
-BASE_URL=http://127.0.0.1:8080
+BASE_URL=http://127.0.0.1:18804
 TOKEN=replace-if-configured
 PRINCIPAL=caller-identity
 
@@ -798,7 +798,7 @@ curl -sS "$BASE_URL/api/sessions/session_123/events?after_sequence=0&limit=200" 
 ```text
 你需要把 Morphz 当作异步 HTTP Session Runtime 调用。
 
-Base URL 由 MORPHZ_BASE_URL 提供，默认 http://127.0.0.1:8080。
+Base URL 由 MORPHZ_BASE_URL 提供，默认 http://127.0.0.1:18804。
 若 MORPHZ_TOKEN 非空，对所有 HTTP 请求发送 Authorization: Bearer <token>。
 trusted_gateway 模式下该值必须是 Gateway 服务令牌，而不是 Dashboard/Operator 管理令牌。
 若 MORPHZ_PRINCIPAL 非空，对 Session HTTP 请求发送 X-Morphz-Principal: <principal>；

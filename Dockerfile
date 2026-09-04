@@ -60,12 +60,12 @@ USER morphz
 
 ENV RUST_LOG=info,morphz=debug \
     MORPHZ_STORAGE_SQLITE_PATH=/home/morphz/data/morphz.db \
-    MORPHZ_BIND=0.0.0.0:8080
+    MORPHZ_BIND=0.0.0.0:18804
 
-EXPOSE 8080
+EXPOSE 18804
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD [ "curl", "-fsS", "http://127.0.0.1:8080/health" ]
+    CMD [ "curl", "-fsS", "http://127.0.0.1:18804/health" ]
 
 ENTRYPOINT [ "morphz" ]
 CMD [ "serve" ]

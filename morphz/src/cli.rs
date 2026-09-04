@@ -729,7 +729,7 @@ fn serve_command(locale: Locale) -> Command {
                     "使用 static:URL,URL 或 file:PATH 加入 Coordination Mesh",
                 ),
             )),
-        "Examples:\n  morphz serve\n  morphz serve --bind=127.0.0.1:9090\n  morphz serve --coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080\n  morphz serve --coordination-mesh=file:/etc/morphz/mesh.toml\n  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:8080",
+        "Examples:\n  morphz serve\n  morphz serve --bind=127.0.0.1:9090\n  morphz serve --coordination-mesh=static:http://10.0.0.11:18804,http://10.0.0.12:18804\n  morphz serve --coordination-mesh=file:/etc/morphz/mesh.toml\n  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:18804",
     )
 }
 
@@ -759,7 +759,7 @@ fn dashboard_command(locale: Locale) -> Command {
                     "只输出控制台地址，不打开浏览器",
                 ),
             )),
-        "Examples:\n  morphz dashboard\n  morphz dashboard --no-open\n  morphz dashboard --bind=0.0.0.0:8080",
+        "Examples:\n  morphz dashboard\n  morphz dashboard --no-open\n  morphz dashboard --bind=0.0.0.0:18804",
     )
 }
 
@@ -916,7 +916,7 @@ fn edge_command(locale: Locale) -> Command {
                         "FILE",
                         locale.text("Device credential output file", "设备凭证输出文件"),
                     )),
-                "Examples:\n  morphz edge pair --server-url=https://agent.example.com --pairing-code=pair_xxx\n  morphz edge pair --server-url=http://127.0.0.1:8080 --pairing-code=pair_xxx --node-name=my-mac",
+                "Examples:\n  morphz edge pair --server-url=https://agent.example.com --pairing-code=pair_xxx\n  morphz edge pair --server-url=http://127.0.0.1:18804 --pairing-code=pair_xxx --node-name=my-mac",
             ),
             output_examples(
                 locale,
@@ -3020,12 +3020,12 @@ mod tests {
     fn serve_accepts_one_coordination_mesh_source() {
         let invocation = parse(&[
             "serve",
-            "--coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080",
+            "--coordination-mesh=static:http://10.0.0.11:18804,http://10.0.0.12:18804",
         ]);
         assert_eq!(invocation.command_path(), ["serve"]);
         assert_eq!(
             invocation.option("coordination-mesh").unwrap().last_value(),
-            Some("static:http://10.0.0.11:8080,http://10.0.0.12:8080")
+            Some("static:http://10.0.0.11:18804,http://10.0.0.12:18804")
         );
     }
 

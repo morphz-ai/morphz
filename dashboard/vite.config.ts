@@ -10,10 +10,10 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: {
-      '/api': 'http://127.0.0.1:8080',
-      '/health': 'http://127.0.0.1:8080',
+      '/api': 'http://127.0.0.1:18804',
+      '/health': 'http://127.0.0.1:18804',
       '/ws': {
-        target: 'ws://127.0.0.1:8080',
+        target: 'ws://127.0.0.1:18804',
         ws: true,
       },
     },

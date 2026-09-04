@@ -584,9 +584,9 @@ Options:
 Examples:
   morphz serve
   morphz serve --bind=127.0.0.1:9090
-  morphz serve --coordination-mesh=static:http://10.0.0.11:8080,http://10.0.0.12:8080
+  morphz serve --coordination-mesh=static:http://10.0.0.11:18804,http://10.0.0.12:18804
   morphz serve --coordination-mesh=file:/etc/morphz/mesh.toml
-  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:8080
+  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret morphz serve --bind=0.0.0.0:18804
 ```
 
 ### `morphz dashboard`
@@ -694,7 +694,7 @@ Options:
 Examples:
   morphz dashboard
   morphz dashboard --no-open
-  morphz dashboard --bind=0.0.0.0:8080
+  morphz dashboard --bind=0.0.0.0:18804
 ```
 
 ### `morphz edge`
