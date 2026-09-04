@@ -5912,13 +5912,21 @@ async fn monitor_pipe<R>(
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    while let Ok(n) = reader.read_line(&mut line).await {
+    // Child processes do not guarantee UTF-8 output. In particular, cmd.exe
+    // writes redirected output in the active Windows OEM code page. Reading
+    // directly into String makes Tokio stop at the first invalid byte, closes
+    // the pipe, and can make the child itself fail with a broken output pipe.
+    // Keep the physical pipe byte-oriented and decode only after one complete
+    // chunk has been consumed so arbitrary local encodings cannot interrupt
+    // process execution or discard the rest of its output.
+    let mut line = Vec::new();
+    while let Ok(n) = reader.read_until(b'\n', &mut line).await {
         if n == 0 {
             break;
         }
         let publish = publish_ref.load(Ordering::SeqCst);
-        let safe_text = buffer.append(&line, publish);
+        let decoded = decode_exec_output_chunk(&line);
+        let safe_text = buffer.append(&decoded, publish);
         if let Some(sink) = &output_sink {
             if sink
                 .send(ToolOutputChunk {
@@ -5941,6 +5949,49 @@ async fn monitor_pipe<R>(
         }
         line.clear();
     }
+}
+
+fn decode_exec_output_chunk(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    #[cfg(windows)]
+    if let Some(text) = decode_windows_oem_output(bytes) {
+        return std::borrow::Cow::Owned(text);
+    }
+    std::borrow::Cow::Owned(String::from_utf8_lossy(bytes).into_owned())
+}
+
+#[cfg(windows)]
+fn decode_windows_oem_output(bytes: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
+
+    let byte_count = i32::try_from(bytes.len()).ok()?;
+    let wide_count = unsafe {
+        MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr(),
+            byte_count,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if wide_count <= 0 {
+        return None;
+    }
+    let mut wide = vec![0_u16; wide_count as usize];
+    let converted = unsafe {
+        MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr(),
+            byte_count,
+            wide.as_mut_ptr(),
+            wide_count,
+        )
+    };
+    (converted == wide_count).then(|| String::from_utf16_lossy(&wide))
 }
 
 const EXEC_OUTPUT_DRAIN_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(1);
@@ -8080,12 +8131,16 @@ pub(crate) fn terminate_process_tree(process_group_id: i32) -> Result<bool, Stri
 
 #[cfg(windows)]
 pub(crate) fn terminate_process_tree(process_id: i32) -> Result<bool, String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
 
     let process_id = u32::try_from(process_id)
         .map_err(|_| format!("managed Windows process ID {process_id} is invalid"))?;
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, process_id) };
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, process_id) };
     if handle == 0 {
         let error = unsafe { GetLastError() };
         return if error == ERROR_INVALID_PARAMETER {
@@ -8096,12 +8151,24 @@ pub(crate) fn terminate_process_tree(process_id: i32) -> Result<bool, String> {
             ))
         };
     }
+    // Windows retains an exited process while another owner still holds a
+    // handle. TerminateProcess then returns ACCESS_DENIED, even though there
+    // is nothing left to cancel. Check the process handle, not just its PID.
+    if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
+        unsafe { CloseHandle(handle) };
+        return Ok(false);
+    }
     let terminated = unsafe { TerminateProcess(handle, 1) };
     let error = (terminated == 0).then(|| unsafe { GetLastError() });
+    // The process can exit between the readiness check and termination.
+    let already_exited =
+        error.is_some() && unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
     unsafe {
         CloseHandle(handle);
     }
-    if let Some(error) = error {
+    if already_exited {
+        Ok(false)
+    } else if let Some(error) = error {
         Err(format!(
             "failed to terminate managed Windows process tree {process_id}: OS error {error}"
         ))
@@ -8569,11 +8636,20 @@ impl Tool for ExecuteCommandTool {
             "Prepared the operating-system execution boundary for exec"
         );
         let sandbox_backend = prepared.report.backend.as_str().to_string();
-        let sandbox_status = match prepared.report.status {
-            EnforcementStatus::Enforced => "enforced",
-            EnforcementStatus::Unavailable => "unavailable",
-        }
-        .to_string();
+        let sandbox_status =
+            if runtime_managed_ssh || profile.sandbox_mode == SandboxMode::DangerFullAccess {
+                // This is an intentional permission-mode choice, not a broken or
+                // missing native sandbox. Keeping it distinct prevents callers
+                // from recommending sandbox repair or administrator privileges
+                // for an ordinary command failure in Full Access mode.
+                "disabled"
+            } else {
+                match prepared.report.status {
+                    EnforcementStatus::Enforced => "enforced",
+                    EnforcementStatus::Unavailable => "unavailable",
+                }
+            }
+            .to_string();
         let startup_stdin = prepared.startup_stdin.clone();
         let mut cmd = prepared.into_tokio_command();
         cmd.current_dir(&exec_cwd)
@@ -13887,6 +13963,35 @@ Body
         assert!(stderr_task.is_finished());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_termination_accepts_an_already_exited_process() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        assert!(child.wait().unwrap().success());
+        // Keep Child alive so Windows still has a handle to the exited process.
+        assert_eq!(terminate_process_tree(pid), Ok(false));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_termination_stops_a_running_process() {
+        let mut child = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ])
+            .spawn()
+            .unwrap();
+        assert_eq!(terminate_process_tree(child.id() as i32), Ok(true));
+        assert!(!child.wait().unwrap().success());
+    }
+
     #[tokio::test]
     async fn exec_output_monitor_drain_does_not_repoll_a_completed_reader_after_timeout() {
         let mut stdout_task = tokio::spawn(async {});
@@ -13905,6 +14010,49 @@ Body
         assert!(!drained);
         assert!(stdout_task.is_finished());
         assert!(stderr_task.is_finished());
+    }
+
+    #[tokio::test]
+    async fn exec_output_monitor_keeps_reading_after_non_utf8_bytes() {
+        let archive_file = NamedTempFile::new().unwrap();
+        let archive_path = archive_file.path().to_string_lossy().to_string();
+        let buffer = Arc::new(ExecutionBuffer {
+            output: std::sync::Mutex::new(String::new()),
+            archive: std::sync::Mutex::new(std::fs::File::create(&archive_path).unwrap()),
+            event_pending: std::sync::Mutex::new(String::new()),
+            archive_path,
+            truncated: AtomicBool::new(false),
+            event_flush_scheduled: AtomicBool::new(false),
+            max_bytes: 1024,
+            event_coalesce_ms: 10,
+            max_event_chars: 128,
+            injected_secret_values: Vec::new(),
+            task_id: "non_utf8_output".to_string(),
+            bus: Arc::new(crate::event::InMemoryEventBus::new()),
+            session_id: "session_test".to_string(),
+            context_id: "context_test".to_string(),
+            initiating_principal_id: None,
+            causal_route: None,
+        });
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let write_task = tokio::spawn(async move {
+            writer.write_all(b"first\xffline\nsecond\n").await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        monitor_pipe(
+            reader,
+            Arc::clone(&buffer),
+            Arc::new(AtomicBool::new(false)),
+            EdgeOutputStream::Stdout,
+            None,
+        )
+        .await;
+        write_task.await.unwrap();
+
+        let output = buffer.get_all();
+        assert!(output.starts_with("first"));
+        assert!(output.ends_with("line\nsecond\n"));
     }
 
     #[cfg(unix)]

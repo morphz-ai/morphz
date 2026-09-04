@@ -882,18 +882,9 @@ mod linux {
         // The root filesystem starts read-only. Re-open only explicitly
         // writable roots, then layer protected paths over those mounts so a
         // broad workspace grant cannot override a narrower denial.
-        for root in sort_paths_by_specificity(write_roots) {
+        for root in sort_paths_by_specificity(write_roots.clone()) {
             push_mount_target_dirs(&mut arguments, &root);
             push_mount(&mut arguments, "--bind", &root, &root);
-        }
-
-        // A fresh tmpfs hides the host bytes but is writable by default. Make
-        // each private data-bearing root read-only after approved nested mounts
-        // have been installed. Those child bind mounts retain their own write
-        // flag, while sibling paths cannot become an undeclared scratch area.
-        for hidden_root in hidden_roots {
-            arguments.push(os("--remount-ro"));
-            arguments.push(hidden_root.as_os_str().to_owned());
         }
 
         let denied_read_set = denied_reads.iter().cloned().collect::<BTreeSet<_>>();
@@ -905,6 +896,19 @@ mod linux {
         }
         for path in denied_reads {
             mask_path(&mut arguments, &path)?;
+        }
+
+        // Seal private roots only after all mount targets (including protected
+        // paths such as HOME/.ssh) have been created. Nested writable binds
+        // retain their own mount flags. An exact write grant replaces the
+        // private root itself, so preserve that grant; protected mounts above
+        // still override it.
+        for hidden_root in hidden_roots {
+            if write_roots.contains(hidden_root) {
+                continue;
+            }
+            arguments.push(os("--remount-ro"));
+            arguments.push(hidden_root.as_os_str().to_owned());
         }
 
         arguments.extend([
@@ -1077,6 +1081,108 @@ mod linux {
             )
             .unwrap_err();
             assert!(error.to_string().contains("without filesystem enumeration"));
+        }
+
+        #[test]
+        fn bubblewrap_preserves_an_explicit_home_write_grant() {
+            let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
+            let arguments = argument_strings(
+                build_bwrap_arguments(&ShellRequest {
+                    command: "true".to_string(),
+                    cwd: home.clone(),
+                    policy: SandboxPolicy::workspace(&home),
+                })
+                .unwrap(),
+            );
+            assert!(arguments.windows(3).any(|items| {
+                items[0] == "--bind"
+                    && items[1] == home.to_string_lossy()
+                    && items[2] == home.to_string_lossy()
+            }));
+            assert!(!arguments
+                .windows(2)
+                .any(|items| { items[0] == "--remount-ro" && items[1] == home.to_string_lossy() }));
+        }
+
+        #[test]
+        fn native_bubblewrap_masks_home_paths_before_sealing_private_roots() {
+            let Some(bwrap) = find_bwrap(None) else {
+                assert!(std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none());
+                return;
+            };
+            let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
+            let fixture = tempfile::TempDir::new_in(&home).unwrap();
+            let workspace = fixture.path().join("workspace");
+            let protected = fixture.path().join("protected");
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::create_dir_all(&protected).unwrap();
+            std::fs::write(protected.join("secret.txt"), "test-secret").unwrap();
+            let mut policy = SandboxPolicy::workspace(&workspace);
+            policy.deny_path(&protected);
+            let arguments = build_bwrap_arguments(&ShellRequest {
+                command: format!(
+                    "set -eu; printf allowed > allowed.txt; test ! -r '{}/secret.txt'; \
+                     if printf denied > '{}'; then exit 10; fi",
+                    protected.display(),
+                    fixture.path().join("outside.txt").display(),
+                ),
+                cwd: workspace.clone(),
+                policy,
+            })
+            .unwrap();
+            let output = Command::new(bwrap).args(arguments).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
+                "allowed"
+            );
+            assert!(!fixture.path().join("outside.txt").exists());
+            assert_eq!(
+                std::fs::read_to_string(protected.join("secret.txt")).unwrap(),
+                "test-secret"
+            );
+        }
+
+        #[test]
+        fn native_bubblewrap_home_workspace_is_writable_and_protected_paths_stay_masked() {
+            let Some(bwrap) = find_bwrap(None) else {
+                assert!(std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none());
+                return;
+            };
+            let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
+            let fixture = tempfile::TempDir::new_in(&home).unwrap();
+            let output_file = tempfile::NamedTempFile::new_in(&home).unwrap();
+            let protected = fixture.path().join(".env");
+            std::fs::write(&protected, "test-secret").unwrap();
+            let mut policy = SandboxPolicy::workspace(&home);
+            policy.deny_path(&protected);
+            let arguments = build_bwrap_arguments(&ShellRequest {
+                command: format!(
+                    "set -eu; printf home-ok > '{}'; test ! -s '{}'; \
+                     if printf denied > '{}'; then exit 10; fi",
+                    output_file.path().display(),
+                    protected.display(),
+                    protected.display(),
+                ),
+                cwd: home,
+                policy,
+            })
+            .unwrap();
+            let output = Command::new(bwrap).args(arguments).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read_to_string(output_file.path()).unwrap(),
+                "home-ok"
+            );
+            assert_eq!(std::fs::read_to_string(protected).unwrap(), "test-secret");
         }
 
         #[test]
@@ -1349,8 +1455,17 @@ mod windows {
                 pattern.root.display()
             )));
         }
+        // Windows enforces exact denies with ACLs on filesystem objects. The
+        // upstream helper materializes a missing deny as a directory so an
+        // object exists to receive that ACL. Doing so changes the user's
+        // workspace (for example, absent `.env` and `.morphz/morphz.toml`
+        // files become directories) and can make the Runtime itself fail to
+        // load project configuration. An absent path contains nothing to
+        // protect; include it on a later execution once it exists instead of
+        // manufacturing persistent sentinel objects in user data.
         let mut paths = denied_roots(literal_paths, kind)?
             .into_iter()
+            .filter(|path| path.exists())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -1575,6 +1690,22 @@ mod windows {
         }
 
         #[test]
+        fn windows_exact_protection_never_materializes_missing_workspace_paths() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            std::fs::create_dir_all(&workspace).unwrap();
+            let existing = workspace.join(".env");
+            let missing = workspace.join(".morphz").join("morphz.toml");
+            std::fs::write(&existing, "SECRET=value").unwrap();
+
+            let resolved =
+                resolve_denied_paths(&[existing.clone(), missing.clone()], &[], "read").unwrap();
+
+            assert_eq!(resolved, vec![std::fs::canonicalize(existing).unwrap()]);
+            assert!(!missing.exists());
+        }
+
+        #[test]
         fn native_windows_sandbox_blocks_outside_and_protected_access() {
             if std::env::var_os("MORPHZ_RUN_WINDOWS_SANDBOX_ATTACK_TEST").is_none() {
                 eprintln!(
@@ -1709,21 +1840,41 @@ mod windows {
                 .unwrap();
             let mut managed_tree = spawn_prepared(managed_tree, &workspace);
             let process_id = i32::try_from(managed_tree.id()).unwrap();
+            // Drain redirected output while awaiting readiness, as the real
+            // execution tool does. PowerShell can emit module-initialization
+            // progress before executing the script and block on a full pipe.
+            let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+                std::thread::spawn(move || {
+                    let mut bytes = Vec::new();
+                    pipe.read_to_end(&mut bytes).unwrap();
+                    bytes
+                })
+            };
+            let stdout = drain(Box::new(managed_tree.stdout.take().unwrap()));
+            let stderr = drain(Box::new(managed_tree.stderr.take().unwrap()));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while !ready.exists() && std::time::Instant::now() < deadline {
+            while !ready.try_exists().unwrap() && std::time::Instant::now() < deadline {
+                if managed_tree.try_wait().unwrap().is_some() {
+                    break;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            if !ready.exists() {
-                let output = managed_tree.wait_with_output().unwrap();
+            if !ready.try_exists().unwrap() {
+                let _ = crate::tool::terminate_process_tree(process_id);
+                let status = managed_tree.wait().unwrap();
+                let stdout = stdout.join().unwrap();
+                let stderr = stderr.join().unwrap();
                 panic!(
                     "sandboxed process did not reach its ready point; status={:?} stdout={} stderr={}",
-                    output.status.code(),
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr),
+                    status.code(),
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr),
                 );
             }
             assert!(crate::tool::terminate_process_tree(process_id).unwrap());
             let _ = managed_tree.wait();
+            stdout.join().unwrap();
+            stderr.join().unwrap();
             std::thread::sleep(std::time::Duration::from_secs(5));
             assert!(
                 !escaped.exists(),

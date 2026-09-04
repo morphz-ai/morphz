@@ -2,6 +2,8 @@ use super::DesktopPolicy;
 use super::LaunchDesktop;
 use super::PRIVATE_DESKTOP_PREFIX;
 use super::PRIVATE_WINDOW_STATION_PREFIX;
+use super::PrivateWindowStationAccessDenied;
+use super::is_private_window_station_access_denied;
 use super::shared_private_desktop_for_user;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
 use crate::setup::SandboxSetupRequest;
@@ -25,6 +27,15 @@ use windows_sys::Win32::NetworkManagement::NetManagement::DNLEN;
 use windows_sys::Win32::NetworkManagement::NetManagement::UNLEN;
 use windows_sys::Win32::Security::Authentication::Identity::GetUserNameExW;
 use windows_sys::Win32::Security::Authentication::Identity::NameSamCompatible;
+
+#[test]
+fn only_private_window_station_access_denial_uses_the_compatibility_path() {
+    let denied = anyhow::Error::new(PrivateWindowStationAccessDenied(5));
+    assert!(is_private_window_station_access_denied(&denied));
+    assert!(!is_private_window_station_access_denied(&anyhow::anyhow!(
+        "CreateDesktopW failed"
+    )));
+}
 
 #[test]
 fn private_desktop_rejects_interactive_and_injected_names() {
@@ -94,11 +105,17 @@ fn shared_desktop_survives_launch_handles_and_concurrent_requests() -> Result<()
             .collect::<Result<Vec<_>>>()
     })?;
     let path = names[0].clone();
+    let mut path_parts = path.split('\\');
+    let window_station = path_parts.next().unwrap_or_default();
+    let desktop = path_parts.next().unwrap_or_default();
     assert!(
-        path.split('\\')
-            .next()
-            .is_some_and(|station| station.starts_with(PRIVATE_WINDOW_STATION_PREFIX)),
-        "elevated desktop must use an isolated Morphz Window Station: {path}",
+        desktop.starts_with(PRIVATE_DESKTOP_PREFIX) && path_parts.next().is_none(),
+        "elevated desktop must remain private: {path}",
+    );
+    assert!(
+        window_station.starts_with(PRIVATE_WINDOW_STATION_PREFIX)
+            || window_station == super::current_window_station_name()?,
+        "elevated desktop must use a private or current Window Station: {path}",
     );
     assert_eq!(names, vec![path.clone(); 4]);
     drop(LaunchDesktop::reference_parent_owned_private(&path)?);

@@ -30,6 +30,7 @@ use std::ptr;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
@@ -92,7 +93,7 @@ type DesktopCacheKey = (String, String, DesktopPolicy);
 type SharedDesktopCache<T> = OnceLock<Mutex<HashMap<DesktopCacheKey, T>>>;
 
 static SHARED_PRIVATE_DESKTOPS: SharedDesktopCache<PrivateDesktop> = OnceLock::new();
-static SHARED_ELEVATED_PRIVATE_DESKTOPS: SharedDesktopCache<PrivateWindowStationDesktop> =
+static SHARED_ELEVATED_PRIVATE_DESKTOPS: SharedDesktopCache<ElevatedPrivateDesktop> =
     OnceLock::new();
 static WINDOW_STATION_SWITCH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -464,14 +465,66 @@ pub(crate) fn shared_private_desktop_for_user(
         sid?
     };
     let owner_user_sid = string_from_sid_bytes(&owner_user_sid).map_err(anyhow::Error::msg)?;
-    let desktop =
-        PrivateWindowStationDesktop::create(&owner_user_sid, &sandbox_sid, logs_base_dir)?;
+    let desktop = match PrivateWindowStationDesktop::create(
+        &owner_user_sid,
+        &sandbox_sid,
+        logs_base_dir,
+    ) {
+        Ok(desktop) => ElevatedPrivateDesktop::PrivateWindowStation(desktop),
+        Err(error) if is_private_window_station_access_denied(&error) => {
+            // Ordinary interactive users can be denied CREATEWINSTA by local policy even though
+            // they are allowed to create a private Desktop inside their existing Window Station.
+            // Keep GUI objects away from the visible Default desktop instead of requiring the
+            // entire Runtime to run as administrator or dropping desktop isolation altogether.
+            logging::debug_log(
+                "CreateWindowStationW was denied; using a private Desktop in the current Window Station",
+                logs_base_dir,
+            );
+            ElevatedPrivateDesktop::CurrentWindowStation(PrivateDesktop::create(logs_base_dir)?)
+        }
+        Err(error) => return Err(error),
+    };
     let startup_path = desktop.startup_path();
-    // Retain both handles across runner exits and idle gaps. Different effective policies stay in
-    // separate GUI namespaces, so a sandbox process cannot automatically discover another
-    // policy's desktops, hooks, clipboard, or global atoms.
+    // Retain the isolation objects across runner exits and idle gaps. Each effective policy
+    // receives its own Desktop. The preferred private Window Station also separates clipboard
+    // and atom-table state; the compatibility path shares those station-level resources.
     desktops.insert(key, desktop);
     Ok(startup_path)
+}
+
+enum ElevatedPrivateDesktop {
+    PrivateWindowStation(PrivateWindowStationDesktop),
+    CurrentWindowStation(PrivateDesktop),
+}
+
+impl ElevatedPrivateDesktop {
+    fn startup_path(&self) -> String {
+        match self {
+            Self::PrivateWindowStation(desktop) => desktop.startup_path(),
+            Self::CurrentWindowStation(desktop) => desktop.startup_path(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PrivateWindowStationAccessDenied(u32);
+
+impl std::fmt::Display for PrivateWindowStationAccessDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "CreateWindowStationW failed for private station: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for PrivateWindowStationAccessDenied {}
+
+fn is_private_window_station_access_denied(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<PrivateWindowStationAccessDenied>()
+        .is_some()
 }
 
 struct LocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
@@ -567,6 +620,9 @@ impl PrivateWindowStationDesktop {
                 &format!("CreateWindowStationW failed for private station: {error}"),
                 logs_base_dir,
             );
+            if error == ERROR_ACCESS_DENIED {
+                return Err(PrivateWindowStationAccessDenied(error).into());
+            }
             anyhow::bail!("CreateWindowStationW failed for private station: {error}");
         }
 
