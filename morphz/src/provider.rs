@@ -2597,13 +2597,30 @@ impl Client for ProtocolClient {
         const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
         let model = self.model_snapshot();
         let protocol = self.protocol_for_model(&model);
-        let messages = [Message {
+        let mut messages = Vec::with_capacity(2);
+        // Claude subscription OAuth assigns bare Messages requests and normal
+        // agent requests to different usage paths.  A probe without any
+        // system instruction can therefore return a persistent HTTP 429 even
+        // while the same account has usable interactive quota.  Keep this
+        // probe independent from application Context, but make its diagnostic
+        // purpose explicit so it exercises the same request class as a real
+        // Morphz agent turn.
+        if self.adapter == "claude-code" {
+            messages.push(Message {
+                role: "system".to_string(),
+                content: "This is a Morphz Provider health probe. Return only the requested plain-text marker.".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            });
+        }
+        messages.push(Message {
             role: "user".to_string(),
             content: "Reply with the plain text MORPHZ_OK.".to_string(),
             name: None,
             tool_call_id: None,
             tool_calls: None,
-        }];
+        });
         // This request is intentionally independent from every Activation and
         // never carries Context, tools, configured long reasoning, or the
         // application's output budget.
@@ -7957,6 +7974,54 @@ mod tests {
             },
             "openai-codex",
             "codex-model-alpha".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        client.probe_health().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn claude_subscription_probe_uses_agent_request_class_without_context() {
+        let app = Router::new().route(
+            "/messages",
+            post(|Json(body): Json<Value>| async move {
+                assert_eq!(body.get("model"), Some(&json!("claude-sonnet-test")));
+                assert_eq!(body.get("max_tokens"), Some(&json!(64)));
+                assert_eq!(body.get("tools"), None);
+                assert_eq!(
+                    body.get("system").and_then(Value::as_str),
+                    Some(
+                        "This is a Morphz Provider health probe. Return only the requested plain-text marker."
+                    )
+                );
+                assert_eq!(
+                    body.pointer("/messages/0/content/0/text")
+                        .and_then(Value::as_str),
+                    Some("Reply with the plain text MORPHZ_OK.")
+                );
+                Json(json!({
+                    "id": "msg-health",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "MORPHZ_OK"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 8, "output_tokens": 2}
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ProtocolClient::new_with_adapter(
+            &ProviderConfig {
+                protocol: ModelProtocol::AnthropicMessages,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "claude-code",
+            "claude-sonnet-test".to_string(),
             None,
             &LlmConfig::default(),
         )

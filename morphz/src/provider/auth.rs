@@ -1358,6 +1358,24 @@ impl ProviderAuthManager {
         account_id: &str,
     ) -> Result<RequestAuthorization, String> {
         let account = self.oauth_account(account_id)?;
+        if let Some(state) = self
+            .account_store
+            .get_provider_account_state(account_id)
+            .await
+            .map_err(|error| {
+                format!("failed to read Provider Account '{account_id}' authority: {error}")
+            })?
+        {
+            if matches!(
+                state.status,
+                ProviderAccountStatus::Disabled | ProviderAccountStatus::Revoked
+            ) {
+                return Err(format!(
+                    "OAuth Auth Account '{account_id}' is {} and cannot authorize Provider requests",
+                    state.status.as_str()
+                ));
+            }
+        }
         let adapter = self.adapters.get(&account.auth_adapter)?;
         let mut token = self.load_token(&account)?;
         if !oauth_adapters_compatible(adapter.id(), &token.adapter_id) {
@@ -1425,19 +1443,25 @@ impl ProviderAuthManager {
 
     pub async fn logout(&self, account_id: &str) -> Result<bool, String> {
         let account = self.oauth_account(account_id)?;
-        let deleted = self.secret_store.delete(&account.credential_ref)?;
-        let _ = self
-            .account_store
+        // Revoke routing authority before removing the credential.  If the
+        // Secret Store cleanup fails, the account is still durably fenced and
+        // the operator gets the real cleanup error.  The previous ordering
+        // could delete the token, lose the state-write error, and then render
+        // a normal `operator_logout` action as the account's "recent error".
+        self.account_store
             .put_provider_account_state(
                 account_id,
                 None,
                 ProviderAccountStatus::Revoked,
                 None,
-                Some("operator_logout"),
+                None,
                 false,
             )
-            .await;
-        Ok(deleted)
+            .await
+            .map_err(|error| {
+                format!("failed to persist Provider Account logout for '{account_id}': {error}")
+            })?;
+        self.secret_store.delete(&account.credential_ref)
     }
 
     fn oauth_account(&self, account_id: &str) -> Result<AuthAccountConfig, String> {
@@ -4057,6 +4081,48 @@ mod tests {
         assert_eq!(registered.provider, account.provider);
         assert_eq!(registered.label, account.label);
         assert_eq!(registered.enabled, account.enabled);
+    }
+
+    #[tokio::test]
+    async fn logout_is_a_revocation_action_not_an_account_error() {
+        let (_directory, manager, secret_store) =
+            test_manager(oauth_account("test-oauth"), AuthAdapterRegistry::default()).await;
+        let account = manager.account("oauth-account").unwrap();
+        manager
+            .put_secret(&account, &account.credential_ref, "opaque-test-token")
+            .unwrap();
+        manager
+            .account_store
+            .put_provider_account_state(
+                "oauth-account",
+                None,
+                ProviderAccountStatus::Ready,
+                None,
+                Some("rate_limited"),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(manager.logout("oauth-account").await.unwrap());
+
+        let state = manager
+            .account_store
+            .get_provider_account_state("oauth-account")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, ProviderAccountStatus::Revoked);
+        assert_eq!(state.last_error_kind, None);
+        let authorization_error = match manager.materialize_authorization("oauth-account").await {
+            Ok(_) => panic!("revoked OAuth account unexpectedly authorized a request"),
+            Err(error) => error,
+        };
+        assert!(authorization_error.contains("is revoked"));
+        assert!(secret_store
+            .resolve("MORPHZ_TEST_OAUTH_TOKEN", SecretUseContext::default())
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

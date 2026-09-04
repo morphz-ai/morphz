@@ -12227,6 +12227,22 @@ mod tests {
         );
         assert!(snapshot.provider_instances.contains_key("oauth-provider"));
         assert!(snapshot.model_routes.contains_key("oauth-model"));
+
+        let logout = handle_logout_provider_oauth_account(
+            State(Arc::clone(&state)),
+            Path("oauth-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(logout.status(), StatusCode::OK);
+        let logged_out = runtime.provider_control_snapshot().await.unwrap();
+        let account = &logged_out.auth_accounts["oauth-account"];
+        assert!(!account.authenticated);
+        let state = account.state.as_ref().unwrap();
+        assert_eq!(state.status, crate::memory::ProviderAccountStatus::Revoked);
+        assert_eq!(state.last_error_kind, None);
     }
 
     #[tokio::test]

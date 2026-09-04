@@ -3362,17 +3362,35 @@ impl MorphzRuntime {
         };
         let mut auth_accounts = BTreeMap::new();
         for (account_id, config) in &catalog.auth_accounts {
-            let state = self
+            let mut state = self
                 .inner
                 .store
                 .get_provider_account_state(account_id)
                 .await?;
+            // Releases before the logout-state fix stored the normal
+            // `operator_logout` action in the error field.  Keep those durable
+            // revocation fences, but do not expose the action as a current
+            // Provider error in the control-plane projection.
+            if let Some(state) = state.as_mut() {
+                if state.status == crate::memory::ProviderAccountStatus::Revoked
+                    && state.last_error_kind.as_deref() == Some("operator_logout")
+                {
+                    state.last_error_kind = None;
+                }
+            }
             let effective_enabled = state
                 .as_ref()
                 .map(|state| state.status != crate::memory::ProviderAccountStatus::Disabled)
                 .unwrap_or(config.enabled);
             let oauth = config.auth_adapter.ends_with("-oauth");
-            let oauth_metadata = if oauth {
+            let credential_may_authenticate = state.as_ref().is_none_or(|state| {
+                !matches!(
+                    state.status,
+                    crate::memory::ProviderAccountStatus::Disabled
+                        | crate::memory::ProviderAccountStatus::Revoked
+                )
+            });
+            let oauth_metadata = if oauth && credential_may_authenticate {
                 self.inner
                     .provider_auth_manager
                     .account_metadata(account_id)
