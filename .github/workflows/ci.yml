@@ -23,6 +23,10 @@ jobs:
           components: clippy, rustfmt
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
+      - name: Audit Rust dependency advisories
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          bash scripts/audit-rust-dependencies.sh
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Source language check
@@ -317,6 +321,7 @@ jobs:
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
+      - run: npm audit --audit-level=low
       - run: npm run lint
       - run: npm test
       - run: npm run build
@@ -350,6 +355,7 @@ jobs:
           cache: npm
           cache-dependency-path: website/package-lock.json
       - run: npm ci
+      - run: npm audit --audit-level=low
       - run: npm run lint
       - run: npm test
       - name: Verify generated documentation is current

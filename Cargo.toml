@@ -7,6 +7,7 @@ members = [
     "morphz",
     "morphz-evals",
     "third_party/morphz-windows-sandbox",
+    "third_party/codex-network-proxy-stub",
     "tools/morphz-cli-docs",
     "yao",
 ]
@@ -34,6 +35,11 @@ homepage = "https://morphz.ai"
 # API as a deliberate no-op adapter instead of importing Codex's HTTP/OTEL
 # stack into the product.
 codex-otel = { path = "third_party/codex-otel-stub" }
+# The Windows sandbox consumes only permission/configuration types from
+# codex-protocol. The upstream protocol crate also references three network
+# policy data types; linking its full proxy implementation would otherwise
+# pull an unused DNS/proxy stack into every Windows release bundle.
+codex-network-proxy = { path = "third_party/codex-network-proxy-stub" }
 # The sandbox command runner must start in non-interactive Windows sessions before any Shell32
 # initialization. Keep the pinned path type API, but resolve `~` from the explicit environment so
 # this low-level helper does not import SHGetKnownFolderPath during process bootstrap.
