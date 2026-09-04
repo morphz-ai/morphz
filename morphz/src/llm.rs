@@ -505,6 +505,28 @@ pub enum ProviderContinuation {
     /// Keep the complete Provider-authored JSON so opaque fields such as
     /// `encrypted_content` survive without Morphz interpreting them.
     OpenaiResponses { reasoning_items: Vec<JsonValue> },
+    /// Gemini `generateContent` is stateless. Thinking models attach an opaque
+    /// signature to function-call Parts and require that exact Part metadata
+    /// on the following request. Keep the Provider-authored function-call
+    /// object so native IDs, omitted IDs, arguments, and future fields survive
+    /// the normalized Runtime tool boundary without exposing the signature as
+    /// assistant text.
+    GeminiContent {
+        function_calls: Vec<GeminiFunctionCallContinuation>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GeminiFunctionCallContinuation {
+    /// Stable Runtime ID used only to associate this opaque state with the
+    /// normalized ToolCall that crossed the execution boundary.
+    pub tool_call_id: String,
+    /// Exact Provider-authored `functionCall` object.
+    pub function_call: JsonValue,
+    /// Exact sibling `thoughtSignature`, when Gemini emitted one. Parallel
+    /// calls are allowed to leave later entries unsigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 
 pub fn provider_continuation_message(

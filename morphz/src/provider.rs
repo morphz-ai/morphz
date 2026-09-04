@@ -4,10 +4,10 @@ use crate::config::{
 };
 use crate::llm::{
     model_attachments, model_visible_message_text, provider_continuation, segmented_model_text,
-    Client, Message, ModelAttachment, ModelAttemptBinding, ModelFailure, ModelFailureKind,
-    ModelStreamEvent, ModelStreamSender, ModelTextPart, ModelUsage, PromptTokenAccuracy,
-    PromptTokenCount, ProviderContinuation, ReasoningEffort, Response, SegmentedModelText,
-    ToolCallRepr, ToolDefinition, MODEL_ATTACHMENT_MESSAGE_NAME,
+    Client, GeminiFunctionCallContinuation, Message, ModelAttachment, ModelAttemptBinding,
+    ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender, ModelTextPart, ModelUsage,
+    PromptTokenAccuracy, PromptTokenCount, ProviderContinuation, ReasoningEffort, Response,
+    SegmentedModelText, ToolCallRepr, ToolDefinition, MODEL_ATTACHMENT_MESSAGE_NAME,
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -3020,6 +3020,7 @@ struct StreamAccumulator {
     chat_reasoning_content: String,
     responses_reasoning_items: BTreeMap<usize, Value>,
     responses_message_items: BTreeMap<usize, Value>,
+    gemini_function_calls: BTreeMap<usize, GeminiFunctionCallContinuation>,
     gemini_tool_index: usize,
     terminal: bool,
     responses_completed: bool,
@@ -3714,6 +3715,19 @@ impl StreamAccumulator {
                     .filter(|id| !id.is_empty())
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("gemini-call-{index}"));
+                self.gemini_function_calls.insert(
+                    index,
+                    GeminiFunctionCallContinuation {
+                        tool_call_id: id.clone(),
+                        function_call: call.clone(),
+                        thought_signature: part
+                            .get("thoughtSignature")
+                            .or_else(|| part.get("thought_signature"))
+                            .and_then(Value::as_str)
+                            .filter(|signature| !signature.is_empty())
+                            .map(str::to_string),
+                    },
+                );
                 self.tool(
                     index,
                     Some(&id),
@@ -3781,6 +3795,14 @@ impl StreamAccumulator {
         } else if !self.responses_reasoning_items.is_empty() {
             Some(ProviderContinuation::OpenaiResponses {
                 reasoning_items: self.responses_reasoning_items.into_values().collect(),
+            })
+        } else if self
+            .gemini_function_calls
+            .values()
+            .any(|call| call.thought_signature.is_some())
+        {
+            Some(ProviderContinuation::GeminiContent {
+                function_calls: self.gemini_function_calls.into_values().collect(),
             })
         } else {
             None
@@ -4439,12 +4461,28 @@ fn build_gemini_request(
 ) -> Value {
     let system = messages
         .iter()
-        .filter(|message| message.role == "system" && model_attachments(message).is_none())
+        .filter(|message| {
+            message.role == "system"
+                && model_attachments(message).is_none()
+                && provider_continuation(message).is_none()
+        })
         .map(model_visible_message_text)
         .collect::<Vec<_>>()
         .join("\n\n");
     let mut contents: Vec<Value> = Vec::new();
-    for message in messages.iter().filter(|message| message.role != "system") {
+    let mut pending_continuation = None;
+    let mut idless_tool_call_ids = HashSet::new();
+    for message in messages {
+        if let Some(continuation) = provider_continuation(message) {
+            pending_continuation = match continuation {
+                ProviderContinuation::GeminiContent { function_calls } => Some(function_calls),
+                _ => None,
+            };
+            continue;
+        }
+        if message.role == "system" {
+            continue;
+        }
         if let Some(attachments) = model_attachments(message) {
             let parts = attachments
                 .iter()
@@ -4495,7 +4533,9 @@ fn build_gemini_request(
                 "response": response,
             });
             if let Some(id) = message.tool_call_id.as_deref().filter(|id| !id.is_empty()) {
-                function_response["id"] = json!(id);
+                if !idless_tool_call_ids.remove(id) {
+                    function_response["id"] = json!(id);
+                }
             }
             ("user", vec![json!({"functionResponse": function_response})])
         } else {
@@ -4508,14 +4548,44 @@ fn build_gemini_request(
             if !message.content.is_empty() {
                 parts.push(json!({"text": message.content}));
             }
+            if message.role == "assistant" {
+                idless_tool_call_ids.clear();
+            }
+            let mut continuation_calls = pending_continuation.take().unwrap_or_default();
             for call in message.tool_calls.as_deref().unwrap_or_default() {
                 let args = serde_json::from_str::<Value>(&call.function.arguments)
                     .unwrap_or_else(|_| json!({"raw": call.function.arguments}));
-                let mut function_call = json!({"name": call.function.name, "args": args});
-                if !call.id.is_empty() {
-                    function_call["id"] = json!(call.id);
+                let signed_call_index = continuation_calls.iter().position(|candidate| {
+                    candidate.tool_call_id == call.id
+                        && candidate.function_call.get("name").and_then(Value::as_str)
+                            == Some(call.function.name.as_str())
+                        && candidate
+                            .function_call
+                            .get("args")
+                            .map_or(args == json!({}), |candidate_args| candidate_args == &args)
+                });
+                if let Some(index) = signed_call_index {
+                    let signed_call = continuation_calls.remove(index);
+                    if signed_call
+                        .function_call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_none()
+                    {
+                        idless_tool_call_ids.insert(call.id.clone());
+                    }
+                    let mut part = json!({"functionCall": signed_call.function_call});
+                    if let Some(signature) = signed_call.thought_signature {
+                        part["thoughtSignature"] = json!(signature);
+                    }
+                    parts.push(part);
+                } else {
+                    let mut function_call = json!({"name": call.function.name, "args": args});
+                    if !call.id.is_empty() {
+                        function_call["id"] = json!(call.id);
+                    }
+                    parts.push(json!({"functionCall": function_call}));
                 }
-                parts.push(json!({"functionCall": function_call}));
             }
             (role, parts)
         };

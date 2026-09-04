@@ -8,11 +8,11 @@
 use super::*;
 use crate::llm::{provider_continuation_message, FunctionCall, ProviderContinuation, ToolCall};
 use axum::{
-    body::Body, http::StatusCode, response::Response as AxumResponse, routing::post, Router,
+    body::Body, http::StatusCode, response::Response as AxumResponse, routing::post, Json, Router,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 fn prompt() -> Vec<Message> {
@@ -1043,6 +1043,216 @@ fn gemini_parallel_calls_preserve_native_ids_in_both_directions() {
         request["contents"][1]["parts"][1]["functionResponse"]["id"],
         "call-a"
     );
+}
+
+#[test]
+fn gemini_replays_native_thought_signature_with_the_exact_function_call_part() {
+    let fixture = json!({
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [
+                {
+                    "functionCall":{"name":"lookup","args":{"id":1}},
+                    "thoughtSignature":"opaque-gemini-signature"
+                },
+                {"functionCall":{"id":"native-b","name":"lookup","args":{"id":2}}}
+            ]}
+        }]
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(ModelProtocol::GeminiContent, fixture, &tx)
+        .unwrap();
+    let parsed = accumulator.finish(&tx).unwrap();
+    let continuation = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|event| match event {
+            ModelStreamEvent::ProviderContinuation { continuation } => Some(continuation),
+            _ => None,
+        })
+        .expect("signed Gemini tool call must produce opaque continuation state");
+
+    let assistant = Message {
+        role: "assistant".to_string(),
+        content: parsed.content,
+        name: None,
+        tool_call_id: None,
+        tool_calls: Some(
+            parsed
+                .tool_calls
+                .iter()
+                .map(|call| ToolCall {
+                    id: call.id.clone(),
+                    r#type: call.r#type.clone(),
+                    function: FunctionCall {
+                        name: call.func_name.clone(),
+                        arguments: call.arguments.clone(),
+                    },
+                })
+                .collect(),
+        ),
+    };
+    let tool_result = |id: &str, value: i32| Message {
+        role: "tool".to_string(),
+        content: json!({"value":value}).to_string(),
+        name: Some("lookup".to_string()),
+        tool_call_id: Some(id.to_string()),
+        tool_calls: None,
+    };
+    let messages = vec![
+        provider_continuation_message(continuation).unwrap(),
+        assistant,
+        tool_result("gemini-call-0", 1),
+        tool_result("native-b", 2),
+    ];
+    let request = build_gemini_request(
+        None,
+        None,
+        &messages,
+        &[],
+        PromptCacheWireMode::ImplicitText,
+    );
+
+    let first_call = &request["contents"][0]["parts"][0];
+    assert_eq!(first_call["thoughtSignature"], "opaque-gemini-signature");
+    assert_eq!(first_call["functionCall"]["name"], "lookup");
+    assert_eq!(first_call["functionCall"]["args"], json!({"id": 1}));
+    assert!(first_call["functionCall"].get("id").is_none());
+    assert!(request["contents"][1]["parts"][0]["functionResponse"]
+        .get("id")
+        .is_none());
+    assert_eq!(
+        request["contents"][1]["parts"][1]["functionResponse"]["id"],
+        "native-b"
+    );
+    assert!(request.get("systemInstruction").is_none());
+}
+
+#[test]
+fn gemini_never_attaches_a_signature_to_a_modified_function_call() {
+    let messages = vec![
+        provider_continuation_message(ProviderContinuation::GeminiContent {
+            function_calls: vec![GeminiFunctionCallContinuation {
+                tool_call_id: "call-1".to_string(),
+                function_call: json!({"id":"call-1","name":"lookup","args":{"id":1}}),
+                thought_signature: Some("signature-for-original-call".to_string()),
+            }],
+        })
+        .unwrap(),
+        Message {
+            role: "assistant".to_string(),
+            content: String::new(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call-1".to_string(),
+                r#type: "function".to_string(),
+                function: FunctionCall {
+                    name: "lookup".to_string(),
+                    arguments: json!({"id":2}).to_string(),
+                },
+            }]),
+        },
+    ];
+    let request = build_gemini_request(
+        None,
+        None,
+        &messages,
+        &[],
+        PromptCacheWireMode::ImplicitText,
+    );
+
+    let call = &request["contents"][0]["parts"][0];
+    assert!(call.get("thoughtSignature").is_none());
+    assert_eq!(call["functionCall"]["args"], json!({"id": 2}));
+}
+
+#[tokio::test]
+async fn gemini_stream_continuation_survives_the_complete_transport_round_trip() {
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::clone(&requests);
+    let request_count = Arc::clone(&attempts);
+    let app = Router::new().route(
+        "/models/test-model:streamGenerateContent",
+        post(move |Json(body): Json<Value>| {
+            captured.lock().unwrap().push(body);
+            let attempt = request_count.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    AxumResponse::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(concat!(
+                            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"thoughtSignature\":\"transport-signature\",\"functionCall\":{\"name\":\"lookup\",\"args\":{\"id\":1}}}]}}]}\n\n"
+                        )))
+                        .unwrap()
+                } else {
+                    AxumResponse::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(concat!(
+                            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"done\"}]}}]}\n\n"
+                        )))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = client(ModelProtocol::GeminiContent, format!("http://{address}"), 1);
+
+    let (first_tx, mut first_rx) = tokio::sync::mpsc::unbounded_channel();
+    let first = client
+        .create_completion_measured_stream(prompt(), vec![], None, first_tx)
+        .await
+        .unwrap();
+    let continuation = std::iter::from_fn(|| first_rx.try_recv().ok())
+        .find_map(|event| match event {
+            ModelStreamEvent::ProviderContinuation { continuation } => Some(continuation),
+            _ => None,
+        })
+        .unwrap();
+    let call = &first.tool_calls[0];
+    let messages = vec![
+        provider_continuation_message(continuation).unwrap(),
+        Message {
+            role: "assistant".to_string(),
+            content: first.content,
+            name: None,
+            tool_call_id: None,
+            tool_calls: Some(vec![ToolCall {
+                id: call.id.clone(),
+                r#type: call.r#type.clone(),
+                function: FunctionCall {
+                    name: call.func_name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            }]),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: json!({"value":1}).to_string(),
+            name: Some("lookup".to_string()),
+            tool_call_id: Some(call.id.clone()),
+            tool_calls: None,
+        },
+    ];
+    let (second_tx, _second_rx) = tokio::sync::mpsc::unbounded_channel();
+    let second = client
+        .create_completion_measured_stream(messages, vec![], None, second_tx)
+        .await
+        .unwrap();
+    assert_eq!(second.content, "done");
+
+    let requests = requests.lock().unwrap();
+    let replayed_call = &requests[1]["contents"][0]["parts"][0];
+    assert_eq!(replayed_call["thoughtSignature"], "transport-signature");
+    assert_eq!(replayed_call["functionCall"]["name"], "lookup");
+    assert!(replayed_call["functionCall"].get("id").is_none());
+    assert!(requests[1]["contents"][1]["parts"][0]["functionResponse"]
+        .get("id")
+        .is_none());
 }
 
 #[test]
