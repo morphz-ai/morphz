@@ -5428,24 +5428,23 @@ mod tests {
             .get_for_activation("activation-directed-interrupt-stale")
             .is_none());
 
-        // The Evaluation lease itself is intentionally short (120 ms), while
-        // this outer bound only protects the test harness. Leave enough wall
-        // clock margin for a heavily loaded parallel test runner to schedule
-        // the dispatcher after the durable timer becomes due.
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                timers.dispatch_due_once().await.unwrap();
-                if evaluations
-                    .cancelled_activation("activation-directed-interrupt")
-                    .is_some()
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the supervisor dispatcher must expire the interrupt Evaluation");
+        // Wait for the recorded lease deadline before asking the Timer engine
+        // to claim work. Repeatedly polling around a 120 ms wall-clock edge
+        // makes this contract test sensitive to parallel-runner scheduling.
+        let expires_at = interrupted
+            .evaluation_lease_expires_at
+            .expect("the routed interrupt must have a lease deadline");
+        if let Ok(remaining) = (expires_at - Utc::now()).to_std() {
+            tokio::time::sleep(remaining + std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            timers.dispatch_due_once().await.unwrap(),
+            1,
+            "the due interrupt Evaluation lease Timer must be claimed"
+        );
+        assert!(evaluations
+            .cancelled_activation("activation-directed-interrupt")
+            .is_some());
         let expired = store.get_objective(&waiting.id).await.unwrap().unwrap();
         assert_eq!(
             expired.wait_condition, waiting.wait_condition,
