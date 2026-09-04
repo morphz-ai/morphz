@@ -9159,6 +9159,7 @@ fn render_objectives(objectives: &[ObjectiveRecord]) -> SExpr {
                     pair("status", atom(objective.status.as_str())),
                     pair("revision", atom(objective.revision.to_string())),
                     pair("statement", atom(&objective.stated_objective)),
+                    pair("generation", atom(objective.generation.to_string())),
                     pair(
                         "coordinator-session",
                         atom(&objective.coordinator_session_id),
@@ -9175,6 +9176,9 @@ fn render_objectives(objectives: &[ObjectiveRecord]) -> SExpr {
                 ];
                 if let Some(evaluation_id) = &objective.active_evaluation_id {
                     fields.push(pair("evaluation", atom(evaluation_id)));
+                }
+                if let Some(request_id) = crate::steering::input_request_id(objective) {
+                    fields.push(pair("user-input-request-id", atom(request_id)));
                 }
                 if let Some(intent) = &objective.completion_intent {
                     fields.push(pair("phase", atom("finalizing")));
@@ -9251,8 +9255,15 @@ fn render_objective_wait(wait: &crate::memory::ObjectiveWaitCondition) -> SExpr 
         ObjectiveWaitCondition::Permission { request_id } => {
             list("permission", vec![pair("request-id", atom(request_id))])
         }
-        ObjectiveWaitCondition::UserInput { session_id } => {
-            list("user-input", vec![pair("session-id", atom(session_id))])
+        ObjectiveWaitCondition::UserInput {
+            session_id,
+            request_id,
+        } => {
+            let mut fields = vec![pair("session-id", atom(session_id))];
+            if let Some(id) = request_id {
+                fields.push(pair("request-id", atom(id)));
+            }
+            list("user-input", fields)
         }
         ObjectiveWaitCondition::ExternalEvent {
             topic,
@@ -10408,6 +10419,7 @@ fn render_protocol() -> SExpr {
                         "enqueue",
                         atom("schedule_tx enqueue serially adds intent to thread_id; omitting thread_id continues the current Thread"),
                     ),
+                    pair("human-steering", atom("A user's supplemental instruction about existing work should be forwarded with steer, not executed twice in a new DialogueTurn. Select the exact Thread or Objective and generation; copy request-id when answering its pending user-input question. Unrelated ordinary messages never satisfy user-input waits. Ask when the intended work is ambiguous; do not broadcast to all waiting Objectives.")),
                     pair(
                         "spawn",
                         atom("schedule_tx spawn creates an independent Thread that can run in parallel; after in the same transaction may reference its client_id as $client_id"),

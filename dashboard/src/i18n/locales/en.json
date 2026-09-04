@@ -1,4 +1,15 @@
 {
+  "steering": {
+    "menu": "Choose work to steer or a Session to reference",
+    "intervene": "Steer thread",
+    "supplement": "Supplement objective",
+    "reply": "Answer this question",
+    "clear": "Remove destination; send as ordinary dialogue",
+    "safeBoundary": "Send only to the selected work at a safe boundary; commands already executing are not interrupted.",
+    "intentUnknown": "No task description available",
+    "copyId": "Copy full thread ID",
+    "queued": "Directed input queued"
+  },
   "common": {
     "shared": "shared",
     "close": "Close"

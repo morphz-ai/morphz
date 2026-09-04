@@ -90,6 +90,7 @@ import {
 import { findTurnSettlement } from './turnSettlement'
 import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/modelSelection'
 import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
+import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
 import {
   clearSessionDraft,
   createDraftClientMessageId,
@@ -365,6 +366,7 @@ function MessageThreadReference({
         <span className="message-thread-mark" aria-hidden="true"><GitBranch size={13} /></span>
         <span className="message-thread-copy">
           <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
+          <span className="thread-assignment" title={threadAssignment(snapshot)}>{threadAssignment(snapshot) ?? t('steering.intentUnknown')}</span>
           <small><i className={`thread-state-dot ${displayState}`} />{statusLabel(displayState, t)} · {t('conversation.threadJobs', { count: jobs.length })}</small>
           {objectiveIds.length > 0 && (
             <em className="message-thread-objective" title={objectiveIds.join(', ')}>
@@ -1208,6 +1210,7 @@ type MessageDispatchMode = 'interrupt' | 'parallel' | 'follow_up'
 type OptimisticMessageStatus = 'sending' | 'accepted' | 'failed'
 
 interface OptimisticMessage {
+  inputDestination?: InputDestination
   id: string
   clientMessageId: string
   sessionId: string
@@ -1327,6 +1330,7 @@ interface SessionWorkingSet {
 
 interface ObjectiveRecord {
   id: string
+  generation: number
   context_id: string
   coordinator_session_id: string
   delivery_session_id: string
@@ -1562,7 +1566,7 @@ interface DialogueHistorySearchHit {
   event_id: string
   sequence?: number
   session_id: string
-  topic: 'chat/user_message' | 'chat/reply' | 'chat/outbound_message' | 'chat/session_signal'
+  topic: 'chat/user_message' | 'chat/steering' | 'chat/reply' | 'chat/outbound_message' | 'chat/session_signal'
   timestamp: string
   actor: string
   kind: 'user' | 'agent' | 'coordination' | 'execution_result'
@@ -1714,6 +1718,8 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
 })
 
 function DialogueActivityDock({
+  onSteerThread,
+  onSteerObjective,
   open,
   visible,
   objectives,
@@ -1755,6 +1761,8 @@ function DialogueActivityDock({
   onThreadControl,
   onOpenDelegationContext,
 }: {
+  onSteerThread: (snapshot: SchedulerThreadSnapshot) => void
+  onSteerObjective: (objective: ObjectiveRecord) => void
   open: boolean
   visible: boolean
   objectives: ObjectiveRecord[]
@@ -1943,6 +1951,7 @@ function DialogueActivityDock({
                       />
                     </header>
                     <strong>{objective.stated_objective}</strong>
+                    {objective.status === 'active' && <button type="button" onClick={() => onSteerObjective(objective)}>{t(objective.wait_condition?.kind === 'user_input' ? 'steering.reply' : 'steering.supplement')}</button>}
                     <code className="dialogue-objective-id" title={objective.id}>{shortId(objective.id, 22)}</code>
                     {expanded && (
                       <div className="objective-card-details">
@@ -2012,6 +2021,7 @@ function DialogueActivityDock({
                         <span className={`activity-status ${displayState}`}><i />{statusLabel(displayState, t)}</span>
                         <span className="dialogue-thread-identity">
                           <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
+                          <span className="thread-assignment" title={threadAssignment(effective)}>{threadAssignment(effective) ?? t('steering.intentUnknown')}</span>
                           <small title={effective.thread.id}>
                             <code>{shortId(effective.thread.id, 18)}</code>
                             {jobSummary && (
@@ -2023,6 +2033,7 @@ function DialogueActivityDock({
                       </button>
                       {effective.thread.lifecycle === 'open' && (
                         <div className="dialogue-thread-card-actions">
+                          {canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.intervene')} onClick={() => onSteerThread(effective)}><MessageSquare size={12} /></button>}
                           {effective.thread.control_state === 'paused' ? (
                             <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
                           ) : (
@@ -2217,6 +2228,8 @@ function DialogueActivityDock({
                     <span className={`activity-status ${snapshot.thread.lifecycle}`}><i />{statusLabel(snapshot.thread.lifecycle, t)}</span>
                     <span>
                       <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
+                      <span className="thread-assignment" title={threadAssignment(snapshot)}>{threadAssignment(snapshot) ?? t('steering.intentUnknown')}</span>
+                      <code title={snapshot.thread.id}>{shortId(snapshot.thread.id)}</code>
                       <small>{summary ? `${summary.title}${summary.target ? ` · ${summary.target}` : ''}` : shortId(snapshot.thread.id, 20)}</small>
                     </span>
                     <time>{formatAgo(snapshot.thread.updated_at, t)}</time>
@@ -2750,7 +2763,10 @@ async function stageComposerFile(
 
 // Keep draft input state below App. A keystroke should only reconcile the
 // composer, not the full event history and every dashboard view.
-const Composer = memo(function Composer({
+export const Composer = memo(function Composer({
+  directedCandidates,
+  selectionRequest,
+  onSelectionRequestHandled,
   inputRef,
   principalId,
   selectedSessionId,
@@ -2769,6 +2785,9 @@ const Composer = memo(function Composer({
   currentAgentId,
   currentContextId,
 }: {
+  directedCandidates: InputSelection[]
+  selectionRequest: InputSelection | null
+  onSelectionRequestHandled: () => void
   inputRef: RefObject<HTMLTextAreaElement | null>
   principalId: string
   selectedSessionId: string
@@ -2786,6 +2805,7 @@ const Composer = memo(function Composer({
     references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
     clientMessageId?: string,
+    inputDestination?: InputDestination,
   ) => Promise<boolean>
   onError: (message: string) => void
   modelInputPolicy?: RuntimeStatus['model_input']
@@ -2802,6 +2822,7 @@ const Composer = memo(function Composer({
     initialDraft?.clientMessageId ?? createDraftClientMessageId(),
   )
   const [message, setMessage] = useState(initialDraft?.text ?? '')
+  const [inputSelection, setInputSelection] = useState<InputSelection | undefined>(initialDraft?.inputSelection)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(
     initialDraft?.attachments.map(attachment => ({ ...attachment })) ?? [],
   )
@@ -2815,6 +2836,16 @@ const Composer = memo(function Composer({
   const composingInput = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const attachmentPreviewRef = useRef<ComposerAttachment[]>(attachments)
+
+  useEffect(() => {
+    if (!selectionRequest || selectionRequest.sessionId !== selectedSessionId) return
+    // An external card command must enter this keyed composer's persisted draft.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInputSelection(selectionRequest)
+    setDraftClientMessageId(createDraftClientMessageId())
+    onSelectionRequestHandled()
+    inputRef.current?.focus()
+  }, [inputRef, onSelectionRequestHandled, selectedSessionId, selectionRequest])
 
   useEffect(() => {
     attachmentPreviewRef.current = attachments
@@ -2845,9 +2876,10 @@ const Composer = memo(function Composer({
         error: attachment.error,
       })),
       references: sessionReferences,
+      inputSelection,
       updatedAt: new Date().toISOString(),
     })
-  }, [attachments, draftClientMessageId, message, principalId, selectedSessionId, sessionReferences])
+  }, [attachments, draftClientMessageId, inputSelection, message, principalId, selectedSessionId, sessionReferences])
 
   useEffect(() => {
     if (!selectedSessionId || attachments.length === 0) return
@@ -2890,32 +2922,51 @@ const Composer = memo(function Composer({
       onError(t('composer.attachments.notReady'))
       return
     }
-    if (await onSend(message, attachments, sessionReferences, dispatchMode, draftClientMessageId)) {
+    if (await onSend(message, attachments, sessionReferences, inputSelection ? 'parallel' : dispatchMode, draftClientMessageId, inputSelection?.destination)) {
       clearSessionDraft(dashboardDraftStorage(), principalId, selectedSessionId)
       setMessage('')
       setSessionReferences([])
       setMentionRange(null)
+      setInputSelection(undefined)
       setAttachments(current => {
         current.forEach(attachment => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl))
         return []
       })
       setDraftClientMessageId(createDraftClientMessageId())
     }
-  }, [attachments, draftClientMessageId, message, onError, onSend, principalId, readOnly, selectedSessionId, sessionReferences, t])
+  }, [attachments, draftClientMessageId, inputSelection, message, onError, onSend, principalId, readOnly, selectedSessionId, sessionReferences, t])
 
-  const mentionCandidates = useMemo(() => {
+  const mentionCandidates = useMemo<Array<SessionReferenceCandidate & { selection?: InputSelection }>>(() => {
     if (!mentionRange) return []
-    return rankSessionReferenceCandidates(
+    const directed = directedCandidates.filter(item => {
+      const id = item.destination.kind === 'thread' ? item.destination.thread_id : item.destination.objective_id
+      return item.sessionId === selectedSessionId && `${item.label} ${id}`.toLowerCase().includes(mentionRange.query.toLowerCase())
+    }).map(selection => ({
+      id: selection.destination.kind === 'thread' ? selection.destination.thread_id : selection.destination.objective_id,
+      agent_id: currentAgentId, context_id: currentContextId, title: selection.label,
+      status: 'active' as const, last_activity_at: '', selection,
+    }))
+    return [...directed, ...rankSessionReferenceCandidates(
       sessionCandidates,
       currentAgentId,
       currentContextId,
       selectedSessionId,
       mentionRange.query,
-    ).slice(0, 8)
-  }, [currentAgentId, currentContextId, mentionRange, selectedSessionId, sessionCandidates])
+    )].slice(0, 12)
+  }, [currentAgentId, currentContextId, directedCandidates, mentionRange, selectedSessionId, sessionCandidates])
 
-  const selectSessionReference = useCallback((candidate: SessionReferenceCandidate) => {
+  const selectSessionReference = useCallback((candidate: SessionReferenceCandidate & { selection?: InputSelection }) => {
     if (!mentionRange) return
+    if (candidate.selection) {
+      setInputSelection(candidate.selection)
+      setDraftClientMessageId(createDraftClientMessageId())
+      // Destination is structured metadata, never an instruction parsed out of text.
+      setMessage(message.slice(0, mentionRange.start) + message.slice(mentionRange.end))
+      setMentionRange(null)
+      setMentionIndex(0)
+      window.requestAnimationFrame(() => inputRef.current?.focus())
+      return
+    }
     const inserted = insertSessionMention(message, mentionRange, candidate.title)
     setMessage(inserted.text)
     setSessionReferences(current => current.some(item => item.sessionId === candidate.id)
@@ -3023,6 +3074,11 @@ const Composer = memo(function Composer({
     >
       <span className="composer-prompt">›</span>
       <div className="composer-input-area">
+        {inputSelection && <div className="composer-steering" role="status">
+          <strong title={inputSelection.destination.kind === 'thread' ? inputSelection.destination.thread_id : inputSelection.destination.objective_id}>@{inputSelection.label}</strong>
+          <button type="button" title={t('steering.clear')} aria-label={t('steering.clear')} onClick={() => { setInputSelection(undefined); setDraftClientMessageId(createDraftClientMessageId()) }}><X size={12} /></button>
+          <small>{t('steering.safeBoundary')}</small>
+        </div>}
         {sessionReferences.length > 0 && (
           <div className="composer-session-references" aria-label={t('composer.sessionReferences.selected')}>
             {sessionReferences.map(reference => (
@@ -3130,7 +3186,8 @@ const Composer = memo(function Composer({
             setMentionIndex(0)
           }}
           onSelect={event => {
-            setMentionRange(sessionMentionAt(message, event.currentTarget.selectionStart ?? message.length))
+            const currentText = event.currentTarget.value
+            setMentionRange(sessionMentionAt(currentText, event.currentTarget.selectionStart ?? currentText.length))
           }}
           onCompositionStart={() => { composingInput.current = true }}
           onCompositionEnd={() => { composingInput.current = false }}
@@ -3187,7 +3244,7 @@ const Composer = memo(function Composer({
           value={message}
         />
         {mentionRange && (
-          <div className="session-mention-menu" role="listbox" aria-label={t('composer.sessionReferences.menu')}>
+          <div className="session-mention-menu" role="listbox" aria-label={t('steering.menu')}>
             {mentionCandidates.map((candidate, index) => (
               <button
                 className={index === mentionIndex ? 'active' : ''}
@@ -3201,11 +3258,11 @@ const Composer = memo(function Composer({
                 <MessageSquare size={13} />
                 <span>
                   <strong>{candidate.title}</strong>
-                  <small>{candidate.context_id === currentContextId
+                  <small>{candidate.selection ? t(candidate.selection.destination.kind === 'thread' ? 'steering.intervene' : candidate.selection.destination.reply_to_request_id ? 'steering.reply' : 'steering.supplement') : candidate.context_id === currentContextId
                     ? t('composer.sessionReferences.currentContext')
                     : t('composer.sessionReferences.otherContext')}</small>
                 </span>
-                <code>{candidate.id}</code>
+                <code title={candidate.id}>{shortId(candidate.id)}</code>
               </button>
             ))}
             {mentionCandidates.length === 0 && (
@@ -3409,6 +3466,8 @@ export default function App() {
   const [pendingTurn, setPendingTurn] = useState<PendingTurnState | null>(null)
   const [error, setError] = useState('')
   const [quotes, setQuotes] = useState<QuoteItem[]>([])
+  const [selectionRequest, setSelectionRequest] = useState<InputSelection | null>(null)
+  const consumeSelectionRequest = useCallback(() => setSelectionRequest(null), [])
   const [activeQuoteId, setActiveQuoteId] = useState('')
   const [inlineCommentQuoteId, setInlineCommentQuoteId] = useState('')
   const conversationEnd = useRef<HTMLDivElement>(null)
@@ -5272,7 +5331,7 @@ export default function App() {
     const eventIds = new Set<string>()
     const collectPending = (signals: ThreadSignalRecord[]) => {
       for (const signal of signals) {
-        if (signal.kind === 'chat/user_message' && signal.status === 'pending') {
+        if (['chat/user_message', 'chat/steering'].includes(signal.kind) && signal.status === 'pending') {
           eventIds.add(signal.event_id)
         }
       }
@@ -5280,7 +5339,7 @@ export default function App() {
     const collectActivation = (snapshot: SchedulerSnapshot['orphan_activations'][number]) => {
       if (snapshot.activation.status !== 'queued') return
       for (const signal of snapshot.signals) {
-        if (signal.kind === 'chat/user_message') eventIds.add(signal.event_id)
+        if (['chat/user_message', 'chat/steering'].includes(signal.kind)) eventIds.add(signal.event_id)
       }
     }
     for (const snapshot of schedulerThreads) {
@@ -5288,7 +5347,7 @@ export default function App() {
       for (const activation of snapshot.activations) collectActivation(activation)
     }
     for (const signal of schedulerSnapshot?.orphan_signals ?? []) {
-      if (signal.kind === 'chat/user_message' && signal.status !== 'acknowledged') {
+      if (['chat/user_message', 'chat/steering'].includes(signal.kind) && signal.status !== 'acknowledged') {
         eventIds.add(signal.event_id)
       }
     }
@@ -6470,7 +6529,7 @@ export default function App() {
       ? { ...item, status: 'sending', error: undefined }
       : item))
     setSending(true)
-    setPendingTurn({ startedAt, rootTurnId: null })
+    if (!message.inputDestination) setPendingTurn({ startedAt, rootTurnId: null })
     conversationPinnedToEnd.current = true
     try {
       const receipt = await DASHBOARD_API.command<{ event_id?: string }>(
@@ -6506,6 +6565,7 @@ export default function App() {
     references: ComposerSessionReference[],
     dispatchMode?: MessageDispatchMode,
     clientMessageId?: string,
+    inputDestination?: InputDestination,
   ): Promise<boolean> => {
     const hasQuotes = quotes.length > 0
     const text = draftMessage.trim()
@@ -6550,6 +6610,7 @@ export default function App() {
         attachments: attachments.map(attachment => ({ ...attachment, previewUrl: undefined })),
         references: references.map(reference => ({ ...reference })),
         dispatchMode,
+        inputDestination,
         status: 'sending',
       }
       setOptimisticMessages(current => [...current, optimisticMessage])
@@ -6563,6 +6624,17 @@ export default function App() {
       return false
     }
   }, [createContext, createSession, deliverOptimisticMessage, quotes, selectedContext, selectedSession, sending, t])
+
+  const steerThread = (snapshot: SchedulerThreadSnapshot) => {
+    if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
+    setSelectionRequest({ destination: threadDestination(snapshot), label: `${shortId(snapshot.thread.id)} · ${threadAssignment(snapshot) ?? t('steering.intentUnknown')}`, sessionId: snapshot.thread.session_id })
+    navigate(dashboardPath('dialogue', snapshot.thread.context_id, snapshot.thread.session_id))
+  }
+  const steerObjective = (objective: ObjectiveRecord) => {
+    if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
+    setSelectionRequest({ destination: objectiveReplyDestination(objective), label: objective.stated_objective, sessionId: objective.coordinator_session_id })
+    navigate(dashboardPath('dialogue', objective.context_id, objective.coordinator_session_id))
+  }
 
   const retryDialogueTurn = useCallback(async (
     failureEvent: MorphzEvent,
@@ -7445,6 +7517,8 @@ export default function App() {
 
   const renderDialogueActivityDock = () => (
     <DialogueActivityDock
+      onSteerThread={steerThread}
+      onSteerObjective={steerObjective}
       open={dialogueActivityOpen}
       visible={dialogueActivityVisible}
       objectives={dialogueActivityObjectives}
@@ -8384,6 +8458,7 @@ export default function App() {
                         />
                       )}
                       <div className="message-body">
+                        {event.topic === 'chat/steering' && <small className="message-input-queue-state" title={String(event.payload.thread_id ?? '')}>@{shortId(String(event.payload.thread_id ?? ''))}</small>}
                         {typeof event.payload.text === 'string' && event.payload.text.trim()
                           ? <MarkdownBody text={event.payload.text} />
                           : event.payload.attachments?.length ? null : t('conversation.noText')}
@@ -8787,6 +8862,7 @@ export default function App() {
                   </header>
                   {threadDetail?.snapshot.thread.id === route.threadId ? (
                     <ThreadCausalCard
+                      onSteer={steerThread}
                       snapshot={threadDetail.snapshot}
                       modelAttemptEvents={threadDetail.model_attempt_events}
                       liveModelAttempts={threadDetailLiveAttempts}
@@ -8825,18 +8901,12 @@ export default function App() {
                   <header><span>{t('work.attention.title').toUpperCase()}</span><b>{attentionCount}</b><small>{t('work.attention.subtitle')}</small></header>
                   <div className="attention-list">
                     {waitingUserObjectives.map(objective => {
-                      const waitingSessionId = typeof objective.wait_condition?.session_id === 'string'
-                        ? objective.wait_condition.session_id
-                        : objective.coordinator_session_id
                       return <article className="attention-card user-input" key={`waiting-user-${objective.id}`}>
                         <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(objective.updated_at, t)}</time></div>
                         <h2>{objective.stated_objective}</h2>
                         {objective.status_reason && <p>{objective.status_reason}</p>}
                         <div className="attention-actions">
-                          <button type="button" onClick={() => {
-                            if (waitingSessionId) setSelectedSessionId(waitingSessionId)
-                            navigate(dashboardPath('dialogue', selectedContextId, waitingSessionId))
-                          }}><MessageSquare size={12} /> {t('work.attention.answerNow')}</button>
+                          <button type="button" onClick={() => steerObjective(objective)}><MessageSquare size={12} /> {t('steering.reply')}</button>
                         </div>
                       </article>
                     })}
@@ -8935,6 +9005,7 @@ export default function App() {
                           />
                         </header>
                         <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
+                        {objective.status === 'active' && <button type="button" onClick={() => steerObjective(objective)}>{t(objective.wait_condition?.kind === 'user_input' ? 'steering.reply' : 'steering.supplement')}</button>}
                         {objective.wait_condition?.kind === 'user_input' && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
                         {expanded && (
                           <div className="objective-work-details">
@@ -9071,6 +9142,7 @@ export default function App() {
                       <header><strong>{t(`work.threadGroups.${group}`)}</strong><span>{snapshots.length}</span></header>
                       {snapshots.map(snapshot => (
                         <ThreadCausalCard
+                          onSteer={steerThread}
                           key={snapshot.thread.id}
                           snapshot={snapshot}
                           t={t}
@@ -9844,6 +9916,12 @@ export default function App() {
             </div>
           </div>
           <Composer
+            selectionRequest={selectionRequest}
+            onSelectionRequestHandled={consumeSelectionRequest}
+            directedCandidates={[
+              ...composerThreads.filter(canSteerThread).map(item => ({ destination: threadDestination(item), label: `${shortId(item.thread.id)} · ${threadAssignment(item) ?? t('steering.intentUnknown')}`, sessionId: item.thread.session_id })),
+              ...runningObjectives.filter(item => item.coordinator_session_id === selectedSessionId).map(item => ({ destination: objectiveReplyDestination(item), label: `${shortId(item.id)} · ${item.stated_objective}`, sessionId: item.coordinator_session_id })),
+            ]}
             key={`${status?.principal_id ?? 'principal'}:${selectedSessionId || 'unbound'}`}
             inputRef={composerInputRef}
             principalId={status?.principal_id ?? ''}

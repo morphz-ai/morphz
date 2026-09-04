@@ -17,6 +17,7 @@ const ephemeralTopics = new Set([
 ])
 
 const sessionProjectionTopics = new Set([
+  'chat/steering',
   'chat/reply',
   'chat/no_reply',
   'chat/cancelled',

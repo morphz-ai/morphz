@@ -366,6 +366,7 @@ pub fn event_has_recall_value(event: &crate::event::Event) -> bool {
         || matches!(
             event.topic.as_str(),
             "chat/user_message"
+                | "chat/steering"
                 | "chat/reply"
                 | "chat/tool_output"
                 | "chat/file_change"
@@ -1764,6 +1765,9 @@ pub enum ThreadActivationMutation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationOutcomeCommit {
+    /// Human input won the same transactional boundary as terminal commit.
+    /// Keep the Thread open so the pending Signal can be evaluated next.
+    DeferredByDirectedInput,
     Committed {
         /// Persisted Events whose authoritative Thread Signals were created in
         /// the same transaction. The Runtime only has to notify the live
@@ -5200,6 +5204,8 @@ pub enum ObjectiveWaitCondition {
     },
     UserInput {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     ExternalEvent {
         topic: String,
@@ -5475,6 +5481,10 @@ pub(crate) fn message_request_fingerprint(
 
     let mut digest = sha2::Sha256::new();
     digest.update(b"morphz.message-request.v1\0");
+    if let Some(destination) = payload.get("input_destination") {
+        digest.update(b"morphz.input-destination.v1\0");
+        digest_field(&mut digest, &serde_json::to_string(destination)?);
+    }
     for name in ["principal_id", "text"] {
         digest_field(&mut digest, field(payload, name)?);
     }

@@ -2869,6 +2869,12 @@ impl ActivationStore for PostgresStore {
                 }
             });
         if terminal_kind == ThreadLifecycle::Completed.as_str() {
+            let directed_input = sqlx::query_scalar::<_, i32>("SELECT 1 FROM thread_signals WHERE thread_id = $1 AND status = 'pending' AND kind = 'chat/steering' LIMIT 1")
+                .bind(thread_id).fetch_optional(&mut *tx).await?;
+            if directed_input.is_some() {
+                tx.commit().await?;
+                return Ok(ActivationOutcomeCommit::DeferredByDirectedInput);
+            }
             let open_group_ids = sqlx::query_scalar::<_, String>(
                 r#"SELECT id FROM thread_groups
                    WHERE ((supervisor_kind = 'thread'

@@ -1260,7 +1260,7 @@ fn is_objective_bound_tool(name: &str) -> bool {
 }
 
 fn is_dialogue_objective_tool(name: &str) -> bool {
-    name == "objective_amend"
+    matches!(name, "objective_amend" | "steer")
 }
 
 /// Critical pressure may suspend physical work, but it must never remove the
@@ -1276,7 +1276,7 @@ fn retain_context_maintenance_tools(
     tools.retain(|tool| {
         matches!(tool.name.as_str(), "context_tx" | "recall")
             || (objective_control_available && tool.name == "objective_update")
-            || (objective_amend_available && tool.name == "objective_amend")
+            || (objective_amend_available && is_dialogue_objective_tool(&tool.name))
     });
 }
 
@@ -1309,7 +1309,7 @@ fn retain_final_reply_control_tools(
 ) {
     tools.retain(|tool| {
         (objective_control_available && tool.name == "objective_update")
-            || (objective_amend_available && tool.name == "objective_amend")
+            || (objective_amend_available && is_dialogue_objective_tool(&tool.name))
     });
 }
 
@@ -8421,7 +8421,23 @@ impl Orchestrator {
             target_id: initial_target_id,
             supervision,
         };
-        let thread = if event.event_type == TYPE_USER_MESSAGE {
+        let thread = if event.payload.contains_key("input_destination") {
+            let existing = existing_thread.ok_or("Directed input is missing its durable Thread")?;
+            if event
+                .payload
+                .get("thread_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(existing.id.as_str())
+                || event
+                    .payload
+                    .get("thread_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    != Some(existing.generation)
+            {
+                return Ok(None);
+            }
+            existing
+        } else if event.event_type == TYPE_USER_MESSAGE {
             // Normal user ingress creates the root Thread in the same durable
             // transaction as the Event. Re-running `ensure_thread` here was a
             // redundant database round trip. The scheduler may trust that
@@ -10978,6 +10994,32 @@ impl Orchestrator {
         })
     }
 
+    async fn yield_to_pending_input(
+        &self,
+        activation: &ThreadActivationRecord,
+        thread_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(store) = self.context_engine.session_store() else {
+            return Ok(false);
+        };
+        let pending = store
+            .list_context_thread_signals_for_threads(
+                &activation.context_id,
+                &[thread_id.to_owned()],
+                Some(crate::memory::ThreadSignalStatus::Pending),
+            )
+            .await?;
+        if !pending.iter().any(|signal| signal.kind == "chat/steering") {
+            return Ok(false);
+        }
+        if let Some(supervisor) = &self.objective_supervisor {
+            supervisor.yield_to_directed_input(&activation.id).await?;
+        }
+        tracing::info!(%thread_id, activation_id = %activation.id,
+            event_code = "orchestrator.input.safe_boundary_yield", "Yielded uncommitted model work to pending directed input");
+        Ok(true)
+    }
+
     async fn run_attempt_inner(
         &self,
         session_id: &str,
@@ -12287,6 +12329,9 @@ impl Orchestrator {
             terminal_provider_continuation,
             terminal_context_view_manifest,
         ) = loop {
+            if self.yield_to_pending_input(activation, &thread.id).await? {
+                return Ok(());
+            }
             let request_index = model_request_index;
             model_request_index = model_request_index.saturating_add(1);
             let model_attempt_id = if request_index == 0 {
@@ -12442,6 +12487,11 @@ impl Orchestrator {
                     mut response,
                     provider_continuation,
                 }) => {
+                    if self.yield_to_pending_input(activation, &thread.id).await? {
+                        self.record_model_attempt_terminal_state(session_id, &model_attempt_id,
+                            "completed", Some("Response superseded before action admission by directed user input")).await?;
+                        return Ok(());
+                    }
                     if !interrupted_public_text.is_empty() {
                         response.content = format!("{interrupted_public_text}{}", response.content);
                         interrupted_public_text.clear();
@@ -13190,6 +13240,13 @@ impl Orchestrator {
                 }
             }
         };
+
+        // The model response has not been committed as an Action yet. A
+        // durable human correction takes precedence here; never cancel or
+        // replay a Job that has already crossed its side-effect boundary.
+        if self.yield_to_pending_input(activation, &thread.id).await? {
+            return Ok(());
+        }
 
         if let Some(state) = safety_refusal_recovery_canary.take() {
             self.record_safety_refusal_recovery_state(
@@ -14784,6 +14841,15 @@ impl Orchestrator {
                 event_code = "orchestrator.evaluation_outcome.duplicate_suppressed",
                 "Suppressed duplicate terminal output from the same Thread Activation"
                 );
+                (false, Vec::new(), Vec::new(), false, false)
+            }
+            ActivationOutcomeCommit::DeferredByDirectedInput => {
+                if let Some(supervisor) = &self.objective_supervisor {
+                    supervisor
+                        .yield_to_directed_input(&route.activation_id)
+                        .await?;
+                }
+                tracing::info!(activation_id = %route.activation_id, event_code = "orchestrator.input.terminal_commit_deferred", "Directed input arrived before terminal commit; preserved the open Thread for its pending Signal");
                 (false, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::DeferredByOpenThreadGroups { ref group_ids } => {
@@ -21710,6 +21776,9 @@ fn legacy_plan_effect_sequence(
 }
 
 fn is_dialogue_trigger(event: &Event) -> bool {
+    if event.payload.contains_key("input_destination") {
+        return false;
+    }
     matches!(
         event.event_type.as_str(),
         TYPE_USER_MESSAGE | TYPE_SESSION_SIGNAL | TYPE_RUNTIME_WAKE

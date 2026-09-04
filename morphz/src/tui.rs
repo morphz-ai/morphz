@@ -5734,6 +5734,7 @@ async fn submit_prompt(
         .send_message(
             &principal,
             SendMessageCommand {
+                input_destination: None,
                 session_id: session.id().to_string(),
                 text: prompt,
                 actor: "User".to_string(),
@@ -6544,7 +6545,7 @@ fn format_objective_wait(wait: &ObjectiveWaitCondition, locale: Locale) -> Strin
                 format!("permission {}", short_id(request_id))
             }
         }
-        ObjectiveWaitCondition::UserInput { session_id } => {
+        ObjectiveWaitCondition::UserInput { session_id, .. } => {
             if locale.is_chinese() {
                 format!("用户输入 {}", short_id(session_id))
             } else {

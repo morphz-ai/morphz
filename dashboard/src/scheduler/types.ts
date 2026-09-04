@@ -161,6 +161,7 @@ export interface SchedulerActivationSnapshot {
 }
 
 export interface SchedulerThreadSnapshot {
+  intent?: string | null
   thread: ThreadRecord
   phase: 'idle' | 'runnable' | 'running' | 'waiting'
   outcome?: ThreadOutcomeRecord

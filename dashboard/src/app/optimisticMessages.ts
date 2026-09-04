@@ -9,6 +9,7 @@ export interface OptimisticMessageIdentity {
 }
 
 export interface OptimisticMessageRequestSource extends OptimisticMessageIdentity {
+  inputDestination?: import('./steering.ts').InputDestination
   text: string
   attachments: Array<{
     stageId: string
@@ -32,6 +33,7 @@ export function buildOptimisticMessageRequest(message: OptimisticMessageRequestS
       session_id: reference.sessionId,
     })),
     ...(dispatchMode ? { dispatch_mode: dispatchMode } : {}),
+    ...(message.inputDestination ? { input_destination: message.inputDestination } : {}),
   }
 }
 

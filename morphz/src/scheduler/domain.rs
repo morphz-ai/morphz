@@ -192,9 +192,13 @@ pub fn objective_wait_dependency_key(
         ObjectiveWaitCondition::Permission { request_id } => {
             (SchedulerDependencyKind::Permission, request_id.clone())
         }
-        ObjectiveWaitCondition::UserInput { session_id } => {
-            (SchedulerDependencyKind::UserInput, session_id.clone())
-        }
+        ObjectiveWaitCondition::UserInput {
+            session_id,
+            request_id,
+        } => (
+            SchedulerDependencyKind::UserInput,
+            request_id.clone().unwrap_or_else(|| session_id.clone()),
+        ),
         ObjectiveWaitCondition::ExternalEvent {
             topic,
             correlation_id,

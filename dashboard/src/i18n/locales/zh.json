@@ -1,4 +1,15 @@
 {
+  "steering": {
+    "menu": "选择工作对象或引用会话",
+    "intervene": "干预线程",
+    "supplement": "补充目标",
+    "reply": "回答此问题",
+    "clear": "取消定向，改为普通对话",
+    "safeBoundary": "仅发送到所选工作；在安全边界接收，不中断已执行的命令。",
+    "intentUnknown": "暂无任务说明",
+    "copyId": "复制完整线程 ID",
+    "queued": "定向输入已入队"
+  },
   "common": {
     "shared": "共享",
     "close": "关闭"

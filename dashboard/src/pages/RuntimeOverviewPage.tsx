@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { shortId } from '../app/presentation'
 import { resolveSelectedModelOption } from '../app/modelSelection'
 
 export type RuntimeOverviewSessionState =
@@ -30,6 +31,7 @@ export type RuntimeOverviewSessionState =
   | 'idle'
 
 export interface RuntimeOverviewThread {
+  intent?: string | null
   id: string
   revision: number
   generation: number
@@ -304,7 +306,7 @@ function SessionCard({
           <p className="runtime-overview-current thread" title={item.current_thread.id}>
             <GitBranch size={10} />
             <span>{t(`runtimeOverview.threadKinds.${item.current_thread.kind}`, { defaultValue: item.current_thread.kind })}</span>
-            <code>{item.current_thread.id.slice(-12)}</code>
+            <code>{shortId(item.current_thread.id)}</code>
           </p>
         )}
         <footer>

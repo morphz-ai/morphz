@@ -330,6 +330,9 @@ impl SqliteStore {
             payload TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_events_user_reply
+            ON events(json_extract(payload, '$.objective_id'), json_extract(payload, '$.reply_to_request_id'))
+            WHERE json_extract(payload, '$.reply_to_request_id') IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
         CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_session_topic
@@ -13555,6 +13558,12 @@ impl ActivationStore for SqliteStore {
                 }
             });
         if terminal_kind == ThreadLifecycle::Completed.as_str() {
+            let directed_input = sqlx::query_scalar::<_, i64>("SELECT 1 FROM thread_signals WHERE thread_id = ? AND status = 'pending' AND kind = 'chat/steering' LIMIT 1")
+                .bind(thread_id).fetch_optional(&mut *tx).await?;
+            if directed_input.is_some() {
+                tx.commit().await?;
+                return Ok(ActivationOutcomeCommit::DeferredByDirectedInput);
+            }
             let open_group_ids = sqlx::query_scalar::<_, String>(
                 r#"SELECT id FROM thread_groups
                    WHERE ((supervisor_kind = 'thread'
@@ -18289,13 +18298,65 @@ impl DeliveryIngressStore for SqliteStore {
                     }
                 }
             }
-            let interrupted = if dispatch_mode == MessageDispatchMode::Interrupt {
-                interrupt_dialogue_turn_in_transaction(&mut tx, &session, event).await?
+            let input_destination = crate::steering::destination(event)?;
+            let mut directed = event.clone();
+            let directed_thread = if let Some(destination) = input_destination.as_ref() {
+                use crate::steering::InputDestination;
+                let objective = match destination {
+                    InputDestination::Objective { objective_id, .. } => {
+                        let row = sqlx::query("SELECT * FROM objectives WHERE id = ?")
+                            .bind(objective_id)
+                            .fetch_optional(&mut *tx)
+                            .await?
+                            .ok_or("Input destination Objective does not exist")?;
+                        Some(objective_from_row(&row)?)
+                    }
+                    _ => None,
+                };
+                let thread = if let Some(objective) = objective.as_ref() {
+                    ensure_thread_in_transaction(
+                        &mut tx,
+                        &crate::steering::objective_thread(objective),
+                    )
+                    .await?
+                } else {
+                    let InputDestination::Thread { thread_id, .. } = destination else {
+                        unreachable!()
+                    };
+                    let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+                        .bind(thread_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .ok_or("Input destination Thread does not exist")?;
+                    thread_from_row(&row)?
+                };
+                crate::steering::route(&mut directed, destination, &thread, objective.as_ref())?;
+                if let Some(request_id) = directed
+                    .payload
+                    .get("reply_to_request_id")
+                    .and_then(JsonValue::as_str)
+                {
+                    let duplicate = sqlx::query_scalar::<_, i64>("SELECT 1 FROM events WHERE json_extract(payload, '$.objective_id') = ? AND json_extract(payload, '$.reply_to_request_id') = ? LIMIT 1")
+                        .bind(directed.payload["objective_id"].as_str()).bind(request_id)
+                        .fetch_optional(&mut *tx).await?.is_some();
+                    if duplicate {
+                        return Err(crate::steering::conflict(
+                            "This question already has an accepted reply",
+                        ));
+                    }
+                }
+                Some(thread)
             } else {
                 None
             };
-            let mut claimed_event = event.clone();
-            if dispatch_mode == MessageDispatchMode::FollowUp {
+            let interrupted =
+                if input_destination.is_none() && dispatch_mode == MessageDispatchMode::Interrupt {
+                    interrupt_dialogue_turn_in_transaction(&mut tx, &session, event).await?
+                } else {
+                    None
+                };
+            let mut claimed_event = directed;
+            if input_destination.is_none() && dispatch_mode == MessageDispatchMode::FollowUp {
                 let predecessor = sqlx::query_scalar::<_, String>(
                     r#"SELECT thread.id
                        FROM session_message_requests request
@@ -18353,14 +18414,19 @@ impl DeliveryIngressStore for SqliteStore {
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             let sequence = append_event_in_transaction(&mut tx, &claimed_event).await?;
-            append_dialogue_signal_in_transaction(
-                &mut tx,
-                &session,
-                &claimed_event,
-                sequence,
-                dispatch_mode,
-            )
-            .await?;
+            if let Some(thread) = directed_thread {
+                append_direct_thread_signal_in_transaction(&mut tx, &claimed_event, &thread.id)
+                    .await?;
+            } else {
+                append_dialogue_signal_in_transaction(
+                    &mut tx,
+                    &session,
+                    &claimed_event,
+                    sequence,
+                    dispatch_mode,
+                )
+                .await?;
+            }
             sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
                 .bind(&timestamp)
                 .bind(&timestamp)
@@ -39098,6 +39164,7 @@ mod tests {
             .await
             .unwrap();
         let wait = ObjectiveWaitCondition::UserInput {
+            request_id: None,
             session_id: objective.coordinator_session_id.clone(),
         };
         sqlx::query(

@@ -296,6 +296,8 @@ struct UpdateSessionRequest {
 
 #[derive(serde::Deserialize)]
 struct SendMessageRequest {
+    #[serde(default)]
+    input_destination: Option<crate::steering::InputDestination>,
     text: String,
     client_message_id: Option<String>,
     #[serde(default)]
@@ -3073,6 +3075,7 @@ async fn handle_search_dialogue_history(
             matches!(
                 event.topic.as_str(),
                 "chat/user_message"
+                    | "chat/steering"
                     | "chat/reply"
                     | "chat/outbound_message"
                     | "chat/session_signal"
@@ -3085,7 +3088,7 @@ async fn handle_search_dialogue_history(
         .filter_map(|hit| {
             let event = events_by_id.get(&hit.document_id)?;
             let kind = match event.topic.as_str() {
-                "chat/user_message" => "user",
+                "chat/user_message" | "chat/steering" => "user",
                 "chat/session_signal" => "coordination",
                 "chat/reply" | "chat/outbound_message"
                     if event
@@ -7369,6 +7372,7 @@ async fn handle_send_message(
         .send_message(
             &principal,
             SendMessageCommand {
+                input_destination: request.input_destination,
                 session_id,
                 text: request.text,
                 actor: "User-API".to_string(),
@@ -10336,6 +10340,7 @@ mod tests {
             gateway_headers(Some("site-user-2")),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "I am user 1".to_string(),
                 client_message_id: Some("forged-identity-message".to_string()),
                 attachments: Vec::new(),
@@ -10650,6 +10655,7 @@ mod tests {
                 ..Default::default()
             }),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "operator must not impersonate".to_string(),
                 client_message_id: Some("operator-impersonation-message".to_string()),
                 attachments: Vec::new(),
@@ -13527,6 +13533,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "evaluate this through the Mesh".to_string(),
                 client_message_id: Some("coordination-required-message".to_string()),
                 attachments: Vec::new(),
@@ -13734,6 +13741,7 @@ account = "xai-account"
                 HeaderMap::new(),
                 Query(AuthQuery::default()),
                 Json(SendMessageRequest {
+                    input_destination: None,
                     text: String::new(),
                     client_message_id: Some("attachment-client-message-1".to_string()),
                     attachments: Vec::new(),
@@ -13845,6 +13853,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "too many".to_string(),
                 client_message_id: Some("client-message-too-many".to_string()),
                 staged_attachment_ids: Vec::new(),
@@ -13879,6 +13888,7 @@ account = "xai-account"
                 HeaderMap::new(),
                 Query(AuthQuery::default()),
                 Json(SendMessageRequest {
+                    input_destination: None,
                     text: "hello".to_string(),
                     client_message_id: Some("client-message-1".to_string()),
                     staged_attachment_ids: Vec::new(),
@@ -13915,6 +13925,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "different request".to_string(),
                 client_message_id: Some("client-message-1".to_string()),
                 attachments: Vec::new(),
@@ -14073,6 +14084,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "stream please".to_string(),
                 client_message_id: Some("stream-message-1".to_string()),
                 attachments: Vec::new(),
@@ -14292,6 +14304,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(SendMessageRequest {
+                input_destination: None,
                 text: "persist summary".to_string(),
                 client_message_id: Some("summary-restart-message".to_string()),
                 attachments: Vec::new(),
@@ -15056,6 +15069,12 @@ account = "xai-account"
                 None,
             ),
             (
+                "dialogue-search-steering",
+                "chat/steering",
+                "dialogue-search-sentinel directed correction",
+                None,
+            ),
+            (
                 "dialogue-search-delivery",
                 "chat/reply",
                 "dialogue-search-sentinel application delivery",
@@ -15108,13 +15127,16 @@ account = "xai-account"
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let matches = payload["matches"].as_array().unwrap();
-        assert_eq!(matches.len(), 2);
+        assert_eq!(matches.len(), 3);
         assert!(matches
             .iter()
             .all(|hit| hit["session_id"] == "dialogue-search-session"));
         assert!(matches
             .iter()
             .any(|hit| hit["kind"] == "user" && hit["event_id"] == "dialogue-search-user"));
+        assert!(matches
+            .iter()
+            .any(|hit| hit["kind"] == "user" && hit["event_id"] == "dialogue-search-steering"));
         assert!(matches.iter().any(|hit| {
             hit["kind"] == "execution_result" && hit["event_id"] == "dialogue-search-delivery"
         }));

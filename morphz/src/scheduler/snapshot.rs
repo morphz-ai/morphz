@@ -60,6 +60,10 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    /// Original work assignment from a durable root Event or Schedule, not
+    /// a model-generated summary of whatever tool happens to run now.
+    #[serde(default)]
+    pub intent: Option<String>,
     pub thread: ThreadRecord,
     pub phase: ThreadPhase,
     pub outcome: Option<ThreadOutcomeRecord>,

@@ -98,6 +98,9 @@ export interface CreateMessageAttachmentStageInput {
 }
 
 export interface SendMessageOptions {
+  input_destination?:
+    | { kind: 'thread'; thread_id: string; generation: number }
+    | { kind: 'objective'; objective_id: string; generation: number; reply_to_request_id?: string };
   attachments?: Array<{
     name: string;
     media_type: string;

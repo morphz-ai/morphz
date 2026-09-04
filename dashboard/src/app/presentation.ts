@@ -69,7 +69,7 @@ export function conversationEventKind(
   topic: string,
   payload: Record<string, unknown>,
 ): ConversationEventKind | null {
-  if (topic === 'chat/user_message') return 'user'
+  if (topic === 'chat/user_message' || topic === 'chat/steering') return 'user'
   if (topic === 'chat/reply') {
     // `thread_kind` is causal provenance, not presentation semantics. A
     // tool-assisted reply can originate from an Execution Thread while still
@@ -149,6 +149,7 @@ export function compactTokens(value?: number) {
 
 export function shortId(value?: string, size = 15) {
   if (!value) return '—'
+  if (value.startsWith('thread_') && value.length > 19) return `thread_…${value.slice(-12)}`
   if (value.length <= size) return value
   return `…${value.slice(-(size - 1))}`
 }

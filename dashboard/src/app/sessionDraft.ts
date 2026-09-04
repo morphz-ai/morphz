@@ -1,3 +1,5 @@
+import type { InputSelection } from './steering.ts'
+
 export const SESSION_DRAFT_VERSION = 1
 export const SESSION_DRAFT_STORAGE_PREFIX = 'morphz.dashboard.session-draft.v1'
 
@@ -29,6 +31,7 @@ export interface PersistedSessionDraft {
   text: string
   attachments: PersistedDraftAttachment[]
   references: PersistedDraftSessionReference[]
+  inputSelection?: InputSelection
   updatedAt: string
 }
 
@@ -108,7 +111,7 @@ export function writeSessionDraft(
   if (!storage || !draft.principalId || !draft.sessionId) return
   const key = sessionDraftStorageKey(draft.principalId, draft.sessionId)
   try {
-    if (!draft.text && draft.attachments.length === 0 && draft.references.length === 0) {
+    if (!draft.text && draft.attachments.length === 0 && draft.references.length === 0 && !draft.inputSelection) {
       storage.removeItem(key)
       return
     }
@@ -131,4 +134,3 @@ export function clearSessionDraft(
     // The caller has already cleared its in-memory state.
   }
 }
-

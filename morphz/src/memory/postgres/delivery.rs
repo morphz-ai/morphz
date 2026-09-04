@@ -14,6 +14,9 @@ use std::collections::HashMap;
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
+        r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_events_user_reply
+           ON events((payload ->> 'objective_id'), (payload ->> 'reply_to_request_id'))
+           WHERE payload ->> 'reply_to_request_id' IS NOT NULL"#,
         r#"CREATE TABLE IF NOT EXISTS session_message_requests (
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             client_message_id TEXT NOT NULL,
@@ -1477,6 +1480,7 @@ impl DeliveryIngressStore for PostgresStore {
             })
             .unwrap_or_default();
         if dispatch_mode == MessageDispatchMode::Parallel
+            && !event.payload.contains_key("input_destination")
             && !has_references
             && event.event_type == TYPE_USER_MESSAGE
             && event.topic == "chat/user_message"
@@ -1495,6 +1499,7 @@ impl DeliveryIngressStore for PostgresStore {
         }
         let mut connection = self.acquire_observed("claim_message").await?;
         if !has_references
+            && !event.payload.contains_key("input_destination")
             && event.event_type == TYPE_USER_MESSAGE
             && event.topic == "chat/user_message"
             && matches!(
@@ -1621,6 +1626,7 @@ impl DeliveryIngressStore for PostgresStore {
 
         if !has_references
             && session.get::<String, _>("attention_state") != "retired"
+            && !event.payload.contains_key("input_destination")
             && event.event_type == TYPE_USER_MESSAGE
             && event.topic == "chat/user_message"
             && matches!(
@@ -1777,21 +1783,77 @@ impl DeliveryIngressStore for PostgresStore {
             }
         }
 
-        let agent_id = session.get::<String, _>("agent_id");
-        let interrupted = if dispatch_mode == MessageDispatchMode::Interrupt {
-            interrupt_dialogue_turn_in_tx(
-                &mut tx,
-                &agent_id,
-                &registry_context_id,
-                session_id,
-                event,
-            )
-            .await?
+        let input_destination = crate::steering::destination(event)?;
+        let mut directed = event.clone();
+        let directed_thread = if let Some(destination) = input_destination.as_ref() {
+            use crate::steering::InputDestination;
+            let objective = match destination {
+                InputDestination::Objective { objective_id, .. } => {
+                    let row = sqlx::query(&format!(
+                        "{} WHERE id = $1 FOR UPDATE",
+                        super::OBJECTIVE_SELECT
+                    ))
+                    .bind(objective_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or("Input destination Objective does not exist")?;
+                    Some(super::objective_from_row(&row)?)
+                }
+                _ => None,
+            };
+            let thread = if let Some(objective) = objective.as_ref() {
+                let thread = super::thread::ensure_thread_in_tx(
+                    &mut tx,
+                    &crate::steering::objective_thread(objective),
+                )
+                .await?;
+                let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
+                    .bind(&thread.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                super::thread::thread_from_row(&row)?
+            } else {
+                let InputDestination::Thread { thread_id, .. } = destination else {
+                    unreachable!()
+                };
+                let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
+                    .bind(thread_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or("Input destination Thread does not exist")?;
+                super::thread::thread_from_row(&row)?
+            };
+            crate::steering::route(&mut directed, destination, &thread, objective.as_ref())?;
+            if let Some(request_id) = directed
+                .payload
+                .get("reply_to_request_id")
+                .and_then(JsonValue::as_str)
+            {
+                if sqlx::query_scalar::<_, i32>("SELECT 1 FROM events WHERE payload ->> 'objective_id' = $1 AND payload ->> 'reply_to_request_id' = $2 LIMIT 1")
+                    .bind(directed.payload["objective_id"].as_str()).bind(request_id)
+                    .fetch_optional(&mut *tx).await?.is_some()
+                { return Err(crate::steering::conflict("This question already has an accepted reply")); }
+            }
+            Some(thread)
         } else {
             None
         };
-        let mut claimed_event = event.clone();
-        if dispatch_mode == MessageDispatchMode::FollowUp {
+        let agent_id = session.get::<String, _>("agent_id");
+        let interrupted =
+            if input_destination.is_none() && dispatch_mode == MessageDispatchMode::Interrupt {
+                interrupt_dialogue_turn_in_tx(
+                    &mut tx,
+                    &agent_id,
+                    &registry_context_id,
+                    session_id,
+                    event,
+                )
+                .await?
+            } else {
+                None
+            };
+        let mut claimed_event = directed;
+        if input_destination.is_none() && dispatch_mode == MessageDispatchMode::FollowUp {
             let predecessor = sqlx::query_scalar::<_, String>(
                 r#"SELECT thread.id
                    FROM session_message_requests request
@@ -1852,16 +1914,20 @@ impl DeliveryIngressStore for PostgresStore {
             )
             .into());
         }
-        append_dialogue_signal_in_tx(
-            &mut tx,
-            &agent_id,
-            &registry_context_id,
-            session_id,
-            &claimed_event,
-            appended.sequence,
-            dispatch_mode,
-        )
-        .await?;
+        if let Some(thread) = directed_thread {
+            append_direct_thread_signal_in_tx(&mut tx, &claimed_event, &thread.id).await?;
+        } else {
+            append_dialogue_signal_in_tx(
+                &mut tx,
+                &agent_id,
+                &registry_context_id,
+                session_id,
+                &claimed_event,
+                appended.sequence,
+                dispatch_mode,
+            )
+            .await?;
+        }
         let timestamp = event
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);

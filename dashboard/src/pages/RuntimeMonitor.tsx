@@ -46,9 +46,7 @@ interface RuntimeMonitorProps {
   mutatingDelegationId: string
 }
 
-function shortId(value: string, size = 12) {
-  return value.length <= size ? value : `…${value.slice(-size)}`
-}
+import { shortId } from '../app/presentation'
 
 function stateIcon(state: RuntimeOverviewSessionState) {
   if (state === 'needs_attention') return <AlertCircle size={12} />
@@ -141,6 +139,7 @@ function ThreadRow({
         </span>
         <GitBranch size={12} />
         <strong>{t(`runtimeOverview.threadKinds.${thread.kind}`, { defaultValue: thread.kind })}</strong>
+        <span className="thread-assignment" title={thread.intent ?? undefined}>{thread.intent ?? t('steering.intentUnknown')}</span>
         <code title={thread.id}>{shortId(thread.id)}</code>
         {thread.target_id && <em title={thread.target_id}>{shortId(thread.target_id, 16)}</em>}
         <time dateTime={thread.updated_at}>{formatClock(thread.updated_at, i18n.language)}</time>

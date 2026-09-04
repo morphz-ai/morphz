@@ -524,6 +524,7 @@ impl RuntimeSessionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeOverviewThread {
+    pub intent: Option<String>,
     pub id: String,
     pub revision: u64,
     pub generation: u64,
@@ -1838,6 +1839,10 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
     if config.orchestrator.context_transactions_enabled {
         registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
     }
+    registry.register(Arc::new(crate::steering::SteerTool {
+        context: Arc::clone(context_engine),
+        bus: Arc::clone(bus),
+    }));
     #[cfg(not(feature = "experimental-cognitive-coordination"))]
     let _ = capability_binding_store;
     #[cfg(feature = "experimental-cognitive-coordination")]
@@ -7676,6 +7681,24 @@ impl MorphzRuntime {
             .into_iter()
             .map(|outcome| (outcome.thread_id.clone(), outcome))
             .collect::<HashMap<_, _>>();
+        let roots = if all_threads.is_empty() {
+            Vec::new()
+        } else {
+            self.query_events(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                event_ids: all_threads
+                    .iter()
+                    .map(|thread| thread.root_turn_id.clone())
+                    .collect(),
+                top_k: Some(all_threads.len()),
+                ..Default::default()
+            })
+            .await?
+        };
+        let root_intents = roots
+            .iter()
+            .filter_map(|event| thread_input_intent(event).map(|intent| (event.id.clone(), intent)))
+            .collect::<HashMap<_, _>>();
         let mut threads = Vec::with_capacity(all_threads.len());
         for thread in all_threads {
             let outcome = outcomes_by_thread.remove(&thread.id);
@@ -7695,6 +7718,26 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                intent: root_intents
+                    .get(&thread.root_turn_id)
+                    .cloned()
+                    .or_else(|| {
+                        schedules
+                            .first()
+                            .map(|schedule| schedule.intent.chars().take(1000).collect())
+                    })
+                    .or_else(|| {
+                        authority_objectives
+                            .iter()
+                            .find(|objective| {
+                                thread.supervision.origin_evaluation_id.is_none()
+                                    && Some(&objective.id)
+                                        == thread.supervision.supervisor_id.as_ref()
+                            })
+                            .map(|objective| {
+                                objective.stated_objective.chars().take(1000).collect()
+                            })
+                    }),
                 thread,
                 phase,
                 outcome,
@@ -8339,6 +8382,23 @@ impl MorphzRuntime {
         }
 
         let mut projected_contexts = Vec::with_capacity(contexts.len());
+        let overview_roots = if thread_by_root.is_empty() {
+            Vec::new()
+        } else {
+            self.query_events(QueryFilter {
+                event_ids: thread_by_root.keys().cloned().collect(),
+                top_k: Some(thread_by_root.len()),
+                ..Default::default()
+            })
+            .await?
+        };
+        let overview_intents = overview_roots
+            .iter()
+            .filter_map(|event| {
+                let thread = thread_by_root.get(&event.id)?;
+                thread_input_intent(event).map(|intent| (thread.id.clone(), intent))
+            })
+            .collect::<HashMap<_, _>>();
         for context in contexts {
             let count = counts_by_context.get(&context.id);
             let mut projected_sessions = sessions_by_context
@@ -8366,7 +8426,7 @@ impl MorphzRuntime {
                         .get(&session.id)
                         .cloned()
                         .unwrap_or_default();
-                    runtime_overview_session(
+                    let mut projected = runtime_overview_session(
                         session,
                         principal_ids,
                         threads,
@@ -8374,7 +8434,26 @@ impl MorphzRuntime {
                         execution_jobs,
                         objectives,
                         &thread_by_root,
-                    )
+                    );
+                    for thread in &mut projected.threads {
+                        thread.intent = overview_intents.get(&thread.id).cloned().or_else(|| {
+                            objectives
+                                .iter()
+                                .find(|objective| {
+                                    thread.supervision.origin_evaluation_id.is_none()
+                                        && Some(&objective.id) == thread.objective_id.as_ref()
+                                })
+                                .map(|objective| objective.stated_objective.clone())
+                        });
+                    }
+                    if let Some(current) = projected.current_thread.as_mut() {
+                        current.intent = projected
+                            .threads
+                            .iter()
+                            .find(|thread| thread.id == current.id)
+                            .and_then(|thread| thread.intent.clone());
+                    }
+                    projected
                 })
                 .collect::<Vec<_>>();
             projected_sessions.sort_by(|left, right| {
@@ -8882,10 +8961,43 @@ impl MorphzRuntime {
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        let primary_objective_intent = if thread.supervision.supervisor_kind
+            == crate::memory::ThreadSupervisorKind::Objective
+            && thread.supervision.origin_evaluation_id.is_none()
+        {
+            if let Some(objective_id) = thread.supervision.supervisor_id.as_deref() {
+                self.inner
+                    .store
+                    .get_objective(objective_id)
+                    .await?
+                    .filter(|objective| objective.context_id == context_id)
+                    .map(|objective| objective.stated_objective.chars().take(1000).collect())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Some(ThreadDetail {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                intent: self
+                    .query_events(QueryFilter {
+                        context_id: Some(context_id.to_string()),
+                        event_id: Some(thread.root_turn_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .first()
+                    .and_then(thread_input_intent)
+                    .or_else(|| {
+                        schedules
+                            .first()
+                            .map(|schedule| schedule.intent.chars().take(1000).collect())
+                    })
+                    .or(primary_objective_intent),
                 outcome: self.inner.store.get_thread_outcome(&thread.id).await?,
                 thread,
                 phase,
@@ -9345,6 +9457,13 @@ fn runtime_overview_principals_by_session(
     by_session
 }
 
+fn thread_input_intent(event: &Event) -> Option<String> {
+    ["intent", "task", "text"]
+        .iter()
+        .find_map(|key| event.payload.get(*key).and_then(Value::as_str))
+        .map(|text| text.chars().take(1000).collect())
+}
+
 fn runtime_overview_session(
     session: SessionRecord,
     principal_ids: Vec<String>,
@@ -9427,6 +9546,7 @@ fn runtime_overview_session(
                 ThreadPhase::Idle
             };
             RuntimeOverviewThread {
+                intent: None,
                 id: thread.id.clone(),
                 revision: thread.revision,
                 generation: thread.generation,
@@ -9655,6 +9775,7 @@ pub struct MessageReceipt {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionMessageOptions {
+    pub input_destination: Option<crate::steering::InputDestination>,
     pub requested_harness: Option<crate::harness::ExactHarnessRef>,
     pub attachments: Vec<crate::sdk::MessageAttachmentInput>,
     /// Durable pre-send attachment stages owned by the same Principal,
@@ -9691,7 +9812,7 @@ pub struct MessageIngressError {
 }
 
 impl MessageIngressError {
-    fn new(kind: MessageIngressErrorKind, message: impl Into<String>) -> Self {
+    pub(crate) fn new(kind: MessageIngressErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -9840,6 +9961,7 @@ impl SessionHandle {
         options: SessionMessageOptions,
     ) -> Result<MessageReceipt, RuntimeError> {
         let SessionMessageOptions {
+            input_destination,
             requested_harness,
             attachments,
             staged_attachment_ids,
@@ -9849,6 +9971,14 @@ impl SessionHandle {
             reasoning_effort,
             target_id,
         } = options;
+        if input_destination.is_some()
+            && (model_alias.is_some()
+                || reasoning_effort.is_some()
+                || target_id.is_some()
+                || requested_harness.is_some())
+        {
+            return Err("Directed input inherits the existing work route; model, reasoning, Target and Harness overrides are not allowed".into());
+        }
         let actor = actor.into();
         let session = self
             .runtime
@@ -9974,7 +10104,12 @@ impl SessionHandle {
         // persisted default before the user Event and Thread are committed.
         // The resulting target_id is therefore immutable for this root even
         // if the user changes the selector while work is still running.
-        let target_id = target_id.or_else(|| session.default_target_id.clone());
+        let target_id = target_id.or_else(|| {
+            input_destination
+                .is_none()
+                .then(|| session.default_target_id.clone())
+                .flatten()
+        });
         let target_id = if let Some(target_id) = target_id {
             let target_id = target_id.trim().to_string();
             if target_id.is_empty() {
@@ -10151,6 +10286,12 @@ impl SessionHandle {
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
             ("coordination_mode".to_string(), json!(coordination_mode)),
         ]);
+        if let Some(destination) = input_destination {
+            payload.insert(
+                "input_destination".into(),
+                serde_json::to_value(destination)?,
+            );
+        }
         if let Some(model_alias) = model_alias {
             payload.insert("model_alias".to_string(), json!(model_alias));
         }
@@ -11596,6 +11737,129 @@ mod tests {
     struct BlockingReplyClient {
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
+    }
+
+    struct SteeringBoundaryClient {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        calls: AtomicU64,
+        marker: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for SteeringBoundaryClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.entered.notify_one();
+                self.release.notified().await;
+                let mut response = text_response("");
+                response.tool_calls.push(ToolCallRepr {
+                    id: "obsolete-write".into(),
+                    r#type: "function".into(),
+                    func_name: "write".into(),
+                    arguments: json!({"path": self.marker, "content":"obsolete"}).to_string(),
+                });
+                return Ok(response);
+            }
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message.content.contains("Use the corrected parser")),
+                "next Evaluation must see the directed correction"
+            );
+            Ok(text_response("corrected-parser-delivered"))
+        }
+    }
+
+    #[tokio::test]
+    async fn steering_supersedes_uncommitted_response_without_a_second_dialogue() {
+        let database = NamedTempFile::new().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let marker = workspace.path().join("obsolete.txt");
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::FullAccess;
+        let client = Arc::new(SteeringBoundaryClient {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            calls: AtomicU64::new(0),
+            marker: marker.to_string_lossy().into_owned(),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-steering-boundary".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Steering boundary".into(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        let original = session
+            .send("Implement a parser", "User", Some("original".into()))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), client.entered.notified())
+            .await
+            .unwrap();
+        let thread = runtime
+            .inner
+            .store
+            .get_thread_by_root(&original.event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let correction = session
+            .send_as_principal_with_options(
+                "Use the corrected parser",
+                "User",
+                runtime.identity().principal_id.clone(),
+                Some("correction".into()),
+                SessionMessageOptions {
+                    input_destination: Some(crate::steering::InputDestination::Thread {
+                        thread_id: thread.id.clone(),
+                        generation: thread.generation,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        client.release.notify_one();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "corrected-parser-delivered");
+        assert!(
+            !marker.exists(),
+            "superseded model action must never execute"
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert!(runtime
+            .inner
+            .store
+            .get_thread_by_root(&correction.event_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(reply.payload["root_turn_id"], original.event_id);
+        let snapshot = runtime
+            .thread_detail(&thread.context_id, &thread.id)
+            .await
+            .unwrap();
+        assert!(snapshot.is_some());
     }
 
     struct InterruptibleDialogueClient {

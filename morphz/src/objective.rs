@@ -2921,6 +2921,18 @@ impl ObjectiveSupervisor {
         if current.revision != expected_revision {
             return Ok(ObjectiveMutation::Conflict { current });
         }
+        let wait_condition = wait_condition.map(|wait| match wait {
+            ObjectiveWaitCondition::UserInput { session_id, .. } => {
+                ObjectiveWaitCondition::UserInput {
+                    session_id,
+                    request_id: Some(format!(
+                        "user-input:{id}:{}:{expected_revision}",
+                        current.generation
+                    )),
+                }
+            }
+            wait => wait,
+        });
         let mut mutation = self
             .transition_objective(
                 &current,
@@ -3064,6 +3076,15 @@ impl ObjectiveSupervisor {
                 );
                 return Ok(RoutedObjectiveEventDisposition::Suppressed);
             }
+            if let Some(request_id) = event
+                .payload
+                .get("reply_to_request_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                if crate::steering::input_request_id(&objective).as_deref() != Some(request_id) {
+                    return Ok(RoutedObjectiveEventDisposition::Suppressed);
+                }
+            }
             let Some(wait) = objective.wait_condition.as_ref() else {
                 // A Dialogue amendment queued behind the Objective's current
                 // primary Activation reaches this branch only after that work
@@ -3080,6 +3101,41 @@ impl ObjectiveSupervisor {
                     RoutedObjectiveEventDisposition::Suppressed
                 });
             };
+            if let Some(request_id) = event
+                .payload
+                .get("reply_to_request_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                if crate::steering::input_request_id(&objective).as_deref() != Some(request_id) {
+                    return Ok(RoutedObjectiveEventDisposition::Suppressed);
+                }
+                self.satisfy_wait_dependency(&objective, wait, &event.id)
+                    .await?;
+                let mutation = self
+                    .transition_objective(
+                        &objective,
+                        ObjectiveStatus::Active,
+                        None,
+                        Some("The exact pending user question received its reply"),
+                        &event.id,
+                        "ObjectiveSupervisor",
+                    )
+                    .await?;
+                let ObjectiveMutation::Updated(woken) = mutation else {
+                    return Ok(RoutedObjectiveEventDisposition::Suppressed);
+                };
+                return Ok(
+                    if self
+                        .claim_routed_evaluation(&woken, &event.id, Some(activation_id), true, None)
+                        .await?
+                        .is_some()
+                    {
+                        RoutedObjectiveEventDisposition::Admitted
+                    } else {
+                        RoutedObjectiveEventDisposition::Suppressed
+                    },
+                );
+            }
             let (dependency_kind, dependency_key) = objective_wait_dependency_key(wait);
             let dependency = self
                 .current_scheduler_dependencies(&objective)
@@ -3128,6 +3184,11 @@ impl ObjectiveSupervisor {
             let Some(wait) = objective.wait_condition.as_ref() else {
                 continue;
             };
+            // Ordinary dialogue never consumes a question merely by sharing
+            // its Session. Explicit replies use the directed branch above.
+            if matches!(wait, ObjectiveWaitCondition::UserInput { .. }) {
+                continue;
+            }
             if objective.status != ObjectiveStatus::Active || !wait_matches_event(wait, event) {
                 continue;
             }
@@ -4069,6 +4130,27 @@ impl ObjectiveSupervisor {
         Ok(true)
     }
 
+    /// Release only the current cognitive slice at a side-effect-free model
+    /// boundary. The already-durable input Signal owns the next activation;
+    /// do not synthesize another continuation or cancel any physical Job.
+    pub async fn yield_to_directed_input(&self, activation_id: &str) -> Result<(), DynError> {
+        if let Some(binding) = self.evaluations.get_for_activation(activation_id) {
+            // Keep the optional handoff's Scheduler Kernel future off every
+            // ordinary Evaluation's stack, including physical denial paths.
+            Box::pin(self.finish_objective_evaluation(
+                &binding.objective_id,
+                &binding.evaluation_id,
+                0,
+                0,
+                activation_id,
+            ))
+            .await?;
+            self.evaluations
+                .unbind(&binding.objective_id, &binding.evaluation_id);
+        }
+        Ok(())
+    }
+
     async fn claim_routed_evaluation(
         self: &Arc<Self>,
         objective: &ObjectiveRecord,
@@ -4887,9 +4969,15 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
         ObjectiveWaitCondition::Permission { request_id } => {
             payload_str("approval_id") == Some(request_id.as_str())
         }
-        ObjectiveWaitCondition::UserInput { session_id } => {
+        ObjectiveWaitCondition::UserInput {
+            session_id,
+            request_id,
+        } => {
             event.event_type == crate::event::TYPE_USER_MESSAGE
                 && payload_str("session_id") == Some(session_id.as_str())
+                && request_id
+                    .as_deref()
+                    .is_some_and(|id| payload_str("reply_to_request_id") == Some(id))
         }
         ObjectiveWaitCondition::ExternalEvent {
             topic,
@@ -4960,6 +5048,7 @@ mod tests {
         assert_eq!(
             native.condition,
             ObjectiveWaitCondition::UserInput {
+                request_id: None,
                 session_id: "session-objective-wait".to_string()
             }
         );
@@ -5471,7 +5560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_session_user_wake_claims_an_exact_objective_evaluation_binding() {
+    async fn only_exact_question_reply_claims_an_objective_evaluation_binding() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
@@ -5479,12 +5568,45 @@ mod tests {
                 .unwrap(),
         );
         let created = seed_objective_bundle(&store, "same-session-user-wake").await;
+        let sibling = store
+            .create_objective(NewObjective {
+                id: "objective-other-question".into(),
+                agent_id: created.agent_id.clone(),
+                context_id: created.context_id.clone(),
+                coordinator_session_id: created.coordinator_session_id.clone(),
+                delivery_session_id: created.delivery_session_id.clone(),
+                parent_objective_id: None,
+                source_event_id: "other-question-source".into(),
+                initiating_principal_id: created.initiating_principal_id.clone(),
+                stated_objective: "Keep the other question pending".into(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let sibling_wait = Some(ObjectiveWaitCondition::UserInput {
+            session_id: created.coordinator_session_id.clone(),
+            request_id: Some("other-question".into()),
+        });
+        assert!(matches!(
+            store
+                .update_objective_state(
+                    &sibling.id,
+                    sibling.revision,
+                    ObjectiveStatus::Active,
+                    sibling_wait.clone(),
+                    None,
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Updated(_)
+        ));
         let waiting = match store
             .update_objective_state(
                 &created.id,
                 created.revision,
                 ObjectiveStatus::Active,
                 Some(ObjectiveWaitCondition::UserInput {
+                    request_id: None,
                     session_id: created.coordinator_session_id.clone(),
                 }),
                 Some("等待用户继续"),
@@ -5512,9 +5634,9 @@ mod tests {
         supervisor.register_timer_handlers().unwrap();
         Arc::clone(&supervisor).start().await.unwrap();
 
-        // This immutable user Event intentionally has no Objective fields. It
-        // acquires the Objective only after the routed Activation exists.
-        let wake = Event::new(
+        // Unrelated same-Session input remains a normal Dialogue and cannot
+        // consume the question. Explicit replies reuse the primary Thread.
+        let mut wake = Event::new(
             "message-resume-objective".to_string(),
             "User".to_string(),
             TYPE_USER_MESSAGE.to_string(),
@@ -5531,6 +5653,42 @@ mod tests {
             .collect(),
         );
         assert!(wake.payload.get("objective_id").is_none());
+        store.append(wake.clone()).await.unwrap();
+        supervisor
+            .prepare_routed_event(&wake, "activation-unrelated")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_objective(&waiting.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .wait_condition,
+            waiting.wait_condition
+        );
+        assert!(evaluations
+            .get_for_activation("activation-unrelated")
+            .is_none());
+        wake.id = "message-exact-reply".into();
+        wake.topic = "chat/steering".into();
+        wake.payload
+            .insert("objective_interrupt".into(), json!(true));
+        wake.payload
+            .insert("objective_id".into(), json!(waiting.id));
+        wake.payload
+            .insert("objective_generation".into(), json!(waiting.generation));
+        wake.payload.insert(
+            "root_turn_id".into(),
+            json!(crate::memory::objective_primary_execution_root_id(
+                &waiting.id,
+                waiting.generation
+            )),
+        );
+        wake.payload.insert(
+            "reply_to_request_id".into(),
+            json!(crate::steering::input_request_id(&waiting).unwrap()),
+        );
         store.append(wake.clone()).await.unwrap();
         assert_eq!(
             supervisor
@@ -5552,6 +5710,9 @@ mod tests {
         assert_eq!(binding.objective_id, resumed.id);
         assert_eq!(binding.evaluation_id, evaluation_id);
         assert_eq!(binding.revision, resumed.revision);
+        let unchanged = store.get_objective(&sibling.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.wait_condition, sibling_wait);
+        assert!(unchanged.active_evaluation_id.is_none());
     }
 
     #[tokio::test]
@@ -7593,6 +7754,7 @@ mod tests {
         ));
 
         let user_wait = ObjectiveWaitCondition::UserInput {
+            request_id: Some("question-1".into()),
             session_id: "session-b".to_string(),
         };
         assert!(wait_matches_event(
@@ -7600,7 +7762,7 @@ mod tests {
             &event(
                 crate::event::TYPE_USER_MESSAGE,
                 "chat/user_message",
-                json!({"session_id":"session-b"}),
+                json!({"session_id":"session-b", "reply_to_request_id":"question-1"}),
             )
         ));
         assert!(!wait_matches_event(

@@ -47,9 +47,7 @@ interface EventHistoryPageProps {
   onOpenFrame: (id: string) => void
 }
 
-function shortId(value: string, size = 28) {
-  return value.length <= size ? value : `…${value.slice(-(size - 1))}`
-}
+import { shortId } from '../app/presentation'
 
 function payloadReference(payload: Record<string, unknown>, key: string): string | undefined {
   const direct = payload[key]

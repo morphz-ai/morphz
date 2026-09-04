@@ -12,6 +12,8 @@ import type {
   ThreadRecord,
 } from '../scheduler/types'
 import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } from '../app/presentation'
+import { canSteerThread, threadAssignment } from '../app/steering'
+import { copyTextToClipboard } from '../utils/clipboard'
 
 function modelAttemptActivationId(event: ThreadDetailResponse['model_attempt_events'][number]) {
   return typeof event.payload.activation_id === 'string' ? event.payload.activation_id : ''
@@ -213,6 +215,7 @@ export function ThreadCausalCard({
   onApproval,
   onSchedule,
   onThreadControl,
+  onSteer,
   selectedSupervisorId,
   onSupervisorFilter,
   onInspect,
@@ -228,6 +231,7 @@ export function ThreadCausalCard({
   onApproval: (approval: ApprovalRecord, decision: ApprovalDecision) => void
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
   onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
+  onSteer?: (snapshot: SchedulerThreadSnapshot) => void
   selectedSupervisorId?: string
   onSupervisorFilter?: (supervisorId: string) => void
   onInspect?: (threadId: string) => void
@@ -260,6 +264,7 @@ export function ThreadCausalCard({
         <span className={`status-pill ${displayPhase}`}>{statusLabel(displayPhase, t)}</span>
         <div>
           <strong>{threadKindLabel(thread.kind, t)}</strong>
+          <span className="thread-assignment" title={threadAssignment(snapshot)}>{threadAssignment(snapshot) ?? t('steering.intentUnknown')}</span>
           <small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)} · {t('work.causal.executor')} {thread.executor_kind}{thread.executor_id ? `/${shortId(thread.executor_id, 16)}` : ''}</small>
           <small className="thread-supervision-summary">
             {t(`work.causal.lifetimeValues.${thread.supervision.lifetime}`)}
@@ -288,6 +293,8 @@ export function ThreadCausalCard({
           </details>
         </section>
         <div className="causal-thread-actions">
+          <button type="button" title={thread.id} onClick={() => { void copyTextToClipboard(thread.id).catch(() => window.prompt(t('steering.copyId'), thread.id)) }}>{t('steering.copyId')}</button>
+          {onSteer && canSteerThread(snapshot) && <button type="button" onClick={() => onSteer(snapshot)}>{t('steering.intervene')}</button>}
           {onInspect && <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>}
           {onSupervisorFilter && thread.supervision.supervisor_id && (
             <button

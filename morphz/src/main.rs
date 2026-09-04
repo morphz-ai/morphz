@@ -4223,6 +4223,7 @@ async fn run_once(
         .send_message(
             &principal,
             SendMessageCommand {
+                input_destination: None,
                 session_id: session_id.clone(),
                 text: prompt,
                 actor: "User".to_string(),
@@ -4604,6 +4605,7 @@ async fn run_interactive(
             if let Err(error) = rt.block_on(sdk.send_message(
                 &principal,
                 SendMessageCommand {
+                    input_destination: None,
                     session_id: console_session.id().to_string(),
                     text,
                     actor: "User-Shafreeck".to_string(),

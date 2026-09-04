@@ -975,7 +975,18 @@ impl PlanExecutionCoordinator {
         }
 
         if objective.status == ObjectiveStatus::Active
-            && objective.wait_condition.as_ref() == Some(&condition)
+            && match (objective.wait_condition.as_ref(), &condition) {
+                (
+                    Some(ObjectiveWaitCondition::UserInput {
+                        session_id: stored, ..
+                    }),
+                    ObjectiveWaitCondition::UserInput {
+                        session_id: requested,
+                        ..
+                    },
+                ) => stored == requested,
+                (stored, requested) => stored == Some(requested),
+            }
             && objective.status_reason.as_deref() == Some(reason)
         {
             return Ok(objective_transition_result(
@@ -3699,6 +3710,10 @@ mod tests {
         assert_eq!(
             settled.wait_condition,
             Some(ObjectiveWaitCondition::UserInput {
+                request_id: Some(format!(
+                    "user-input:{}:{}:{}",
+                    claimed.id, claimed.generation, claimed.revision
+                )),
                 session_id: queued.session_id,
             })
         );
