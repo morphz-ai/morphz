@@ -652,7 +652,11 @@ fn create_managed_ssh_secret_pipe(
     };
 
     let mut random = [0_u8; 16];
-    getrandom::fill(&mut random)?;
+    getrandom::fill(&mut random).map_err(|error| {
+        std::io::Error::other(format!(
+            "failed to generate a random Managed SSH pipe name: {error}"
+        ))
+    })?;
     let suffix = random
         .iter()
         .map(|byte| format!("{byte:02x}"))

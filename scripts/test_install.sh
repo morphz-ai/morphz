@@ -3,8 +3,27 @@ set -eu
 
 repository_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/morphz-install-test.XXXXXX")"
-trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+test_stage="initialization"
 
+cleanup() {
+  status="$?"
+  trap - EXIT HUP INT TERM
+  if [ "$status" -ne 0 ]; then
+    printf '%s\n' "installer test failed during: $test_stage" >&2
+    for output in "$temporary"/*-output; do
+      [ -f "$output" ] || continue
+      printf '\n--- %s ---\n' "$(basename "$output")" >&2
+      sed -n '1,240p' "$output" >&2
+    done
+  fi
+  rm -rf "$temporary"
+  exit "$status"
+}
+
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+test_stage="release matrix contract"
 grep -F 'linux-aarch64' "$repository_root/scripts/install.sh" >/dev/null
 grep -F 'aarch64-unknown-linux-gnu' "$repository_root/.github/workflows/release.yml" >/dev/null
 
@@ -43,6 +62,7 @@ printf '%s\n' \
   'esac' > "$temporary/mock-bin/uname"
 chmod 0755 "$temporary/mock-bin/uname"
 
+test_stage="Linux ARM64 installation"
 PATH="$temporary/mock-bin:$PATH" \
 MORPHZ_INSTALL_DIR="$temporary/arm-bin" \
 MORPHZ_RELEASE_BASE_URL="file://$temporary/arm-release" \
@@ -62,6 +82,7 @@ printf '%s\n' \
 printf '%s\n' '#!/bin/sh' 'printf "%s\\n" 10.15.7' > "$temporary/legacy-mac-bin/sw_vers"
 chmod 0755 "$temporary/legacy-mac-bin/uname" "$temporary/legacy-mac-bin/sw_vers"
 
+test_stage="legacy macOS rejection"
 if PATH="$temporary/legacy-mac-bin:$PATH" \
   MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
   sh "$repository_root/scripts/install.sh" >"$temporary/legacy-mac-output" 2>&1; then
@@ -70,6 +91,7 @@ if PATH="$temporary/legacy-mac-bin:$PATH" \
 fi
 grep -F 'Morphz requires macOS 11 or newer' "$temporary/legacy-mac-output" >/dev/null
 
+test_stage="custom install directory"
 MORPHZ_INSTALL_DIR="$temporary/bin" \
 MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
   sh "$repository_root/scripts/install.sh" >"$temporary/custom-output" 2>&1
@@ -84,6 +106,7 @@ grep -F '[4/5] Installing to' "$temporary/custom-output" >/dev/null
 grep -F '[5/5] Configuring the command path' "$temporary/custom-output" >/dev/null
 grep -F "Run now: $temporary/bin/morphz setup" "$temporary/custom-output" >/dev/null
 
+test_stage="fish PATH configuration"
 HOME="$temporary/home" \
 SHELL="/opt/homebrew/bin/fish" \
 PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -97,6 +120,7 @@ grep -F 'fish_add_path --global "$HOME/.local/bin"' "$fish_config" >/dev/null
 grep -F "Added $temporary/home/.local/bin to PATH in $fish_config" "$temporary/fish-output" >/dev/null
 grep -F "Run now: $temporary/home/.local/bin/morphz setup" "$temporary/fish-output" >/dev/null
 
+test_stage="idempotent fish PATH configuration"
 HOME="$temporary/home" \
 SHELL="/opt/homebrew/bin/fish" \
 PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -105,6 +129,7 @@ MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
 
 [ "$(grep -cF 'fish_add_path --global "$HOME/.local/bin"' "$fish_config")" -eq 1 ]
 
+test_stage="explicit headless setup"
 MORPHZ_INSTALL_DIR="$temporary/setup-bin" \
 MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
   sh "$repository_root/scripts/install.sh" setup --no-open >"$temporary/setup-output" 2>&1
@@ -116,9 +141,19 @@ if grep -F 'Run now:' "$temporary/setup-output" >/dev/null; then
   exit 1
 fi
 
-MORPHZ_INSTALL_DIR="$temporary/noninteractive-setup-bin" \
-MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
-  sh "$repository_root/scripts/install.sh" setup >"$temporary/noninteractive-setup-output" 2>&1
+test_stage="setup without an interactive terminal"
+if command -v setsid >/dev/null 2>&1; then
+  env \
+    MORPHZ_INSTALL_DIR="$temporary/noninteractive-setup-bin" \
+    MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
+    setsid sh "$repository_root/scripts/install.sh" setup \
+      >"$temporary/noninteractive-setup-output" 2>&1
+else
+  MORPHZ_INSTALL_DIR="$temporary/noninteractive-setup-bin" \
+  MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
+    sh "$repository_root/scripts/install.sh" setup \
+      >"$temporary/noninteractive-setup-output" 2>&1
+fi
 
 grep -F 'Setup was not started because no interactive terminal is available' \
   "$temporary/noninteractive-setup-output" >/dev/null
@@ -127,6 +162,7 @@ if grep -F 'morphz installer fixture setup' "$temporary/noninteractive-setup-out
   exit 1
 fi
 
+test_stage="unsupported action rejection"
 if MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
   sh "$repository_root/scripts/install.sh" unsupported >"$temporary/unsupported-output" 2>&1; then
   printf '%s\n' 'installer accepted an unsupported action' >&2
@@ -137,6 +173,7 @@ grep -F 'morphz installer: unknown action: unsupported' "$temporary/unsupported-
 test_posix_profile() {
   shell_name="$1"
   profile_name="$2"
+  test_stage="$shell_name PATH configuration"
   test_home="$temporary/home-$shell_name"
   mkdir -p "$test_home"
 
