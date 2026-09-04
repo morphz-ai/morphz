@@ -1206,10 +1206,8 @@ body { background: var(--paper); }
 .docs-site .docs-sidebar a:hover,
 .docs-site .docs-toc a:hover { color: var(--accent-strong); }
 .docs-site .docs-sidebar a.is-active { color: var(--accent-strong); border-left-color: var(--accent); background: var(--accent-soft); }
-.docs-site .docs-index__grid .doc-status--current { color: var(--accent-strong); }
 .docs-site .docs-index__grid .doc-status--preview { color: var(--muted); }
 .docs-site .status-badge { border-color: var(--line); }
-.docs-site .status-badge--current { color: var(--accent-strong); background: var(--accent-soft); }
 .docs-site .status-badge--preview { color: var(--muted); background: color-mix(in srgb, var(--paper-bright) 65%, transparent); }
 .docs-site .docs-index__start { border-color: var(--line); background: var(--paper-bright); }
 .docs-site .docs-index__start h2,

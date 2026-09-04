@@ -19,6 +19,7 @@ test("publishes the current core capability map in both languages", async () => 
     "contexts-and-recall.md",
     "core-concepts.md",
     "execution-lifecycle.md",
+    "principals-and-authority.md",
     "sessions-and-concurrency.md",
   ];
   for (const locale of ["zh", "en"]) {
@@ -27,31 +28,43 @@ test("publishes the current core capability map in both languages", async () => 
   }
 
   const zhContext = await readFile(new URL("zh/contexts-and-recall.md", contentRoot), "utf8");
-  assert.match(zhContext, /普通认知帧退役先进入认知时钟驱动的整理窗口/);
+  assert.match(zhContext, /窗口使用认知时钟计量/);
+  assert.match(zhContext, /后继认知帧同时把旧帧列为来源并声明/);
   assert.match(zhContext, /退役只表示内容退出当前活动编码，不代表事实错误、认知失效或物理删除/);
   assert.match(zhContext, /context audit/);
 
   const zhSessions = await readFile(new URL("zh/sessions-and-concurrency.md", contentRoot), "utf8");
   assert.match(zhSessions, /retire-session/);
-  assert.match(zhSessions, /只让会话退出当前注意窗口/);
+  assert.match(zhSessions, /让会话退出当前注意窗口，同时保留会话身份/);
 
   const zhApplications = await readFile(new URL("zh/cognitive-applications.md", contentRoot), "utf8");
   assert.match(zhApplications, /安装不等于运行或授权/);
   assert.match(zhApplications, /精确领域程序标识、版本和制品哈希/);
 
   const zhTrajectories = await readFile(new URL("zh/agent-trajectories.md", contentRoot), "utf8");
-  assert.match(zhTrajectories, /不是聊天记录、调试日志或新的事实来源/);
+  assert.match(zhTrajectories, /执行轨迹只投影其中与指定范围有关的因果状态转换/);
   assert.match(zhTrajectories, /AT-Training/);
 
   const zhCore = await readFile(new URL("zh/core-concepts.md", contentRoot), "utf8");
   assert.match(zhCore, /长期记忆由权威事件历史、智能体维护的认知状态/);
   assert.match(zhCore, /认知自进化/);
-  assert.match(zhCore, /主体（`Principal`）是进入运行时的稳定身份与授权来源/);
+  assert.match(zhCore, /主体是进入运行时的稳定身份与授权来源/);
+
+  const zhPrincipals = await readFile(new URL("zh/principals-and-authority.md", contentRoot), "utf8");
+  assert.match(zhPrincipals, /谁正在与智能体交互，以及这次行动的权限来自谁/);
+  assert.doesNotMatch(zhPrincipals, /Principal/);
+
+  const zhLifecycle = await readFile(new URL("zh/execution-lifecycle.md", contentRoot), "utf8");
+  assert.match(zhLifecycle, /代次标识目标的一轮有效推进/);
+  assert.match(zhLifecycle, /线程代次隔离同一条逻辑线程/);
 
   const enCore = await readFile(new URL("en/core-concepts.md", contentRoot), "utf8");
   assert.match(enCore, /long-term memory through authoritative Event History/);
   assert.match(enCore, /self-evolving cognition/);
   assert.match(enCore, /A Principal is the stable identity and authority source/);
+
+  const enPrincipals = await readFile(new URL("en/principals-and-authority.md", contentRoot), "utf8");
+  assert.match(enPrincipals, /stable identity and source of authority/);
 });
 
 test("requires publication metadata and avoids legacy terminology", async () => {

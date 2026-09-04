@@ -25,5 +25,5 @@ test("keeps documentation language switches on the current article", async () =>
   assert.match(en, /href="\/docs\/core-concepts"[^>]*class="language-switch"/);
   assert.doesNotMatch(zh, /docs-toolbar__language/);
   assert.doesNotMatch(en, /docs-toolbar__language/);
-  assert.match(zh, /status-badge status-badge--current/);
+  assert.doesNotMatch(zh, /status-badge--current/);
 });

@@ -10,7 +10,7 @@ The model may propose an Action, but only the Runtime can turn it into a physica
 
 ## Execution Target model
 
-An Execution Target is a stable physical destination, not a temporary worker process or network connection. The current Runtime can represent:
+An Execution Target gives a physical work destination a stable identity. Temporary worker processes and network connections belong to that identity. The current Runtime can represent:
 
 - the machine running the current process;
 - an Edge device connected through an outbound channel;

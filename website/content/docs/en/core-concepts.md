@@ -8,15 +8,13 @@ status: current
 
 Morphz is an open-source agent for durable, concurrent work. Its execution core is an **S-Expression Cognitive Machine**: the language model supplies nondeterministic interpretation, judgment, and action proposals, while the Runtime owns deterministic identity, versions, causality, authority, scheduling, and persistence.
 
-These parts form one agent. They are not separate products.
-
 ## Agent and Context
 
-An Agent is the durable subject of work. It has a stable identity and a root Cognitive Context that carries shared cognition and Runtime state. A model account, a Session, or an individual model request is not the Agent itself.
+An Agent is the durable subject of work. It has a stable identity and a root Cognitive Context that carries shared cognition and Runtime state. Model accounts, Sessions, and individual model requests are respectively resources, interaction connections, and Evaluation processes used by the Agent.
 
-A Context is first-class, durable, versioned, evaluable state. Before every Evaluation, the Runtime compiles Events, current cognition, the Session directory, scheduler state, capability boundaries, and one Evaluation entry point into a structured expression. The model therefore computes over the Agent's current state rather than an ever-growing transcript.
+A Context is first-class, durable, versioned, evaluable state. Before every Evaluation, the Runtime compiles Events, current cognition, the Session directory, scheduler state, capability boundaries, and one Evaluation entry point into a structured expression. The model evaluates the Agent's current state through that expression.
 
-## Events, Observations, and cognitive Frames
+## Long-term memory and self-evolving cognition
 
 Morphz carries long-term memory through authoritative Event History, Agent-maintained cognitive state, and a Context Encoding compiled for each Evaluation. History preserves what happened, cognitive Frames express the Agent's current understanding, and Context Encoding selects what the current Evaluation can see.
 
@@ -34,17 +32,19 @@ A Principal is the stable identity and authority source entering the Runtime. It
 
 Principal, Agent, and Session carry distinct semantics: Principal identifies who interacts or grants authority, Agent identifies who owns cognition and works, and Session identifies the connection through which an interaction occurs.
 
+See [Principals and authority](/en/docs/principals-and-authority) for how identity persists along a causal path and flows into approval, Execution Target authorization, and Capability Leases.
+
 ## Sessions, Threads, and Activations
 
-A Session is an input/output connection and progress boundary. One Agent may own multiple Sessions in the same Context. They share cognition while retaining their own message order, delivery destination, and attention state. A Session is neither a separate Mind nor a copy of the Agent.
+A Session carries the input, output, message order, delivery destination, and attention state of one interaction connection. One Agent may own multiple Sessions in the same Context and share cognition across them.
 
 A Thread is the stable causal path of one unit of work. A new message can create a new Thread while an older Thread waits for a tool, approval, or timer.
 
-An Activation is one leased execution opportunity for a Thread. It may include several model attempts and tool actions until the work completes, waits, or reaches another durable boundary. An Activation ending does not necessarily end its Thread.
+An Activation is one leased execution opportunity for a Thread. It may include several model attempts and tool actions until the work completes, waits, or reaches another durable boundary. The Thread may then terminate or wait for another Activation.
 
 ## Objectives and durable scheduling
 
-An Objective represents an intention that must continue across Evaluations, waits, or process restarts. It owns status, revision, budget, dependencies, an Evaluation lease, and a final delivery destination. The scheduler derives whether it is runnable, waiting, leased, paused, blocked, or terminal from durable dependencies rather than inferring that state from conversation text.
+An Objective represents an intention that must continue across Evaluations, waits, or process restarts. It owns status, revision, budget, dependencies, an Evaluation lease, and a final delivery destination. The scheduler derives whether it is runnable, waiting, leased, paused, blocked, or terminal directly from durable dependencies.
 
 Ordinary dialogue does not require an Objective. Use one when work genuinely needs durable supervision and a convergence condition.
 
@@ -60,7 +60,7 @@ An Execution Target is the stable destination of physical tool work. It may be t
 
 ## Agent Trajectory
 
-An Agent Trajectory projects authoritative Events and state transitions into a portable causal graph for inspection, evaluation, or permission-checked training Episode derivation. It is neither a transcript nor a new source of truth. Export and verification never rewrite Event History.
+An Agent Trajectory projects authoritative Events and state transitions into a portable causal graph for inspection, evaluation, or permission-checked training Episode derivation. Event History remains authoritative; export and verification only read it.
 
 ## How one request moves
 
@@ -77,4 +77,4 @@ user or external Event
 
 A model completion, a successful tool action, a state commit, and final delivery are separate boundaries. Morphz records them separately so the correct workstream can continue after concurrency, failure, or restart.
 
-Continue with [Contexts, cognitive Frames, and Recall](/en/docs/contexts-and-recall), [Sessions and concurrent work](/en/docs/sessions-and-concurrency), and [Threads, Activations, and Objectives](/en/docs/execution-lifecycle).
+Continue with [Principals and authority](/en/docs/principals-and-authority), [Contexts, cognitive Frames, and Recall](/en/docs/contexts-and-recall), [Sessions and concurrent work](/en/docs/sessions-and-concurrency), and [Threads, Activations, and Objectives](/en/docs/execution-lifecycle).

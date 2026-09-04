@@ -17,7 +17,7 @@ morphz config explain --format=json
 morphz doctor
 ```
 
-`config check` validates every configuration layer. `config explain` shows whether each effective value came from user configuration, project preference, environment, or command line. `doctor` checks storage, workspace, authority, and model-service configuration. A passing diagnostic does not prove that a real model request or remote tool will succeed, so continue at the relevant boundary.
+`config check` validates every configuration layer. `config explain` shows whether each effective value came from user configuration, project preference, environment, or command line. `doctor` checks storage, workspace, authority, and model-service configuration. Passing these diagnostics establishes the static boundaries; real model requests and remote tools still need live tests at their respective boundaries.
 
 ## Authenticated but no model response
 
@@ -34,7 +34,7 @@ morphz provider account test <account-id> --route=<model-route>
 morphz model route test <model-route> --account=<account-id>
 ```
 
-Connection establishment, first-byte wait, and stream reads have independent timeouts. A transient Provider failure may place a Thread into backoff while it waits for resource recovery. A model Attempt count is not a count of the entire Thread starting over.
+Connection establishment, first-byte wait, and stream reads have independent timeouts. A transient Provider failure may place a Thread into backoff while it waits for resource recovery. The model Attempt count records replaceable model calls within the same Thread.
 
 ## Mind projection or Recall mismatch
 

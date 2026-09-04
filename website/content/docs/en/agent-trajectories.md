@@ -8,7 +8,7 @@ status: current
 
 An Agent Trajectory is a bounded projection of authoritative Events and state. It organizes inputs, decisions, Actions, admission, state transitions, and Outcomes into a portable causal graph for inspection, evaluation, or permission-checked training Episode derivation.
 
-It is not a transcript, debug log, or new source of truth. Runtime Event History remains authoritative. Export, verification, and Episode derivation never rewrite it.
+Runtime Event History remains authoritative. A Trajectory projects only the causal state transitions relevant to its selected scope. Export, verification, and Episode derivation are read-only operations.
 
 ## Bundle contents
 
@@ -20,7 +20,7 @@ An Agent Trajectory Bundle contains:
 - Outcomes, Verifier Results, and Reward Records;
 - integrity digest, transforms, disclosure, and rights declarations.
 
-The Exporter uses indexed queries to select bounded Events and preserves external references to parents outside the scope. It does not recursively fetch unbounded history merely to claim completeness.
+The Exporter uses indexed queries to select bounded Events and preserves parents outside the scope as external references. The selected Context, Objective, or Activation always determines the export boundary.
 
 ## Three Profiles
 
@@ -44,7 +44,7 @@ morphz trajectory verify trajectory.json
 
 Verification treats the input as untrusted data. It does not execute payloads, dereference external resources, restore capabilities, or write to the Runtime. It checks identity uniqueness, cross-references, State references, causal acyclicity, scope consistency, and the integrity digest.
 
-The current integrity mechanism is a deterministic SHA-256 digest. It is not a publisher signature and cannot prove that a represented Outcome is true in the external world.
+The current integrity mechanism uses a deterministic SHA-256 digest to detect content tampering. Publisher identity and the external truth of a represented Outcome require independent evidence.
 
 ## Derive a training Episode
 
@@ -69,5 +69,3 @@ The derived form separates model input, supervised target, environment output, a
 - State is primarily represented through exact version references and optional deltas rather than automatically disclosed full Context snapshots;
 - environment and model bindings are best-effort projections of known Runtime facts and must not be invented when unavailable;
 - Dataset sharding, consent revocation, trainer adapters, normative signatures, and independent interoperability suites are not current implementation features.
-
-Event History remains authoritative. A Trajectory is a verifiable, portable projection of experience, not a replacement for the Runtime database.

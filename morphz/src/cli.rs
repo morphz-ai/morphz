@@ -1644,7 +1644,7 @@ fn context_command(locale: Locale) -> Command {
                                     "不透明的续页游标",
                                 ),
                             )),
-                        "Examples:\n  morphz context recall search 沙箱 权限 --limit=20 --format=json\n  morphz context recall search --since=2026-08-04T00:00:00+08:00 --until=2026-08-05T00:00:00+08:00 --format=json",
+                        "Examples:\n  morphz context recall search \"沙箱 权限\" --limit=20 --format=json\n  morphz context recall search --since=2026-08-04T00:00:00+08:00 --until=2026-08-05T00:00:00+08:00 --format=json",
                     ),
                     output_examples(
                         locale,

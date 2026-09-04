@@ -17,7 +17,7 @@ morphz config explain --format=json
 morphz doctor
 ```
 
-`config check` 校验所有配置层；`config explain` 显示每个最终值来自用户配置、项目偏好、环境变量还是命令行；`doctor` 检查存储、工作区、权限和模型服务配置。诊断成功不等于真实模型请求或远端工具一定成功，后续仍要检查对应边界。
+`config check` 校验所有配置层；`config explain` 显示每个最终值来自用户配置、项目偏好、环境变量还是命令行；`doctor` 检查存储、工作区、权限和模型服务配置。诊断成功说明这些静态边界已经通过检查；真实模型请求和远端工具还需在各自边界实测。
 
 ## 模型已经登录但不响应
 
@@ -34,7 +34,7 @@ morphz provider account test <account-id> --route=<model-route>
 morphz model route test <model-route> --account=<account-id>
 ```
 
-连接建立、首字节等待和流读取都有独立超时。模型服务临时失败时，线程可以进入退避并等待资源恢复；日志中的模型尝试次数不是整条线程从头执行的次数。
+连接建立、首字节等待和流读取都有独立超时。模型服务临时失败时，线程可以进入退避并等待资源恢复；日志中的模型尝试次数记录同一线程内可替换的模型调用。
 
 ## 认知投影与召回异常
 

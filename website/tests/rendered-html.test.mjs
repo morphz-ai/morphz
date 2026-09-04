@@ -124,6 +124,8 @@ test("renders documentation indexes and bilingual article routes", async () => {
     "/docs/core-concepts",
     "/en/docs/core-concepts",
     "/docs/contexts-and-recall",
+    "/docs/principals-and-authority",
+    "/en/docs/principals-and-authority",
     "/docs/sessions-and-concurrency",
     "/en/docs/sessions-and-concurrency",
     "/docs/cognitive-applications",
@@ -139,23 +141,26 @@ test("renders documentation indexes and bilingual article routes", async () => {
   assert.match(pages.get("/docs/core-concepts"), /面向长期、并发工作的开源智能体/);
   assert.match(pages.get("/docs/core-concepts"), /认知自进化/);
   assert.match(pages.get("/docs/core-concepts"), /主体/);
+  assert.match(pages.get("/docs/core-concepts"), /长期记忆与认知自进化/);
+  assert.match(pages.get("/docs/core-concepts"), /主体与授权/);
   assert.match(pages.get("/en/docs/core-concepts"), /open-source agent for durable, concurrent work/);
   assert.match(pages.get("/en/docs/core-concepts"), /self-evolving cognition/);
   assert.match(pages.get("/en/docs/core-concepts"), /Principal identity/);
+  assert.match(pages.get("/docs/principals-and-authority"), /谁正在与智能体交互/);
+  assert.match(pages.get("/en/docs/principals-and-authority"), /source of authority/);
   assert.match(pages.get("/docs/contexts-and-recall"), /退役不是失效或删除/);
   assert.match(pages.get("/docs/sessions-and-concurrency"), /会话退役与恢复/);
   assert.match(pages.get("/en/docs/sessions-and-concurrency"), /Retiring and restoring Session attention/);
   assert.match(pages.get("/docs/cognitive-applications"), /安装不等于运行或授权/);
   assert.match(pages.get("/en/docs/cognitive-applications"), /Installation is not activation or authority/);
-  assert.match(pages.get("/docs/agent-trajectories"), /不是聊天记录、调试日志或新的事实来源/);
-  assert.match(pages.get("/en/docs/agent-trajectories"), /not a transcript, debug log, or new source of truth/);
-  assert.match(pages.get("/docs/core-concepts"), /当前实现/);
-  assert.match(pages.get("/en/docs/core-concepts"), /Current behavior/);
+  assert.match(pages.get("/docs/agent-trajectories"), /执行轨迹只投影其中与指定范围有关的因果状态转换/);
+  assert.match(pages.get("/en/docs/agent-trajectories"), /Trajectory projects only the causal state transitions relevant to its selected scope/);
+  assert.doesNotMatch(pages.get("/docs/core-concepts"), /status-badge--current/);
+  assert.doesNotMatch(pages.get("/en/docs/core-concepts"), /status-badge--current/);
   assert.match(pages.get("/docs/core-concepts"), /href="\/en\/docs\/core-concepts"[^>]*class="language-switch"/);
   assert.match(pages.get("/en/docs/core-concepts"), /href="\/docs\/core-concepts"[^>]*class="language-switch"/);
   assert.doesNotMatch(pages.get("/docs/core-concepts"), /docs-toolbar__language/);
   assert.doesNotMatch(pages.get("/en/docs/core-concepts"), /docs-toolbar__language/);
-  assert.match(pages.get("/docs/core-concepts"), /status-badge status-badge--current/);
 });
 
 test("uses the Dashboard electric-cyan palette across the public site", async () => {

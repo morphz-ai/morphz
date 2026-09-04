@@ -6,7 +6,7 @@ order: 130
 status: current
 ---
 
-Morphz does not equate a model request with a task. A Thread owns continuity, an Activation provides one execution opportunity, model Attempts are replaceable, and an Objective supervises work that must converge over time.
+A task may span several model requests. A Thread owns continuity, an Activation provides one execution opportunity, model Attempts are replaceable, and an Objective supervises work that must converge over time.
 
 ## A Thread is a stable causal path
 
@@ -16,13 +16,13 @@ Every Thread records its root request, Agent, Context, Session, Execution Target
 - an **Execution Thread** carries tool work, delegation, or Objective progress;
 - a **Delivery Thread** returns a completed result to a selected Session.
 
-The authoritative Thread lifecycle is only open, completed, failed, or cancelled. Runnable, running, waiting, and idle are scheduler phases derived from dependencies and Activations, not another independently mutable business state. Pause is an orthogonal operator control: a paused Thread remains open and keeps its durable mailbox.
+The authoritative Thread lifecycle contains open, completed, failed, and cancelled. The scheduler derives runnable, running, waiting, and idle execution phases from dependencies and Activations. Pause is a separate operator control: a paused Thread remains open and keeps its durable mailbox.
 
 ## Activations and model Attempts
 
 An Activation is a time-bounded scheduler lease for a Thread. It fixes causal boundaries such as the root Event, trigger Event, Session, Principal, Objective, and Execution Target for one Evaluation.
 
-One Activation may contain several model Attempts. A network retry, Context recovery, or rejected model output may replace an Attempt without changing the owning Thread or root request. Tool Actions also carry Activation and call identities, allowing recovery to replay a result without repeating the physical effect.
+One Activation may contain several model Attempts. A network retry, Context recovery, or rejected model output may replace an Attempt while preserving the owning Thread and root request. Tool Actions also carry Activation and call identities, allowing recovery to replay a result without repeating the physical effect.
 
 When an Activation ends, its Thread may be terminal or waiting on another durable dependency.
 
@@ -34,7 +34,7 @@ A Thread declares who consumes its terminal Outcome when it is created:
 - a `durable` Thread is supervised by an Objective or the Runtime and may continue across Evaluations and restarts;
 - a `disposable` Thread belongs only to its originating Evaluation and cannot join a required long-lived Thread Group.
 
-A child attaches to a parent Thread, not to a short-lived Activation. A durable Execution Thread without valid Objective or Runtime supervision is a lifecycle invariant violation; it cannot remain permanently “runnable” without an owner.
+A child remains attached to its parent Thread across short-lived Activations. Every durable Execution Thread requires valid Objective or Runtime supervision; a missing owner triggers a lifecycle invariant error.
 
 Independent child Threads may join a Thread Group. The Group is a durable supervision barrier: a waiting Thread or Objective wakes only after the member Outcomes satisfy the Group condition.
 
@@ -42,7 +42,13 @@ Independent child Threads may join a Thread Group. The Group is a durable superv
 
 An Objective stores its stated goal, revision, lifecycle, budget, coordinator Session, delivery Session, and current Evaluation lease. Its public lifecycle is active, paused, blocked, completed, cancelled, or failed.
 
-Durable dependencies determine whether an active Objective can run. Current dependency kinds include Thread, Thread Group, tool task, delegation, timer, permission, user input, external Event, and resource availability. When a dependency is satisfied, scheduling continues within the same Objective generation. Explicitly resuming a paused or blocked Objective enters a new executable generation so stale wakes cannot release current work.
+### Objective dependencies
+
+Durable dependencies determine when an active Objective can run. Current dependency kinds include Thread, Thread Group, tool task, delegation, timer, permission, user input, external Event, and resource availability.
+
+### Objective generations
+
+A generation identifies one valid round of Objective progress. Satisfying a dependency resumes work in the same generation; explicitly resuming a paused or blocked Objective opens a new one. A wake must match the current generation, while late signals from an older generation remain historical records.
 
 ## Completion includes delivery
 
@@ -75,4 +81,6 @@ morphz objective list --context=context-default --format=json
 morphz objective show <objective-id> --format=json
 ```
 
-Thread controls are revision-checked. Superseding a Thread terminates the current generation and creates successor work from the corrected intent instead of silently rewriting the root request in place.
+### Thread generations
+
+A Thread generation isolates successive execution intents on the same logical Thread. Thread controls are revision-checked. Superseding a Thread closes the current generation and opens a successor from the corrected intent, while preserving the root request and earlier generation in causal history.

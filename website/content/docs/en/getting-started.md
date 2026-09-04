@@ -6,7 +6,7 @@ order: 10
 status: current
 ---
 
-Morphz ships as a prebuilt native binary with the Dashboard embedded. The first-run path covers installation, model configuration, and a live response check. Once the model response appears, Morphz is ready for work.
+Morphz ships as a prebuilt native binary with the Dashboard embedded. The first-run path covers installation, model configuration, and a live response check.
 
 ## Prerequisites
 
@@ -85,17 +85,17 @@ Or provide a prompt directly:
 morphz inspect this project and explain what you can access
 ```
 
-The first run is complete when a model response appears. If the page shows only user messages, keep the current Session and trace its model request path with [Operations and troubleshooting](/en/docs/operations).
+When the Dashboard displays a model response, the model path is verified and Morphz is ready for work. If the page shows only user messages, keep the current Session and trace its model request path with [Operations and troubleshooting](/en/docs/operations).
 
 ## Build from source
 
-For development, review, or independent reproduction, use the Rust toolchain pinned by `rust-toolchain.toml` from the repository root:
+From the repository root, use the Rust toolchain pinned by `rust-toolchain.toml`:
 
 ```bash
 cargo build --release
 ```
 
-The resulting binary is `target/release/morphz`. The one-command installer above serves ordinary users; this path supports development, review, and independent reproduction.
+The resulting binary is `target/release/morphz`. Source builds support development, review, and independent reproduction; ordinary users can use the one-command installer above.
 
 ## Next steps
 

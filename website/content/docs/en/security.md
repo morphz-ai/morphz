@@ -1,6 +1,6 @@
 ---
 title: Security and permission boundaries
-description: Understand how untrusted model output, Principal identity, secrets, Execution Targets, approval, and audit remain separate.
+description: Understand how untrusted model output, secrets, Execution Targets, approval, and audit remain separate.
 section: operations
 order: 310
 status: current
@@ -8,9 +8,9 @@ status: current
 
 Morphz treats model output, tool results, imported artifacts, and remote data as untrusted candidates. A real-world effect must pass joint Runtime validation of structure, identity, causality, version, Execution Target, and capability boundaries.
 
-## Principal identity
+## Identity boundary
 
-Local default mode attributes requests to the Runtime's default Principal. Trusted Gateway mode allows an independently authenticated Gateway to assert the end-user Principal, but it requires a separate service identity and token.
+See [Principals and authority](/en/docs/principals-and-authority) for the identity model and its relationship to Agents and Sessions. Local default mode attributes requests to the Runtime's default Principal. Trusted Gateway mode allows an independently authenticated Gateway to assert the end-user Principal, but it requires a separate service identity and token.
 
 `MORPHZ_DASHBOARD_TOKEN` proves only that a caller may administer the current Runtime. It is not an end-user identity and must not be reused as the Trusted Gateway service token.
 

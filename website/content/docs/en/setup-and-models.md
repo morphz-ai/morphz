@@ -6,7 +6,7 @@ order: 20
 status: current
 ---
 
-Setup creates a complete request path. It does more than store an API key: a usable configuration needs a provider instance, an auth account, and a model route.
+Setup saves a Provider Instance, auth account, and model Route together to establish a complete request path.
 
 ## Two Setup interfaces
 

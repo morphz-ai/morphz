@@ -1,12 +1,12 @@
 ---
 title: Contexts, cognitive Frames, and Recall
-description: Understand how authoritative Events, current cognition, explicit transactions, and bounded Context projections work together.
+description: Understand how Morphz carries long-term memory through authoritative Events, current cognition, explicit transactions, and bounded Context projections.
 section: concepts
 order: 110
 status: current
 ---
 
-A Cognitive Context is not a prompt, and it does not require sending all historical text to the model on every request. It is durable state owned by the Agent. Context Encoding is the bounded view compiled by the Runtime for one Evaluation.
+A Cognitive Context is durable state owned by the Agent. For each Evaluation, the Runtime compiles a bounded Context Encoding that contains only the history, cognition, and Runtime state needed by that Evaluation.
 
 ## Three state layers
 
@@ -16,7 +16,7 @@ Morphz separates durable state into three layers:
 2. **Mind state** contains cognitive Frames, relations, order, and checkpoints maintained through explicit transactions.
 3. **Context Encoding** projects the Events, cognition, Sessions, and Runtime state needed by the current Evaluation.
 
-ContextDB is the current default cognitive store. It keeps immutable Events and authoritative cognitive and scheduler projections within one transactional boundary. The lexical Recall index is derived and rebuildable; it does not replace Event History or Mind state.
+ContextDB is the current default cognitive store. It keeps immutable Events and authoritative cognitive and scheduler projections within one transactional boundary. Event History and Mind state remain authoritative, while the derived lexical Recall index can be rebuilt at any time.
 
 ## Context Encoding
 
@@ -35,7 +35,7 @@ protocol
 → evaluate
 ```
 
-This is an evaluable structure with explicit ownership, not a document assembled from arbitrary fields:
+Together these regions form an evaluable structure with explicit ownership:
 
 - `inbox` projects immutable Observation content in Event-sequence order;
 - `observation-state` contains mutable projection attributes such as protection, residency, freshness, and usage;
@@ -79,15 +79,15 @@ The current operations are:
 
 The Mind version is a global physical commit sequence, but conflict detection tracks finer semantic boundaries: Frame content, lifecycle target, an exact relation edge, Frame order, and checkpoint identity.
 
-When concurrent transactions touch independent boundaries, the Runtime can safely rebase the older transaction onto the latest version. If an exact boundary it read or wrote has changed, the commit is rejected and the Agent must reread and perform a semantic merge. Checkpoint rollback and Session-attention operations always require an exact version and are never rebased.
+When concurrent transactions touch independent boundaries, the Runtime can safely rebase the older transaction onto the latest version. If an exact boundary it read or wrote has changed, the commit is rejected and the Agent must reread and perform a semantic merge. Checkpoint rollback and Session-attention operations always require an exact version and skip automatic rebasing.
 
 ## Retirement is not invalidation or deletion
 
 Retirement means moving content out of the active Encoding. It does not assert that a fact is false, that cognition is invalid, or that data should be deleted.
 
 - retiring an Observation releases its active Encoding immediately;
-- retiring an ordinary Frame first enters a cognitive-clock organizing window, during which it remains visible and releases no immediate capacity;
-- a Frame with a safe successor and an explicit replacement relation may leave the active state in the same transaction;
+- retiring an ordinary Frame first enters an organizing window, during which it remains visible and continues to occupy capacity. Its cognitive clock advances when a new user message, external Event, or real tool result enters the Context;
+- when a successor Frame both cites the old Frame as a source and declares a `supersedes` relation, the old Frame may leave the active state in the same transaction;
 - protected content must be explicitly unprotected first;
 - the undelivered root request of the current Activation is causally protected from early retirement.
 
@@ -102,7 +102,7 @@ Recall provides three principal access paths:
 3. traversal from a cognitive Frame through source and relation edges in either direction.
 
 ```bash
-morphz context recall search sandbox permission --limit=20 --format=json
+morphz context recall search "sandbox permission" --limit=20 --format=json
 
 morphz context recall search \
   --since=2026-08-04T09:00:00+08:00 \
@@ -113,7 +113,7 @@ morphz context recall frame memory/sandbox \
   --depth=2 --direction=ancestors --include-events --format=json
 ```
 
-`since` is inclusive and `until` is exclusive. Time values require an explicit offset. When a continuation cursor is returned, pass it back unchanged. Paging reads the same authoritative evidence; it does not rerun the original tool.
+`since` is inclusive and `until` is exclusive. Time values require an explicit offset. When a continuation cursor is returned, pass it back unchanged. Paging continues through the same authoritative evidence set.
 
 Recall results first arrive as new Observations in the Inbox. Promoting them into current cognition still requires an explicit transaction, so reading historical evidence and asserting current cognition remain separate operations.
 
