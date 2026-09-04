@@ -179,7 +179,7 @@ jobs:
           edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
           tar -tzf "dist/$edge_asset" | grep -Fx morphz-edge
           tar -tzf "dist/$edge_asset" | grep -Fx THIRD_PARTY_LICENSES_RUST.md
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -267,7 +267,7 @@ jobs:
           else
             file "dist/morphz-bundle/morphz" | grep -F '${{ matrix.file_arch }}'
           fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -387,7 +387,7 @@ jobs:
               throw "packaged Windows Edge runtime is missing $_"
             }
           }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: morphz-windows-x86_64
           path: |
