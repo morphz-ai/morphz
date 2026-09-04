@@ -1939,16 +1939,34 @@ impl PlanExecutionCoordinator {
                 })
             };
         }
-        let activation = self
+        let activation = match self
             .store
             .reconcile_plan_evaluation_activation(&plan.id, activation_id)
-            .await?
-            .ok_or_else(|| {
-                format!(
+            .await
+        {
+            Ok(Some(activation)) => activation,
+            Ok(None) => {
+                return Err(format!(
                     "child Activation '{}' referenced by PlanExecution '{}' does not exist",
                     activation_id, plan.id
                 )
-            })?;
+                .into());
+            }
+            Err(error) => {
+                // A second terminal-child consumer can read the same waiting
+                // Plan before the first consumer requeues it. If the Plan has
+                // advanced since our snapshot, the durable result was already
+                // consumed and this replay is successful idempotency, not a
+                // route failure. Preserve real Store or validation failures
+                // while the original revision remains authoritative.
+                if let Some(current) = self.store.get_plan_execution(&plan.id).await? {
+                    if current.revision > plan.revision {
+                        return Ok(PlanResumeReceipt::Existing(current));
+                    }
+                }
+                return Err(error);
+            }
+        };
         validate_terminal_evaluation_route(&plan, &activation)?;
 
         let mut machine: PlanMachine =
