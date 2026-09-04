@@ -8,7 +8,7 @@
 use super::context_db::{
     calculate_subtree_hash, canonicalize_body, AuthorityDomain, ContextAuthority, ContextDbError,
     ContextDbResult, ContextNodeDraft, ContextNodeRecord, ContextOperation, ContextSnapshot,
-    ContextTransaction, CreateContextRequest, SqliteContextDb,
+    ContextTransaction, CreateContextRequest, SqliteContextDb, MAX_TRANSACTION_OPERATIONS,
 };
 use crate::context_ast::{
     decode_context_head, decode_context_value, encode_context_head, encode_context_value,
@@ -578,20 +578,29 @@ impl ContextDbRuntimeAdapter {
             );
             let synchronization_digest =
                 format!("{:x}", Sha256::digest(synchronization_identity.as_bytes()));
-            self.db
-                .apply_transaction_in_transaction(
-                    transaction,
-                    ContextTransaction {
-                        transaction_id: format!("runtime-mind-{synchronization_digest}"),
-                        idempotency_key: format!("runtime-mind-{synchronization_digest}"),
-                        context_id: context_id.to_string(),
-                        base_revision: snapshot.revision,
-                        authority: runtime_authority(),
-                        operations,
-                    },
-                )
-                .await?
-                .root_hash
+            let mut base_revision = snapshot.revision;
+            let mut root_hash = snapshot.root_hash;
+            for (chunk_index, chunk) in operations.chunks(MAX_TRANSACTION_OPERATIONS).enumerate() {
+                let chunk_identity =
+                    format!("runtime-mind-{synchronization_digest}-chunk-{chunk_index}");
+                let receipt = self
+                    .db
+                    .apply_transaction_in_transaction(
+                        transaction,
+                        ContextTransaction {
+                            transaction_id: chunk_identity.clone(),
+                            idempotency_key: chunk_identity,
+                            context_id: context_id.to_string(),
+                            base_revision,
+                            authority: runtime_authority(),
+                            operations: chunk.to_vec(),
+                        },
+                    )
+                    .await?;
+                base_revision = receipt.after_revision;
+                root_hash = receipt.root_hash;
+            }
+            root_hash
         } else {
             snapshot.root_hash
         };

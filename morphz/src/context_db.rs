@@ -19,7 +19,7 @@ use std::time::Duration;
 
 const SCHEMA_VERSION: u32 = 1;
 const MAX_TREE_DEPTH: usize = 128;
-const MAX_TRANSACTION_OPERATIONS: usize = 4_096;
+pub(crate) const MAX_TRANSACTION_OPERATIONS: usize = 4_096;
 const MAX_TRANSACTION_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub type ContextDbResult<T> = Result<T, ContextDbError>;

@@ -39462,6 +39462,85 @@ mod tests {
 
     #[cfg(feature = "context-db")]
     #[tokio::test]
+    async fn cognitive_store_migration_chunks_contexts_larger_than_one_physical_transaction() {
+        use crate::context_store::context_state_commitment;
+        use crate::orchestrator::context::MindState;
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let config = SqliteStorageConfig::default();
+        let context_id = "large-cognitive-store-migration-context";
+        let legacy = SqliteStore::new_with_legacy(path, &config).await.unwrap();
+        legacy
+            .create_test_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "large-cognitive-store-migration-agent".to_string(),
+                title: "Large cognitive Store migration".to_string(),
+            })
+            .await
+            .unwrap();
+        let state = MindState {
+            version: 1,
+            retired: (0..=crate::context_db::MAX_TRANSACTION_OPERATIONS)
+                .map(|index| format!("retired-observation-{index:05}"))
+                .collect(),
+            ..Default::default()
+        };
+        legacy
+            .initialize_context_state(
+                context_id,
+                &state,
+                &context_state_commitment(&state).unwrap(),
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        legacy.pool.close().await;
+        drop(legacy);
+
+        let transition =
+            SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::ContextDb)
+                .await
+                .unwrap();
+        assert_eq!(transition.previous, Some(CognitiveStoreBackend::Legacy));
+        assert_eq!(transition.synchronized, 1);
+
+        let context_db = SqliteStore::new_with_context_db(path, &config)
+            .await
+            .unwrap();
+        assert_eq!(
+            context_db
+                .get_context_state(context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            state
+        );
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_receipts WHERE context_id = ?",
+            )
+            .bind(context_id)
+            .fetch_one(&context_db.pool)
+            .await
+            .unwrap()
+                >= 2,
+            "a Context larger than the physical operation limit must be synchronized in chunks"
+        );
+        context_db.pool.close().await;
+        drop(context_db);
+
+        let repeated =
+            SqliteStore::migrate_cognitive_store(path, &config, CognitiveStoreBackend::ContextDb)
+                .await
+                .unwrap();
+        assert_eq!(repeated.synchronized, 0);
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
     async fn cognitive_store_switch_round_trips_without_hidden_dual_write() {
         use crate::context_store::{
             context_state_commitment, context_state_hash, ContextMutationPlan, ContextStateMutation,
