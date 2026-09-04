@@ -5428,19 +5428,33 @@ mod tests {
             .get_for_activation("activation-directed-interrupt-stale")
             .is_none());
 
-        // Wait for the recorded lease deadline before asking the Timer engine
-        // to claim work. Repeatedly polling around a 120 ms wall-clock edge
-        // makes this contract test sensitive to parallel-runner scheduling.
-        let expires_at = interrupted
+        // Read the final durable lease after all intermediate work. Runtime
+        // has two valid expiry paths: the Timer dispatcher and Objective
+        // reconciliation. The reconciler may revoke the Evaluation and cancel
+        // its now-redundant Timer while this test is sleeping, so the contract
+        // is the final cancellation fence rather than which path wins.
+        let active = store.get_objective(&waiting.id).await.unwrap().unwrap();
+        let expires_at = active
             .evaluation_lease_expires_at
-            .expect("the routed interrupt must have a lease deadline");
+            .expect("the active interrupt must retain a lease deadline");
+        let lease_timer = store
+            .get_runtime_timer(&objective_lease_timer_id(&waiting.id))
+            .await
+            .unwrap()
+            .expect("the active interrupt must retain a lease Timer");
+        assert_eq!(lease_timer.due_at, expires_at);
         if let Ok(remaining) = (expires_at - Utc::now()).to_std() {
             tokio::time::sleep(remaining + std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(
-            timers.dispatch_due_once().await.unwrap(),
-            1,
-            "the due interrupt Evaluation lease Timer must be claimed"
+        let claimed = timers.dispatch_due_once().await.unwrap();
+        let persisted_timer = store
+            .get_runtime_timer(&objective_lease_timer_id(&waiting.id))
+            .await
+            .unwrap()
+            .expect("the interrupt lease Timer history must remain inspectable");
+        assert!(
+            claimed == 1 || persisted_timer.status == crate::memory::RuntimeTimerStatus::Cancelled,
+            "either the Timer dispatcher or Objective reconciliation must own lease expiry"
         );
         assert!(evaluations
             .cancelled_activation("activation-directed-interrupt")
