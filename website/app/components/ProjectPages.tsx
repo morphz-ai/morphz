@@ -59,9 +59,9 @@ const downloadCopy = {
     currentBody: "日常使用可直接安装 GitHub Releases 提供的预编译版本；每个下载文件均附带 SHA-256 校验值。参与开发或需要独立复现时，也可以从源码构建。",
     platformsLabel: "原生平台",
     platforms: [
-      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "原生沙箱与系统钥匙串"],
-      ["Linux", "x86_64", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Bubblewrap 原生隔离"],
-      ["Windows", "x86_64 · Native", "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex\nmorphz setup", "ConPTY 与 Windows 原生沙箱"],
+      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "原生沙箱与系统钥匙串"],
+      ["Linux", "x86_64", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "Bubblewrap 原生隔离"],
+      ["Windows", "x86_64 · Native", "irm https://morphz.ai/install.ps1 | iex\nmorphz setup", "ConPTY 与 Windows 原生沙箱"],
     ],
     afterLabel: "安装之后",
     after: [
@@ -81,9 +81,9 @@ const downloadCopy = {
     currentBody: "For regular use, install a prebuilt binary from GitHub Releases; each download includes a SHA-256 checksum. Build from source when contributing to development or reproducing the project independently.",
     platformsLabel: "Native platforms",
     platforms: [
-      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Native sandbox and system keychain"],
-      ["Linux", "x86_64", "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh\nmorphz setup", "Native Bubblewrap isolation"],
-      ["Windows", "x86_64 · Native", "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex\nmorphz setup", "ConPTY and native Windows sandbox"],
+      ["macOS", "Apple Silicon · Intel", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "Native sandbox and system keychain"],
+      ["Linux", "x86_64", "curl -fsSL https://morphz.ai/install.sh | sh\nmorphz setup", "Native Bubblewrap isolation"],
+      ["Windows", "x86_64 · Native", "irm https://morphz.ai/install.ps1 | iex\nmorphz setup", "ConPTY and native Windows sandbox"],
     ],
     afterLabel: "After installation",
     after: [

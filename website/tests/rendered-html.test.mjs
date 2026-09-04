@@ -47,7 +47,7 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(zh, /href="\/docs\/execution-targets"[^>]*><h3>执行与安全/);
   assert.match(zh, /启动 Morphz。/);
   assert.doesNotMatch(zh, /启动一个 Morphz/);
-  assert.match(zh, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
+  assert.match(zh, /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
   assert.match(zh, /aria-label="选择安装平台"/);
   assert.match(zh, /macOS/);
   assert.match(zh, /Linux/);
@@ -75,7 +75,7 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /Keep talking while the Agent works/);
   assert.match(en, /Execution Targets/);
   assert.match(en, /Run Morphz/);
-  assert.match(en, /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
+  assert.match(en, /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
   assert.match(en, /aria-label="Choose an installation platform"/);
   assert.match(en, /COGNITIVE APPLICATIONS/);
   assert.match(en, /Updated STATE-Bench-derived protocol: Morphz 122\/150, Letta 93\/150, Mem0 96\/150/);
@@ -255,8 +255,8 @@ test("renders the bilingual paper and native distribution pages", async () => {
   assert.match(html[2], /Windows/);
   assert.doesNotMatch(html[2], /独立执行节点客户端/);
   assert.doesNotMatch(html[3], /standalone Execution Target client/);
-  assert.match(html[2], /curl -fsSL https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.sh \| sh/);
-  assert.match(html[2], /irm https:\/\/github\.com\/morphz-ai\/morphz\/releases\/latest\/download\/install\.ps1 \| iex/);
+  assert.match(html[2], /curl -fsSL https:\/\/morphz\.ai\/install\.sh \| sh/);
+  assert.match(html[2], /irm https:\/\/morphz\.ai\/install\.ps1 \| iex/);
   assert.match(html[3], /GitHub Releases/);
 
   for (const filename of [

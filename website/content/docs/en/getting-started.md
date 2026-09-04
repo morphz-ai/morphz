@@ -19,13 +19,13 @@ Morphz ships as a prebuilt native binary with the Dashboard embedded. The first-
 macOS and Linux:
 
 ```bash
-curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
+irm https://morphz.ai/install.ps1 | iex
 ```
 
 The installer detects the current platform, downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs into the user path without requiring root or administrator access. Open a new terminal before continuing with Setup.

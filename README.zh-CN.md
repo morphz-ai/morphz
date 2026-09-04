@@ -43,13 +43,13 @@ Morphz 已经拥有 macOS、Linux 和 Windows 的原生沙箱实现，但 0.1 �
 在 macOS 或 Linux 上安装预编译版本：
 
 ```bash
-curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
+irm https://morphz.ai/install.ps1 | iex
 ```
 
 安装器会选择对应的 GitHub Release 原生制品并校验 SHA-256。打开一个新终端后，配置模型

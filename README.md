@@ -52,13 +52,13 @@ the verified boundary between implemented, validated, experimental, and planned 
 Install a prebuilt release on macOS or Linux:
 
 ```bash
-curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
+irm https://morphz.ai/install.ps1 | iex
 ```
 
 The installers select the native GitHub Release asset and verify its SHA-256 checksum. Open a new

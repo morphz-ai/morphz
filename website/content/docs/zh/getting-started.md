@@ -19,13 +19,13 @@ Morphz 以预编译的原生二进制交付，控制台嵌入在主程序中。�
 macOS 与 Linux：
 
 ```bash
-curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh
+curl -fsSL https://morphz.ai/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex
+irm https://morphz.ai/install.ps1 | iex
 ```
 
 安装器识别当前平台，从 GitHub Releases 下载对应归档并校验 SHA-256，然后安装到用户目录，不要求 root 或管理员权限。打开一个新终端后继续设置。

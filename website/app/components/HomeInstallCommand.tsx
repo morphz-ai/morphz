@@ -9,15 +9,15 @@ type Platform = "macos" | "linux" | "windows";
 const platforms = {
   macos: {
     label: "macOS",
-    command: "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh",
+    command: "curl -fsSL https://morphz.ai/install.sh | sh",
   },
   linux: {
     label: "Linux",
-    command: "curl -fsSL https://github.com/morphz-ai/morphz/releases/latest/download/install.sh | sh",
+    command: "curl -fsSL https://morphz.ai/install.sh | sh",
   },
   windows: {
     label: "Windows",
-    command: "irm https://github.com/morphz-ai/morphz/releases/latest/download/install.ps1 | iex",
+    command: "irm https://morphz.ai/install.ps1 | iex",
   },
 } as const;
 
