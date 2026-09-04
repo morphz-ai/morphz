@@ -38,7 +38,7 @@ impl PlanInferClient {
                     }],
                 },
                 Response {
-                    content: "handoff-complete".to_string(),
+                    content: r#""handoff-complete""#.to_string(),
                     tool_calls: Vec::new(),
                 },
                 Response {
@@ -77,11 +77,11 @@ impl PlanInferClient {
                     ],
                 },
                 Response {
-                    content: "first-child-value".to_string(),
+                    content: r#""first-child-value""#.to_string(),
                     tool_calls: Vec::new(),
                 },
                 Response {
-                    content: "second-child-value".to_string(),
+                    content: r#""second-child-value""#.to_string(),
                     tool_calls: Vec::new(),
                 },
                 Response {
@@ -123,7 +123,7 @@ impl PlanInferClient {
                     }],
                 },
                 Response {
-                    content: "child-tool-finished".to_string(),
+                    content: r#""child-tool-finished""#.to_string(),
                     tool_calls: Vec::new(),
                 },
                 Response {
