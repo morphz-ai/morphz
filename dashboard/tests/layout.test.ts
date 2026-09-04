@@ -97,7 +97,7 @@ test('all Objective steering entry points use a visible, compact shared button',
   assert.match(button, /onClick=\{onClick\}/)
   assert.match(button, /aria-hidden="true"/)
   const style = appCss.match(/button\.objective-steering-button\s*\{([^}]*)\}/)?.[1] ?? ''
-  assert.match(style, /font-size:\s*10px/)
+  assert.match(style, /font-size:\s*9px/)
   assert.match(style, /font-weight:\s*600/)
   assert.doesNotMatch(style, /var\(--sans\)/)
   assert.match(style, /min-height:\s*24px/)
