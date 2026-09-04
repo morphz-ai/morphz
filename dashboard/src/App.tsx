@@ -6524,6 +6524,39 @@ export default function App() {
     setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, comment } : q))
   }, [])
 
+  // Every durable message surface must render the same quote editor. Selection
+  // is shared across lanes, including assistant-call text and task results.
+  const renderMessageQuoteComments = (eventId: string) => quotes.map((quote, index) => (
+    quote.eventId === eventId ? (
+      <span key={quote.id}>
+        <button
+          className={`message-quote-badge ${inlineCommentQuoteId === quote.id ? 'active' : ''}`}
+          type="button"
+          style={{ position: 'absolute', top: quote.badgeTop, left: quote.badgeLeft, zIndex: 10 }}
+          title={quote.comment.trim() || t('conversation.commentPlaceholder')}
+          onClick={() => setInlineCommentQuoteId(current => current === quote.id ? '' : quote.id)}
+        >
+          {index + 1}
+        </button>
+        {inlineCommentQuoteId === quote.id && (
+          // Anchor to the message row so the editor stays inside either lane.
+          <span className="inline-comment-box" style={{ top: quote.badgeTop + 22 }}>
+            <textarea
+              className="inline-comment-input"
+              placeholder={t('conversation.commentPlaceholder')}
+              rows={2}
+              value={quote.comment}
+              onChange={event => updateQuoteComment(quote.id, event.target.value)}
+              // Blur dismisses the editor but preserves the comment on the quote.
+              onBlur={() => setInlineCommentQuoteId(current => current === quote.id ? '' : current)}
+              autoFocus
+            />
+          </span>
+        )}
+      </span>
+    ) : null
+  ))
+
   const deliverOptimisticMessage = useCallback(async (message: OptimisticMessage): Promise<boolean> => {
     const startedAt = Date.now()
     setOptimisticMessages(current => current.map(item => item.id === message.id
@@ -8412,6 +8445,7 @@ export default function App() {
                           <div className="message-body"><MarkdownBody text={assistantText} /></div>
                         )}
                         <ExecutionToolCalls calls={eventToolCalls} targetLabels={executionTargetLabels} locale={i18n.language} t={t} />
+                        {renderMessageQuoteComments(event.id)}
                         <div className="message-meta execution-output-meta">
                           <time className="message-time" title={new Date(event.timestamp).toLocaleString(i18n.language)}>
                             {formatTime(event.timestamp, i18n.language)}
@@ -8515,40 +8549,7 @@ export default function App() {
                           ))}
                         </div>
                       )}
-                      {quotes.map((q, qi) => q.eventId === event.id ? (
-                            <span key={q.id}>
-                              <button
-                                className={`message-quote-badge ${inlineCommentQuoteId === q.id ? 'active' : ''}`}
-                                type="button"
-                                style={{ position: 'absolute', top: q.badgeTop, left: q.badgeLeft, zIndex: 10 }}
-                                title={q.comment.trim() ? q.comment.trim() : t('conversation.commentPlaceholder')}
-                                onClick={() => setInlineCommentQuoteId(inlineCommentQuoteId === q.id ? '' : q.id)}
-                              >
-                                {qi + 1}
-                              </button>
-                              {inlineCommentQuoteId === q.id && (
-                                // Positioned against the message row rather than
-                                // the badge, so the box cannot reach past the
-                                // column on either side and be clipped.
-                                <span className="inline-comment-box" style={{ top: q.badgeTop + 22 }}>
-                                  <textarea
-                                    className="inline-comment-input"
-                                    placeholder={t('conversation.commentPlaceholder')}
-                                    rows={2}
-                                    value={q.comment}
-                                    onChange={e => updateQuoteComment(q.id, e.target.value)}
-                                    // Collapsing on blur keeps what was typed:
-                                    // the text lives on the quote, and the
-                                    // badge carries a dot once it is non-empty.
-                                    onBlur={() => setInlineCommentQuoteId(current => (
-                                      current === q.id ? '' : current
-                                    ))}
-                                    autoFocus
-                                  />
-                                </span>
-                              )}
-                            </span>
-                      ) : null)}
+                      {renderMessageQuoteComments(event.id)}
                       {!showRole && (
                         <div className="message-meta">
                           <time className="message-time">{formatTime(event.timestamp, i18n.language)}</time>
@@ -8736,6 +8737,7 @@ export default function App() {
                                 <div className="message-body"><MarkdownBody text={assistantText} /></div>
                               )}
                               <ExecutionToolCalls calls={eventToolCalls} targetLabels={executionTargetLabels} locale={i18n.language} t={t} />
+                              {renderMessageQuoteComments(event.id)}
                               <div className="message-meta execution-output-meta">
                                 <time className="message-time" title={new Date(event.timestamp).toLocaleString(i18n.language)}>
                                   {formatTime(event.timestamp, i18n.language)}
@@ -8750,6 +8752,7 @@ export default function App() {
                         const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                         return (
                           <article className={`message-row background execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                            {renderMessageQuoteComments(event.id)}
                             <div className="message-role">
                               <strong>{t('conversation.roleDelivery')}</strong>
                               <time>{formatTime(event.timestamp, i18n.language)}</time>
