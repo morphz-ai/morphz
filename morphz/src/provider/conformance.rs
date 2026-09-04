@@ -1129,6 +1129,148 @@ fn gemini_replays_native_thought_signature_with_the_exact_function_call_part() {
 }
 
 #[test]
+fn antigravity_normalizes_native_function_response_role_and_parallel_order() {
+    let continuation = ProviderContinuation::GeminiContent {
+        function_calls: vec![
+            GeminiFunctionCallContinuation {
+                tool_call_id: "runtime-a".to_string(),
+                function_call: json!({"id":"native-a","name":"lookup","args":{"id":1}}),
+                thought_signature: Some("opaque-native-signature".to_string()),
+            },
+            GeminiFunctionCallContinuation {
+                tool_call_id: "runtime-b".to_string(),
+                function_call: json!({"id":"native-b","name":"lookup","args":{"id":2}}),
+                thought_signature: None,
+            },
+        ],
+    };
+    let assistant = Message {
+        role: "assistant".to_string(),
+        content: String::new(),
+        name: None,
+        tool_call_id: None,
+        tool_calls: Some(vec![
+            ToolCall {
+                id: "runtime-a".to_string(),
+                r#type: "function".to_string(),
+                function: FunctionCall {
+                    name: "lookup".to_string(),
+                    arguments: json!({"id":1}).to_string(),
+                },
+            },
+            ToolCall {
+                id: "runtime-b".to_string(),
+                r#type: "function".to_string(),
+                function: FunctionCall {
+                    name: "lookup".to_string(),
+                    arguments: json!({"id":2}).to_string(),
+                },
+            },
+        ]),
+    };
+    let tool_result = |runtime_id: &str, native_id: i32| Message {
+        role: "tool".to_string(),
+        content: json!({"value":native_id}).to_string(),
+        name: Some("lookup".to_string()),
+        tool_call_id: Some(runtime_id.to_string()),
+        tool_calls: None,
+    };
+    let messages = vec![
+        Message {
+            role: "user".to_string(),
+            content: "look up both".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        },
+        provider_continuation_message(continuation).unwrap(),
+        assistant,
+        // Execution may finish parallel calls out of order. The Provider wire
+        // contract still follows the original functionCall order.
+        tool_result("runtime-b", 2),
+        tool_result("runtime-a", 1),
+    ];
+    let provider = ProviderConfig {
+        protocol: ModelProtocol::GeminiContent,
+        base_url: "https://provider.invalid".to_string(),
+        ..ProviderConfig::default()
+    };
+    let antigravity = ProtocolClient::new_with_adapter(
+        &provider,
+        "google-antigravity",
+        "gemini-test".to_string(),
+        None,
+        &LlmConfig::default(),
+    )
+    .unwrap();
+    let public = ProtocolClient::new(
+        &provider,
+        "gemini-test".to_string(),
+        None,
+        &LlmConfig::default(),
+    )
+    .unwrap();
+
+    let antigravity_request = antigravity.request_for_model("gemini-test", &messages, &[]);
+    let native_contents = antigravity_request["request"]["contents"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        native_contents[1]["parts"][0]["thoughtSignature"],
+        "opaque-native-signature"
+    );
+    assert_eq!(native_contents[2]["role"], "model");
+    assert_eq!(
+        native_contents[2]["parts"][0]["functionResponse"]["id"],
+        "native-a"
+    );
+    assert_eq!(
+        native_contents[2]["parts"][1]["functionResponse"]["id"],
+        "native-b"
+    );
+
+    let public_request = public.request_for_model("gemini-test", &messages, &[]);
+    assert_eq!(public_request["contents"][2]["role"], "user");
+    assert_eq!(
+        public_request["contents"][2]["parts"][0]["functionResponse"]["id"],
+        "native-a"
+    );
+    assert_eq!(
+        public_request["contents"][2]["parts"][1]["functionResponse"]["id"],
+        "native-b"
+    );
+}
+
+#[test]
+fn antigravity_compacted_gemini_history_starts_with_a_user_turn() {
+    let provider = ProviderConfig {
+        protocol: ModelProtocol::GeminiContent,
+        base_url: "https://provider.invalid".to_string(),
+        ..ProviderConfig::default()
+    };
+    let antigravity = ProtocolClient::new_with_adapter(
+        &provider,
+        "google-antigravity",
+        "gemini-test".to_string(),
+        None,
+        &LlmConfig::default(),
+    )
+    .unwrap();
+    let messages = vec![Message {
+        role: "assistant".to_string(),
+        content: "retained model history".to_string(),
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    }];
+
+    let request = antigravity.request_for_model("gemini-test", &messages, &[]);
+    assert_eq!(request["request"]["contents"][0]["role"], "user");
+    assert_eq!(request["request"]["contents"][0]["parts"][0]["text"], "");
+    assert_eq!(request["request"]["contents"][1]["role"], "model");
+}
+
+#[test]
 fn gemini_never_attaches_a_signature_to_a_modified_function_call() {
     let messages = vec![
         provider_continuation_message(ProviderContinuation::GeminiContent {

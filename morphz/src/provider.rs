@@ -1689,6 +1689,11 @@ impl ProtocolClient {
             } else {
                 gemini_schema::GeminiToolSchemaDialect::PublicApi
             };
+            let request = normalize_gemini_function_history(
+                request,
+                self.adapter == "google-antigravity"
+                    && model.to_ascii_lowercase().contains("gemini"),
+            );
             gemini_schema::project_request_tool_schemas(request, dialect)
         } else {
             request
@@ -2305,6 +2310,124 @@ impl ProtocolClient {
             .map(|model| model.id)
             .collect())
     }
+}
+
+#[derive(Debug, Clone)]
+struct GeminiFunctionRef {
+    id: Option<String>,
+    name: String,
+}
+
+fn gemini_function_ref(part: &Value, field: &str) -> Option<GeminiFunctionRef> {
+    gemini_function_object_ref(part.get(field)?)
+}
+
+fn gemini_function_object_ref(function: &Value) -> Option<GeminiFunctionRef> {
+    let function = function.as_object()?;
+    let name = function.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(GeminiFunctionRef {
+        id: function
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
+        name: name.to_string(),
+    })
+}
+
+fn gemini_call_matches_response(call: &GeminiFunctionRef, response: &Value) -> bool {
+    let Some(response) = gemini_function_ref(response, "functionResponse") else {
+        return false;
+    };
+    match call.id.as_deref() {
+        Some(id) => response.id.as_deref() == Some(id),
+        None => response.name == call.name,
+    }
+}
+
+/// Keep each Gemini function response group in the Provider-authored call
+/// order. Antigravity consumes Gemini-shaped JSON but adds two endpoint-local
+/// rules: its native client sends a pure response turn with `role=model` and
+/// requires a leading user turn when compacted history starts with model
+/// content. Public Gemini keeps the standard `role=user` response turn.
+fn normalize_gemini_function_history(mut request: Value, antigravity: bool) -> Value {
+    let Some(contents) = request.get_mut("contents").and_then(Value::as_array_mut) else {
+        return request;
+    };
+    if antigravity
+        && contents
+            .first()
+            .and_then(|content| content.get("role"))
+            .and_then(Value::as_str)
+            == Some("model")
+    {
+        contents.insert(0, json!({"role": "user", "parts": [{"text": ""}]}));
+    }
+
+    let mut pending_calls = Vec::<GeminiFunctionRef>::new();
+    for content in contents {
+        let Some(parts) = content.get_mut("parts").and_then(Value::as_array_mut) else {
+            pending_calls.clear();
+            continue;
+        };
+        let calls = parts
+            .iter()
+            .filter_map(|part| gemini_function_ref(part, "functionCall"))
+            .collect::<Vec<_>>();
+        let response_count = parts
+            .iter()
+            .filter(|part| part.get("functionResponse").is_some())
+            .count();
+        let has_other_parts = parts.iter().any(|part| {
+            part.get("functionCall").is_none() && part.get("functionResponse").is_none()
+        });
+
+        if !calls.is_empty() {
+            pending_calls = if response_count == 0 {
+                calls
+            } else {
+                Vec::new()
+            };
+            continue;
+        }
+        if response_count == 0 {
+            if has_other_parts {
+                pending_calls.clear();
+            }
+            continue;
+        }
+
+        let old_parts = std::mem::take(parts);
+        let (mut responses, other_parts): (Vec<_>, Vec<_>) = old_parts
+            .into_iter()
+            .partition(|part| part.get("functionResponse").is_some());
+        if !pending_calls.is_empty() {
+            let mut ordered = Vec::with_capacity(responses.len() + other_parts.len());
+            for call in &pending_calls {
+                if let Some(index) = responses
+                    .iter()
+                    .position(|response| gemini_call_matches_response(call, response))
+                {
+                    ordered.push(responses.remove(index));
+                }
+            }
+            ordered.append(&mut responses);
+            ordered.extend(other_parts);
+            *parts = ordered;
+        } else {
+            responses.extend(other_parts);
+            *parts = responses;
+        }
+        pending_calls.clear();
+        if antigravity && !has_other_parts {
+            content["role"] = json!("model");
+        }
+    }
+    request
 }
 
 pub async fn list_provider_models(
@@ -4471,7 +4594,7 @@ fn build_gemini_request(
         .join("\n\n");
     let mut contents: Vec<Value> = Vec::new();
     let mut pending_continuation = None;
-    let mut idless_tool_call_ids = HashSet::new();
+    let mut pending_function_responses = HashMap::<String, GeminiFunctionRef>::new();
     for message in messages {
         if let Some(continuation) = provider_continuation(message) {
             pending_continuation = match continuation {
@@ -4528,14 +4651,22 @@ fn build_gemini_request(
         let (role, mut parts) = if message.role == "tool" {
             let response = serde_json::from_str::<Value>(&message.content)
                 .unwrap_or_else(|_| json!({"output": message.content}));
+            let runtime_call_id = message.tool_call_id.as_deref().filter(|id| !id.is_empty());
+            let native_call = runtime_call_id.and_then(|id| pending_function_responses.remove(id));
             let mut function_response = json!({
-                "name": message.name.as_deref().unwrap_or("tool"),
+                "name": native_call
+                    .as_ref()
+                    .map(|call| call.name.as_str())
+                    .or(message.name.as_deref())
+                    .unwrap_or("tool"),
                 "response": response,
             });
-            if let Some(id) = message.tool_call_id.as_deref().filter(|id| !id.is_empty()) {
-                if !idless_tool_call_ids.remove(id) {
-                    function_response["id"] = json!(id);
-                }
+            let response_id = match native_call.as_ref() {
+                Some(call) => call.id.as_deref(),
+                None => runtime_call_id,
+            };
+            if let Some(id) = response_id {
+                function_response["id"] = json!(id);
             }
             ("user", vec![json!({"functionResponse": function_response})])
         } else {
@@ -4549,7 +4680,7 @@ fn build_gemini_request(
                 parts.push(json!({"text": message.content}));
             }
             if message.role == "assistant" {
-                idless_tool_call_ids.clear();
+                pending_function_responses.clear();
             }
             let mut continuation_calls = pending_continuation.take().unwrap_or_default();
             for call in message.tool_calls.as_deref().unwrap_or_default() {
@@ -4566,13 +4697,10 @@ fn build_gemini_request(
                 });
                 if let Some(index) = signed_call_index {
                     let signed_call = continuation_calls.remove(index);
-                    if signed_call
-                        .function_call
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .is_none()
+                    if let Some(function_ref) =
+                        gemini_function_object_ref(&signed_call.function_call)
                     {
-                        idless_tool_call_ids.insert(call.id.clone());
+                        pending_function_responses.insert(call.id.clone(), function_ref);
                     }
                     let mut part = json!({"functionCall": signed_call.function_call});
                     if let Some(signature) = signed_call.thought_signature {
@@ -4583,6 +4711,9 @@ fn build_gemini_request(
                     let mut function_call = json!({"name": call.function.name, "args": args});
                     if !call.id.is_empty() {
                         function_call["id"] = json!(call.id);
+                    }
+                    if let Some(function_ref) = gemini_function_object_ref(&function_call) {
+                        pending_function_responses.insert(call.id.clone(), function_ref);
                     }
                     parts.push(json!({"functionCall": function_call}));
                 }
