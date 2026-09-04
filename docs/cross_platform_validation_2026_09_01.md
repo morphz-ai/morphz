@@ -6,9 +6,9 @@ The product source baseline is `e110f651` (`test(platform): make process lifecyc
 
 | Platform | Validation host | Architecture and toolchain | Complete library result | Attempt-loop result |
 | --- | --- | --- | --- | --- |
-| macOS 26.5.1 | `mbp-m4pro.local` | Apple Silicon (`arm64`), Rust 1.97.1 | 1,099 passed, 0 failed, 6 ignored | 76 passed, 0 failed |
-| Ubuntu 26.04 | `ubuntu.local` | ARM64, 4 GiB VM, Rust 1.97.1 | 1,087 passed, 0 failed, 6 ignored | 76 passed, 0 failed |
-| Windows build 10.0.26200.7628 | `hell.local` | x86_64, 32 GiB, Rust 1.92.0 MSVC | 1,081 passed, 0 failed, 6 ignored | 76 passed, 0 failed |
+| macOS 26.5.1 | Local macOS host | Apple Silicon (`arm64`), Rust 1.97.1 | 1,099 passed, 0 failed, 6 ignored | 76 passed, 0 failed |
+| Ubuntu 26.04 | Local Ubuntu VM | ARM64, 4 GiB VM, Rust 1.97.1 | 1,087 passed, 0 failed, 6 ignored | 76 passed, 0 failed |
+| Windows build 10.0.26200.7628 | Local Windows host | x86_64, 32 GiB, Rust 1.92.0 MSVC | 1,081 passed, 0 failed, 6 ignored | 76 passed, 0 failed |
 
 The differing library totals are expected: each host compiles its native `cfg`-gated Sandbox, process, credential-store, and terminal implementations.
 

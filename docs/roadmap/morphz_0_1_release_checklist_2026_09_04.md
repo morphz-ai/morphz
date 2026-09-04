@@ -26,9 +26,9 @@
 - [x] 添加 `SECURITY.md`，公布支持版本与私密漏洞报告方式。
 - [x] 补齐 GitHub About 描述、官网地址与项目主题标签。
 - [x] 删除遗留的本机 Gemini 代理指令和过时模型知识库，公开入口不再包含开发机地址、掩码凭据或 AI 自我指令。
-- [ ] 检查 README、GitHub About、仓库主页和所有公开链接。
+- [x] 检查 README、GitHub About、仓库主页和所有公开链接。
 - [x] 将仓库切换为 Public。
-- [ ] 从公开仓库重新核对 README、GitHub About、仓库主页和全部入口链接。
+- [x] 从公开仓库重新核对 README、GitHub About、仓库主页和全部入口链接。
 
 ## 三、预编译安装与 GitHub Release
 
@@ -39,7 +39,7 @@
 - [x] Release workflow 对每个平台的最终归档执行解包、组件检查和原生可执行 smoke；发布已存在的同名 Release 时失败，不覆盖资产。
 - [x] 安装器提供五阶段进度、Shell PATH 持久化、无终端 Setup 防挂起、Linux Bubblewrap 预检和 macOS 版本预检。
 - [x] 修复 `--no-open` 已声明却未进入运行时开关表的问题。
-- [ ] 在 Private 仓库创建 `v0.1.0` 标签并等待 Release workflow 成功。
+- [ ] 在最终发布候选 commit 创建 `v0.1.0` 标签并等待 Release workflow 成功。
 - [ ] 核对 Release 中的平台归档、安装脚本与校验文件齐全。
 - [ ] 在干净环境分别验证 macOS、Linux 与 Windows 安装路径；无法本机覆盖的平台以原生 CI 加安装器契约测试作为发布门禁并明确记录。
 - [ ] 验证 `morphz setup`、模型连接、真实响应与 `morphz update status`。
@@ -64,12 +64,13 @@
 - [x] 文档已清理内部口吻、自我对话口吻和过量防守式否定句。
 - [x] robots、sitemap、canonical、语言 alternate 与语义化 404 已生成。
 - [x] 运行网站完整测试与 lint：构建及 28 项测试通过，lint 通过。
-- [x] 部署 `morphz-website` Cloudflare Worker（当前版本 `890b5753-0f1c-48fd-aeb5-97ba8405cb54`）。
+- [x] 部署 `morphz-website` Cloudflare Worker（当前版本 `66ff4d95-e07c-4201-becd-bf06b7a401de`）。
 - [x] 将 `morphz.ai` 和 `www.morphz.ai` 绑定到生产 Worker；Cloudflare 公共解析已经生效。
 - [x] 修复 vinext 生产分包缺陷；保留 `next/link` 客户端切页，并在线验证文章、论文、规范、文档、下载及文档当前页语言切换。
 - [x] 完整验证 DNS、TLS、首页、中英文页面、PDF、安装脚本、404 与移动端访问；本机终端仍有旧 DNS 缓存，但公共浏览器与 Cloudflare 边缘路径均正常。
 - [x] 在 `website/README.md` 记录 Worker 部署、版本查询与回滚命令。
 - [x] 实际回退到上一可用版本并恢复当前版本，确认自定义域名与页面访问均正常。
+- [x] 重新部署公开仓库版本，并逐字节核对线上 `install.sh`、`install.ps1` 与仓库安装器一致。
 
 ## 六、首发演示与传播材料
 
@@ -78,8 +79,8 @@
 - [x] 将演示放入首页第二屏，并在中英文 README 使用封面链接到对应语言首页。
 - [x] 冻结视频与封面哈希：MP4 `f8d1e18446d1bed2d0e5254b32010e9d33e535b8754c65904ff6b7f1f8902b42`；封面 `beca2d7b4e129f8b1fbf4ce0b30ffb79abdedd676b8f1c47c4c118b04e97d413`。
 - [x] 0.1 首发不再额外制作 3–5 分钟实机长片；真实 Dashboard 教程留给发布后独立制作。
-- [ ] 准备中文首发文案、英文首发文案、标题、封面与可复制的核心主张。
-- [ ] 所有对 GPT-6 Astra 的表述以可核实事实为准；传播重点放在“上下文长度不等于状态模型”。
+- [x] 准备[中文与英文首发文案](./morphz_0_1_launch_copy_2026_09_05.md)、标题、封面与可复制的核心主张。
+- [x] 首发文案不引用 GPT-6 产品传闻或竞品内部实现；传播重点放在 Morphz 已公开、可验证的机制。
 
 ## 七、9 月 5 日公开动作
 
