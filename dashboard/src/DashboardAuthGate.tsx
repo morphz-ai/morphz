@@ -107,7 +107,6 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       <section className="dashboard-auth-frame">
         <header className="dashboard-auth-header">
           <span className="dashboard-auth-brand">
-            <i className="brand-mark">◆</i>
             <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
           </span>
           <span className="dashboard-auth-actions">

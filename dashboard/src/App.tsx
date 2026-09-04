@@ -7578,7 +7578,6 @@ export default function App() {
             title={`${t('header.machineTagline')} · ${t('header.agentLabel', { title: selectedAgent?.title ?? (selectedAgentId || 'default') })}`}
             onClick={() => navigate('/')}
           >
-            <span className="brand-mark">◆</span>
             <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
           </button>
 

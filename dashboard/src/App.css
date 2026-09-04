@@ -615,7 +615,6 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 }
 
 .brand { justify-self: start; gap: 10px; padding: 6px 0; text-align: left; }
-.brand-mark { color: var(--accent); font-size: 16px; filter: drop-shadow(0 0 8px var(--accent-glow)); }
 .brand > span:last-child { min-width: 0; align-items: flex-start; flex-direction: column; gap: 2px; }
 .brand strong { color: var(--accent-strong); font-size: 17px; letter-spacing: .01em; }
 .brand small { max-width: 100%; overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
@@ -894,7 +893,6 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
   align-items: center;
   gap: 10px;
 }
-.dashboard-auth-brand > i { flex: 0 0 auto; font-style: normal; }
 .dashboard-auth-brand > span { display: grid; min-width: 0; gap: 2px; }
 .dashboard-auth-brand strong { color: var(--accent-strong); font-size: 17px; letter-spacing: .01em; }
 .dashboard-auth-brand small { overflow: hidden; color: var(--muted); font: 9px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
@@ -4041,7 +4039,6 @@ button.message-attachment-chip:hover, button.message-attachment-chip:focus-visib
   .morphz-shell.is-immersive .dialogue-activity-restore { top: calc(66px + var(--morphz-safe-top)); }
   .conversation-layout-switch button { padding-inline: 7px; }
   .conversation-layout-switch button span { display: none; }
-  .brand-mark { display: none; }
   .brand strong { font-size: 13px; }
   .runtime-navigation button { padding-inline: 10px; }
   .runtime-navigation button span { display: none; }
