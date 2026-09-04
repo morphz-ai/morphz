@@ -11,9 +11,10 @@
 - [x] Provider 与 Runtime 修改已经完成并独立提交；发布环境整改单独收口。
 - [x] 冻结唯一发布候选；以本清单所在的 `HEAD` 和最终 `v0.1.0` 标签指向作为权威 commit SHA。
 - [x] 确认发布程序与主站版本为 `0.1.0`，发布标签为 `v0.1.0`。
-- [x] 从发布候选工作树运行完整格式、Clippy、Rust 测试、Dashboard 与网站门禁：Rust 库 1239 项、CLI 30 项、attempt-loop 76 项和网站 28 项全部通过，6 项外部网络或人工快照测试按声明忽略。
+- [x] 从发布候选工作树运行完整格式、Clippy、Rust 测试、Dashboard 与网站门禁：Rust 核心库 1241 项、CLI 30 项、attempt-loop 76 项、Dashboard 199 项和网站 28 项全部通过，6 项外部网络或人工快照测试按声明忽略。
 - [x] 完成发布依赖审计：Dashboard 与网站的完整 npm 依赖树均为 0 个已知漏洞；Rust 为 0 个可达安全公告，并由 CI 与 Release workflow 持续门禁。
-- [ ] 推送发布候选提交，并确认该 SHA 的 GitHub Actions 全部通过。
+- [x] 将发布候选 `79d82b63a54b5bf4a3cda866ccb21ef156b7a0fe` 推送到 `origin/main`。
+- [ ] 确认该 SHA 的 GitHub Actions 全部通过；当前 Private 仓库的 Free 组织因 Actions 账单/用量限制拒绝启动新 job，仓库公开后立即重跑。
 
 ## 二、公开源码与仓库入口
 
@@ -26,7 +27,7 @@
 - [x] 补齐 GitHub About 描述、官网地址与项目主题标签。
 - [x] 删除遗留的本机 Gemini 代理指令和过时模型知识库，公开入口不再包含开发机地址、掩码凭据或 AI 自我指令。
 - [ ] 检查 README、GitHub About、仓库主页和所有公开链接。
-- [ ] 发布前确认仓库保持 Private；发布动作中再切换为 Public。
+- [ ] 将仓库切换为 Public，并从公开仓库重新核对 README、GitHub About、仓库主页和全部入口链接。
 
 ## 三、预编译安装与 GitHub Release
 
@@ -81,7 +82,8 @@
 
 ## 七、9 月 5 日公开动作
 
-- [ ] 将 GitHub 仓库切换为 Public。
+- [ ] 将 GitHub 仓库切换为 Public；这是完整 CI、Release dry run 和正式标签之前的前置动作。
+- [ ] 在公开仓库上重跑 `79d82b63` 的完整 CI 和 Release dry run，确认所有平台 job 成功且 dry run 不创建 Release。
 - [ ] 立即从公开地址执行一次全新安装与真实响应 smoke test。
 - [ ] 确认 `https://morphz.ai`、GitHub Release、论文和规范入口全部可访问。
 - [ ] 发布中文与英文首发内容。
@@ -89,8 +91,8 @@
 
 ## 当前硬阻塞（随进度删除）
 
-1. 发布候选尚未冻结并推送，当前提交尚无对应的远端 CI 结果。
-2. `v0.1.0` Release 尚未生成和进行公开安装验证。
+1. 仓库仍为 Private；GitHub 已明确拒绝为最新提交启动任何 Actions job，原始提示为账户付款失败或 spending limit 不足。切换为 Public 后需立即重跑完整 CI 与 Release dry run。
+2. `v0.1.0` Release 尚未生成和进行公开安装验证；必须等公开仓库的 CI 与 dry run 通过后再打标签。
 
 ## 已知发布边界
 
