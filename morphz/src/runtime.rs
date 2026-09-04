@@ -12682,6 +12682,97 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
+    fn contains_projected_schema_keyword(
+        value: &serde_json::Value,
+        keyword: &str,
+        in_properties: bool,
+    ) -> bool {
+        match value {
+            serde_json::Value::Array(values) => values
+                .iter()
+                .any(|value| contains_projected_schema_keyword(value, keyword, false)),
+            serde_json::Value::Object(object) => object.iter().any(|(key, value)| {
+                (!in_properties && key == keyword)
+                    || contains_projected_schema_keyword(value, keyword, key == "properties")
+            }),
+            _ => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn every_production_tool_schema_projects_to_gemini_and_antigravity() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let definitions = runtime.inner.registry.definitions();
+        let canonical = serde_json::json!({
+            "tools": [{
+                "functionDeclarations": definitions.iter().map(|definition| serde_json::json!({
+                    "name": definition.name,
+                    "description": definition.description,
+                    "parametersJsonSchema": definition.parameters,
+                })).collect::<Vec<_>>()
+            }]
+        });
+
+        for (dialect, schema_key, unsupported) in [
+            (
+                crate::provider::gemini_schema::GeminiToolSchemaDialect::PublicApi,
+                "parametersJsonSchema",
+                &["const", "oneOf", "anyOf", "allOf", "$ref", "$defs"][..],
+            ),
+            (
+                crate::provider::gemini_schema::GeminiToolSchemaDialect::Antigravity,
+                "parameters",
+                &["const", "enum", "oneOf", "anyOf", "allOf", "$ref", "$defs"][..],
+            ),
+        ] {
+            let projected = crate::provider::gemini_schema::project_request_tool_schemas(
+                canonical.clone(),
+                dialect,
+            );
+            let declarations = projected["tools"][0]["functionDeclarations"]
+                .as_array()
+                .unwrap();
+            assert_eq!(declarations.len(), definitions.len());
+            for declaration in declarations {
+                let name = declaration["name"].as_str().unwrap();
+                let schema = &declaration[schema_key];
+                assert!(schema.is_object(), "{name} is missing {schema_key}");
+                for keyword in unsupported {
+                    assert!(
+                        !contains_projected_schema_keyword(schema, keyword, false),
+                        "{name} retained unsupported Gemini schema keyword {keyword}: {schema}"
+                    );
+                }
+            }
+
+            let schedule = declarations
+                .iter()
+                .find(|declaration| declaration["name"] == "schedule_tx")
+                .expect("production Registry must expose schedule_tx");
+            let operation =
+                &schedule[schema_key]["properties"]["operations"]["items"]["properties"]["op"];
+            match dialect {
+                crate::provider::gemini_schema::GeminiToolSchemaDialect::PublicApi => {
+                    let values = operation["enum"].as_array().unwrap();
+                    for expected in ["enqueue", "spawn", "inspect", "pause", "cancel"] {
+                        assert!(values.iter().any(|value| value == expected));
+                    }
+                }
+                crate::provider::gemini_schema::GeminiToolSchemaDialect::Antigravity => {
+                    let description = operation["description"].as_str().unwrap();
+                    for expected in ["enqueue", "spawn", "inspect", "pause", "cancel"] {
+                        assert!(description.contains(expected));
+                    }
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn read_only_context_configuration_omits_context_tx_from_production_registry() {
         let database = NamedTempFile::new().unwrap();

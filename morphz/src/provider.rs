@@ -24,6 +24,7 @@ use std::time::Duration;
 pub mod auth;
 mod claude_oauth;
 pub mod control;
+pub(crate) mod gemini_schema;
 pub mod routing;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
@@ -1682,6 +1683,16 @@ impl ProtocolClient {
     }
 
     fn adapt_request(&self, model: &str, request: Value, tools: &[ToolDefinition]) -> Value {
+        let request = if self.protocol_for_model(model) == ModelProtocol::GeminiContent {
+            let dialect = if self.adapter == "google-antigravity" {
+                gemini_schema::GeminiToolSchemaDialect::Antigravity
+            } else {
+                gemini_schema::GeminiToolSchemaDialect::PublicApi
+            };
+            gemini_schema::project_request_tool_schemas(request, dialect)
+        } else {
+            request
+        };
         if self.adapter == "openai-codex" {
             return adapt_codex_request(request);
         }
@@ -4540,7 +4551,9 @@ fn build_gemini_request(
             "functionDeclarations": tools.iter().map(|tool| json!({
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.parameters,
+                // Keep the canonical Runtime schema intact until the physical
+                // Provider adapter projects it into its supported dialect.
+                "parametersJsonSchema": tool.parameters,
             })).collect::<Vec<_>>()
         }]);
     }
@@ -5206,6 +5219,104 @@ mod tests {
             .to_str()
             .unwrap()
             .starts_with("antigravity/hub/"));
+    }
+
+    fn discriminated_schedule_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "schedule_tx".to_string(),
+            description: "Inspect or pause a schedule".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "operations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "inspect"},
+                                        "schedule_id": {"type": "string"}
+                                    },
+                                    "required": ["op", "schedule_id"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "pause"},
+                                        "schedule_id": {"type": "string"},
+                                        "expected_revision": {"type": "integer", "minimum": 1}
+                                    },
+                                    "required": ["op", "schedule_id", "expected_revision"],
+                                    "additionalProperties": false
+                                }
+                            ]
+                        }
+                    }
+                },
+                "required": ["operations"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn contains_keyword(value: &Value, keyword: &str, in_properties: bool) -> bool {
+        match value {
+            Value::Array(values) => values
+                .iter()
+                .any(|value| contains_keyword(value, keyword, false)),
+            Value::Object(object) => object.iter().any(|(key, value)| {
+                (!in_properties && key == keyword)
+                    || contains_keyword(value, keyword, key == "properties")
+            }),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn gemini_and_antigravity_compile_runtime_tool_schemas_for_their_wire_dialects() {
+        let tool = discriminated_schedule_tool();
+        let canonical_request = build_gemini_request(
+            None,
+            None,
+            &messages(),
+            std::slice::from_ref(&tool),
+            PromptCacheWireMode::ImplicitText,
+        );
+
+        let public_request = gemini_schema::project_request_tool_schemas(
+            canonical_request.clone(),
+            gemini_schema::GeminiToolSchemaDialect::PublicApi,
+        );
+        let public_declaration = &public_request["tools"][0]["functionDeclarations"][0];
+        let public_schema = &public_declaration["parametersJsonSchema"];
+        assert!(public_declaration.get("parameters").is_none());
+        assert!(!contains_keyword(public_schema, "const", false));
+        assert!(!contains_keyword(public_schema, "oneOf", false));
+        assert_eq!(
+            public_schema["properties"]["operations"]["items"]["properties"]["op"]["enum"],
+            json!(["inspect", "pause"])
+        );
+
+        let antigravity_request = gemini_schema::project_request_tool_schemas(
+            canonical_request,
+            gemini_schema::GeminiToolSchemaDialect::Antigravity,
+        );
+        let antigravity_declaration = &antigravity_request["tools"][0]["functionDeclarations"][0];
+        let antigravity_schema = &antigravity_declaration["parameters"];
+        assert!(antigravity_declaration
+            .get("parametersJsonSchema")
+            .is_none());
+        assert!(!contains_keyword(antigravity_schema, "const", false));
+        assert!(!contains_keyword(antigravity_schema, "oneOf", false));
+        assert!(!contains_keyword(antigravity_schema, "enum", false));
+        assert!(
+            antigravity_schema["properties"]["operations"]["items"]["properties"]
+                .get("expected_revision")
+                .is_some()
+        );
     }
 
     #[test]
