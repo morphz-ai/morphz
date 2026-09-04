@@ -6,15 +6,25 @@
 >
 > 标记规则：`[x]` 已完成；`[ ]` 未完成；每次执行后直接更新本文件。
 
+## 9 月 5 日发布结果
+
+- 北京时间 07:27，正式公开 [`v0.1.0`](https://github.com/morphz-ai/morphz/releases/tag/v0.1.0)，并设为最新版本。
+- 发布提交：`59f01783e74758ae8ac9c6a60dfade4e33ceebfb`。
+- [最终 CI](https://github.com/morphz-ai/morphz/actions/runs/33926978021) 全部通过；[五平台 Release 预构建](https://github.com/morphz-ai/morphz/actions/runs/33927010457) 全部通过。
+- 标签触发的重复构建 `33929011306` 已取消。本次发布复用上述预构建的原始归档，未重新打包；全部 22 个上传文件的 GitHub SHA-256 与本地原始产物逐项一致。
+- 公开后，匿名下载全部 10 个 Morphz / morphz-edge 归档并通过 SHA-256、主程序、Windows 沙箱辅助程序及许可证文件检查。线上两个安装脚本与 Release 附件逐字节一致。
+- 通过官网安装脚本和默认 `latest/download` 地址，在 macOS 临时目录完成全新安装；`morphz --version` 返回 `0.1.0` 和上述提交，`morphz setup --help` 正常。此次公开安装检查未修改用户安装目录或 Shell 配置，未再次执行模型真实响应测试。
+- 官网入门文档、核心概念与论文入口均返回 HTTP 200。文章传播由作者随后提交至 HN 和 Twitter/X。
+
 ## 一、发布候选冻结
 
 - [x] Provider 与 Runtime 修改已经完成并独立提交；发布环境整改单独收口。
-- [x] 冻结唯一发布候选；以本清单所在的 `HEAD` 和最终 `v0.1.0` 标签指向作为权威 commit SHA。
+- [x] 冻结唯一发布候选；以 `v0.1.0` 标签指向的 `59f01783e74758ae8ac9c6a60dfade4e33ceebfb` 为权威 commit SHA。
 - [x] 确认发布程序与主站版本为 `0.1.0`，发布标签为 `v0.1.0`。
 - [x] 从发布候选工作树运行完整格式、Clippy、Rust 测试、Dashboard 与网站门禁：Rust 核心库 1241 项、CLI 30 项、attempt-loop 76 项、Dashboard 199 项和网站 28 项全部通过，6 项外部网络或人工快照测试按声明忽略。
 - [x] 完成发布依赖审计：Dashboard 与网站的完整 npm 依赖树均为 0 个已知漏洞；Rust 为 0 个可达安全公告，并由 CI 与 Release workflow 持续门禁。
 - [x] 将当前发布候选推送到 `origin/main`。
-- [ ] 确认发布候选 HEAD 的 GitHub Actions 全部通过；仓库公开后重新触发最终验证。
+- [x] 确认发布候选 HEAD 的 GitHub Actions 全部通过；仓库公开后的最终验证见上述 CI 记录。
 
 ## 二、公开源码与仓库入口
 
@@ -39,8 +49,8 @@
 - [x] Release workflow 对每个平台的最终归档执行解包、组件检查和原生可执行 smoke；发布已存在的同名 Release 时失败，不覆盖资产。
 - [x] 安装器提供五阶段进度、Shell PATH 持久化、无终端 Setup 防挂起、Linux Bubblewrap 预检和 macOS 版本预检。
 - [x] 修复 `--no-open` 已声明却未进入运行时开关表的问题。
-- [ ] 在最终发布候选 commit 创建 `v0.1.0` 标签并等待 Release workflow 成功。
-- [ ] 核对 Release 中的平台归档、安装脚本与校验文件齐全。
+- [x] 在最终发布候选 commit 创建 `v0.1.0` 标签，并将同一提交通过 Release workflow 的原始产物公开发布。
+- [x] 核对 Release 中的平台归档、安装脚本与校验文件齐全；22 个附件全部验证通过。
 - [ ] 在干净环境分别验证 macOS、Linux 与 Windows 安装路径；无法本机覆盖的平台以原生 CI 加安装器契约测试作为发布门禁并明确记录。
 - [ ] 验证 `morphz setup`、模型连接、真实响应与 `morphz update status`。
 
@@ -85,16 +95,15 @@
 ## 七、9 月 5 日公开动作
 
 - [x] 将 GitHub 仓库切换为 Public；这是完整 CI、Release dry run 和正式标签之前的前置动作。
-- [ ] 在公开仓库上重跑发布候选 HEAD 的完整 CI 和 Release dry run，确认所有平台 job 成功且 dry run 不创建 Release。
+- [x] 在公开仓库上重跑发布候选 HEAD 的完整 CI 和 Release dry run，确认所有平台 job 成功且 dry run 不创建 Release。
 - [ ] 立即从公开地址执行一次全新安装与真实响应 smoke test。
-- [ ] 确认 `https://morphz.ai`、GitHub Release、论文和规范入口全部可访问。
+- [x] 确认 `https://morphz.ai`、GitHub Release、论文和规范入口全部可访问；主站入口此前已验证，正式 Release 与论文入口在公开后再次验证。
 - [ ] 发布中文与英文首发内容。
 - [ ] 发布后观察安装失败、404、Worker 错误率与 GitHub Issue，并保留回滚能力。
 
-## 当前硬阻塞（随进度删除）
+## 发布状态
 
-1. 公开仓库上的完整 CI 与 Release dry run 尚未取得最终结果。
-2. `v0.1.0` Release 尚未生成和进行公开安装验证；必须等 CI 与 dry run 通过后再打标签。
+正式 Release 与公开下载验证已完成。上方仍未勾选的人工通读、模型真实响应复核、传播及发布后观察事项保留原状态。
 
 ## 已知发布边界
 
