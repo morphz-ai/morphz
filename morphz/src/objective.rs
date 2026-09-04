@@ -5449,23 +5449,20 @@ mod tests {
         if let Ok(remaining) = (expires_at - Utc::now()).to_std() {
             tokio::time::sleep(remaining + std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                timers.dispatch_due_once().await.unwrap();
-                if evaluations
-                    .cancelled_activation("activation-directed-interrupt")
-                    .is_some()
-                {
-                    break;
-                }
-                // Reconciliation and the Timer engine are both allowed to own
-                // expiry. Give an in-flight reconciler time to finish after it
-                // has cancelled the now-redundant Timer.
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("one Runtime expiry path must revoke the interrupt Evaluation");
+        // Drive the semantic handler directly. The Runtime's Timer engine is
+        // covered independently; routing this assertion through its durable
+        // claim loop makes the test race continuous Objective reconciliation
+        // over ownership of the same Timer row.
+        assert_eq!(
+            Arc::clone(&supervisor)
+                .dispatch_lease_timer(lease_timer)
+                .await
+                .unwrap(),
+            TimerDisposition::Complete
+        );
+        assert!(evaluations
+            .cancelled_activation("activation-directed-interrupt")
+            .is_some());
         let expired = store.get_objective(&waiting.id).await.unwrap().unwrap();
         assert_eq!(
             expired.wait_condition, waiting.wait_condition,
