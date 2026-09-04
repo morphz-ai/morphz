@@ -88,7 +88,7 @@ import {
   retryableDialogueThread,
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
-import { resolveSelectedModelOption } from './app/modelSelection'
+import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/modelSelection'
 import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
 import {
   clearSessionDraft,
@@ -3563,6 +3563,7 @@ export default function App() {
     window.setTimeout(() => request.returnFocus?.focus(), 0)
   }, [])
   const authoritativeRefreshRef = useRef<(queries: readonly AuthoritativeQuery[]) => void>(() => {})
+  const initialProviderSetupHandled = useRef(false)
 
   useEffect(() => {
     activeViewRef.current = view
@@ -4423,6 +4424,20 @@ export default function App() {
     const timer = window.setTimeout(() => void loadCatalog(), 0)
     return () => window.clearTimeout(timer)
   }, [loadCatalog])
+
+  useEffect(() => {
+    if (
+      initialProviderSetupHandled.current
+      || !catalogReady
+      || !status
+      || view !== 'overview'
+      || route.contextId
+    ) return
+    initialProviderSetupHandled.current = true
+    if (requiresInitialProviderSetup(status)) {
+      navigate('/providers/setup', { replace: true })
+    }
+  }, [catalogReady, navigate, route.contextId, status, view])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

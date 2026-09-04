@@ -1053,12 +1053,45 @@ fn protect_runtime_files(app_config: &mut config::AppConfig, config_paths: &[Pat
     if let Some(home) = config::morphz_home_dir() {
         paths.extend(runtime_control_plane_paths(&home));
     }
+    if let Some(home) = host_user_home_dir() {
+        paths.extend(host_sensitive_paths(&home));
+    }
     for path in paths {
         let protected = path.to_string_lossy().into_owned();
         if !app_config.permissions.protected_paths.contains(&protected) {
             app_config.permissions.protected_paths.push(protected);
         }
     }
+}
+
+fn host_user_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let candidates = [std::env::var_os("USERPROFILE"), std::env::var_os("HOME")];
+    #[cfg(not(windows))]
+    let candidates = [std::env::var_os("HOME"), None];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn host_sensitive_paths(home: &Path) -> Vec<PathBuf> {
+    [
+        ".ssh",
+        ".env",
+        ".env.local",
+        ".env.development",
+        ".env.development.local",
+        ".env.test",
+        ".env.test.local",
+        ".env.production",
+        ".env.production.local",
+    ]
+    .into_iter()
+    .map(|name| home.join(name))
+    .collect()
 }
 
 fn runtime_control_plane_paths(home: &Path) -> Vec<PathBuf> {
@@ -5312,12 +5345,12 @@ mod tests {
         bootstrap_config_language, build_client, command_needs_llm, console_message_from_event,
         create_session_command, dashboard_browser_url, dashboard_setup_browser_url,
         doctor_failures, ensure_cli_identity_records, format_tool_call_activity,
-        generate_dashboard_token, parse_terminal_approval_input, read_console_input,
-        resolve_resumed_session, runtime_control_plane_paths, select_or_create_console_session,
-        setup_environment_is_headless_for, should_run_first_time_setup_with_terminal,
-        should_use_tui_with_terminal, validate_coding_eval_storage_isolation,
-        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
-        TerminalApprovalChoice,
+        generate_dashboard_token, host_sensitive_paths, parse_terminal_approval_input,
+        read_console_input, resolve_resumed_session, runtime_control_plane_paths,
+        select_or_create_console_session, setup_environment_is_headless_for,
+        should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
+        validate_coding_eval_storage_isolation, wait_for_session_reply, ConsoleInput,
+        ConsoleMessageKind, OfflineClient, TerminalApprovalChoice,
     };
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::{AppConfig, ResolvedConfig, TuiTheme};
@@ -5357,6 +5390,16 @@ mod tests {
         assert!(paths.contains(&Path::new("/home/person/.morphz/profiles").to_path_buf()));
         assert!(paths.contains(&Path::new("/home/person/.morphz/edge").to_path_buf()));
         assert!(!paths.contains(&Path::new("/home/person/.morphz/workspace").to_path_buf()));
+    }
+
+    #[test]
+    fn host_sensitive_paths_are_explicit_and_require_no_discovery() {
+        let paths = host_sensitive_paths(Path::new("/home/person"));
+        assert!(paths.contains(&Path::new("/home/person/.ssh").to_path_buf()));
+        assert!(paths.contains(&Path::new("/home/person/.env.local").to_path_buf()));
+        assert!(paths
+            .iter()
+            .all(|path| !path.to_string_lossy().contains('*')));
     }
 
     #[test]

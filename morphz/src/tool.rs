@@ -7146,23 +7146,25 @@ fn candidate_allowed(
     profile.path_allowed(candidate, access)
 }
 
-fn discovery_entries(
-    root: &Path,
+fn discovery_entries<'a>(
+    root: &'a Path,
     include_hidden: bool,
-    profile: &PermissionProfile,
-) -> Vec<walkdir::DirEntry> {
+    profile: &'a PermissionProfile,
+) -> impl Iterator<Item = walkdir::DirEntry> + 'a {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             entry.path() == root
-                || include_hidden
-                || !is_hidden_relative(entry.path().strip_prefix(root).unwrap_or(entry.path()))
+                || ((include_hidden
+                    || !is_hidden_relative(
+                        entry.path().strip_prefix(root).unwrap_or(entry.path()),
+                    ))
+                    && candidate_allowed(entry.path(), profile, FilesystemAccess::Read))
         })
         .filter_map(Result::ok)
-        .filter(|entry| entry.path() != root)
-        .filter(|entry| candidate_allowed(entry.path(), profile, FilesystemAccess::Read))
-        .collect()
+        .filter(move |entry| entry.path() != root)
+        .take(MAX_DISCOVERY_VISITS.saturating_add(1))
 }
 
 #[async_trait::async_trait]
@@ -7178,7 +7180,7 @@ impl Tool for ListFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".to_string(),
-            description: "Recursively discover files inside directories allowed by the current Permission Profile. Supports glob, result limits, and hidden-file control. Use for code navigation instead of uncontrolled exec/ls/find output.".to_string(),
+            description: "Recursively discover files inside directories allowed by the current Permission Profile. Supports glob, result limits, hidden-file control, and a fixed traversal ceiling; truncated=true means either ceiling was reached. Use for code navigation instead of uncontrolled exec/ls/find output.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -7236,11 +7238,17 @@ impl Tool for ListFilesTool {
         let limit = args.max_results.clamp(1, 2_000);
         let mut matches = Vec::new();
         let mut truncated = false;
+        let mut visited = 0usize;
         for entry in discovery_entries(
             &root,
             args.include_hidden,
             self.permissions.profile().as_ref(),
         ) {
+            if visited == MAX_DISCOVERY_VISITS {
+                truncated = true;
+                break;
+            }
+            visited += 1;
             if !args.include_directories && !entry.file_type().is_file() {
                 continue;
             }
@@ -7269,6 +7277,7 @@ impl Tool for ListFilesTool {
             "root": args.path,
             "glob": args.glob,
             "count": matches.len(),
+            "visited": visited,
             "truncated": truncated,
             "entries": matches,
         }))?)
@@ -7317,6 +7326,9 @@ fn default_search_context() -> usize {
     2
 }
 
+const MAX_DISCOVERY_VISITS: usize = 20_000;
+const MAX_SEARCH_BYTES: u64 = 64 * 1024 * 1024;
+
 #[async_trait::async_trait]
 impl Tool for SearchTool {
     fn name(&self) -> &str {
@@ -7330,7 +7342,7 @@ impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".to_string(),
-            description: "Run a size-bounded literal text search over UTF-8 source files inside directories allowed by the current Permission Profile. Returns paths, line numbers, and context. Use for code location instead of exec/rg/grep.".to_string(),
+            description: "Run a size- and traversal-bounded literal text search over UTF-8 source files inside directories allowed by the current Permission Profile. Returns paths, line numbers, context, and truncated=true when a bound is reached. Use for code location instead of exec/rg/grep.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -7432,8 +7444,14 @@ impl Tool for SearchTool {
         };
         let mut results = Vec::new();
         let mut truncated = false;
+        let mut visited = 0usize;
+        let mut scanned_bytes = 0_u64;
 
         'paths: for input in &args.paths {
+            if visited == MAX_DISCOVERY_VISITS {
+                truncated = true;
+                break;
+            }
             let resolved = self
                 .permissions
                 .authorize_path(
@@ -7444,28 +7462,39 @@ impl Tool for SearchTool {
                     approval_context(),
                 )
                 .await?;
+            let mut discovery_truncated = false;
             let candidates = if resolved.is_file() {
+                visited = visited.saturating_add(1);
                 vec![(
                     resolved.clone(),
                     PathBuf::from(resolved.file_name().unwrap_or_default()),
                 )]
             } else if resolved.is_dir() {
-                discovery_entries(
+                let remaining = MAX_DISCOVERY_VISITS.saturating_sub(visited);
+                let mut entries = discovery_entries(
                     &resolved,
                     args.include_hidden,
                     self.permissions.profile().as_ref(),
                 )
-                .into_iter()
-                .filter(|entry| entry.file_type().is_file())
-                .map(|entry| {
-                    let relative = entry
-                        .path()
-                        .strip_prefix(&resolved)
-                        .unwrap_or(entry.path())
-                        .to_path_buf();
-                    (entry.into_path(), relative)
-                })
-                .collect::<Vec<_>>()
+                .take(remaining.saturating_add(1))
+                .collect::<Vec<_>>();
+                if entries.len() > remaining {
+                    entries.pop();
+                    discovery_truncated = true;
+                }
+                visited = visited.saturating_add(entries.len());
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.file_type().is_file())
+                    .map(|entry| {
+                        let relative = entry
+                            .path()
+                            .strip_prefix(&resolved)
+                            .unwrap_or(entry.path())
+                            .to_path_buf();
+                        (entry.into_path(), relative)
+                    })
+                    .collect::<Vec<_>>()
             } else {
                 return Err(format!("Search path '{}' does not exist", input).into());
             };
@@ -7479,7 +7508,11 @@ impl Tool for SearchTool {
                     Ok(metadata) if metadata.len() <= 2 * 1024 * 1024 => metadata,
                     _ => continue,
                 };
-                let _ = metadata;
+                if scanned_bytes.saturating_add(metadata.len()) > MAX_SEARCH_BYTES {
+                    truncated = true;
+                    break 'paths;
+                }
+                scanned_bytes = scanned_bytes.saturating_add(metadata.len());
                 let content = match std::fs::read_to_string(&path) {
                     Ok(content) => content,
                     Err(_) => continue,
@@ -7516,10 +7549,16 @@ impl Tool for SearchTool {
                     }));
                 }
             }
+            if discovery_truncated {
+                truncated = true;
+                break 'paths;
+            }
         }
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "query": args.query,
             "count": results.len(),
+            "visited": visited,
+            "scanned_bytes": scanned_bytes,
             "truncated": truncated,
             "matches": results,
         }))?)
@@ -8502,8 +8541,10 @@ impl Tool for ExecuteCommandTool {
                 }
                 SandboxPermissionMode::RequireEscalated | SandboxPermissionMode::UseDefault => {}
             }
-            let protected = profile.sandbox_protected_patterns(&policy.read_roots);
-            for pattern in protected {
+            for path in profile.sandbox_protected_paths(&policy.read_roots) {
+                policy.deny_path(path);
+            }
+            for pattern in profile.sandbox_protected_patterns(&policy.read_roots) {
                 policy.deny_pattern(pattern);
             }
             let effective_network = policy.network == NetworkPolicy::Allow;
@@ -13466,6 +13507,10 @@ Body
         .unwrap();
         let entries = listed["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
+        assert!(listed["visited"]
+            .as_u64()
+            .is_some_and(|visited| visited > 0));
+        assert_eq!(listed["truncated"], false);
         assert!(entries.iter().any(|entry| entry["path"] == "src/lib.rs"));
         assert!(entries
             .iter()
@@ -13488,6 +13533,13 @@ Body
         )
         .unwrap();
         assert_eq!(searched["count"], 1);
+        assert!(searched["visited"]
+            .as_u64()
+            .is_some_and(|visited| visited > 0));
+        assert!(searched["scanned_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0));
+        assert_eq!(searched["truncated"], false);
         assert_eq!(searched["matches"][0]["path"], "src/lib.rs");
         assert_eq!(searched["matches"][0]["line"], 2);
         assert_eq!(searched["matches"][0]["context"][0]["line"], 1);
@@ -13605,7 +13657,10 @@ Body
         .unwrap();
         let output: serde_json::Value = serde_json::from_str(&output).unwrap();
 
-        assert_eq!(output["exit_code"], 7);
+        assert_eq!(
+            output["exit_code"], 7,
+            "unexpected sandbox result: {output}"
+        );
         assert_eq!(
             output["effective_boundary"]["permission_request_available"],
             true

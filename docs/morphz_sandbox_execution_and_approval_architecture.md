@@ -50,7 +50,7 @@ Morphz 默认采用 AI 自动审批，在安全性与长时间自主运行之间
 - 可复用前缀规则、完整的结构化命令规范化、域名级网络授权、资源限制和跨重启 Grant；
 - 将同一 Permission Broker 扩展到网络、浏览器、MCP 等其余现实副作用工具。
 
-默认产品策略把工作区外文件系统作为只读根挂载，工作区和显式额外目录作为可写根；`protected_paths` 在只读根内仍不可访问。Linux/Windows 的 glob protected path 会在每次命令启动时解析已有匹配项；命令在其 writable root 中新建的、此前不存在的同名文件不包含启动前秘密，并会在下一次命令启动时进入保护快照。能力报告和后续评测必须如实保留这些边界，不能把“只读可见”描述成“不可见”，也不能把额外工作区描述成完全访问。
+默认产品策略把工作区外文件系统作为只读根挂载，工作区和显式额外目录作为可写根；`protected_paths` 在只读根内仍不可访问。默认保护项和 Runtime 控制面文件使用明确路径，因此启动命令不需要遍历工作区或宿主文件系统。macOS Seatbelt 可以直接编译自定义 glob；Linux 与 Windows 原生后端无法无枚举地表达 glob，因此会明确拒绝此类配置，并要求 Operator 改用准确路径。能力报告和后续评测必须如实保留这些边界，不能把“只读可见”描述成“不可见”，也不能把额外工作区描述成完全访问。
 
 Windows 主程序安装不是单个 `morphz.exe`：`morphz.exe`、`morphz-windows-sandbox-runner.exe`、`morphz-windows-command-runner.exe` 与 `morphz-windows-sandbox-setup.exe` 构成一个版本一致的发布单元。独立的 `morphz-edge.exe` 不随主程序安装；它只在用户另行创建 Execution Target 节点时，通过独立 Edge 发行包与相同的沙箱 helper 一起部署。公开 helper、隔离账户/组、命名管道、私有桌面与 WFP/防火墙对象都使用 Morphz 产品命名；实现源自固定 OpenAI Codex revision 的事实只在第三方许可证、来源记录和架构说明中署名，不能把 Morphz 的运行行为呈现成 Codex 组件。首次受限执行可能触发系统提权以建立隔离账户、ACL 与 WFP 规则；日常命令随后使用已配置的受限身份。`morphz doctor` 会在 helper 缺失时明确报告 `missing`，而不是静默退回无沙箱执行。
 

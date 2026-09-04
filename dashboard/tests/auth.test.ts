@@ -14,6 +14,7 @@ const authGateSource = readFileSync(
   new URL('../src/DashboardAuthGate.tsx', import.meta.url),
   'utf8',
 )
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const appCss = readFileSync(new URL('../src/App.css', import.meta.url), 'utf8')
 const chineseLocale = JSON.parse(
   readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'),
@@ -71,9 +72,10 @@ test('launch token survives Router path replacement and a recreated mobile page 
   )
 })
 
-test('first authenticated launch opens guided Provider setup when no model is configured', () => {
-  assert.match(authGateSource, /setProviderSetupRequired\(!status\.provider && !status\.model\?\.trim\(\)\)/)
-  assert.match(authGateSource, /<Navigate to="\/providers\/setup" replace \/>/)
+test('first authenticated launch delegates Provider onboarding to live Runtime model state', () => {
+  assert.doesNotMatch(authGateSource, /providerSetupRequired|<Navigate/)
+  assert.match(appSource, /requiresInitialProviderSetup\(status\)/)
+  assert.match(appSource, /navigate\('\/providers\/setup', \{ replace: true \}\)/)
 })
 
 test('authentication shell inherits the saved Dashboard theme before login', () => {

@@ -242,6 +242,11 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn is_filesystem_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
 fn push_unique_pattern(patterns: &mut Vec<SandboxPathPattern>, pattern: SandboxPathPattern) {
     if !patterns.iter().any(|existing| existing == &pattern) {
         patterns.push(pattern);
@@ -495,7 +500,12 @@ mod macos {
             .join("\n");
         let protected_read_rules = protected_reads
             .iter()
-            .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(path)))
+            .map(|path| {
+                format!(
+                    "(deny file-read* (regex #\"{}\"))",
+                    sbpl_regex(&exact_path_regex(path))
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let protected_read_pattern_rules = protected_read_patterns
@@ -516,7 +526,12 @@ mod macos {
             .join(" ");
         let denied_write_rules = protected_writes
             .iter()
-            .map(|path| format!("(deny file-write* (subpath {}))", sbpl_quote(path)))
+            .map(|path| {
+                format!(
+                    "(deny file-write* (regex #\"{}\"))",
+                    sbpl_regex(&exact_path_regex(path))
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let denied_write_pattern_rules = protected_write_patterns
@@ -556,6 +571,16 @@ mod macos {
         value.replace('"', "\\\"")
     }
 
+    fn exact_path_regex(path: &Path) -> String {
+        let path = path.to_string_lossy().replace('\\', "/");
+        let path = regex_literal(&path);
+        if path == "/" {
+            "^/.*$".to_string()
+        } else {
+            format!("^{path}(/.*)?$")
+        }
+    }
+
     fn denied_pattern_regexes(
         patterns: &[SandboxPathPattern],
         kind: &str,
@@ -581,7 +606,7 @@ mod macos {
         for character in value.chars() {
             if matches!(
                 character,
-                '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\'
+                '.' | '+' | '*' | '?' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\'
             ) {
                 escaped.push('\\');
             }
@@ -662,9 +687,7 @@ mod macos {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use glob::{MatchOptions, Pattern};
     use std::collections::BTreeSet;
-    use walkdir::WalkDir;
 
     const STANDARD_BWRAP_PATHS: &[&str] = &[
         "/usr/bin/bwrap",
@@ -846,6 +869,12 @@ mod linux {
         // Read-only grants are mounted first; a later writable grant for the
         // same or a narrower path intentionally wins.
         for root in sort_paths_by_specificity(read_roots) {
+            // `/` is already the immutable baseline mount. Rebinding it here
+            // would happen after HOME and TMP were hidden and would expose
+            // those host directories again.
+            if is_filesystem_root(&root) {
+                continue;
+            }
             push_mount_target_dirs(&mut arguments, &root);
             push_mount(&mut arguments, "--ro-bind", &root, &root);
         }
@@ -894,51 +923,17 @@ mod linux {
         patterns: &[SandboxPathPattern],
         kind: &str,
     ) -> Result<Vec<PathBuf>, SandboxError> {
-        let mut paths = denied_roots(literal_paths, kind)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        for rule in patterns {
-            let root = std::fs::canonicalize(&rule.root).map_err(|error| {
-                SandboxError::new(format!(
-                    "failed to resolve sandbox denied {kind} pattern root '{}': {error}",
-                    rule.root.display()
-                ))
-            })?;
-            let pattern = Pattern::new(&rule.glob).map_err(|error| {
-                SandboxError::new(format!(
-                    "invalid sandbox denied {kind} glob '{}': {error}",
-                    rule.glob
-                ))
-            })?;
-            let options = MatchOptions {
-                require_literal_separator: true,
-                require_literal_leading_dot: false,
-                case_sensitive: true,
-            };
-            for entry in WalkDir::new(&root).follow_links(false) {
-                let entry = entry.map_err(|error| {
-                    SandboxError::new(format!(
-                        "failed to enumerate sandbox denied {kind} pattern below '{}': {error}",
-                        root.display()
-                    ))
-                })?;
-                let Ok(relative) = entry.path().strip_prefix(&root) else {
-                    continue;
-                };
-                if relative.as_os_str().is_empty() || !pattern.matches_path_with(relative, options)
-                {
-                    continue;
-                }
-                let canonical = std::fs::canonicalize(entry.path()).map_err(|error| {
-                    SandboxError::new(format!(
-                        "failed to resolve sandbox denied {kind} match '{}': {error}",
-                        entry.path().display()
-                    ))
-                })?;
-                paths.insert(canonical);
-            }
+        if let Some(pattern) = patterns.first() {
+            return Err(SandboxError::new(format!(
+                "Linux native sandbox cannot enforce wildcard protected_paths without filesystem enumeration: '{}' below '{}'; use an exact protected path",
+                pattern.glob,
+                pattern.root.display()
+            )));
         }
-        Ok(sort_paths_by_specificity(paths.into_iter().collect()))
+        Ok(sort_paths_by_specificity(denied_roots(
+            literal_paths,
+            kind,
+        )?))
     }
 
     fn sort_paths_by_specificity(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -953,12 +948,16 @@ mod linux {
     }
 
     fn mask_path(arguments: &mut Vec<OsString>, path: &Path) -> Result<(), SandboxError> {
-        let metadata = std::fs::metadata(path).map_err(|error| {
-            SandboxError::new(format!(
-                "failed to inspect Linux sandbox protected path '{}': {error}",
-                path.display()
-            ))
-        })?;
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(SandboxError::new(format!(
+                    "failed to inspect Linux sandbox protected path '{}': {error}",
+                    path.display()
+                )))
+            }
+        };
         if metadata.is_dir() {
             arguments.extend([os("--perms"), os("000"), os("--tmpfs")]);
             arguments.push(path.as_os_str().to_owned());
@@ -1014,9 +1013,8 @@ mod linux {
             std::fs::create_dir_all(workspace.join(".git")).unwrap();
             std::fs::write(workspace.join(".env"), "SECRET=value\n").unwrap();
             let mut policy = SandboxPolicy::workspace(&workspace);
-            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git"));
-            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git/**"));
-            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+            policy.deny_path(workspace.join(".git"));
+            policy.deny_path(workspace.join(".env"));
             let arguments = argument_strings(
                 build_bwrap_arguments(&ShellRequest {
                     command: "true".to_string(),
@@ -1055,9 +1053,30 @@ mod linux {
             assert!(arguments
                 .windows(2)
                 .any(|items| items == ["--cap-drop", "ALL"]));
-            assert!(Pattern::new("**/.env")
-                .unwrap()
-                .matches_path(Path::new(".env")));
+            assert_eq!(
+                arguments
+                    .windows(3)
+                    .filter(|items| {
+                        items[0] == "--ro-bind" && items[1] == "/" && items[2] == "/"
+                    })
+                    .count(),
+                1,
+                "the read-only root baseline must not be rebound after private roots are hidden",
+            );
+        }
+
+        #[test]
+        fn bubblewrap_rejects_wildcard_protection_without_enumerating() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let workspace = temp.path().join("workspace");
+            std::fs::create_dir_all(&workspace).unwrap();
+            let error = resolve_denied_paths(
+                &[],
+                &[SandboxPathPattern::new(&workspace, "**/.env")],
+                "read",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("without filesystem enumeration"));
         }
 
         #[test]
@@ -1076,7 +1095,7 @@ mod linux {
             std::fs::create_dir_all(&workspace).unwrap();
             std::fs::write(workspace.join(".env"), "SECRET=value\n").unwrap();
             let mut policy = SandboxPolicy::workspace(&workspace);
-            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+            policy.deny_path(workspace.join(".env"));
             let request = ShellRequest {
                 command: format!(
                     "printf allowed > allowed.txt; if printf denied > '{}'; then exit 10; fi; test ! -s .env; python3 -c 'import socket; s=socket.socket(); s.settimeout(0.2); s.connect((\"1.1.1.1\", 53))' >/dev/null 2>&1 && exit 11 || true",
@@ -1113,10 +1132,8 @@ mod windows {
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_absolute_path::AbsolutePathBuf;
-    use glob::{MatchOptions, Pattern};
     use serde::{Deserialize, Serialize};
     use std::collections::{BTreeSet, HashMap};
-    use walkdir::WalkDir;
 
     const RUNNER_EXE: &str = "morphz-windows-sandbox-runner.exe";
     const COMMAND_RUNNER_EXE: &str = "morphz-windows-command-runner.exe";
@@ -1325,45 +1342,18 @@ mod windows {
         patterns: &[SandboxPathPattern],
         kind: &str,
     ) -> Result<Vec<PathBuf>, SandboxError> {
+        if let Some(pattern) = patterns.first() {
+            return Err(SandboxError::new(format!(
+                "Windows native sandbox cannot enforce wildcard protected_paths without filesystem enumeration: '{}' below '{}'; use an exact protected path",
+                pattern.glob,
+                pattern.root.display()
+            )));
+        }
         let mut paths = denied_roots(literal_paths, kind)?
             .into_iter()
-            .collect::<BTreeSet<_>>();
-        for rule in patterns {
-            let root = std::fs::canonicalize(&rule.root).map_err(|error| {
-                SandboxError::new(format!(
-                    "failed to resolve Windows denied {kind} pattern root '{}': {error}",
-                    rule.root.display()
-                ))
-            })?;
-            let pattern = Pattern::new(&rule.glob).map_err(|error| {
-                SandboxError::new(format!(
-                    "invalid Windows denied {kind} glob '{}': {error}",
-                    rule.glob
-                ))
-            })?;
-            let options = MatchOptions {
-                require_literal_separator: true,
-                require_literal_leading_dot: false,
-                case_sensitive: false,
-            };
-            for entry in WalkDir::new(&root).follow_links(false) {
-                let entry = entry.map_err(|error| {
-                    SandboxError::new(format!(
-                        "failed to enumerate Windows denied {kind} pattern below '{}': {error}",
-                        root.display()
-                    ))
-                })?;
-                let Ok(relative) = entry.path().strip_prefix(&root) else {
-                    continue;
-                };
-                if relative.as_os_str().is_empty() || !pattern.matches_path_with(relative, options)
-                {
-                    continue;
-                }
-                paths.insert(absolute_lexical_path(entry.path())?);
-            }
-        }
-        let mut paths = paths.into_iter().collect::<Vec<_>>();
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         paths.sort_by(|left, right| {
             left.components()
                 .count()
@@ -1571,19 +1561,17 @@ mod windows {
         }
 
         #[test]
-        fn denied_pattern_resolution_is_case_insensitive_on_windows() {
+        fn windows_rejects_wildcard_protection_without_enumerating() {
             let temp = tempfile::TempDir::new().unwrap();
             let workspace = temp.path().join("workspace");
-            std::fs::create_dir_all(workspace.join("Nested")).unwrap();
-            std::fs::write(workspace.join("Nested/.ENV"), "SECRET=value").unwrap();
-            let resolved = resolve_denied_paths(
+            std::fs::create_dir_all(&workspace).unwrap();
+            let error = resolve_denied_paths(
                 &[],
                 &[SandboxPathPattern::new(&workspace, "**/.env")],
                 "read",
             )
-            .unwrap();
-            assert_eq!(resolved.len(), 1);
-            assert!(resolved[0].ends_with(".ENV"));
+            .unwrap_err();
+            assert!(error.to_string().contains("without filesystem enumeration"));
         }
 
         #[test]
@@ -1602,7 +1590,7 @@ mod windows {
             std::fs::write(workspace.join(".env"), "SECRET=value\r\n").unwrap();
             std::fs::write(&outside_existing, "preserve\r\n").unwrap();
             let mut policy = SandboxPolicy::workspace(&workspace);
-            policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+            policy.deny_path(workspace.join(".env"));
             let sandbox = NativeSandbox::with_backend(Arc::new(WindowsMorphzBackend));
 
             let allowed = sandbox
@@ -1925,11 +1913,27 @@ mod tests {
         std::fs::remove_dir_all(&protected).unwrap();
 
         let profile = macos::build_profile(&policy).unwrap();
-        let protected_text = canonical_protected.to_string_lossy();
-        assert!(profile.contains(&format!("(deny file-read* (subpath \"{protected_text}\"))")));
-        assert!(profile.contains(&format!(
-            "(deny file-write* (subpath \"{protected_text}\"))"
-        )));
+        assert!(profile.contains("(deny file-read* (regex #\""));
+        assert!(profile.contains("(deny file-write* (regex #\""));
+        assert!(profile.contains("checkpoint(/.*)?$"));
+
+        let sandbox = NativeSandbox::for_current_platform();
+        let prepared = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "exit 7".to_string(),
+                cwd: workspace,
+                policy,
+            })
+            .unwrap();
+        assert_eq!(
+            std::process::Command::new(prepared.program)
+                .args(prepared.arguments)
+                .status()
+                .unwrap()
+                .code(),
+            Some(7),
+            "future protected paths must compile into a valid Seatbelt profile",
+        );
     }
 
     #[cfg(target_os = "macos")]

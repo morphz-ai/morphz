@@ -4836,6 +4836,23 @@ def edit_tool(args, workspace_root):
     after_digest = hashlib.sha256(data).hexdigest()
     return "file edited: path={} replacements={} bytes={} sha256={}".format(original, len(replacements), len(data), after_digest)
 
+MAX_DISCOVERY_VISITS = 20000
+MAX_SEARCH_BYTES = 64 * 1024 * 1024
+
+def discovery_entries(root, include_hidden):
+    for directory, directories, files in os.walk(root, followlinks=False):
+        if not include_hidden:
+            directories[:] = sorted(name for name in directories if not name.startswith("."))
+            files = [name for name in files if not name.startswith(".")]
+        else:
+            directories.sort()
+        for name in directories:
+            path = os.path.join(directory, name)
+            yield path, os.path.relpath(path, root), "dir"
+        for name in sorted(files):
+            path = os.path.join(directory, name)
+            yield path, os.path.relpath(path, root), "file"
+
 def list_files_tool(args, workspace_root):
     original = args.get("path", ".")
     root = resolve_path(original, workspace_root)
@@ -4847,28 +4864,23 @@ def list_files_tool(args, workspace_root):
     include_directories = bool(args.get("include_directories", False))
     entries = []
     truncated = False
-    for directory, directories, files in os.walk(root, followlinks=False):
-        if not include_hidden:
-            directories[:] = sorted(name for name in directories if not name.startswith("."))
-            files = [name for name in files if not name.startswith(".")]
-        else:
-            directories.sort()
-        candidates = []
-        if include_directories:
-            candidates.extend((os.path.join(directory, name), "dir") for name in directories)
-        candidates.extend((os.path.join(directory, name), "file") for name in sorted(files))
-        for path, kind in candidates:
-            relative = os.path.relpath(path, root).replace(os.sep, "/")
-            if not path_matches(relative, pattern):
-                continue
-            if len(entries) == limit:
-                truncated = True
-                break
-            size = os.path.getsize(path) if kind == "file" else None
-            entries.append({"path": relative, "kind": kind, "bytes": size})
-        if truncated:
+    visited = 0
+    for path, relative, kind in discovery_entries(root, include_hidden):
+        if visited == MAX_DISCOVERY_VISITS:
+            truncated = True
             break
-    return json.dumps({"root": original, "glob": pattern, "count": len(entries), "truncated": truncated, "entries": entries}, ensure_ascii=False, indent=2)
+        visited += 1
+        if kind == "dir" and not include_directories:
+            continue
+        relative = relative.replace(os.sep, "/")
+        if not path_matches(relative, pattern):
+            continue
+        if len(entries) == limit:
+            truncated = True
+            break
+        size = os.path.getsize(path) if kind == "file" else None
+        entries.append({"path": relative, "kind": kind, "bytes": size})
+    return json.dumps({"root": original, "glob": pattern, "count": len(entries), "visited": visited, "truncated": truncated, "entries": entries}, ensure_ascii=False, indent=2)
 
 def search_tool(args, workspace_root):
     query = args["query"].strip()
@@ -4885,31 +4897,35 @@ def search_tool(args, workspace_root):
     needle = query if case_sensitive else query.lower()
     matches = []
     truncated = False
+    visited = 0
+    scanned_bytes = 0
 
     for original in inputs:
         root = resolve_path(original, workspace_root)
         if os.path.isfile(root):
-            candidates = [(root, os.path.basename(root))]
+            candidates = [(root, os.path.basename(root), "file")]
         elif os.path.isdir(root):
-            candidates = []
-            for directory, directories, files in os.walk(root, followlinks=False):
-                if not include_hidden:
-                    directories[:] = sorted(name for name in directories if not name.startswith("."))
-                    files = [name for name in files if not name.startswith(".")]
-                else:
-                    directories.sort()
-                for name in sorted(files):
-                    path = os.path.join(directory, name)
-                    candidates.append((path, os.path.relpath(path, root)))
+            candidates = discovery_entries(root, include_hidden)
         else:
             raise ValueError("search path '{}' does not exist".format(original))
 
-        for path, relative in candidates:
+        for path, relative, kind in candidates:
+            if visited == MAX_DISCOVERY_VISITS:
+                truncated = True
+                break
+            visited += 1
+            if kind != "file":
+                continue
             if not path_matches(relative, pattern):
                 continue
             try:
-                if os.path.getsize(path) > 2 * 1024 * 1024:
+                size = os.path.getsize(path)
+                if size > 2 * 1024 * 1024:
                     continue
+                if scanned_bytes + size > MAX_SEARCH_BYTES:
+                    truncated = True
+                    break
+                scanned_bytes += size
                 with open(path, "r", encoding="utf-8") as handle:
                     lines = handle.read().splitlines()
             except (OSError, UnicodeError):
@@ -4934,7 +4950,7 @@ def search_tool(args, workspace_root):
                 break
         if truncated:
             break
-    return json.dumps({"query": args["query"], "count": len(matches), "truncated": truncated, "matches": matches}, ensure_ascii=False, indent=2)
+    return json.dumps({"query": args["query"], "count": len(matches), "visited": visited, "scanned_bytes": scanned_bytes, "truncated": truncated, "matches": matches}, ensure_ascii=False, indent=2)
 
 try:
     request = json.load(sys.stdin)
@@ -8583,6 +8599,9 @@ mod tests {
         let listing: serde_json::Value =
             serde_json::from_str(listed["output"].as_str().unwrap()).unwrap();
         assert_eq!(listing["count"], 1);
+        assert!(listing["visited"]
+            .as_u64()
+            .is_some_and(|visited| visited > 0));
         assert_eq!(listing["entries"][0]["path"], "lib.rs");
 
         let search = invoke(serde_json::json!({
@@ -8594,6 +8613,12 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(search["output"].as_str().unwrap()).unwrap();
         assert_eq!(payload["count"], 1);
+        assert!(payload["visited"]
+            .as_u64()
+            .is_some_and(|visited| visited > 0));
+        assert!(payload["scanned_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0));
         assert_eq!(payload["matches"][0]["path"], "src/lib.rs");
     }
 

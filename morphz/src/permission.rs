@@ -240,12 +240,16 @@ impl Default for PermissionConfig {
             read_roots: Vec::new(),
             write_roots: Vec::new(),
             protected_paths: vec![
-                "**/.env".to_string(),
-                "**/.env.*".to_string(),
-                "**/.git".to_string(),
-                "**/.git/**".to_string(),
-                "**/.ssh".to_string(),
-                "**/.ssh/**".to_string(),
+                ".env".to_string(),
+                ".env.local".to_string(),
+                ".env.development".to_string(),
+                ".env.development.local".to_string(),
+                ".env.test".to_string(),
+                ".env.test.local".to_string(),
+                ".env.production".to_string(),
+                ".env.production.local".to_string(),
+                ".git".to_string(),
+                ".ssh".to_string(),
                 ".morphz/config.toml".to_string(),
                 ".morphz/morphz.toml".to_string(),
             ],
@@ -444,13 +448,41 @@ impl PermissionProfile {
             .is_ok_and(|decision| matches!(decision, PathDecision::Allowed(_)))
     }
 
-    /// Keep protected paths symbolic. Native sandbox backends compile these
-    /// rules directly; Runtime startup must never enumerate a workspace merely
-    /// to discover every current match. Newly-created protected paths are
-    /// therefore covered by the same policy without rebuilding the Profile.
+    /// Compile exact protected entries without touching the filesystem. An
+    /// exact directory protects its complete subtree at the native sandbox
+    /// boundary. Filesystem roots are deliberately excluded from relative
+    /// expansion: a compatibility read grant for `/` or `C:\` must never turn
+    /// a workspace protection into a host-wide operation.
+    pub fn sandbox_protected_paths(&self, roots: &[PathBuf]) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for protected in &self.protected_paths {
+            if has_glob_metacharacters(protected) {
+                continue;
+            }
+            let protected = Path::new(protected);
+            if protected.is_absolute() {
+                push_unique(&mut paths, protected.to_path_buf());
+                continue;
+            }
+            for root in roots {
+                if is_filesystem_root(root) {
+                    continue;
+                }
+                push_unique(&mut paths, root.join(protected));
+            }
+        }
+        paths
+    }
+
+    /// Keep wildcard protected paths symbolic. macOS Seatbelt compiles these
+    /// rules directly. Backends without symbolic path matching reject them
+    /// rather than enumerating the filesystem to manufacture a snapshot.
     pub fn sandbox_protected_patterns(&self, roots: &[PathBuf]) -> Vec<SandboxPathPattern> {
         let mut rules = Vec::new();
         for pattern in &self.protected_paths {
+            if !has_glob_metacharacters(pattern) {
+                continue;
+            }
             let path = Path::new(pattern);
             if path.is_absolute() {
                 let root = path.ancestors().last().unwrap_or(path);
@@ -477,6 +509,16 @@ fn filesystem_root(path: &Path) -> PathBuf {
         .last()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn is_filesystem_root(path: &Path) -> bool {
+    filesystem_root(path) == path
+}
+
+fn has_glob_metacharacters(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| matches!(character, '*' | '?' | '[' | ']'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -970,6 +1012,18 @@ fn resolve_existing_or_parent(path: &Path) -> Result<PathBuf, PermissionError> {
 }
 
 fn path_matches_pattern(candidate: &Path, resolved: &Path, pattern: &str) -> bool {
+    if !has_glob_metacharacters(pattern) {
+        let protected = Path::new(pattern);
+        return [candidate, resolved].into_iter().any(|path| {
+            path.ancestors().any(|ancestor| {
+                if protected.is_absolute() {
+                    ancestor == protected
+                } else {
+                    ancestor.ends_with(protected)
+                }
+            })
+        });
+    }
     let Ok(pattern) = Pattern::new(pattern) else {
         return true;
     };
@@ -1146,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_missing_protected_path_is_retained_symbolically_for_native_sandbox() {
+    fn exact_missing_protected_path_is_retained_as_a_literal_native_denial() {
         let root = TempDir::new().unwrap();
         let mut config = PermissionConfig {
             workspace_root: root.path().to_string_lossy().into_owned(),
@@ -1159,11 +1213,8 @@ mod tests {
             .push("future-config.toml".to_string());
         let profile = PermissionProfile::from_config(&config).unwrap();
         assert!(profile
-            .sandbox_protected_patterns(&profile.read_roots)
-            .contains(&SandboxPathPattern::new(
-                &profile.workspace_root,
-                "future-config.toml",
-            )));
+            .sandbox_protected_paths(&profile.read_roots)
+            .contains(&profile.workspace_root.join("future-config.toml")));
     }
 
     #[test]
@@ -1317,16 +1368,43 @@ mod tests {
     }
 
     #[test]
-    fn protected_paths_remain_symbolic_for_os_sandbox() {
+    fn default_protected_paths_compile_without_filesystem_enumeration() {
         let root = TempDir::new().unwrap();
         let profile = profile(root.path());
-        let protected = profile.sandbox_protected_patterns(&profile.read_roots);
-        assert!(protected
-            .iter()
-            .any(|rule| rule.root == profile.workspace_root && rule.glob == "**/.git/**"));
-        assert!(protected
-            .iter()
-            .any(|rule| rule.root == profile.workspace_root && rule.glob == "**/.env"));
+        let protected = profile.sandbox_protected_paths(&profile.read_roots);
+        assert!(protected.contains(&profile.workspace_root.join(".git")));
+        assert!(protected.contains(&profile.workspace_root.join(".env")));
+        assert!(profile
+            .sandbox_protected_patterns(&profile.read_roots)
+            .is_empty());
+        assert!(!protected.iter().any(|path| is_filesystem_root(path)));
+    }
+
+    #[test]
+    fn exact_protected_directory_covers_its_descendants() {
+        let root = TempDir::new().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        let profile = profile(root.path());
+
+        assert!(!profile.path_allowed(&nested.join(".git/config"), FilesystemAccess::Read));
+    }
+
+    #[test]
+    fn custom_globs_remain_symbolic_for_capable_sandbox_backends() {
+        let root = TempDir::new().unwrap();
+        let mut config = PermissionConfig {
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            ..PermissionConfig::default()
+        };
+        config.protected_paths.push("nested/**/.secret".to_string());
+        let profile = PermissionProfile::from_config(&config).unwrap();
+        assert!(profile
+            .sandbox_protected_patterns(&profile.read_roots)
+            .contains(&SandboxPathPattern::new(
+                &profile.workspace_root,
+                "nested/**/.secret",
+            )));
     }
 
     #[tokio::test]

@@ -1,8 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use morphz::sandbox::{
-        BackendKind, EnforcementStatus, NativeSandbox, NetworkPolicy, SandboxPathPattern,
-        SandboxPolicy, ShellRequest,
+        BackendKind, EnforcementStatus, NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest,
     };
     use std::process::Command;
 
@@ -30,7 +29,7 @@ mod linux {
 
         let mut policy = SandboxPolicy::workspace(&workspace);
         policy.network = NetworkPolicy::Deny;
-        policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env"));
+        policy.deny_path(workspace.join(".env"));
         let request = ShellRequest {
             command: format!(
                 "printf allowed > allowed.txt; \
