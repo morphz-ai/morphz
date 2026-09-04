@@ -39,7 +39,12 @@ def artifact(value: str) -> dict[str, object]:
         item["archive_format"] = "zip"
         item["entrypoint"] = "morphz-edge.exe"
     else:
-        item["archive_format"] = "raw"
+        if not path.name.endswith(".tar.gz"):
+            raise argparse.ArgumentTypeError(
+                "macOS and Linux artifacts must be tar.gz bundles containing morphz-edge and its license records"
+            )
+        item["archive_format"] = "tar.gz"
+        item["entrypoint"] = "morphz-edge"
     return item
 
 

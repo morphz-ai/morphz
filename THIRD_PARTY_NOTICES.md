@@ -23,6 +23,18 @@ the applicable package lockfiles. Their names in a manifest do not incorporate t
 the Morphz copyright license. Binary distributors remain responsible for satisfying the licenses
 of the dependency versions they ship.
 
+The release-ready inventories and license texts for dependencies embedded in the Morphz binary are
+generated from the locked dependency graphs and committed as:
+
+- [`THIRD_PARTY_LICENSES_RUST.md`](THIRD_PARTY_LICENSES_RUST.md);
+- [`dashboard/THIRD_PARTY_LICENSES.md`](dashboard/THIRD_PARTY_LICENSES.md).
+
+Run `python3 scripts/generate-third-party-licenses.py rust` and
+`python3 scripts/generate-third-party-licenses.py dashboard` after changing either lockfile. CI
+rejects stale inventories. When an upstream package declares a permissive SPDX license but omits a
+standalone license file from its package, the generator includes the corresponding canonical text
+from `third_party/licenses/`.
+
 The 2026-09-03 lockfile audit found no dependency identified solely as GPL, AGPL, SSPL, or BUSL.
 It did identify separately licensed dependencies that require preservation and distribution review:
 
@@ -32,10 +44,9 @@ It did identify separately licensed dependencies that require preservation and d
 - the website dependency graph includes platform `libvips` packages identified as
   LGPL-3.0-or-later and Sharp platform packages with combined Apache-2.0, LGPL, and MIT notices.
 
-These findings do not relicense dependencies and do not by themselves establish compliance for a
-particular binary, container, or hosted deployment. Release packaging must preserve applicable
-license texts and review which optional or platform artifacts are actually distributed. The audit
-record and limitations are in
+These findings do not relicense dependencies. Release packaging preserves the generated inventories,
+license texts, and applicable vendored-source records. Platform-specific native artifacts still
+require review whenever the release contents change. The audit record and limitations are in
 [`docs/audits/dependency_license_audit_2026_09_03.md`](docs/audits/dependency_license_audit_2026_09_03.md).
 
 ## Other separately licensed material

@@ -83,7 +83,8 @@ else
 fi
 
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/morphz-install.XXXXXX")"
-trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+staged_install=""
+trap 'rm -rf "$temporary"; if [ -n "$staged_install" ]; then rm -f "$staged_install"; fi' EXIT HUP INT TERM
 
 download() {
   source_url="$1"
@@ -116,7 +117,10 @@ tar -xzf "$temporary/$asset" -C "$temporary/unpacked"
 [ -f "$temporary/unpacked/morphz" ] || fail "release archive does not contain morphz"
 
 mkdir -p "$install_dir"
-install -m 0755 "$temporary/unpacked/morphz" "$install_dir/morphz"
+staged_install="$install_dir/.morphz-install.$$"
+install -m 0755 "$temporary/unpacked/morphz" "$staged_install"
+mv -f "$staged_install" "$install_dir/morphz"
+staged_install=""
 
 progress 5 "Configuring the command path"
 path_file=""

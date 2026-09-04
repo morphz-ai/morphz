@@ -67,7 +67,7 @@ trap cleanup EXIT HUP INT TERM
 manifest="$temporary/manifest.json"
 signature="$temporary/manifest.json.sig"
 public_key="$temporary/release-public-key.pem"
-artifact="$temporary/morphz-edge.download"
+artifact="$temporary/morphz-edge.tar.gz"
 curl -fsSL "$manifest_url" -o "$manifest"
 curl -fsSL "${manifest_url}.sig" -o "$signature"
 
@@ -109,7 +109,7 @@ expected_sha=$(printf '%s\n' "$selection" | sed -n '3p')
 expected_size=$(printf '%s\n' "$selection" | sed -n '4p')
 archive_format=$(printf '%s\n' "$selection" | sed -n '5p')
 [ -n "$version" ] || fail "release manifest has no version"
-[ "$archive_format" = "raw" ] || fail "unsupported $platform artifact format '$archive_format'"
+[ "$archive_format" = "tar.gz" ] || fail "unsupported $platform artifact format '$archive_format'"
 case "$artifact_url" in
   https://*) ;;
   file://*) [ "${MORPHZ_EDGE_ALLOW_INSECURE_TEST_URLS:-0}" = "1" ] || fail "artifact URL must use HTTPS" ;;
@@ -126,7 +126,13 @@ else
   actual_sha=$(shasum -a 256 "$artifact" | awk '{print $1}')
 fi
 [ "$actual_sha" = "$expected_sha" ] || fail "download SHA-256 mismatch"
-chmod 0755 "$artifact"
+
+bundle="$temporary/bundle"
+mkdir -p "$bundle"
+tar -xzf "$artifact" -C "$bundle"
+source_binary="$bundle/morphz-edge"
+[ -f "$source_binary" ] || fail "release bundle does not contain morphz-edge"
+chmod 0755 "$source_binary"
 
 install_dir="${MORPHZ_EDGE_INSTALL_DIR:-$HOME/.local/bin}"
 state_dir="${MORPHZ_EDGE_STATE_DIR:-$HOME/.morphz/edge}"
@@ -138,9 +144,18 @@ if [ -e "$install_path" ]; then
   backup="$temporary/morphz-edge.previous"
   cp "$install_path" "$backup"
 fi
-cp "$artifact" "$install_path.new"
+cp "$source_binary" "$install_path.new"
 chmod 0755 "$install_path.new"
 mv "$install_path.new" "$install_path"
+
+license_dir="$state_dir/licenses"
+mkdir -p "$license_dir"
+for legal_entry in LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md dashboard third_party; do
+  if [ -e "$bundle/$legal_entry" ]; then
+    rm -rf "${license_dir:?}/$legal_entry"
+    cp -R "$bundle/$legal_entry" "$license_dir/$legal_entry"
+  fi
+done
 
 set -- --workspace "$workspace" bootstrap \
   --server-url "$server_url" --pairing-code "$code" \

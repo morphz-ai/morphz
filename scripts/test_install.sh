@@ -108,6 +108,7 @@ grep -F "Run now: $temporary/bin/morphz setup" "$temporary/custom-output" >/dev/
 
 test_stage="fish PATH configuration"
 HOME="$temporary/home" \
+XDG_CONFIG_HOME="$temporary/home/.config" \
 SHELL="/opt/homebrew/bin/fish" \
 PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
 MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
@@ -122,6 +123,7 @@ grep -F "Run now: $temporary/home/.local/bin/morphz setup" "$temporary/fish-outp
 
 test_stage="idempotent fish PATH configuration"
 HOME="$temporary/home" \
+XDG_CONFIG_HOME="$temporary/home/.config" \
 SHELL="/opt/homebrew/bin/fish" \
 PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
 MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \

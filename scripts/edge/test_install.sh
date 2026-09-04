@@ -13,7 +13,8 @@ trap cleanup EXIT HUP INT TERM
 
 private_key="$temporary/release-private.pem"
 public_key="$temporary/release-public.pem"
-artifact="$temporary/morphz-edge-fixture"
+fixture_binary="$temporary/morphz-edge-fixture"
+artifact="$temporary/morphz-edge-fixture.tar.gz"
 argument_log="$temporary/edge-arguments.log"
 workspace="$temporary/workspace"
 mkdir -p "$workspace"
@@ -21,7 +22,7 @@ mkdir -p "$workspace"
 openssl ecparam -name prime256v1 -genkey -noout -out "$private_key"
 openssl ec -in "$private_key" -pubout -out "$public_key" >/dev/null 2>&1
 
-cat > "$artifact" <<'SH'
+cat > "$fixture_binary" <<'SH'
 #!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "${MORPHZ_EDGE_TEST_ARGUMENT_LOG:?}"
@@ -41,7 +42,16 @@ case " $* " in
   *) exit 75 ;;
 esac
 SH
-chmod 0755 "$artifact"
+chmod 0755 "$fixture_binary"
+mkdir -p "$temporary/edge-bundle/dashboard" "$temporary/edge-bundle/third_party"
+cp "$fixture_binary" "$temporary/edge-bundle/morphz-edge"
+printf '%s\n' 'test license' > "$temporary/edge-bundle/LICENSE"
+printf '%s\n' 'test notice' > "$temporary/edge-bundle/NOTICE"
+printf '%s\n' 'test third-party notices' > "$temporary/edge-bundle/THIRD_PARTY_NOTICES.md"
+printf '%s\n' 'test Rust licenses' > "$temporary/edge-bundle/THIRD_PARTY_LICENSES_RUST.md"
+printf '%s\n' 'test Dashboard licenses' > "$temporary/edge-bundle/dashboard/THIRD_PARTY_LICENSES.md"
+printf '%s\n' 'test vendored notice' > "$temporary/edge-bundle/third_party/NOTICE"
+tar -czf "$artifact" -C "$temporary/edge-bundle" .
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -97,7 +107,8 @@ value = {
         "url": pathlib.Path(artifact).as_uri(),
         "sha256": digest,
         "size_bytes": int(size),
-        "archive_format": "raw",
+        "archive_format": "tar.gz",
+        "entrypoint": "morphz-edge",
     }],
 }
 pathlib.Path(path).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
@@ -118,6 +129,7 @@ sh "$rendered/install" \
 
 [ -x "$home/.local/bin/morphz-edge" ] || fail "binary was not installed"
 [ -f "$home/.morphz/edge/bootstrap-receipt.json" ] || fail "bootstrap receipt was not created"
+[ -f "$home/.morphz/edge/licenses/THIRD_PARTY_LICENSES_RUST.md" ] || fail "license bundle was not installed"
 grep -q 'pair_once_only_for_test' "$argument_log" || fail "pairing code did not reach bootstrap"
 grep -q 'http://127.0.0.1:8788' "$argument_log" || fail "Edge Server URL did not reach bootstrap"
 grep -Fq "$workspace" "$argument_log" || fail "workspace did not reach bootstrap"

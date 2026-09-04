@@ -18,12 +18,15 @@ python3 scripts/edge/build_release_manifest.py \
   --version 0.1.0 \
   --signing-key release-private.pem \
   --output dist/manifest.json \
-  --artifact macos=aarch64=dist/morphz-edge-macos-aarch64=https://releases.example/morphz-edge-macos-aarch64 \
-  --artifact linux=x86_64=dist/morphz-edge-linux-x86_64=https://releases.example/morphz-edge-linux-x86_64 \
+  --artifact macos=aarch64=dist/morphz-edge-macos-aarch64.tar.gz=https://releases.example/morphz-edge-macos-aarch64.tar.gz \
+  --artifact linux=x86_64=dist/morphz-edge-linux-x86_64.tar.gz=https://releases.example/morphz-edge-linux-x86_64.tar.gz \
   --artifact windows=x86_64=dist/morphz-edge-windows-x86_64.zip=https://releases.example/morphz-edge-windows-x86_64.zip
 ```
 
-Windows artifacts are ZIP bundles. The bundle entrypoint is `morphz-edge.exe`; keep the Morphz Windows sandbox helper executables beside it.
+macOS and Linux artifacts are tar.gz bundles whose entrypoint is `morphz-edge`. Windows artifacts
+are ZIP bundles whose entrypoint is `morphz-edge.exe`; keep the Morphz Windows sandbox helper
+executables beside it. Every bundle also carries the generated third-party license inventories and
+vendored-source provenance records staged by `scripts/stage-release-legal.sh`.
 
 ## Render deployable installers
 

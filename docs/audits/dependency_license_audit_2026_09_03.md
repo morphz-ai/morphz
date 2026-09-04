@@ -2,8 +2,8 @@
 
 > Scope: current Cargo metadata and JavaScript lockfiles
 >
-> Outcome: no GPL-, AGPL-, SSPL-, or BUSL-only dependency identified; release packaging review is
-> still required
+> Outcome: no GPL-, AGPL-, SSPL-, or BUSL-only dependency identified; locked Rust and Dashboard
+> license bundles are generated and verified in CI
 
 ## 1. Purpose
 
@@ -60,14 +60,17 @@ Publishing source does not copy dependency source merely because a manifest name
 container, installer, or static website bundle may distribute additional dependency artifacts and
 therefore needs an artifact-specific notice and license review.
 
-Before shipping the first binary or container release:
+The first binary-release path now performs the following work:
 
-1. generate an inventory from the exact release artifact and target platform;
-2. determine whether Sharp/libvips or other optional native components are present;
-3. include all license texts and notices required by the components actually shipped;
-4. preserve source-availability and relinking obligations if an LGPL component is distributed in a
-   form that triggers them; and
-5. repeat the scan after lockfile changes.
+1. generate inventories from the locked non-development Rust and Dashboard dependency graphs;
+2. reject stale generated inventories in CI and the tagged release workflow;
+3. include the generated license bundles and vendored-source license, notice, and provenance
+   records in every Morphz release archive; and
+4. verify those records when each platform archive is assembled.
+
+The hosted technical website remains outside the downloadable runtime archive. If a future binary,
+container, or offline website bundle distributes Sharp/libvips or another optional native component,
+that artifact needs its own source-availability and relinking review before publication.
 
 Font, image, icon, model-weight, paper-source, benchmark-corpus, and external dataset provenance
 remain separate release-readiness checks and are not closed by this audit.

@@ -21,7 +21,7 @@ morphz-edge revoke-local-lease = morphz edge revoke-local-lease
 cargo build --release -p morphz --bin morphz-edge
 ```
 
-产物位于 `target/release/morphz-edge`。发布系统可以只分发这个文件；用户不需要安装完整的 Morphz Server CLI。
+产物位于 `target/release/morphz-edge`。官方 Release 将独立客户端与对应许可证记录打包发布；用户不需要安装完整的 Morphz Server CLI。
 
 ## 配对与运行
 

@@ -3,9 +3,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,19 +15,26 @@ env:
 
 jobs:
   validate-tag:
-    name: Validate release tag
+    name: Validate release ref
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Match tag to Cargo package version
         shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' morphz/Cargo.toml | head -n 1)"
           test -n "$package_version"
-          test "$RELEASE_TAG" = "v$package_version"
+          if [[ "$RELEASE_EVENT" == "push" ]]; then
+            test "$RELEASE_TAG" = "v$package_version"
+          else
+            echo "dry-run release validation for v$package_version at $GITHUB_SHA"
+          fi
 
   release-readiness:
     name: Release readiness
@@ -36,9 +44,11 @@ jobs:
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
@@ -50,11 +60,22 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
           bash scripts/audit-rust-dependencies.sh
+      - name: Verify locked Rust license bundle
+        run: python3 scripts/generate-third-party-licenses.py rust --check
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Verify locked Dashboard license bundle
+        run: |
+          npm ci --prefix dashboard
+          python3 scripts/generate-third-party-licenses.py dashboard --check
       - name: Verify source and installer contracts
         run: |
           cargo fmt --all -- --check
@@ -85,7 +106,9 @@ jobs:
     container:
       image: ubuntu:22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Install Linux build dependencies
         run: |
           apt-get update
@@ -93,12 +116,12 @@ jobs:
             build-essential ca-certificates clang cmake curl git libssl-dev \
             perl pkg-config bubblewrap
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build release binaries
         run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
       - name: Package release bundle
@@ -107,12 +130,19 @@ jobs:
           set -euo pipefail
           mkdir -p dist/morphz-bundle
           cp "target/${{ matrix.target }}/release/morphz" dist/morphz-bundle/
-          cp LICENSE NOTICE dist/morphz-bundle/
+          sh scripts/stage-release-legal.sh dist/morphz-bundle
           archive="${{ matrix.asset }}.tar.gz"
-          tar -czf "dist/$archive" -C dist/morphz-bundle morphz LICENSE NOTICE
+          tar -czf "dist/$archive" -C dist/morphz-bundle \
+            morphz LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
+            dashboard third_party
           edge_asset="${{ matrix.asset }}"
-          edge_asset="morphz-edge-${edge_asset#morphz-}"
-          cp "target/${{ matrix.target }}/release/morphz-edge" "dist/$edge_asset"
+          edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
+          mkdir -p dist/morphz-edge-bundle
+          cp "target/${{ matrix.target }}/release/morphz-edge" dist/morphz-edge-bundle/
+          sh scripts/stage-release-legal.sh dist/morphz-edge-bundle
+          tar -czf "dist/$edge_asset" -C dist/morphz-edge-bundle \
+            morphz-edge LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
+            dashboard third_party
           if command -v sha256sum >/dev/null 2>&1; then
             (cd dist && sha256sum "$archive" > "$archive.sha256")
             (cd dist && sha256sum "$edge_asset" > "$edge_asset.sha256")
@@ -141,13 +171,22 @@ jobs:
           MORPHZ_NO_MODIFY_PATH=1 \
             sh scripts/install.sh
           "$install_root/morphz" --version
-      - uses: actions/upload-artifact@v4
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx THIRD_PARTY_NOTICES.md
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx THIRD_PARTY_LICENSES_RUST.md
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx dashboard/THIRD_PARTY_LICENSES.md
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx third_party/morphz-windows-sandbox/NOTICE
+          edge_asset="${{ matrix.asset }}"
+          edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
+          tar -tzf "dist/$edge_asset" | grep -Fx morphz-edge
+          tar -tzf "dist/$edge_asset" | grep -Fx THIRD_PARTY_LICENSES_RUST.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.asset }}
           path: |
             dist/${{ matrix.asset }}.tar.gz
             dist/${{ matrix.asset }}.tar.gz.sha256
-            dist/morphz-edge-*
+            dist/morphz-edge-*.tar.gz
+            dist/morphz-edge-*.tar.gz.sha256
           if-no-files-found: error
 
   macos-bundles:
@@ -167,14 +206,16 @@ jobs:
             file_arch: x86_64
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build release binaries
         run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
       - name: Package release bundle
@@ -183,12 +224,19 @@ jobs:
           set -euo pipefail
           mkdir -p dist/morphz-bundle
           cp "target/${{ matrix.target }}/release/morphz" dist/morphz-bundle/
-          cp LICENSE NOTICE dist/morphz-bundle/
+          sh scripts/stage-release-legal.sh dist/morphz-bundle
           archive="${{ matrix.asset }}.tar.gz"
-          tar -czf "dist/$archive" -C dist/morphz-bundle morphz LICENSE NOTICE
+          tar -czf "dist/$archive" -C dist/morphz-bundle \
+            morphz LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
+            dashboard third_party
           edge_asset="${{ matrix.asset }}"
-          edge_asset="morphz-edge-${edge_asset#morphz-}"
-          cp "target/${{ matrix.target }}/release/morphz-edge" "dist/$edge_asset"
+          edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
+          mkdir -p dist/morphz-edge-bundle
+          cp "target/${{ matrix.target }}/release/morphz-edge" dist/morphz-edge-bundle/
+          sh scripts/stage-release-legal.sh dist/morphz-edge-bundle
+          tar -czf "dist/$edge_asset" -C dist/morphz-edge-bundle \
+            morphz-edge LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
+            dashboard third_party
           (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
           (cd dist && shasum -a 256 "$edge_asset" > "$edge_asset.sha256")
       - name: Verify packaged macOS runtime
@@ -197,6 +245,14 @@ jobs:
           set -euo pipefail
           tar -tzf "dist/${{ matrix.asset }}.tar.gz" \
             | grep -Fx morphz
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx THIRD_PARTY_NOTICES.md
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx THIRD_PARTY_LICENSES_RUST.md
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx dashboard/THIRD_PARTY_LICENSES.md
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" | grep -Fx third_party/morphz-windows-sandbox/NOTICE
+          edge_asset="${{ matrix.asset }}"
+          edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
+          tar -tzf "dist/$edge_asset" | grep -Fx morphz-edge
+          tar -tzf "dist/$edge_asset" | grep -Fx THIRD_PARTY_LICENSES_RUST.md
           otool -l "dist/morphz-bundle/morphz" \
             | awk '/LC_BUILD_VERSION/{build=1} build && /minos 11\.0/{compatible=1} END{exit !compatible}'
           host_arch="$(uname -m)"
@@ -211,13 +267,14 @@ jobs:
           else
             file "dist/morphz-bundle/morphz" | grep -F '${{ matrix.file_arch }}'
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.asset }}
           path: |
             dist/${{ matrix.asset }}.tar.gz
             dist/${{ matrix.asset }}.tar.gz.sha256
-            dist/morphz-edge-*
+            dist/morphz-edge-*.tar.gz
+            dist/morphz-edge-*.tar.gz.sha256
           if-no-files-found: error
 
   windows-bundle:
@@ -225,13 +282,15 @@ jobs:
     needs: validate-tag
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build release binaries and sandbox helpers
         shell: pwsh
         run: |
@@ -244,6 +303,27 @@ jobs:
           $bundle = "dist/morphz-bundle"
           $edgeBundle = "dist/morphz-edge-bundle"
           New-Item -ItemType Directory -Force $bundle, $edgeBundle | Out-Null
+          function Copy-LegalFiles {
+            param([string]$Destination)
+            Copy-Item LICENSE, NOTICE, THIRD_PARTY_NOTICES.md, THIRD_PARTY_LICENSES_RUST.md $Destination -Force
+            New-Item -ItemType Directory -Force "$Destination/dashboard" | Out-Null
+            Copy-Item dashboard/THIRD_PARTY_LICENSES.md "$Destination/dashboard/" -Force
+            @(
+              "third_party/codex-otel-stub/NOTICE",
+              "third_party/codex-utils-absolute-path/LICENSE",
+              "third_party/codex-utils-absolute-path/UPSTREAM.md",
+              "third_party/codex-utils-pty/LICENSE",
+              "third_party/codex-utils-pty/NOTICE",
+              "third_party/codex-utils-pty/UPSTREAM.md",
+              "third_party/morphz-windows-sandbox/LICENSE",
+              "third_party/morphz-windows-sandbox/NOTICE",
+              "third_party/morphz-windows-sandbox/UPSTREAM.md"
+            ) | ForEach-Object {
+              $destinationDirectory = Join-Path $Destination (Split-Path $_ -Parent)
+              New-Item -ItemType Directory -Force $destinationDirectory | Out-Null
+              Copy-Item $_ $destinationDirectory -Force
+            }
+          }
           @(
             "morphz.exe",
             "morphz-windows-sandbox-runner.exe",
@@ -252,9 +332,7 @@ jobs:
           ) | ForEach-Object {
             Copy-Item "target/release/$_" "$bundle/$_" -Force
           }
-          Copy-Item LICENSE, NOTICE $bundle -Force
-          $archive = "morphz-windows-x86_64.zip"
-          Compress-Archive -Path "$bundle/*" -DestinationPath "dist/$archive" -Force
+          Copy-LegalFiles $bundle
           @(
             "morphz-edge.exe",
             "morphz-windows-sandbox-runner.exe",
@@ -263,8 +341,10 @@ jobs:
           ) | ForEach-Object {
             Copy-Item "target/release/$_" "$edgeBundle/$_" -Force
           }
-          Copy-Item LICENSE, NOTICE $edgeBundle -Force
+          Copy-LegalFiles $edgeBundle
+          $archive = "morphz-windows-x86_64.zip"
           $edgeArchive = "morphz-edge-windows-x86_64.zip"
+          Compress-Archive -Path "$bundle/*" -DestinationPath "dist/$archive" -Force
           Compress-Archive -Path "$edgeBundle/*" -DestinationPath "dist/$edgeArchive" -Force
           @($archive, $edgeArchive) | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 "dist/$_").Hash.ToLowerInvariant()
@@ -283,13 +363,31 @@ jobs:
           @(
             "morphz-windows-sandbox-runner.exe",
             "morphz-windows-command-runner.exe",
-            "morphz-windows-sandbox-setup.exe"
+            "morphz-windows-sandbox-setup.exe",
+            "THIRD_PARTY_NOTICES.md",
+            "THIRD_PARTY_LICENSES_RUST.md",
+            "dashboard/THIRD_PARTY_LICENSES.md",
+            "third_party/morphz-windows-sandbox/NOTICE"
           ) | ForEach-Object {
             if (-not (Test-Path -LiteralPath (Join-Path $smoke $_))) {
               throw "packaged Windows runtime is missing $_"
             }
           }
-      - uses: actions/upload-artifact@v4
+          $edgeSmoke = Join-Path $env:RUNNER_TEMP "morphz-edge-release-smoke"
+          Expand-Archive -LiteralPath "dist/morphz-edge-windows-x86_64.zip" -DestinationPath $edgeSmoke
+          @(
+            "morphz-edge.exe",
+            "morphz-windows-sandbox-runner.exe",
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe",
+            "THIRD_PARTY_NOTICES.md",
+            "THIRD_PARTY_LICENSES_RUST.md"
+          ) | ForEach-Object {
+            if (-not (Test-Path -LiteralPath (Join-Path $edgeSmoke $_))) {
+              throw "packaged Windows Edge runtime is missing $_"
+            }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: morphz-windows-x86_64
           path: |
@@ -301,11 +399,16 @@ jobs:
 
   publish:
     name: Publish GitHub Release
+    if: github.event_name == 'push'
     needs: [release-readiness, linux-bundles, macos-bundles, windows-bundle]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true

@@ -72,7 +72,8 @@ morphz-edge bootstrap
       "url": "https://...",
       "sha256": "...",
       "size_bytes": 0,
-      "archive_format": "raw"
+      "archive_format": "tar.gz",
+      "entrypoint": "morphz-edge"
     }
   ]
 }
@@ -80,7 +81,7 @@ morphz-edge bootstrap
 
 Manifest 使用发布私钥生成原始 detached ECDSA/SHA-256 签名 `manifest.json.sig`；两个安装器内置对应公钥并在解析 JSON 前验签。签名后的 Manifest 对构建的 URL、SHA-256、字节数和打包格式共同背书。URL 可以指向 GitHub Releases 或 R2，但协议不得依赖某一厂商。
 
-macOS/Linux 首版使用 `archive_format=raw`。Windows 使用 ZIP bundle，除 `morphz-edge.exe` 外还必须包含 Windows Sandbox Runner 与所需辅助程序，Manifest 的 `entrypoint` 固定为 `morphz-edge.exe`。
+macOS/Linux 使用包含 `morphz-edge` 与许可证记录的 tar.gz bundle，Manifest 的 `entrypoint` 固定为 `morphz-edge`。Windows 使用 ZIP bundle，除 `morphz-edge.exe` 外还必须包含 Windows Sandbox Runner 与所需辅助程序，Manifest 的 `entrypoint` 固定为 `morphz-edge.exe`。
 
 ## 5. 本地布局
 
@@ -90,6 +91,7 @@ macOS/Linux 首版使用 `archive_format=raw`。Windows 使用 ZIP bundle，除 
 ~/.local/bin/morphz-edge                 Linux/macOS binary（平台可覆盖）
 ~/.morphz/edge/credentials.json          设备身份
 ~/.morphz/edge/bootstrap-receipt.json    安装与版本 receipt
+~/.morphz/edge/licenses/                 当前安装版本的许可证记录
 ~/.morphz/edge/service.*                 后台服务配置/状态引用
 ```
 
