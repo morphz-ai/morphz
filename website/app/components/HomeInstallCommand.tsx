@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import type { Locale } from "@/lib/docs";
 import { CopyCommand } from "./CopyCommand";
 
@@ -26,13 +26,16 @@ const labels = {
   en: { group: "Choose an installation platform" },
 } as const;
 
-function detectedPlatform(): Platform | null {
+function detectedPlatform(): Platform {
   const value = `${navigator.platform ?? ""} ${navigator.userAgent}`.toLowerCase();
   if (value.includes("win")) return "windows";
   if (value.includes("mac")) return "macos";
   if (value.includes("linux") && !value.includes("android")) return "linux";
-  return null;
+  return "macos";
 }
+
+const subscribeToPlatform = () => () => {};
+const serverPlatform = (): Platform => "macos";
 
 export function HomeInstallCommand({
   locale,
@@ -45,12 +48,9 @@ export function HomeInstallCommand({
   release: string;
   description: string;
 }) {
-  const [platform, setPlatform] = useState<Platform>("macos");
-
-  useEffect(() => {
-    const detected = detectedPlatform();
-    if (detected) setPlatform(detected);
-  }, []);
+  const detected = useSyncExternalStore(subscribeToPlatform, detectedPlatform, serverPlatform);
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform | null>(null);
+  const platform = selectedPlatform ?? detected;
 
   const current = platforms[platform];
 
@@ -64,7 +64,7 @@ export function HomeInstallCommand({
               type="button"
               aria-pressed={platform === key}
               data-active={platform === key ? "true" : "false"}
-              onClick={() => setPlatform(key)}
+              onClick={() => setSelectedPlatform(key)}
               key={key}
             >
               {platforms[key].label}

@@ -72,11 +72,7 @@ morphz
 
 Updates are explicit and use the same verified GitHub Release assets. `morphz update status`
 checks for a release, `morphz update` installs it, and `morphz update rollback` restores the binary
-retained by the last update. The standalone `morphz-edge` Execution Target client has its own
-installation lifecycle and is never installed or updated with the main program.
-Before the repository becomes public, maintainers can exercise the same path against private
-Releases by exporting `GH_TOKEN` (or `GITHUB_TOKEN`); `MORPHZ_GITHUB_REPOSITORY=owner/repository`
-selects a different release repository without changing the binary.
+retained by the last update.
 
 `setup` opens the embedded Dashboard wizard by default. Use `setup --tui` on an SSH host or a
 machine without a browser, or `setup --no-open` to print the Dashboard URL without opening it.

@@ -34,6 +34,26 @@ npm run lint
 
 Every public page must keep its Chinese and English slug in parity. Update both languages when a product contract changes.
 
+## Production deployment
+
+Build and deploy the generated Worker from `website/`:
+
+```bash
+npm test
+npm run lint
+npx wrangler deploy --config dist/server/wrangler.json --strict \
+  --domain morphz.ai --domain www.morphz.ai
+```
+
+Wrangler records every deployed Worker version. List the available versions and restore a known-good version with:
+
+```bash
+npx wrangler deployments list --name morphz-website
+npx wrangler rollback VERSION_ID --name morphz-website
+```
+
+After a deployment, verify the Chinese and English navigation, documentation language switch, PDFs, installers, crawler files, and the semantic 404 page on `https://morphz.ai`.
+
 ## Generated CLI reference
 
 The bilingual CLI reference is generated from the same Clap command tree used by the Morphz binary. Refresh it from the repository root after changing CLI commands, options, or localized help:
