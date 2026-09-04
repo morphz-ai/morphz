@@ -92,6 +92,15 @@ max_connections = 16
 
 仅设置 `MORPHZ_POSTGRES_URL` 不会自动切换物理存储。认知存储默认使用上下文数据库；`legacy` 仅用于显式迁移兼容回退。启动不会隐式迁移认知权威，迁移必须由运维者明确执行。
 
+后台命令的完整输出默认归档在 `~/.morphz/artifacts`，不会随 Morphz 的启动目录改变。可信的用户配置可以选择其他绝对位置：
+
+```toml
+[background_task]
+artifact_dir = "/absolute/path/to/morphz-artifacts"
+```
+
+项目配置不能改变这项由宿主管理的存储位置。
+
 ## 会话工作集与认知整理
 
 ```toml

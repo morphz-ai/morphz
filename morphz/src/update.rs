@@ -593,6 +593,11 @@ fn platform_bundle(os: &str, arch: &str) -> Option<Bundle> {
             archive_kind: ArchiveKind::TarGz,
             entries: &["morphz"],
         }),
+        ("linux", "aarch64") => Some(Bundle {
+            asset_name: "morphz-linux-aarch64.tar.gz",
+            archive_kind: ArchiveKind::TarGz,
+            entries: &["morphz"],
+        }),
         ("windows", "x86_64") => Some(Bundle {
             asset_name: "morphz-windows-x86_64.zip",
             archive_kind: ArchiveKind::Zip,
@@ -1340,7 +1345,9 @@ mod tests {
         let windows = platform_bundle("windows", "x86_64").unwrap();
         assert_eq!(windows.asset_name, "morphz-windows-x86_64.zip");
         assert!(!windows.entries.contains(&"morphz-edge.exe"));
-        assert!(platform_bundle("linux", "aarch64").is_none());
+        let linux_arm = platform_bundle("linux", "aarch64").unwrap();
+        assert_eq!(linux_arm.asset_name, "morphz-linux-aarch64.tar.gz");
+        assert_eq!(linux_arm.entries, &["morphz"]);
     }
 
     #[test]
@@ -1358,14 +1365,21 @@ mod tests {
     fn release_asset_selection_is_exact() {
         let release = GitHubRelease {
             tag_name: "v1.0.0".to_string(),
-            assets: vec![GitHubAsset {
-                name: "morphz-linux-x86_64.tar.gz".to_string(),
-                url: "https://api.github.com/assets/1".to_string(),
-                browser_download_url: "https://github.com/download/1".to_string(),
-            }],
+            assets: vec![
+                GitHubAsset {
+                    name: "morphz-linux-x86_64.tar.gz".to_string(),
+                    url: "https://api.github.com/assets/1".to_string(),
+                    browser_download_url: "https://github.com/download/1".to_string(),
+                },
+                GitHubAsset {
+                    name: "morphz-linux-aarch64.tar.gz".to_string(),
+                    url: "https://api.github.com/assets/2".to_string(),
+                    browser_download_url: "https://github.com/download/2".to_string(),
+                },
+            ],
         };
         assert!(release_asset(&release, "morphz-linux-x86_64.tar.gz").is_ok());
-        assert!(release_asset(&release, "morphz-linux-aarch64.tar.gz").is_err());
+        assert!(release_asset(&release, "morphz-linux-aarch64.tar.gz").is_ok());
     }
 
     #[test]

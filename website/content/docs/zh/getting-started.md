@@ -10,9 +10,11 @@ Morphz 以预编译的原生二进制交付，控制台嵌入在主程序中。�
 
 ## 前置条件
 
-- macOS（Apple Silicon 或 Intel）、ARM64 或 x86_64 Linux，或 x86_64 Windows；
+- macOS 11 或更高版本（Apple Silicon 或 Intel）、使用 glibc 2.35 或更高版本的 ARM64 或 x86_64 Linux，或 x86_64 Windows；
 - 可访问至少一个模型服务；
 - 对当前工作目录具有读写权限。
+
+Linux 上的本地命令执行还需要 Bubblewrap，并且系统需要允许非特权用户命名空间。安装器会检查这项边界，并在环境未就绪时给出处理提示。安装操作系统软件包可能需要管理员权限；Morphz 程序本身不需要。
 
 ## 一条命令安装
 
@@ -41,7 +43,7 @@ morphz update
 
 ## 完成设置
 
-默认使用控制台设置向导：
+默认使用控制台设置向导；在交互式 SSH 或无图形界面的 Linux 会话中，会自动进入终端向导：
 
 ```bash
 morphz setup

@@ -55,6 +55,24 @@ case "$platform-$architecture" in
   *) fail "no Morphz release is published for $platform/$architecture" ;;
 esac
 
+if [ "$platform" = "macos" ]; then
+  macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+  case "$macos_major" in
+    ''|*[!0-9]*) fail "could not determine the macOS version" ;;
+  esac
+  [ "$macos_major" -ge 11 ] || fail "Morphz requires macOS 11 or newer"
+elif [ "$platform" = "linux" ]; then
+  if ! command -v bwrap >/dev/null 2>&1; then
+    printf '%s\n' \
+      "Warning: Bubblewrap is not installed; Morphz local command execution will stay unavailable." \
+      "Install your distribution's bubblewrap package, then run: morphz doctor" >&2
+  elif ! bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid --proc /proc -- /bin/true >/dev/null 2>&1; then
+    printf '%s\n' \
+      "Warning: Bubblewrap cannot create an unprivileged sandbox on this system." \
+      "Ask the system administrator to enable unprivileged user namespaces, then run: morphz doctor" >&2
+  fi
+fi
+
 asset="morphz-$platform-$architecture.tar.gz"
 if [ -n "${MORPHZ_RELEASE_BASE_URL:-}" ]; then
   release_base="$MORPHZ_RELEASE_BASE_URL"
@@ -165,10 +183,21 @@ case "$path_status" in
 esac
 
 if [ "$post_install_action" = "setup" ]; then
-  printf '\n%s\n' "Starting Morphz Setup"
+  no_open_requested=0
+  for setup_option in "$@"; do
+    case "$setup_option" in
+      --no-open|--no-open=true) no_open_requested=1 ;;
+    esac
+  done
   if ( : </dev/tty ) 2>/dev/null; then
+    printf '\n%s\n' "Starting Morphz Setup"
     "$install_dir/morphz" setup "$@" </dev/tty
-  else
+  elif [ "$no_open_requested" = "1" ]; then
+    printf '\n%s\n' "Starting Morphz Setup"
     "$install_dir/morphz" setup "$@"
+  else
+    printf '\n%s\n' \
+      "Morphz is installed, but Setup was not started because no interactive terminal is available." \
+      "Run from an interactive terminal: morphz setup --tui"
   fi
 fi

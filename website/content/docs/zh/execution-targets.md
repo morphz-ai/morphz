@@ -53,6 +53,8 @@ morphz target authorizations <target-id> --format=json
 
 Morphz 使用宿主已有 OpenSSH 配置解析远程目的地。智能体只提交主机别名与能力需求；运行时使用宿主 SSH 客户端和严格主机密钥校验，不把凭证值交给模型。
 
+通过节点使用 Morphz 核心文件工具时，远端主机需要提供 Python 3；普通远程命令仍然只依赖 OpenSSH 与远端命令行环境。
+
 ```json
 {
   "kind": "managed_ssh",

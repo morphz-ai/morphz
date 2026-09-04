@@ -51,6 +51,25 @@ MORPHZ_RELEASE_BASE_URL="file://$temporary/arm-release" \
 [ -x "$temporary/arm-bin/morphz" ]
 grep -F '[2/5] Downloading morphz-linux-aarch64.tar.gz' "$temporary/arm-output" >/dev/null
 
+mkdir -p "$temporary/legacy-mac-bin"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "${1:-}" in' \
+  '  -s) printf "%s\\n" Darwin ;;' \
+  '  -m) printf "%s\\n" x86_64 ;;' \
+  '  *) exit 1 ;;' \
+  'esac' > "$temporary/legacy-mac-bin/uname"
+printf '%s\n' '#!/bin/sh' 'printf "%s\\n" 10.15.7' > "$temporary/legacy-mac-bin/sw_vers"
+chmod 0755 "$temporary/legacy-mac-bin/uname" "$temporary/legacy-mac-bin/sw_vers"
+
+if PATH="$temporary/legacy-mac-bin:$PATH" \
+  MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
+  sh "$repository_root/scripts/install.sh" >"$temporary/legacy-mac-output" 2>&1; then
+  printf '%s\n' 'installer accepted an unsupported macOS version' >&2
+  exit 1
+fi
+grep -F 'Morphz requires macOS 11 or newer' "$temporary/legacy-mac-output" >/dev/null
+
 MORPHZ_INSTALL_DIR="$temporary/bin" \
 MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
   sh "$repository_root/scripts/install.sh" >"$temporary/custom-output" 2>&1
@@ -94,6 +113,17 @@ grep -F 'Starting Morphz Setup' "$temporary/setup-output" >/dev/null
 grep -F 'morphz installer fixture setup --no-open' "$temporary/setup-output" >/dev/null
 if grep -F 'Run now:' "$temporary/setup-output" >/dev/null; then
   printf '%s\n' 'installer printed a redundant command before starting setup' >&2
+  exit 1
+fi
+
+MORPHZ_INSTALL_DIR="$temporary/noninteractive-setup-bin" \
+MORPHZ_RELEASE_BASE_URL="file://$temporary/release" \
+  sh "$repository_root/scripts/install.sh" setup >"$temporary/noninteractive-setup-output" 2>&1
+
+grep -F 'Setup was not started because no interactive terminal is available' \
+  "$temporary/noninteractive-setup-output" >/dev/null
+if grep -F 'morphz installer fixture setup' "$temporary/noninteractive-setup-output" >/dev/null; then
+  printf '%s\n' 'installer started interactive Setup without a terminal' >&2
   exit 1
 fi
 

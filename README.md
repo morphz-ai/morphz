@@ -30,9 +30,10 @@ interfaces, multi-process operation, and parts of cross-platform validation cont
 Breaking changes are possible, and this release does not claim production-grade multi-tenant cloud
 operation.
 
-Native sandbox implementations exist for macOS, Linux, and Windows. The final 0.1 OS and
-architecture support matrix is still being validated; Linux workspace-write mode requires
-Bubblewrap, and Windows security claims depend on the complete Morphz Windows helper bundle.
+Native sandbox implementations exist for macOS, Linux, and Windows. Morphz 0.1 supports macOS 11
+or newer on Apple Silicon and Intel, ARM64 and x86_64 Linux with glibc 2.35 or newer, and x86_64 Windows.
+Linux workspace-write mode requires Bubblewrap, and Windows security claims depend on the complete
+Morphz Windows helper bundle.
 
 See the [current implementation status](docs/morphz_runtime_core_implementation_status_v1.md) for
 the verified boundary between implemented, validated, experimental, and planned capabilities.
@@ -54,8 +55,12 @@ the verified boundary between implemented, validated, experimental, and planned 
 
 ### Prerequisites
 
+- a supported operating system from the matrix above;
 - access to at least one supported model service;
 - read and write access to the working directory you give the Agent.
+
+Local command execution on Linux requires Bubblewrap and working unprivileged user namespaces. The
+installer reports this boundary before download when the host is not ready.
 
 Install a prebuilt release on macOS or Linux:
 
@@ -82,8 +87,9 @@ Updates are explicit and use the same verified GitHub Release assets. `morphz up
 checks for a release, `morphz update` installs it, and `morphz update rollback` restores the binary
 retained by the last update.
 
-`setup` opens the embedded Dashboard wizard by default. Use `setup --tui` on an SSH host or a
-machine without a browser, or `setup --no-open` to print the Dashboard URL without opening it.
+`setup` opens the embedded Dashboard wizard by default and automatically selects the terminal
+wizard in an interactive SSH or headless Linux session. Use `setup --tui` to select it explicitly,
+or `setup --no-open` to print the Dashboard URL without opening it.
 
 The directory from which Morphz runs may become the Agent's working directory. Use an explicit
 `--cwd` when necessary; do not grant an experimental Agent write access to a source checkout

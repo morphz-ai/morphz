@@ -505,7 +505,7 @@ impl RoutedClient {
             .get(&candidate.model)
             .map(crate::config::ProviderModelConfig::model_input_limits)
             .unwrap_or_default();
-        let protocol = provider.protocol.effective_for_model(&candidate.model);
+        let protocol = provider.protocol;
         ModelAttemptBinding {
             requested_alias: alias.to_string(),
             route_id: route_id.to_string(),
@@ -1632,7 +1632,7 @@ impl RoutedClient {
             .get(&candidate.model)
             .map(crate::config::ProviderModelConfig::model_input_limits)
             .unwrap_or_default();
-        let protocol = provider.protocol.effective_for_model(&candidate.model);
+        let protocol = provider.protocol;
         Ok(ModelAttemptBinding {
             requested_alias: alias,
             route_id: route_id.to_string(),
@@ -2023,7 +2023,7 @@ impl Client for RoutedClient {
                 .get(&physical_model)
                 .map(crate::config::ProviderModelConfig::model_input_limits)
                 .unwrap_or_default();
-            let protocol = provider.protocol.effective_for_model(&physical_model);
+            let protocol = provider.protocol;
             ModelAttemptBinding {
                 requested_alias: physical_model.clone(),
                 route_id: format!("account:{account_id}"),
@@ -2462,7 +2462,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_binding_records_the_effective_anthropic_protocol() {
+    async fn a_model_name_cannot_override_the_configured_wire_protocol() {
         let mut config = routed_config();
         let provider = config.provider_instances.get_mut("direct").unwrap();
         provider
@@ -2487,7 +2487,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(binding.physical_model, "claude-opus-5");
-        assert_eq!(binding.protocol, "anthropic-messages");
+        assert_eq!(binding.protocol, "openai-responses");
         assert_eq!(
             binding.request_session_id.as_deref(),
             Some("session-claude")

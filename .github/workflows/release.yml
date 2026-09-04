@@ -28,28 +28,66 @@ jobs:
           test -n "$package_version"
           test "$RELEASE_TAG" = "v$package_version"
 
-  unix-bundles:
+  release-readiness:
+    name: Release readiness
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - name: Install Bubblewrap for runtime tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Verify source and installer contracts
+        run: |
+          cargo fmt --all -- --check
+          bash scripts/check-source-language.sh
+          perl scripts/check-core-protocol-language.pl
+          perl scripts/check-diagnostic-logs.pl
+          cmp scripts/install.sh website/public/install.sh
+          sh scripts/test_install.sh
+      - name: Run release-critical tests
+        run: cargo test --locked -p morphz --lib --bin morphz -- --test-threads=1
+      - name: Reject compiler and Clippy warnings
+        run: cargo clippy --locked -p morphz --all-targets --all-features -- -D warnings
+
+  linux-bundles:
     name: ${{ matrix.asset }}
     needs: validate-tag
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             asset: morphz-linux-x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset: morphz-linux-aarch64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            asset: morphz-macos-aarch64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            asset: morphz-macos-x86_64
     runs-on: ${{ matrix.os }}
+    container:
+      image: ubuntu:22.04
     steps:
       - uses: actions/checkout@v5
+      - name: Install Linux build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+            build-essential ca-certificates clang cmake curl git libssl-dev \
+            perl pkg-config bubblewrap
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -77,6 +115,97 @@ jobs:
           else
             (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
             (cd dist && shasum -a 256 "$edge_asset" > "$edge_asset.sha256")
+          fi
+      - name: Verify packaged Linux runtime and compatibility floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          "dist/morphz-bundle/morphz" --version
+          required_glibc="$({ objdump -T dist/morphz-bundle/morphz || true; } \
+            | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' \
+            | sort -V \
+            | tail -n 1)"
+          test -n "$required_glibc"
+          oldest="$(printf '%s\n' "$required_glibc" '2.35' | sort -V | head -n 1)"
+          if [[ "$oldest" != "$required_glibc" ]]; then
+            echo "release binary requires GLIBC_$required_glibc; maximum supported floor is GLIBC_2.35" >&2
+            exit 1
+          fi
+          install_root="$RUNNER_TEMP/morphz-install-smoke"
+          MORPHZ_RELEASE_BASE_URL="file://$PWD/dist" \
+          MORPHZ_INSTALL_DIR="$install_root" \
+          MORPHZ_NO_MODIFY_PATH=1 \
+            sh scripts/install.sh
+          "$install_root/morphz" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}.tar.gz
+            dist/${{ matrix.asset }}.tar.gz.sha256
+            dist/morphz-edge-*
+          if-no-files-found: error
+
+  macos-bundles:
+    name: ${{ matrix.asset }}
+    needs: validate-tag
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            asset: morphz-macos-aarch64
+            file_arch: arm64
+          - target: x86_64-apple-darwin
+            asset: morphz-macos-x86_64
+            file_arch: x86_64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
+      - name: Package release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/morphz-bundle
+          cp "target/${{ matrix.target }}/release/morphz" dist/morphz-bundle/
+          cp LICENSE NOTICE dist/morphz-bundle/
+          archive="${{ matrix.asset }}.tar.gz"
+          tar -czf "dist/$archive" -C dist/morphz-bundle morphz LICENSE NOTICE
+          edge_asset="${{ matrix.asset }}"
+          edge_asset="morphz-edge-${edge_asset#morphz-}"
+          cp "target/${{ matrix.target }}/release/morphz-edge" "dist/$edge_asset"
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+          (cd dist && shasum -a 256 "$edge_asset" > "$edge_asset.sha256")
+      - name: Verify packaged macOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -tzf "dist/${{ matrix.asset }}.tar.gz" \
+            | grep -Fx morphz
+          otool -l "dist/morphz-bundle/morphz" \
+            | awk '/LC_BUILD_VERSION/{build=1} build && /minos 11\.0/{compatible=1} END{exit !compatible}'
+          host_arch="$(uname -m)"
+          if [[ "$host_arch" == '${{ matrix.file_arch }}' ]]; then
+            "dist/morphz-bundle/morphz" --version
+            install_root="$RUNNER_TEMP/morphz-install-smoke"
+            MORPHZ_RELEASE_BASE_URL="file://$PWD/dist" \
+            MORPHZ_INSTALL_DIR="$install_root" \
+            MORPHZ_NO_MODIFY_PATH=1 \
+              sh scripts/install.sh
+            "$install_root/morphz" --version
+          else
+            file "dist/morphz-bundle/morphz" | grep -F '${{ matrix.file_arch }}'
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -137,6 +266,25 @@ jobs:
             $hash = (Get-FileHash -Algorithm SHA256 "dist/$_").Hash.ToLowerInvariant()
             "$hash  $_" | Set-Content -NoNewline "dist/$_.sha256"
           }
+      - name: Verify packaged Windows runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $smoke = Join-Path $env:RUNNER_TEMP "morphz-release-smoke"
+          Expand-Archive -LiteralPath "dist/morphz-windows-x86_64.zip" -DestinationPath $smoke
+          & (Join-Path $smoke "morphz.exe") --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "packaged morphz.exe failed its version smoke test"
+          }
+          @(
+            "morphz-windows-sandbox-runner.exe",
+            "morphz-windows-command-runner.exe",
+            "morphz-windows-sandbox-setup.exe"
+          ) | ForEach-Object {
+            if (-not (Test-Path -LiteralPath (Join-Path $smoke $_))) {
+              throw "packaged Windows runtime is missing $_"
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: morphz-windows-x86_64
@@ -149,7 +297,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [unix-bundles, windows-bundle]
+    needs: [release-readiness, linux-bundles, macos-bundles, windows-bundle]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -168,10 +316,10 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/* --clobber
-          else
-            gh release create "$RELEASE_TAG" dist/* \
-              --verify-tag \
-              --title "$RELEASE_TAG" \
-              --generate-notes
+            echo "release $RELEASE_TAG already exists; release assets are immutable" >&2
+            exit 1
           fi
+          gh release create "$RELEASE_TAG" dist/* \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --generate-notes

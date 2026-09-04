@@ -3146,7 +3146,8 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
             .filter_map(provider_continuation)
             .flat_map(|continuation| match continuation {
                 ProviderContinuation::OpenaiResponses { reasoning_items } => reasoning_items,
-                ProviderContinuation::OpenaiChat { .. } => Vec::new(),
+                ProviderContinuation::OpenaiChat { .. }
+                | ProviderContinuation::GeminiContent { .. } => Vec::new(),
             })
             .filter_map(|item| {
                 item.get("id")
@@ -3170,7 +3171,8 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
             .filter_map(provider_continuation)
             .flat_map(|continuation| match continuation {
                 ProviderContinuation::OpenaiResponses { reasoning_items } => reasoning_items,
-                ProviderContinuation::OpenaiChat { .. } => Vec::new(),
+                ProviderContinuation::OpenaiChat { .. }
+                | ProviderContinuation::GeminiContent { .. } => Vec::new(),
             })
             .filter_map(|item| {
                 item.get("id")

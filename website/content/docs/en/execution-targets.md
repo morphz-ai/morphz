@@ -53,6 +53,8 @@ A Target with no authorization history remains available to its owner. After the
 
 Morphz resolves remote destinations through the host's OpenSSH configuration. The Agent submits a host alias and capability requirements. The Runtime invokes the host SSH client with strict host-key checking and never gives credential values to the model.
 
+The remote host must provide Python 3 when the Target uses Morphz's core file tools. Plain remote command execution continues to use OpenSSH and the remote shell.
+
 ```json
 {
   "kind": "managed_ssh",

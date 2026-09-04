@@ -1368,8 +1368,8 @@ impl ProtocolClient {
             .unwrap_or_default()
     }
 
-    fn protocol_for_model(&self, model: &str) -> ModelProtocol {
-        self.protocol.effective_for_model(model)
+    fn protocol_for_model(&self, _model: &str) -> ModelProtocol {
+        self.protocol
     }
 
     fn request_reasoning_effort(
@@ -5204,7 +5204,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_physical_models_use_native_anthropic_messages_on_compatibility_providers() {
+    fn model_names_cannot_override_the_configured_wire_protocol() {
         let client = ProtocolClient::new(
             &ProviderConfig {
                 protocol: ModelProtocol::OpenaiResponses,
@@ -5219,28 +5219,26 @@ mod tests {
 
         assert_eq!(
             client.protocol_for_model("Claude-Opus-5"),
-            ModelProtocol::AnthropicMessages
+            ModelProtocol::OpenaiResponses
         );
         assert_eq!(
             client.endpoint_for(true, "Claude-Opus-5").unwrap(),
-            "https://provider.invalid/v1/messages"
+            "https://provider.invalid/v1/responses"
         );
         let request = client.request_for_model("Claude-Opus-5", &messages(), &[]);
         assert_eq!(request["model"], "Claude-Opus-5");
-        assert_eq!(request["system"], "system");
-        assert!(request["messages"].is_array());
-        assert!(request.get("input").is_none());
+        assert!(request["input"].is_array());
+        assert!(request.get("messages").is_none());
 
         let authorized = client
             .authorize(
-                ModelProtocol::AnthropicMessages,
-                client.http.post("https://provider.invalid/v1/messages"),
+                ModelProtocol::OpenaiResponses,
+                client.http.post("https://provider.invalid/v1/responses"),
             )
             .build()
             .unwrap();
-        assert_eq!(authorized.headers()["x-api-key"], "secret");
-        assert_eq!(authorized.headers()["anthropic-version"], "2023-06-01");
-        assert!(authorized.headers().get("authorization").is_none());
+        assert_eq!(authorized.headers()["authorization"], "Bearer secret");
+        assert!(authorized.headers().get("x-api-key").is_none());
 
         assert_eq!(
             client.protocol_for_model("Qwen3.8-27B-FP8"),

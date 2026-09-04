@@ -1182,16 +1182,16 @@ async fn gemini_stream_continuation_survives_the_complete_transport_round_trip()
                 if attempt == 0 {
                     AxumResponse::builder()
                         .header("content-type", "text/event-stream")
-                        .body(Body::from(concat!(
-                            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"thoughtSignature\":\"transport-signature\",\"functionCall\":{\"name\":\"lookup\",\"args\":{\"id\":1}}}]}}]}\n\n"
-                        )))
+                        .body(Body::from(
+                            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"thoughtSignature\":\"transport-signature\",\"functionCall\":{\"name\":\"lookup\",\"args\":{\"id\":1}}}]}}]}\n\n",
+                        ))
                         .unwrap()
                 } else {
                     AxumResponse::builder()
                         .header("content-type", "text/event-stream")
-                        .body(Body::from(concat!(
-                            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"done\"}]}}]}\n\n"
-                        )))
+                        .body(Body::from(
+                            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"done\"}]}}]}\n\n",
+                        ))
                         .unwrap()
                 }
             }

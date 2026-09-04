@@ -10,9 +10,11 @@ Morphz ships as a prebuilt native binary with the Dashboard embedded. The first-
 
 ## Prerequisites
 
-- macOS on Apple Silicon or Intel, ARM64 or x86_64 Linux, or x86_64 Windows;
+- macOS 11 or newer on Apple Silicon or Intel, ARM64 or x86_64 Linux with glibc 2.35 or newer, or x86_64 Windows;
 - Access to at least one model service;
 - Read and write access to the working directory.
+
+Local command execution on Linux also requires Bubblewrap and working unprivileged user namespaces. The installer checks this boundary and prints a remediation when the host is not ready. Installing the operating-system package may require administrator access; the Morphz binary itself does not.
 
 ## Install with one command
 
@@ -41,7 +43,7 @@ A successful update retains the previous main binary; use `morphz update rollbac
 
 ## Complete Setup
 
-Setup opens the Dashboard wizard by default:
+Setup opens the Dashboard wizard by default. On an interactive SSH or headless Linux session it selects the terminal wizard automatically:
 
 ```bash
 morphz setup

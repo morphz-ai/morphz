@@ -24,9 +24,11 @@ Morphz 0.1 是一次以源码为先的 Developer Preview。核心机制已经可
 多进程运行和部分跨平台验证仍在演进，后续可能发生不兼容变更；当前版本也不承诺生产级
 多租户云服务能力。
 
-Morphz 已经拥有 macOS、Linux 和 Windows 的原生沙箱实现，但 0.1 最终支持的操作系统与
-架构矩阵仍在验证中。Linux 的 workspace-write 模式依赖 Bubblewrap；Windows 的安全声明
-依赖包含完整辅助程序的 Morphz Windows bundle。
+Morphz 已经拥有 macOS、Linux 和 Windows 的原生沙箱实现。Morphz 0.1 支持 macOS 11 或更高
+版本的 Apple Silicon 与 Intel Mac、使用 glibc 2.35 或更高版本的 ARM64 与 x86_64 Linux，
+以及 x86_64 Windows。
+Linux 的 workspace-write 模式依赖 Bubblewrap；Windows 的安全声明依赖包含完整辅助程序的
+Morphz Windows bundle。
 
 已经实现、完成验证、仍属实验以及尚在规划的能力边界，以
 [当前核心实现状态](docs/morphz_runtime_core_implementation_status_v1.md)为准。
@@ -45,8 +47,12 @@ Morphz 已经拥有 macOS、Linux 和 Windows 的原生沙箱实现，但 0.1 �
 
 ### 前置条件
 
+- 使用上述支持矩阵中的操作系统；
 - 可以访问至少一个受支持的模型服务；
 - 对交给 Agent 的工作目录具有读写权限。
+
+Linux 上的本地命令执行需要 Bubblewrap，并且系统需要允许非特权用户命名空间。安装器会在
+下载前检查这项边界，并在宿主环境未就绪时给出提示。
 
 在 macOS 或 Linux 上安装预编译版本：
 
@@ -68,8 +74,9 @@ morphz doctor
 morphz
 ```
 
-`setup` 默认打开内嵌的控制台向导。在 SSH 主机或没有浏览器的机器上使用 `setup --tui`；
-只需要输出控制台地址而不打开浏览器时，使用 `setup --no-open`。
+`setup` 默认打开内嵌的控制台向导；在交互式 SSH 或无图形界面的 Linux 会话中，会自动选择
+终端向导。也可以用 `setup --tui` 显式选择；只需要输出控制台地址而不打开浏览器时，使用
+`setup --no-open`。
 
 Morphz 的启动目录可能成为 Agent 的工作目录；必要时用显式的 `--cwd` 启动，不要无意中
 把源码 checkout 的写权限交给实验中的 Agent。开发者仍可使用

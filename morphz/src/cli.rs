@@ -74,6 +74,7 @@ const SWITCH_OPTIONS: &[&str] = &[
     "include-terminal",
     "tui",
     "plain",
+    "no-open",
     "include-user-content",
     "allow-training",
     "allow-downgrade",

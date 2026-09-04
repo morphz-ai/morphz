@@ -426,12 +426,14 @@ fn should_use_tui(invocation: &Invocation) -> Result<bool, AppError> {
     should_use_tui_with_terminal(
         invocation,
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        setup_environment_is_headless(),
     )
 }
 
 fn should_use_tui_with_terminal(
     invocation: &Invocation,
     interactive_terminal: bool,
+    headless_setup: bool,
 ) -> Result<bool, AppError> {
     let force_tui = switch_enabled(invocation, "tui")?;
     let force_plain = switch_enabled(invocation, "plain")?;
@@ -445,10 +447,30 @@ fn should_use_tui_with_terminal(
                 "morphz setup 默认使用 Dashboard；终端向导请使用 --tui，不能使用 --plain".into(),
             );
         }
-        return Ok(force_tui);
+        let no_open = switch_enabled(invocation, "no-open")?;
+        return Ok(force_tui || (interactive_terminal && headless_setup && !no_open));
     }
     let conversational = matches!(command.as_str(), "" | "resume" | "session resume");
     Ok(conversational && !force_plain && (force_tui || interactive_terminal))
+}
+
+fn setup_environment_is_headless() -> bool {
+    let ssh_session = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let display = std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty());
+    let wayland_display =
+        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty());
+    setup_environment_is_headless_for(std::env::consts::OS, ssh_session, display, wayland_display)
+}
+
+fn setup_environment_is_headless_for(
+    operating_system: &str,
+    ssh_session: bool,
+    display: bool,
+    wayland_display: bool,
+) -> bool {
+    ssh_session || (operating_system == "linux" && !display && !wayland_display)
 }
 
 fn selected_config_path(invocation: &Invocation) -> Option<PathBuf> {
@@ -4089,6 +4111,7 @@ fn doctor(
             ("missing", "run `morphz setup`".to_string())
         };
     let tools = runtime.tool_names();
+    let failures = doctor_failures(sandbox_mode, native_sandbox.status, provider_status);
 
     if json_output(invocation) {
         println!(
@@ -4114,23 +4137,43 @@ fn doctor(
                 "tools": { "status": "ok", "names": tools },
             }))?
         );
-        return Ok(());
+    } else {
+        println!("[ok] storage: {storage}");
+        println!("[ok] workspace: {}", workspace.display());
+        println!(
+            "[ok] sandbox: {:?}, approval: {:?}",
+            sandbox_mode, approval_policy
+        );
+        println!(
+            "[{native_status}] native sandbox backend: {} ({})",
+            native_sandbox.backend.as_str(),
+            native_sandbox.notes.join("; ")
+        );
+        println!("[{provider_status}] provider: {provider_summary}");
+        println!("[ok] tools: {}", tools.join(", "));
     }
 
-    println!("[ok] storage: {storage}");
-    println!("[ok] workspace: {}", workspace.display());
-    println!(
-        "[ok] sandbox: {:?}, approval: {:?}",
-        sandbox_mode, approval_policy
-    );
-    println!(
-        "[{native_status}] native sandbox backend: {} ({})",
-        native_sandbox.backend.as_str(),
-        native_sandbox.notes.join("; ")
-    );
-    println!("[{provider_status}] provider: {provider_summary}");
-    println!("[ok] tools: {}", tools.join(", "));
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Morphz diagnostics failed: {}", failures.join("; ")).into())
+    }
+}
+
+fn doctor_failures(
+    sandbox_mode: SandboxMode,
+    native_status: EnforcementStatus,
+    provider_status: &str,
+) -> Vec<&'static str> {
+    let mut failures = Vec::new();
+    if sandbox_mode != SandboxMode::DangerFullAccess && native_status != EnforcementStatus::Enforced
+    {
+        failures.push("native sandbox is unavailable");
+    }
+    if provider_status != "ok" {
+        failures.push("model provider is not ready");
+    }
+    failures
 }
 
 async fn run_once(
@@ -5268,12 +5311,13 @@ mod tests {
         apply_cli_config, apply_default_workspace_policy, apply_default_workspace_policy_at,
         bootstrap_config_language, build_client, command_needs_llm, console_message_from_event,
         create_session_command, dashboard_browser_url, dashboard_setup_browser_url,
-        ensure_cli_identity_records, format_tool_call_activity, generate_dashboard_token,
-        parse_terminal_approval_input, read_console_input, resolve_resumed_session,
-        runtime_control_plane_paths, select_or_create_console_session,
-        should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
-        validate_coding_eval_storage_isolation, wait_for_session_reply, ConsoleInput,
-        ConsoleMessageKind, OfflineClient, TerminalApprovalChoice,
+        doctor_failures, ensure_cli_identity_records, format_tool_call_activity,
+        generate_dashboard_token, parse_terminal_approval_input, read_console_input,
+        resolve_resumed_session, runtime_control_plane_paths, select_or_create_console_session,
+        setup_environment_is_headless_for, should_run_first_time_setup_with_terminal,
+        should_use_tui_with_terminal, validate_coding_eval_storage_isolation,
+        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
+        TerminalApprovalChoice,
     };
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::{AppConfig, ResolvedConfig, TuiTheme};
@@ -5283,6 +5327,7 @@ mod tests {
     use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
     use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
     use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
+    use morphz::sandbox::EnforcementStatus;
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::path::Path;
@@ -5440,31 +5485,91 @@ mod tests {
     #[test]
     fn tui_is_default_only_for_interactive_conversations_and_can_be_overridden() {
         let parser = morphz_command_line_parser();
-        assert!(should_use_tui_with_terminal(&parser.parse(["hello"]).unwrap(), true).unwrap());
-        assert!(!should_use_tui_with_terminal(&parser.parse(["hello"]).unwrap(), false).unwrap());
         assert!(
-            should_use_tui_with_terminal(&parser.parse(["--tui", "hello"]).unwrap(), false)
-                .unwrap()
+            should_use_tui_with_terminal(&parser.parse(["hello"]).unwrap(), true, false).unwrap()
         );
         assert!(
-            !should_use_tui_with_terminal(&parser.parse(["--plain", "hello"]).unwrap(), true)
-                .unwrap()
+            !should_use_tui_with_terminal(&parser.parse(["hello"]).unwrap(), false, false).unwrap()
         );
-        assert!(
-            !should_use_tui_with_terminal(&parser.parse(["exec", "hello"]).unwrap(), true).unwrap()
-        );
+        assert!(should_use_tui_with_terminal(
+            &parser.parse(["--tui", "hello"]).unwrap(),
+            false,
+            false
+        )
+        .unwrap());
+        assert!(!should_use_tui_with_terminal(
+            &parser.parse(["--plain", "hello"]).unwrap(),
+            true,
+            false
+        )
+        .unwrap());
+        assert!(!should_use_tui_with_terminal(
+            &parser.parse(["exec", "hello"]).unwrap(),
+            true,
+            false
+        )
+        .unwrap());
         assert!(parser.parse(["--tui", "--plain"]).is_err());
 
         let setup = parser.parse(["setup"]).unwrap();
-        assert!(!should_use_tui_with_terminal(&setup, true).unwrap());
+        assert!(!should_use_tui_with_terminal(&setup, true, false).unwrap());
+        assert!(should_use_tui_with_terminal(&setup, true, true).unwrap());
+        let setup_no_open = parser.parse(["setup", "--no-open"]).unwrap();
+        assert!(!should_use_tui_with_terminal(&setup_no_open, true, true).unwrap());
         let setup_tui = parser.parse(["setup", "--tui"]).unwrap();
-        assert!(should_use_tui_with_terminal(&setup_tui, false).unwrap());
+        assert!(should_use_tui_with_terminal(&setup_tui, false, true).unwrap());
         let setup_plain = parser.parse(["setup", "--plain"]).unwrap();
-        assert!(should_use_tui_with_terminal(&setup_plain, true).is_err());
+        assert!(should_use_tui_with_terminal(&setup_plain, true, true).is_err());
         assert!(parser.parse(["setup", "--tui", "--no-open"]).is_err());
         assert!(parser
             .parse(["setup", "--tui", "--bind=127.0.0.1:9090"])
             .is_err());
+    }
+
+    #[test]
+    fn setup_environment_detects_ssh_and_headless_linux() {
+        assert!(setup_environment_is_headless_for(
+            "linux", false, false, false
+        ));
+        assert!(!setup_environment_is_headless_for(
+            "linux", false, true, false
+        ));
+        assert!(!setup_environment_is_headless_for(
+            "linux", false, false, true
+        ));
+        assert!(setup_environment_is_headless_for(
+            "macos", true, false, false
+        ));
+        assert!(!setup_environment_is_headless_for(
+            "macos", false, false, false
+        ));
+    }
+
+    #[test]
+    fn doctor_fails_when_required_runtime_boundaries_are_missing() {
+        assert!(doctor_failures(
+            SandboxMode::WorkspaceWrite,
+            EnforcementStatus::Enforced,
+            "ok"
+        )
+        .is_empty());
+        assert_eq!(
+            doctor_failures(
+                SandboxMode::WorkspaceWrite,
+                EnforcementStatus::Unavailable,
+                "missing"
+            ),
+            vec![
+                "native sandbox is unavailable",
+                "model provider is not ready"
+            ]
+        );
+        assert!(doctor_failures(
+            SandboxMode::DangerFullAccess,
+            EnforcementStatus::Unavailable,
+            "ok"
+        )
+        .is_empty());
     }
 
     #[test]

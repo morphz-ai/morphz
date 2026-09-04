@@ -92,6 +92,15 @@ max_connections = 16
 
 Merely setting `MORPHZ_POSTGRES_URL` does not switch the physical store. ContextDB is the default cognitive authority. `legacy` is available only as an explicit migration-compatibility fallback. Startup never migrates cognitive authority implicitly; an operator must request migration.
 
+Full background-command output is archived under `~/.morphz/artifacts` by default, independently of the directory from which Morphz starts. A trusted user configuration may select another absolute location:
+
+```toml
+[background_task]
+artifact_dir = "/absolute/path/to/morphz-artifacts"
+```
+
+Project configuration cannot change this host-owned location.
+
 ## Session Working Set and cognitive organization
 
 ```toml
