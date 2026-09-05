@@ -1,6 +1,30 @@
 # Morphz v0.1.1 candidate and v0.1.2 release checklist
 
-Status: v0.1.1 publication blocked; corrected v0.1.2 candidate prepared.
+Status: publication resumed; Dashboard correction integrated into v0.1.2.
+
+## Final Dashboard integration
+
+After pausing for the newly reported Dashboard issue, the user explicitly
+resumed publication. Development supplied `8a082da1f9e894afd630888586d90c202b747a18`
+(parent `470c410d`), which was fast-forwarded into the release checkout without
+rewriting history. The change permanently retires confirmed optimistic message
+placeholders rather than only hiding them while the matching Event is loaded.
+History pagination, Session changes, and a later POST receipt therefore cannot
+resurrect the original card at the end. It does not duplicate, delete, or replay
+the persisted message and does not change Runtime or database semantics.
+
+Review confirmed that late callbacks only update existing placeholders and
+reconciliation preserves array identity once no acknowledgements remain to
+consume. Seven added regressions cover both Event/receipt orders, historical
+paging, Session isolation, pending/failed deliveries, and identity-based rather
+than text-based acknowledgement. Development reported 225 tests, lint, build,
+and reproducible committed Dashboard assets; the release task is independently
+rerunning those checks and checking the embedded web surface and strict Rust
+Clippy. The prior `470c410d` full workspace test completed successfully, but its
+CI result is not a substitute for the final integrated SHA's CI.
+
+The final release notes include this fix. No v0.1.2 tag has been pushed yet;
+publication still requires the final candidate checks and exact-SHA CI.
 
 ## Heartbeat test race and corrected candidate
 
