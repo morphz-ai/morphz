@@ -140,6 +140,19 @@ test("site pages share the new SVG favicon and a PNG fallback", async () => {
   }
 });
 
+test("only home pages include the decorative arrival, with route-stable gradient IDs", async () => {
+  for (const [path, locale] of [["/", "zh"], ["/en", "en"]]) {
+    const html = await (await render(path)).text();
+    assert.match(html, /class="butterfly-arrival"[^>]*aria-hidden="true"[^>]*data-arrival-state="idle"/);
+    assert.match(html, new RegExp(`id="home-butterfly-upper-${locale}"`));
+    assert.match(html, new RegExp(`fill="url\\(#home-butterfly-upper-${locale}\\)"`));
+    assert.match(html, /class="brand__icon" aria-hidden="true"/);
+    assert.match(html, /class="brand__wing brand__wing--left"/);
+  }
+  const article = await (await render("/en/blog/from-chat-completion-to-structured-context-evaluation")).text();
+  assert.doesNotMatch(article, /class="butterfly-arrival"/);
+});
+
 test("uses one site header across landing and content pages", async () => {
   const zhRoutes = ["/", "/paper", "/download", "/docs", "/blog"];
   const enRoutes = ["/en", "/en/paper", "/en/download", "/en/docs", "/en/blog"];

@@ -1,0 +1,42 @@
+/* Decoration is opt-in. Server-rendered content and the real home link remain
+   visible and interactive through loading, cancellation, and reduced motion. */
+.brand__icon { position: relative; display: block; flex: none; width: 28px; height: 28px; }
+.brand__wings { position: absolute; inset: 0; display: block; opacity: 0; fill: #56d0de; pointer-events: none; }
+.brand__wing { transform-box: view-box; transform-origin: 48px 40px; }
+
+.butterfly-arrival {
+  position: fixed;
+  z-index: 60;
+  top: 0;
+  left: 0;
+  width: 256px;
+  height: 256px;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  transform-origin: 0 0;
+  contain: layout style;
+}
+.butterfly-arrival svg { display: block; overflow: visible; }
+.butterfly-arrival[data-arrival-state="done"] { visibility: hidden; }
+
+@media (prefers-reduced-motion: no-preference) and (hover: hover) and (pointer: fine) {
+  .brand:is(:hover, :focus-visible) .brand__mark { opacity: 0; }
+  .brand:is(:hover, :focus-visible) .brand__wings { opacity: 1; }
+  .brand:is(:hover, :focus-visible) .brand__wing--left { animation: brand-wing-left 720ms ease-in-out both; }
+  .brand:is(:hover, :focus-visible) .brand__wing--right { animation: brand-wing-right 720ms ease-in-out both; }
+}
+@keyframes brand-wing-left {
+  0%, 100% { transform: scaleX(1) rotate(0); }
+  30% { transform: scaleX(.55) rotate(-5deg); }
+  65% { transform: scaleX(.94) rotate(1deg); }
+}
+@keyframes brand-wing-right {
+  0%, 100% { transform: scaleX(1) rotate(0); }
+  30% { transform: scaleX(.55) rotate(5deg); }
+  65% { transform: scaleX(.94) rotate(-1deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .butterfly-arrival { display: none; }
+  .brand__wing { animation: none; }
+}

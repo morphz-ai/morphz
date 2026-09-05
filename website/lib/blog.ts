@@ -13,7 +13,7 @@ export interface BlogRecord {
 }
 
 export function blogsFor(locale: Locale): BlogRecord[] {
-  return (generatedBlogs as BlogRecord[])
+  return generatedBlogs
     .filter((post) => post.locale === locale)
     .sort((left, right) => right.published.localeCompare(left.published));
 }

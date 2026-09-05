@@ -43,7 +43,7 @@ export const standardFamilyLabels: Record<Locale, Record<StandardFamily, string>
   },
 };
 
-const records = (generatedStandards as Omit<StandardRecord, "family" | "order">[])
+const records: StandardRecord[] = generatedStandards
   .filter((standard) => standard.slug in catalog)
   .map((standard) => ({ ...standard, ...catalog[standard.slug] }));
 

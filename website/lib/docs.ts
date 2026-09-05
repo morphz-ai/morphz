@@ -20,7 +20,7 @@ export const sectionLabels: Record<Locale, Record<DocSection, string>> = {
 };
 
 export function docsFor(locale: Locale): DocRecord[] {
-  return (generatedDocs as DocRecord[])
+  return generatedDocs
     .filter((doc) => doc.locale === locale)
     .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
 }

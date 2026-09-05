@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="morphz-butterfly-title morphz-butterfly-desc">
+  <title id="morphz-butterfly-title">Morphz butterfly</title>
+  <desc id="morphz-butterfly-desc">A symmetrical electric-cyan butterfly with pointed upper wings suggesting the letter M.</desc>
+  <defs>
+    <linearGradient id="morphz-butterfly-upper" x1="30" y1="29" x2="109" y2="151" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b5f7f4"/>
+      <stop offset="0.48" stop-color="#56d0de"/>
+      <stop offset="1" stop-color="#1aa6bc"/>
+    </linearGradient>
+    <linearGradient id="morphz-butterfly-lower" x1="105" y1="150" x2="55" y2="228" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#72e4e8"/>
+      <stop offset="0.5" stop-color="#40c7d5"/>
+      <stop offset="1" stop-color="#158ea5"/>
+    </linearGradient>
+    <g id="morphz-butterfly-wing-pair">
+      <path d="M119 140C103 105 68 56 26 26C22 73 28 115 56 138C75 153 99 153 119 140Z" fill="url(#morphz-butterfly-upper)"/>
+      <path d="M26 26C32 72 54 111 91 135C63 123 39 88 26 26Z" fill="#d0fffa" fill-opacity="0.3"/>
+      <path d="M116 156C95 147 68 151 56 171C43 192 47 215 61 231C87 220 109 194 120 167C122 162 120 158 116 156Z" fill="url(#morphz-butterfly-lower)"/>
+      <path d="M61 231C68 206 86 181 110 162C91 183 78 207 61 231Z" fill="#c8fff5" fill-opacity="0.2"/>
+    </g>
+  </defs>
+  <g id="morphz-butterfly-left-wings">
+    <use href="#morphz-butterfly-wing-pair"/>
+  </g>
+  <g id="morphz-butterfly-right-wings" transform="translate(256 0) scale(-1 1)">
+    <use href="#morphz-butterfly-wing-pair"/>
+  </g>
+  <g id="morphz-butterfly-body" fill="#56d0de">
+    <path d="M123 105C122 94 117 86 111 80M133 105C134 94 139 86 145 80" fill="none" stroke="#56d0de" stroke-width="3.5" stroke-linecap="round"/>
+    <circle cx="128" cy="112" r="7"/>
+    <path d="M128 123C123 123 121 136 122 152C123 174 125 190 128 202C131 190 133 174 134 152C135 136 133 123 128 123Z"/>
+  </g>
+</svg>

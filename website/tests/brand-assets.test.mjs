@@ -7,14 +7,25 @@ const names = ["morphz-mark", "morphz-mark-ink", "morphz-mark-white", "morphz-ma
 const favicons = ["morphz-favicon", "morphz-favicon-cyan"];
 const sizes = [16, 24, 32, 48, 64, 128, 256, 512];
 
-test("brand masters share one scalable, self-contained silhouette", async () => {
+test("brand masters preserve the silhouette with seamless monochrome wings", async () => {
   const sources = await Promise.all(names.map((name) => readFile(new URL(`${name}.svg`, root), "utf8")));
   const paths = (svg) => [...svg.matchAll(/<path d="([^"]+)"/g)].map((match) => match[1]);
-  for (const svg of sources) {
+  const shadedPaths = [
+    "M8 4 38 31 38 70 8 92Z",
+    "M88 4 58 31 58 70 88 92Z",
+    "M38 31 48 40 38 40Z",
+    "M58 31 48 40 58 40Z",
+  ];
+  // The monochrome contours include the folds in each wing. Separate adjacent
+  // paths leave a translucent antialiasing seam along x=38 and x=58.
+  const seamlessPaths = [
+    "M8 4 48 40 38 40 38 70 8 92Z",
+    "M88 4 48 40 58 40 58 70 88 92Z",
+  ];
+  for (const [index, svg] of sources.entries()) {
     assert.match(svg, /viewBox="0 0 96 96"/);
     assert.match(svg, /<title id="title">Morphz<\/title>/);
-    assert.equal(paths(svg).length, 4);
-    assert.deepEqual(paths(svg), paths(sources[0]));
+    assert.deepEqual(paths(svg), index === 0 ? shadedPaths : seamlessPaths, names[index]);
     assert.doesNotMatch(svg, /<(?:image|script|foreignObject|filter|text)\b/);
     assert.doesNotMatch(svg, /(?:href|src)\s*=/);
   }

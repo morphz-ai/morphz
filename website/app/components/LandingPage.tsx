@@ -5,6 +5,7 @@ import { ContextEvaluationField } from "./ContextEvaluationField";
 import { HomeInstallCommand } from "./HomeInstallCommand";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
+import { ButterflyArrival } from "./ButterflyArrival";
 
 const content = {
   zh: {
@@ -206,6 +207,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
   return (
     <main className={`landing-shell landing-clean landing-clean--${locale}`}>
       <SiteHeader locale={locale} />
+      <ButterflyArrival locale={locale} />
 
       <section className="home-hero">
         <div className="home-hero__copy">

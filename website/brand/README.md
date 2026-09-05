@@ -13,7 +13,7 @@
 - 同名 `-16.png` 至 `-512.png`：透明 PNG 导出，共 8 种尺寸。
 - `public/brand/preview.png`：彩色、单色、深浅背景及实际小尺寸对照。
 
-四个常规尺寸 SVG 共用 `0 0 96 96` 坐标与完全相同的路径。标识自身无背景、描边、光晕或字体依赖。预览中的 Morphz 字样仅用于组合效果检查。
+四个常规尺寸 SVG 共用 `0 0 96 96` 坐标与相同的外轮廓。纯色版将尖角与翼面合为连续路径，消除抗锯齿产生的细接缝；彩色版保留独立折面与阴影。标识自身无背景、描边、光晕或字体依赖。预览中的 Morphz 字样仅用于组合效果检查。
 
 ## 使用
 
@@ -53,3 +53,19 @@ MORPHZ_BRAND_SHARP=/absolute/path/to/sharp/dist/index.cjs node scripts/render-br
 `public/brand/og-cyan-v2.png` 是当前选定的电光青渐变版：仅为封面的大尺寸 logo 增加冰青高光到深青的渐变，保持背景与文案。由内置 imagegen 编辑生成，提示词见 `cover-cyan-gradient-edit-prompt.txt`。已接入 Open Graph / X metadata，尚未部署。网站导航栏和 favicon 仍使用电光青纯色版本。
 
 `public/brand/og-cyan-violet-v1.png` 是独立保存的多色色相渐变试验版：logo 以电光青为主，右翼由青经蓝过渡到紫色；背景仍为电光青。由内置 imagegen 编辑生成，提示词见 `cover-cyan-violet-edit-prompt.txt`。该试验版保留备用，不被当前 metadata 引用；网站采用 `og-cyan-v2.png`。
+
+## 蝴蝶方案
+
+`public/brand/morphz-butterfly-v1.svg` 是独立的具象蝴蝶方案：尖角上翼延续 M 形轮廓，下翼、躯干与触角补足蝴蝶形态，使用电光青渐变。由可编辑 SVG 路径绘制，左右翼与躯干分别成组，方便后续制作动效。
+
+配套提供透明背景的 `morphz-butterfly-v1-512.png`，以及深浅背景、32／48／64 px 尺寸对照的 `morphz-butterfly-v1-preview.png`。使用 `scripts/render-butterfly-preview.mjs` 导出，sharp 的配置方式同上。此方案尚未接入导航栏、favicon 或分享封面。
+
+`public/brand/morphz-butterfly-v2.svg` 从现有 M 标识延伸：保留尖角、两片相接的主翼和中央门形留白，仅让外缘形成轻微的蝶翼曲线，表面沿用电光青渐变。v1 独立保留。运行 `node scripts/render-butterfly-preview.mjs v2` 导出透明 PNG、深浅背景预览及与原标识的 `morphz-butterfly-v2-comparison.png` 对照图。v2 同样未替换官网图标。
+
+## 首页品牌动效试作
+
+`ButterflyArrival.tsx` 使用第一版蝴蝶的路径，在首页留白处飞入、悬停、收翼并变为现有 M，最后落到导航栏图标的实际位置。约 3.2 秒完成，开始前预留 350 ms 显示页面。每次完整加载首页播放一次，站内切页不重播；刷新可重新查看。第二版蝴蝶未用于此动效。
+
+飞行、变形与落位由 `lib/butterfly-motion.ts` 的确定性时间函数驱动，SVG 终点与原 M 轮廓一致。`BrandMark.tsx` 保留原始静态图标，在支持鼠标悬停的设备上增加一次短暂的双翼开合。尺寸、文案、favicon 与分享封面均保持不变。
+
+装饰层不接收鼠标或触摸事件，不改变内容和链接的可见性。滚动、点击、键盘操作、窗口变化和减少动态效果设置都会结束开场，并释放定时器与事件监听。关闭动画、JavaScript 未加载或开场失败时，原图标照常显示。本次仅供本地预览，尚未部署。
