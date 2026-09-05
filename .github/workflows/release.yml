@@ -426,7 +426,12 @@ jobs:
             echo "release $RELEASE_TAG already exists; release assets are immutable" >&2
             exit 1
           fi
+          notes_args=(--generate-notes)
+          release_notes_path="docs/releases/${RELEASE_TAG}.md"
+          if [[ -f "$release_notes_path" ]]; then
+            notes_args=(--notes-file "$release_notes_path")
+          fi
           gh release create "$RELEASE_TAG" dist/* \
             --verify-tag \
             --title "$RELEASE_TAG" \
-            --generate-notes
+            "${notes_args[@]}"
