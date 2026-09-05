@@ -6890,7 +6890,16 @@ async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() 
 async fn same_session_dialogue_turns_are_serialized() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("single-writer.db");
-    let bus = Arc::new(InMemoryEventBus::new());
+    let dispatch_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut event_bus = InMemoryEventBus::new();
+    let captured_errors = Arc::clone(&dispatch_errors);
+    event_bus.set_error_handler(move |error, event| {
+        captured_errors
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}: {error}", event.topic, event.id));
+    });
+    let bus = Arc::new(event_bus);
     let snapshots = capture_model_request_snapshots(&bus, "serialized-session");
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     store
@@ -6942,6 +6951,32 @@ async fn same_session_dialogue_turns_are_serialized() {
 
     let replies = wait_for_topic_count(&store, "chat/reply", "serialized-session", 2).await;
 
+    if replies.len() != 2 {
+        // The shared wait helper returns an empty Vec on timeout even when a
+        // partial reply was persisted. Preserve the actual state for diagnosis
+        // without extending the deadline or accepting a late success.
+        let actual_replies = store
+            .query(QueryFilter {
+                session_id: Some("serialized-session".to_string()),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await;
+        let threads = store.list_context_threads("serialized-session", true).await;
+        let activations = store
+            .list_context_thread_activations("serialized-session", true)
+            .await;
+        let signals = store
+            .list_context_thread_signals("serialized-session", None)
+            .await;
+        panic!(
+            "two serialized replies were not observed before the deadline; calls={}, active={}, max_active={}, replies={actual_replies:?}, threads={threads:?}, activations={activations:?}, signals={signals:?}, dispatch_errors={:?}",
+            client.calls.load(Ordering::SeqCst),
+            client.active.load(Ordering::SeqCst),
+            client.max_active.load(Ordering::SeqCst),
+            dispatch_errors.lock().unwrap(),
+        );
+    }
     assert_eq!(replies.len(), 2);
     assert_eq!(client.calls.load(Ordering::SeqCst), 2);
     assert_eq!(
