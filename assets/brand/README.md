@@ -1,17 +1,23 @@
-# Morphz brand mark
+# Morphz brand assets
 
-`morphz-mark.svg` is the primary compact Morphz mark. It combines the initial `M` with
-parentheses: Morphz and Mind held inside a structured evaluation boundary. The parentheses are
-widest at the center and taper toward both ends, giving the boundary a sense of flow without
-adding another symbol.
+The primary mark is the pointed, butterfly-shaped M in electric cyan (`#56d0de`).
+Both repository READMEs reference the same SVG as the website navigation:
+[`morphz-mark-cyan.svg`](../../website/public/brand/morphz-mark-cyan.svg).
 
-`morphz-avatar.svg` and `morphz-avatar-512.png` use a full-bleed dark background for the GitHub
-organization avatar and other services that apply their own mask. The full background prevents
-transparent corners from being composited onto white.
+`morphz-avatar-cyan.svg` and `morphz-avatar-cyan-512.png` place that exact silhouette on
+a full-bleed dark background, with clear space for square or circular avatar masks.
+Use the PNG for the GitHub organization avatar. Regenerate it with:
+
+```bash
+MORPHZ_BRAND_SHARP=/absolute/path/to/sharp/dist/index.cjs node scripts/render-github-avatar.mjs
+```
+
+The previous `(M)` design remains in `morphz-mark.svg`, `morphz-avatar.svg`, and
+`morphz-avatar-512.png` as a legacy asset. Existing videos can retain it until their next update.
 
 - Ink: `#17191d`
 - Paper: `#f7f8f8`
 - Accent: `#56d0de`
 
-Keep the mark square, preserve the clear space built into the SVG, and do not recolor individual
-parentheses independently.
+Preserve the pointed tips, continuous wings, and proportions of the primary mark.
+See the [website brand guide](../../website/brand/README.md) for other approved formats.

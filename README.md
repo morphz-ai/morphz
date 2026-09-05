@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/morphz-mark.svg" alt="Morphz logo: M inside parentheses" width="112" height="112">
+  <img src="website/public/brand/morphz-mark-cyan.svg" alt="Morphz" width="112" height="112">
 </p>
 
 # Morphz

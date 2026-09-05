@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title description">
+  <title id="title">Morphz</title>
+  <desc id="description">The electric-cyan butterfly-shaped M on a dark background.</desc>
+  <rect width="256" height="256" fill="#17191d"/>
+  <g transform="translate(36.8 36.8) scale(1.9)" fill="#56d0de">
+    <path d="M8 4 48 40 38 40 38 70 8 92Z"/>
+    <path d="M88 4 48 40 58 40 58 70 88 92Z"/>
+  </g>
+</svg>

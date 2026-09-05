@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="website/public/brand/morphz-mark-cyan.svg" alt="Morphz" width="112" height="112">
+</p>
+
 # Morphz
 
 [English](README.md) · 简体中文
