@@ -339,18 +339,23 @@
 .platform-grid article:hover { z-index: 1; background: var(--accent-soft); transform: translateY(-6px); }
 .platform-grid article:hover::after { opacity: .12; transform: translateX(0); }
 
-/* Reading pages stay calm; punctuation and data surfaces carry the motion. */
-.docs-site .motion-reveal,
-.content-site .doc-prose .motion-reveal { transform: translate3d(0, 18px, 0); filter: blur(2px); }
-.docs-site .motion-reveal.is-visible,
-.content-site .doc-prose .motion-reveal.is-visible { transform: translate3d(0, 0, 0); filter: blur(0); }
+/* Reading content is visible even if stale reveal classes remain on navigation.
+   Neither long-form text nor its ancestors depend on an observer callback. */
+.motion-ready .blog-article__layout,
+.motion-ready .doc-prose,
+.motion-ready .doc-prose .motion-reveal {
+  opacity: 1;
+  filter: none;
+  transform: none;
+  transition: none;
+  will-change: auto;
+}
 
 .doc-prose h2 { position: relative; overflow: hidden; }
 .doc-prose h2::after { content: ")"; position: absolute; right: 4px; bottom: -42px; color: var(--accent); font-family: var(--font-geist-mono); font-size: 104px; font-weight: 250; line-height: 1; opacity: calc(.025 + var(--motion-progress, .5) * .06); transform: translateX(var(--motion-shift, 0px)); }
 
 .doc-prose pre { position: relative; overflow: auto; }
-.doc-prose pre::after { content: ""; position: absolute; top: 0; right: 0; left: 0; height: 1px; background: linear-gradient(90deg, var(--accent-bright), transparent 76%); transform: scaleX(0); transform-origin: left; transition: transform 1s .16s cubic-bezier(.22, 1, .36, 1); }
-.doc-prose pre.is-visible::after { transform: scaleX(1); }
+.doc-prose pre::after { content: ""; position: absolute; top: 0; right: 0; left: 0; height: 1px; background: linear-gradient(90deg, var(--accent-bright), transparent 76%); }
 
 .doc-prose blockquote { position: relative; overflow: hidden; }
 .doc-prose blockquote::after { content: ")"; position: absolute; right: 12px; bottom: -38px; color: var(--accent); font-family: var(--font-geist-mono); font-size: 112px; font-weight: 250; line-height: 1; opacity: .08; }
@@ -361,11 +366,6 @@
 .doc-prose tr > :last-child { border-right: 0; }
 .doc-prose tbody tr:last-child > * { border-bottom: 0; }
 .doc-prose tbody tr:hover td { background: var(--accent-soft); }
-.motion-ready .doc-prose table.motion-reveal tbody td { opacity: 0; transform: translateY(9px); }
-.motion-ready .doc-prose table.motion-reveal.is-visible tbody td { opacity: 1; transform: translateY(0); transition: opacity .5s ease, transform .55s cubic-bezier(.22, 1, .36, 1), background-color .25s ease; }
-.motion-ready .doc-prose table.motion-reveal.is-visible tbody tr:nth-child(2) td { transition-delay: 60ms; }
-.motion-ready .doc-prose table.motion-reveal.is-visible tbody tr:nth-child(3) td { transition-delay: 120ms; }
-.motion-ready .doc-prose table.motion-reveal.is-visible tbody tr:nth-child(4) td { transition-delay: 180ms; }
 
 .docs-index__grid > a { position: relative; overflow: hidden; }
 .docs-index__grid > a::after { content: ")"; position: absolute; right: 14px; bottom: -48px; color: var(--accent); font-family: var(--font-geist-mono); font-size: 126px; font-weight: 250; line-height: 1; opacity: 0; transform: translateX(22px); transition: opacity .35s ease, transform .45s cubic-bezier(.22, 1, .36, 1); }

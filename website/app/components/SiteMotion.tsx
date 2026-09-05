@@ -23,7 +23,6 @@ const revealSelector = [
   ".blog-index__header > *",
   ".blog-card",
   ".blog-article__header > *",
-  ".blog-article__layout",
   ".project-page__header > *",
   ".project-page__statement > *",
   ".project-page__section > .project-page__label",
@@ -39,7 +38,6 @@ const revealSelector = [
   ".doc-article > .doc-article__meta",
   ".doc-article > h1",
   ".doc-article > .doc-article__description",
-  ".doc-prose > *",
   ".doc-article__footer",
   ".standards-hero__copy > *",
   ".standards-stack > article",
@@ -59,7 +57,6 @@ const parallaxSelector = [
   ".home-mechanism__steps",
   ".home-cognitive-os__proof",
   ".project-page__statement",
-  ".doc-prose h2",
 ].join(",");
 
 function siblingOrder(element: HTMLElement): number {
@@ -78,6 +75,9 @@ export function SiteMotion() {
       return () => root.classList.remove("motion-reduced");
     }
 
+    // Keep the server-rendered page visible when observer APIs are unavailable.
+    if (typeof IntersectionObserver === "undefined" || typeof MutationObserver === "undefined") return;
+
     const observed = new WeakSet<Element>();
     const parallaxElements = new Set<HTMLElement>();
     let frame = 0;
@@ -88,7 +88,9 @@ export function SiteMotion() {
         entry.target.classList.add("is-visible");
         intersection.unobserve(entry.target);
       }
-    }, { rootMargin: "0px 0px -7%", threshold: 0.08 });
+    // A tall section may never fit 8% of its area inside a mobile viewport.
+    // Reveal on entry, independently of the element's total height.
+    }, { rootMargin: "0px 0px -7%", threshold: 0 });
 
     const updateMotion = () => {
       frame = 0;
@@ -144,6 +146,8 @@ export function SiteMotion() {
 
     const register = () => {
       document.querySelectorAll<HTMLElement>(revealSelector).forEach((element) => {
+        // Reading content must remain available without any animation callback.
+        if (element.closest(".blog-article__layout, .doc-prose")) return;
         if (observed.has(element)) return;
         observed.add(element);
         element.classList.add("motion-reveal");

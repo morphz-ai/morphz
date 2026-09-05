@@ -244,6 +244,16 @@ test("renders the bilingual journal and its first essay", async () => {
   assert.match(html[3], /A transcript is not cognitive state/);
   assert.match(html[3], /By/);
   assert.match(html[3], /Morphz Project/);
+  // Direct HTML readers must receive real article markup, not just a title or
+  // text embedded in hydration data. The final section is present without JS.
+  for (const article of html.slice(2)) {
+    const prose = article.match(/<div class="doc-prose blog-prose">([\s\S]*?)<\/div>/)?.[1];
+    assert.ok(prose, "article body is server-rendered");
+    assert.match(prose, /<p>/);
+    assert.match(prose, /<pre>/);
+    assert.match(prose, /<h2 id="(?:conclusion|结论)">/);
+    assert.match(prose, /href="https:\/\/github\.com\/morphz-ai\/morphz"/);
+  }
   assert.doesNotMatch(html[2], /我叫 Morphz|一台认知机，也应当拥有自己的声音/);
   assert.doesNotMatch(html[3], /I am Morphz|A cognitive machine should have a voice of its own/);
 });
