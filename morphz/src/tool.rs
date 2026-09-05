@@ -3792,74 +3792,82 @@ impl ScheduleTxTool {
             "Current Runtime has no Objective Store configured and cannot promote a durable Thread",
         )?;
 
-        let (objective_id, expected_objective_revision, new_objective_spec, completion_criteria) =
-            match objective_binding {
-                ScheduleObjectiveBinding::Current => {
-                    let objective_id = CURRENT_OBJECTIVE_ID
+        let (
+            objective_id,
+            expected_objective_revision,
+            target_generation,
+            new_objective_spec,
+            completion_criteria,
+        ) = match objective_binding {
+            ScheduleObjectiveBinding::Current => {
+                let objective_id = CURRENT_OBJECTIVE_ID
                         .try_with(Clone::clone)
                         .ok()
                         .flatten()
                         .ok_or(
                         "the current Evaluation is not bound to an Objective, so objective.mode=current cannot be used",
                     )?;
-                    let objective = objectives
-                        .get_objective(&objective_id)
-                        .await?
-                        .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
-                    validate_promotion_objective(&objective, &target)?;
-                    (
-                        objective_id,
-                        Some(objective.revision),
-                        None,
-                        objective.stated_objective,
-                    )
+                let objective = objectives
+                    .get_objective(&objective_id)
+                    .await?
+                    .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
+                validate_promotion_objective(&objective, &target)?;
+                (
+                    objective_id,
+                    Some(objective.revision),
+                    objective.generation,
+                    None,
+                    objective.stated_objective,
+                )
+            }
+            ScheduleObjectiveBinding::Existing { objective_id } => {
+                let objective_id = objective_id.trim().to_string();
+                if objective_id.is_empty() {
+                    return Err("objective_id must not be empty".into());
                 }
-                ScheduleObjectiveBinding::Existing { objective_id } => {
-                    let objective_id = objective_id.trim().to_string();
-                    if objective_id.is_empty() {
-                        return Err("objective_id must not be empty".into());
-                    }
-                    let objective = objectives
-                        .get_objective(&objective_id)
-                        .await?
-                        .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
-                    validate_promotion_objective(&objective, &target)?;
-                    (
-                        objective_id,
-                        Some(objective.revision),
-                        None,
-                        objective.stated_objective,
-                    )
+                let objective = objectives
+                    .get_objective(&objective_id)
+                    .await?
+                    .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
+                validate_promotion_objective(&objective, &target)?;
+                (
+                    objective_id,
+                    Some(objective.revision),
+                    objective.generation,
+                    None,
+                    objective.stated_objective,
+                )
+            }
+            ScheduleObjectiveBinding::Create {
+                stated_objective,
+                completion_criteria,
+                token_budget,
+            } => {
+                let stated_objective = stated_objective.trim().to_string();
+                let completion_criteria = completion_criteria.trim().to_string();
+                if stated_objective.is_empty() || completion_criteria.is_empty() {
+                    return Err("objective.mode=create requires a non-empty objective and completion criteria".into());
                 }
-                ScheduleObjectiveBinding::Create {
-                    stated_objective,
-                    completion_criteria,
-                    token_budget,
-                } => {
-                    let stated_objective = stated_objective.trim().to_string();
-                    let completion_criteria = completion_criteria.trim().to_string();
-                    if stated_objective.is_empty() || completion_criteria.is_empty() {
-                        return Err("objective.mode=create requires a non-empty objective and completion criteria".into());
-                    }
-                    let digest = sha256_hex(
+                let digest = sha256_hex(
                     format!(
                         "{attempt_id}\0thread-promote\0{thread_id}\0{stated_objective}\0{completion_criteria}\0{token_budget:?}"
                     )
                     .as_bytes(),
                 );
-                    let objective_id = format!("objective-auto-{}", &digest[..24]);
-                    (
-                        objective_id,
-                        None,
-                        Some((stated_objective, completion_criteria.clone(), token_budget)),
-                        completion_criteria,
-                    )
-                }
-            };
+                let objective_id = format!("objective-auto-{}", &digest[..24]);
+                (
+                    objective_id,
+                    None,
+                    1,
+                    Some((stated_objective, completion_criteria.clone(), token_budget)),
+                    completion_criteria,
+                )
+            }
+        };
 
-        // A supervision transfer creates a new fencing epoch even when the
-        // target Objective itself is still at revision 1.
-        let target_generation = target.supervision.generation.saturating_add(1).max(2);
+        // The supervisor identity changes; its generation belongs to the new
+        // Objective, not the old parent. Thread revision CAS and source-group
+        // membership fence the transfer without inventing an Objective epoch.
         let group_digest = sha256_hex(
             format!(
                 "{attempt_id}\0thread-promotion-group\0{thread_id}\0{objective_id}\0{target_generation}"
@@ -4680,7 +4688,9 @@ impl Tool for ScheduleTxTool {
         let mut prepared_supervisions = Vec::<Option<ThreadSupervision>>::new();
         let mut prepared_required = Vec::<bool>::new();
         let mut local_refs = HashMap::<String, String>::new();
-        let mut existing_objective_revisions = HashMap::<String, u64>::new();
+        // Keep revision (transaction CAS) separate from generation (lifetime
+        // fencing). Normal Objective edits/leases must not stale its children.
+        let mut existing_objectives = HashMap::<String, crate::memory::ObjectiveRecord>::new();
         for (index, operation) in args.operations.iter().enumerate() {
             if let ScheduleOperation::Spawn {
                 client_id,
@@ -4740,14 +4750,12 @@ impl Tool for ScheduleTxTool {
                         if objective_id.is_empty() {
                             return Err("objective_id must not be empty".into());
                         }
-                        let objective_revision = if created_objective_id.as_deref()
+                        let objective_generation = if created_objective_id.as_deref()
                             == Some(objective_id.as_str())
                         {
                             1
-                        } else if let Some(revision) =
-                            existing_objective_revisions.get(&objective_id)
-                        {
-                            *revision
+                        } else if let Some(objective) = existing_objectives.get(&objective_id) {
+                            objective.generation
                         } else {
                             let objectives = self.objectives.as_ref().ok_or(
                                 "the current Runtime has no Objective Store configured and cannot create a durable Thread",
@@ -4774,14 +4782,14 @@ impl Tool for ScheduleTxTool {
                                 )
                                 .into());
                             }
-                            existing_objective_revisions
-                                .insert(objective_id.clone(), objective.revision);
-                            objective.revision
+                            let generation = objective.generation;
+                            existing_objectives.insert(objective_id.clone(), objective);
+                            generation
                         };
                         ThreadSupervision::objective(
                             objective_id,
                             route.activation_id.clone(),
-                            objective_revision,
+                            objective_generation,
                             Some(route.thread_id.clone()),
                         )
                     }
@@ -4938,9 +4946,9 @@ impl Tool for ScheduleTxTool {
             {
                 continue;
             }
-            let expected_revision = existing_objective_revisions
+            let expected_revision = existing_objectives
                 .get(&plan.group.supervisor_id)
-                .copied()
+                .map(|objective| objective.revision)
                 .ok_or_else(|| {
                     format!(
                         "Objective Group '{}' is missing the revision fence for existing Objective '{}'",
@@ -11509,6 +11517,15 @@ Body
 
     #[tokio::test]
     async fn schedule_tx_atomically_binds_existing_objective_to_required_durable_group() {
+        assert_existing_objective_dispatches_four_threads("existing").await;
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_current_objective_dispatches_four_threads_after_revision_change() {
+        assert_existing_objective_dispatches_four_threads("current").await;
+    }
+
+    async fn assert_existing_objective_dispatches_four_threads(binding_mode: &str) {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
@@ -11574,25 +11591,50 @@ Body
             .await
             .unwrap();
 
+        // Editing/claiming an Objective changes its CAS revision, not its
+        // executable lifetime. Reproduce the production revision != generation.
+        let crate::memory::ObjectiveMutation::Updated(objective) = store
+            .edit_objective(
+                &objective.id,
+                objective.revision,
+                "Implement four independent districts",
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("objective edit must succeed");
+        };
+        assert_ne!(objective.revision, objective.generation);
+
         let bus = Arc::new(InMemoryEventBus::new());
-        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        // Explicitly drive the clock; no random sleeps or background test race.
+        let (scheduler, timers) = build_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let tool = ScheduleTxTool::new(
             Arc::clone(&scheduler),
             Arc::clone(&store) as Arc<dyn SessionStore>,
         )
         .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
+        let binding = if binding_mode == "current" {
+            serde_json::json!({"mode": "current"})
+        } else {
+            serde_json::json!({"mode": "existing", "objective_id": objective.id})
+        };
         let arguments = serde_json::json!({
-            "operations": [{
+            "operations": (0..4).map(|index| serde_json::json!({
                 "op": "spawn",
                 "lifetime": "durable",
-                "objective": {
-                    "mode": "existing",
-                    "objective_id": objective.id
-                },
-                "client_id": "required-work",
-                "intent": "执行必须完成的长期工作",
-                "delay_seconds": 3600
-            }]
+                "objective": binding,
+                "client_id": format!("required-work-{index}"),
+                "intent": format!("Implement independent district {index}")
+            })).collect::<Vec<_>>()
         })
         .to_string();
         let route = Some(ToolCausalRoute {
@@ -11610,7 +11652,10 @@ Body
                     "context-existing-objective".to_string(),
                     CURRENT_ATTEMPT_ID.scope(
                         "attempt-existing-objective".to_string(),
-                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&arguments)),
+                        CURRENT_OBJECTIVE_ID.scope(
+                            Some(objective.id.clone()),
+                            CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&arguments)),
+                        ),
                     ),
                 ),
             )
@@ -11639,7 +11684,8 @@ Body
             .expect("required durable group");
         assert_eq!(group.supervisor_kind, ThreadSupervisorKind::Objective);
         assert_eq!(group.supervisor_id, objective.id);
-        assert_eq!(group.required_count, 1);
+        assert_eq!(group.required_count, 4);
+        assert_eq!(group.generation, objective.generation);
         let bound_events = store
             .query(QueryFilter {
                 context_id: Some("context-existing-objective".to_string()),
@@ -11650,10 +11696,60 @@ Body
             .unwrap();
         assert_eq!(bound_events.len(), 1);
         assert_eq!(bound_events[0].payload["thread_group_id"], group_id);
+
+        // Restart the process-local scheduler before any child is dispatched:
+        // all four queued intents must be recovered from durable state.
+        drop(tool);
+        drop(scheduler);
+        drop(timers);
+        let (scheduler, timers) = build_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        scheduler.recover().await.unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 4);
+        let mut roots = BTreeSet::new();
+        for _ in 0..4 {
+            let event = receiver
+                .try_recv()
+                .expect("each child must actually be dispatched");
+            roots.insert(event.payload["root_turn_id"].as_str().unwrap().to_string());
+        }
+        assert_eq!(roots.len(), 4);
+        let schedules = store.list_schedules(None, None).await.unwrap();
+        assert_eq!(schedules.len(), 4);
+        for schedule in &schedules {
+            assert_eq!(schedule.status, ScheduleStatus::Dispatched);
+            let thread = store
+                .get_thread(&schedule.thread_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(thread.supervision.generation, objective.generation);
+            assert!(roots.contains(&thread.root_turn_id));
+        }
+        assert_eq!(
+            store
+                .list_context_thread_signals("context-existing-objective", None)
+                .await
+                .unwrap()
+                .len(),
+            4
+        );
+        // Recovery must not re-deliver any already dispatched occurrence.
+        scheduler.recover().await.unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 0);
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn schedule_tx_promotes_the_same_attached_thread_to_a_durable_objective() {
+        assert_promoted_thread_dispatches("create").await;
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_promotes_into_edited_existing_objective_and_dispatches() {
+        assert_promoted_thread_dispatches("existing").await;
+    }
+
+    async fn assert_promoted_thread_dispatches(binding_mode: &str) {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
@@ -11706,7 +11802,7 @@ Body
 
         let bus = Arc::new(InMemoryEventBus::new());
         let sessions = Arc::clone(&store) as Arc<dyn SessionStore>;
-        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let (scheduler, timers) = build_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions)
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>);
         let spawn_route = ToolCausalRoute {
@@ -11769,17 +11865,49 @@ Body
         );
         let revision = attached.revision;
 
+        let binding = if binding_mode == "existing" {
+            let objective = store
+                .create_objective(NewObjective {
+                    id: "objective-promotion-existing".to_string(),
+                    agent_id: "agent-thread-promotion".to_string(),
+                    context_id: "context-thread-promotion".to_string(),
+                    coordinator_session_id: "session-thread-promotion".to_string(),
+                    delivery_session_id: "session-thread-promotion".to_string(),
+                    parent_objective_id: None,
+                    source_event_id: "promotion-existing-created".to_string(),
+                    initiating_principal_id: None,
+                    stated_objective: "Adopt a child".to_string(),
+                    token_budget: None,
+                })
+                .await
+                .unwrap();
+            let crate::memory::ObjectiveMutation::Updated(objective) = store
+                .edit_objective(
+                    &objective.id,
+                    objective.revision,
+                    "Adopt and execute a child",
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("objective edit must succeed");
+            };
+            assert_ne!(objective.revision, objective.generation);
+            serde_json::json!({"mode": "existing", "objective_id": objective.id})
+        } else {
+            serde_json::json!({
+                "mode": "create",
+                "stated_objective": "持续完成已经开始的长期处理",
+                "completion_criteria": "产生经过检查的最终结果",
+                "token_budget": 9000
+            })
+        };
         let promote = serde_json::json!({
             "operations": [{
                 "op": "promote",
                 "thread_id": thread_id,
                 "expected_revision": revision,
-                "objective": {
-                    "mode": "create",
-                    "stated_objective": "持续完成已经开始的长期处理",
-                    "completion_criteria": "产生经过检查的最终结果",
-                    "token_budget": 9000
-                }
+                "objective": binding
             }]
         })
         .to_string();
@@ -11858,6 +11986,40 @@ Body
             current[0].status,
             crate::memory::ThreadGroupMemberStatus::Pending
         );
+        let objective = store.get_objective(objective_id).await.unwrap().unwrap();
+        let thread = store.get_thread(&thread_id).await.unwrap().unwrap();
+        assert_eq!(thread.supervision.generation, objective.generation);
+        assert_eq!(receipt["target_group"]["generation"], objective.generation);
+        let schedule = store
+            .list_schedules(Some(&thread_id), None)
+            .await
+            .unwrap()
+            .remove(0);
+        scheduler
+            .reschedule(&schedule.id, schedule.revision, None, None)
+            .await
+            .unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        assert_eq!(
+            store
+                .get_schedule(&schedule.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduleStatus::Dispatched
+        );
+        assert_eq!(
+            store
+                .list_context_thread_signals("context-thread-promotion", None)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.thread_id == thread_id)
+                .count(),
+            1
+        );
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 0);
     }
 
     async fn scheduler_store_with_threads(
@@ -12059,6 +12221,156 @@ Body
         assert_eq!(event.payload["wake_source"], "schedule-enqueue");
         assert_eq!(event.payload["objective_id"], objective_id);
         assert_eq!(event.payload["objective_generation"], generation);
+    }
+
+    #[tokio::test]
+    async fn stale_objective_generation_cannot_dispatch_a_schedule_or_signal() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(&database, &[]).await;
+        let objective = store
+            .create_objective(NewObjective {
+                id: "objective-stale-child".to_string(),
+                agent_id: "agent-scheduler-test".to_string(),
+                context_id: "context-scheduler-test".to_string(),
+                coordinator_session_id: "session-scheduler-test".to_string(),
+                delivery_session_id: "session-scheduler-test".to_string(),
+                parent_objective_id: None,
+                source_event_id: "objective-stale-created".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "Reject stale work".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let child = store
+            .ensure_thread(NewThread {
+                id: "thread-stale-child".to_string(),
+                agent_id: objective.agent_id.clone(),
+                context_id: objective.context_id.clone(),
+                session_id: objective.coordinator_session_id.clone(),
+                initiating_principal_id: None,
+                root_turn_id: "root-stale-child".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::objective(
+                    &objective.id,
+                    "evaluation-stale-child",
+                    objective.generation,
+                    None,
+                ),
+            })
+            .await
+            .unwrap();
+        let crate::memory::ObjectiveMutation::Updated(paused) = store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Paused,
+                None,
+                Some("pause fixture"),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("pause must succeed");
+        };
+        let crate::memory::ObjectiveMutation::Updated(resumed) = store
+            .update_objective_state(
+                &paused.id,
+                paused.revision,
+                ObjectiveStatus::Active,
+                None,
+                Some("new lifetime"),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("resume must succeed");
+        };
+        assert!(resumed.generation > child.supervision.generation);
+        // Seed stale persisted work as if a pre-fix writer had produced it.
+        let schedule = store
+            .ensure_schedule(NewSchedule {
+                id: "schedule-stale-child".to_string(),
+                thread_id: child.id,
+                source_turn_id: child.root_turn_id,
+                intent: "must never execute under a new Objective lifetime".to_string(),
+                model_alias: None,
+                not_before: None,
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .claim_schedule(&schedule.id, schedule.revision, None)
+            .await
+            .unwrap()
+            .is_none());
+        let (scheduler, timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+        scheduler.arm(schedule.clone()).await.unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        assert_eq!(
+            store
+                .get_schedule(&schedule.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduleStatus::Queued
+        );
+        assert!(store
+            .list_context_thread_signals("context-scheduler-test", None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .query(QueryFilter {
+                topic: Some("chat/schedule_due".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        // A pre-fix malformed queued record remains inspectable and can be
+        // closed through the ordinary operator control path; upgrading must
+        // not silently rebind its lifetime and execute it.
+        let crate::memory::ThreadMutation::Updated(cancelled) = store
+            .control_thread(
+                &schedule.thread_id,
+                1,
+                crate::memory::ThreadControlAction::Cancel,
+                Some("replace never-started invalid owner fixture"),
+                Some("Runtime-Test"),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("operator cancellation must close the stale child");
+        };
+        assert_eq!(
+            cancelled.lifecycle,
+            crate::memory::ThreadLifecycle::Cancelled
+        );
+        assert_eq!(
+            store
+                .get_schedule(&schedule.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduleStatus::Cancelled
+        );
+        drop(scheduler);
+        drop(timers);
+        let (scheduler, timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+        scheduler.recover().await.unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 0);
     }
 
     #[tokio::test]

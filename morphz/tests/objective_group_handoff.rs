@@ -61,7 +61,7 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
     let mut supervision = ThreadSupervision::objective(
         objective.id.clone(),
         "objective-handoff-evaluation".to_string(),
-        objective.revision,
+        objective.generation,
         None,
     );
     supervision.thread_group_id = Some(group_id.to_string());
@@ -216,7 +216,7 @@ async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
             supervision: ThreadSupervision::objective(
                 objective.id.clone(),
                 "objective-handoff-direct-evaluation",
-                objective.revision,
+                objective.generation,
                 None,
             ),
         })

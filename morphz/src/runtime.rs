@@ -21718,34 +21718,68 @@ mod tests {
             .collect(),
         );
         runtime.publish(stale_event).await.unwrap();
-        let stale_activation = {
+        let stale_audit = {
             let mut observed = None;
             for _ in 0..100 {
                 let current = runtime
                     .inner
                     .store
-                    .list_context_thread_activations(runtime.identity().context_id.as_str(), true)
+                    .query(QueryFilter {
+                        event_id: Some(
+                            "objective_event_rejected_objective-scoped-b-stale-continuation"
+                                .to_string(),
+                        ),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                let still_pending = runtime
+                    .inner
+                    .store
+                    .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 100)
                     .await
                     .unwrap()
-                    .into_iter()
-                    .find(|activation| {
-                        activation.trigger_event_id == "objective-scoped-b-stale-continuation"
-                    });
-                if let Some(current) = current {
-                    if current.status == crate::memory::ThreadActivationStatus::Cancelled {
-                        observed = Some(current);
-                        break;
-                    }
+                    .iter()
+                    .any(|entry| entry.event_id == "objective-scoped-b-stale-continuation");
+                if let Some(current) = current.into_iter().next().filter(|_| !still_pending) {
+                    observed = Some(current);
+                    break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            observed
-                .expect("late Objective continuation should reach an audited cancelled Activation")
+            observed.expect(
+                "late Objective continuation must be durably audited before materialization",
+            )
         };
         assert_eq!(
-            stale_activation.status,
-            crate::memory::ThreadActivationStatus::Cancelled
+            stale_audit.payload["reason"],
+            "stale_objective_evaluation_or_generation"
         );
+        assert!(runtime
+            .inner
+            .store
+            .get_thread_by_root("objective-scoped-b-stale-continuation")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .inner
+            .store
+            .list_context_thread_activations(runtime.identity().context_id.as_str(), true)
+            .await
+            .unwrap()
+            .iter()
+            .all(
+                |activation| activation.trigger_event_id != "objective-scoped-b-stale-continuation"
+            ));
+        assert!(runtime
+            .inner
+            .store
+            .list_context_thread_signals(runtime.identity().context_id.as_str(), None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|signal| signal.event_id != "objective-scoped-b-stale-continuation"));
         assert_eq!(client.objective_b_calls.load(Ordering::SeqCst), 1);
     }
 

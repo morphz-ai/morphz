@@ -4634,6 +4634,9 @@ pub struct ThreadSupervision {
     pub lifetime: ThreadLifetime,
     pub supervisor_kind: ThreadSupervisorKind,
     pub supervisor_id: Option<String>,
+    /// Executable lifetime of the named supervisor (Objective generation or
+    /// parent Thread generation), never its mutable CAS revision. A transfer
+    /// changes supervisor identity and adopts that supervisor's generation.
     pub generation: u64,
     pub origin_evaluation_id: Option<String>,
     pub parent_thread_id: Option<String>,
@@ -4664,14 +4667,14 @@ impl ThreadSupervision {
     pub fn objective(
         objective_id: impl Into<String>,
         origin_evaluation_id: impl Into<String>,
-        objective_revision: u64,
+        objective_generation: u64,
         parent_thread_id: Option<String>,
     ) -> Self {
         Self {
             lifetime: ThreadLifetime::Durable,
             supervisor_kind: ThreadSupervisorKind::Objective,
             supervisor_id: Some(objective_id.into()),
-            generation: objective_revision.max(1),
+            generation: objective_generation.max(1),
             origin_evaluation_id: Some(origin_evaluation_id.into()),
             parent_thread_id,
             thread_group_id: None,

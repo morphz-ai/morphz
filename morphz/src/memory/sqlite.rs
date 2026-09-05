@@ -17039,6 +17039,25 @@ impl ScheduleStore for SqliteStore {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
+            if thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective {
+                // The INSERT above already acquired SQLite's writer. Validate
+                // the owner in the same atomic boundary before publishing work.
+                let generation = sqlx::query_scalar::<_, i64>(
+                    "SELECT generation FROM objectives WHERE id = ? AND status = 'active' AND agent_id = ? AND context_id = ? AND coordinator_session_id = ?",
+                )
+                .bind(&thread.supervision.supervisor_id)
+                .bind(&thread.agent_id)
+                .bind(&thread.context_id)
+                .bind(&thread.session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if generation != Some(i64::try_from(thread.supervision.generation)?) {
+                    return Err(format!(
+                        "Thread '{}' does not match its active Objective owner/generation (requested {}, current {:?})",
+                        thread.id, thread.supervision.generation, generation
+                    ).into());
+                }
+            }
         }
         for plan in groups {
             if plan.group.generation == 0 {
@@ -17510,6 +17529,9 @@ impl ScheduleStore for SqliteStore {
             })?
         };
         let mut objective = objective_from_row(&objective_row)?;
+        if objective.generation != request.target_group.group.generation {
+            return Err("Promoted Thread must use the target Objective generation, not its revision or the previous supervisor generation".into());
+        }
         let promoted_thread_row = sqlx::query("SELECT * FROM threads WHERE id = ?")
             .bind(&request.thread_id)
             .fetch_one(&mut *tx)

@@ -1372,6 +1372,57 @@ fn objective_supervision_matches_state(
     }
 }
 
+fn objective_generation_for_new_thread(
+    objective: &crate::memory::ObjectiveRecord,
+    evaluation_id: &str,
+    event_generation: Option<u64>,
+) -> Result<u64, DynError> {
+    if objective.status != crate::memory::ObjectiveStatus::Active
+        || event_generation.is_some_and(|generation| generation != objective.generation)
+        || objective.active_evaluation_id.as_deref() != Some(evaluation_id)
+    {
+        return Err(format!(
+            "Cannot create a Thread for a stale Objective Evaluation/generation: '{}'",
+            objective.id
+        )
+        .into());
+    }
+    // An event payload's revision is not an epoch. Only the current durable
+    // Evaluation can establish a new route, even within the same generation.
+    Ok(objective.generation)
+}
+
+fn objective_event_rejection(
+    event: &Event,
+    session: &crate::memory::SessionRecord,
+    objective_id: &str,
+    evaluation_id: &str,
+) -> Event {
+    let mut audit = Event::new(
+        format!("objective_event_rejected_{}", event.id),
+        "Runtime-Orchestrator".to_string(),
+        "runtime_control".to_string(),
+        "runtime/objective_event_rejected".to_string(),
+        serde_json::json!({
+            "agent_id": session.agent_id,
+            "context_id": session.context_id,
+            "session_id": session.id,
+            "objective_id": objective_id,
+            "objective_evaluation_id": evaluation_id,
+            "source_event_id": event.id,
+            "requested_generation": event.payload.get("objective_generation"),
+            "reason": "stale_objective_evaluation_or_generation",
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    // Only immutable input participates in the audit: retries after a later
+    // Objective mutation must reproduce exactly the same persisted fact.
+    audit.timestamp = event.timestamp;
+    audit
+}
+
 #[cfg(test)]
 fn baseline_system_prompt() -> &'static str {
     render_stable_system_prompt(SystemPromptMode::AgentOwnedContext)
@@ -8384,14 +8435,46 @@ impl Orchestrator {
         let supervision = if let Some(thread) = existing_thread.as_ref() {
             thread.supervision.clone()
         } else if let Some((objective_id, evaluation_id)) = objective_route {
-            ThreadSupervision::objective(
-                objective_id,
+            let objective = self
+                .objective_supervisor
+                .as_ref()
+                .ok_or(
+                    "Cannot resolve Objective Thread generation without an Objective supervisor",
+                )?
+                .get(objective_id)
+                .await?
+                .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
+            let generation = match objective_generation_for_new_thread(
+                &objective,
                 evaluation_id,
                 event
                     .payload
-                    .get("objective_revision")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(1),
+                    .get("objective_generation")
+                    .and_then(|value| value.as_u64()),
+            ) {
+                Ok(generation) => generation,
+                Err(_) => {
+                    // Reject before creating a Thread/Signal/Activation, while
+                    // retaining one durable, replay-safe audit of the input.
+                    self.store
+                        .append(objective_event_rejection(
+                            event,
+                            &session,
+                            objective_id,
+                            evaluation_id,
+                        ))
+                        .await?;
+                    session_store.discard_signal_outbox(&event.id).await?;
+                    tracing::warn!(event_id = %event.id, objective_id, evaluation_id,
+                        event_code = "orchestrator.objective_event.rejected",
+                        "Rejected a stale Objective Event before materializing a new Thread");
+                    return Ok(None);
+                }
+            };
+            ThreadSupervision::objective(
+                objective_id,
+                evaluation_id,
+                generation,
                 parent
                     .as_ref()
                     .map(|activation| stable_thread_id(&activation.root_turn_id)),
@@ -23944,6 +24027,124 @@ mod tests {
         assert!(model_attachments(&projected[0]).is_some());
     }
 
+    #[tokio::test]
+    async fn rejected_objective_event_audit_and_outbox_are_replay_safe() {
+        use crate::memory::SignalOutboxStatus;
+
+        let tmp = TempDir::new().unwrap();
+        let store = SqliteStore::new(tmp.path().join("rejected-event.db").to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-rejected".into(),
+                    title: "Rejected event fixture".into(),
+                    root_context_id: "context-rejected".into(),
+                },
+                NewCognitiveContext {
+                    id: "context-rejected".into(),
+                    agent_id: "agent-rejected".into(),
+                    title: "Rejected event fixture".into(),
+                },
+                NewSession {
+                    id: "session-rejected".into(),
+                    agent_id: "agent-rejected".into(),
+                    context_id: "context-rejected".into(),
+                    parent_session_id: None,
+                    title: "Rejected event fixture".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let session = store
+            .get_session("session-rejected")
+            .await
+            .unwrap()
+            .unwrap();
+        let source = Event::new(
+            "stale-input".into(),
+            "Runtime-Test".into(),
+            TYPE_TOOL_OUTPUT.into(),
+            "chat/tool_output".into(),
+            json!({
+                "context_id": session.context_id,
+                "session_id": session.id,
+                "objective_id": "objective-rejected",
+                "objective_evaluation_id": "evaluation-rejected",
+                "objective_generation": 1,
+                "runtime_force_evaluation": true,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(source.clone()).await.unwrap();
+        // New internal Events no longer create outbox rows. Seed the persisted
+        // handoff explicitly to exercise recovery of an older pending input.
+        let pool = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(tmp.path().join("rejected-event.db")),
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO signal_outbox (event_id, status, created_at) VALUES (?, 'pending', ?)",
+        )
+        .bind(&source.id)
+        .bind(source.timestamp.to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        assert_eq!(
+            store
+                .list_signal_outbox(SignalOutboxStatus::Pending, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // Retry once after the audit commit but before outbox resolution, and
+        // once after resolution. Neither crash boundary duplicates the audit.
+        for resolve in [false, true, true] {
+            store
+                .append(super::objective_event_rejection(
+                    &source,
+                    &session,
+                    "objective-rejected",
+                    "evaluation-rejected",
+                ))
+                .await
+                .unwrap();
+            if resolve {
+                store.discard_signal_outbox(&source.id).await.unwrap();
+            }
+        }
+        let audits = store
+            .query(QueryFilter {
+                topic: Some("runtime/objective_event_rejected".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].timestamp, source.timestamp);
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        let discarded = store
+            .list_signal_outbox(SignalOutboxStatus::Discarded, 10)
+            .await
+            .unwrap();
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].event_id, source.id);
+        assert!(discarded[0].signal_id.is_none());
+    }
+
     #[test]
     fn objective_supervision_always_uses_execution_threads() {
         let supervisor_entry = Event::new(
@@ -24010,7 +24211,33 @@ mod tests {
             &current,
             Some(&objective)
         ));
+        assert_eq!(
+            super::objective_generation_for_new_thread(&objective, "evaluation-current", None)
+                .unwrap(),
+            1
+        );
+        assert!(super::objective_generation_for_new_thread(
+            &objective,
+            "evaluation-current",
+            Some(objective.revision)
+        )
+        .is_err());
         objective.active_evaluation_id = Some("evaluation-replacement".into());
+        assert!(super::objective_generation_for_new_thread(
+            &objective,
+            "evaluation-current",
+            Some(objective.generation)
+        )
+        .is_err());
+        assert!(
+            super::objective_generation_for_new_thread(&objective, "evaluation-current", None)
+                .is_err()
+        );
+        assert_eq!(
+            super::objective_generation_for_new_thread(&objective, "evaluation-replacement", None)
+                .unwrap(),
+            1
+        );
         assert!(!objective_supervision_matches_state(
             &current,
             Some(&objective)
@@ -24026,6 +24253,12 @@ mod tests {
             Some(&objective)
         ));
         objective.generation += 1;
+        assert!(super::objective_generation_for_new_thread(
+            &objective,
+            "evaluation-current",
+            Some(1)
+        )
+        .is_err());
         assert!(!objective_supervision_matches_state(
             &primary,
             Some(&objective)

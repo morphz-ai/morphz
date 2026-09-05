@@ -325,7 +325,7 @@ Outbox 解决的是“双写外部系统”的可靠性，不应用来连接同�
 所有可被恢复、替换或取消后重启的执行实体都必须有 generation：
 
 ```text
-Objective revision
+Objective generation (revision is a separate CAS counter)
 Thread generation
 Activation generation + lease token
 ThreadGroup generation
@@ -334,6 +334,17 @@ Schedule generation
 ```
 
 任何异步结果提交时必须验证自己仍属于当前 generation。旧 Activation、旧恢复探针、旧 Job 或旧 Timer 即使最终返回，也只能被记录为 stale outcome，不能修改当前权威状态。
+
+Objective 的 `revision` 用于原子修改的 CAS 校验，普通编辑、租约和依赖更新都可能推进它；
+`generation` 标识目标的一次可执行生命周期。创建或转交给 Objective 的 Thread 及其
+Thread Group 必须采用该 Objective 的 `generation`，不能使用 `revision`，也不能在
+转交时把原父 Thread 的 generation 加一。转交由 Thread revision、原 Group 成员资格和
+目标 Objective revision 共同原子校验。
+
+SQLite 与 PostgreSQL 必须在创建事务中拒绝监督者或 generation 不一致的子线程，
+同时保留派发时的 generation 校验。回归需要覆盖 `revision != generation` 的已有目标，
+并实际触发四个独立线程的首次 Signal，不能仅检查创建回执或延迟数小时的 Schedule。
+历史异常由调度快照明确报告；禁止自动把所有陈旧 generation 改成当前值来绕过 fencing。
 
 暂停和恢复不只是 UI 状态切换：
 

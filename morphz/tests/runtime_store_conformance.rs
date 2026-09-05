@@ -3591,6 +3591,52 @@ where
         })
         .await
         .unwrap();
+    let ObjectiveMutation::Updated(objective) = store
+        .edit_objective(
+            &objective.id,
+            objective.revision,
+            "edited objective; same executable lifetime",
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("objective edit must succeed");
+    };
+    assert_ne!(objective.revision, objective.generation);
+    let children = (0..2)
+        .map(|index| NewThread {
+            id: format!("conformance-objective-generation-child-{index}"),
+            agent_id: objective.agent_id.clone(),
+            context_id: objective.context_id.clone(),
+            session_id: objective.coordinator_session_id.clone(),
+            initiating_principal_id: None,
+            root_turn_id: format!("conformance-objective-generation-root-{index}"),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective(
+                &objective.id,
+                "conformance-generation-evaluation",
+                if index == 0 {
+                    objective.generation
+                } else {
+                    objective.revision
+                },
+                None,
+            ),
+        })
+        .collect::<Vec<_>>();
+    let error = store
+        .commit_schedule_transaction(&[], &[], &children, &[], &[])
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Objective owner/generation"), "{error}");
+    // A malformed sibling must roll back even the valid child preceding it.
+    for child in &children {
+        assert!(store.get_thread(&child.id).await.unwrap().is_none());
+    }
     let objective_thread = store
         .ensure_thread(NewThread {
             id: "conformance-schedule-objective-thread".to_string(),

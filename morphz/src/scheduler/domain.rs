@@ -308,6 +308,7 @@ pub enum SchedulerInvariantCode {
     PendingDependencyTargetsTerminalGroup,
     ObjectiveWaitDisagreesWithDependencies,
     ObjectivePrimaryExecutionOwnerMismatch,
+    ObjectiveChildExecutionOwnerMismatch,
     DuplicateObjectivePrimaryExecutionThread,
     OrphanActivation,
     OrphanSignal,
@@ -382,6 +383,30 @@ pub fn audit_scheduler_invariants(
                 &thread.id,
                 "open Thread already has a terminal ThreadOutcome",
             ));
+        }
+
+        if thread.lifecycle == ThreadLifecycle::Open
+            && thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective
+            && thread.supervision.origin_evaluation_id.is_some()
+        {
+            if let Some(objective) = thread
+                .supervision
+                .supervisor_id
+                .as_deref()
+                .and_then(|id| objectives_by_id.get(id).copied())
+            {
+                if thread.supervision.generation != objective.generation {
+                    // Report malformed/stale children, but do not rewrite or
+                    // quarantine user data as a side effect of this audit.
+                    violations.push(violation(
+                        SchedulerInvariantSeverity::Error,
+                        SchedulerInvariantCode::ObjectiveChildExecutionOwnerMismatch,
+                        "thread", &thread.id,
+                        &format!("child supervision generation {} differs from Objective generation {}; queued schedules cannot pass the dispatch fence",
+                            thread.supervision.generation, objective.generation),
+                    ));
+                }
+            }
         }
 
         if thread.lifecycle != ThreadLifecycle::Open
@@ -693,6 +718,35 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[test]
+    fn child_owner_generation_mismatch_is_visible_without_mutating_scheduler_state() {
+        let now = Utc::now();
+        let mut objective = objective(now);
+        objective.revision = 9;
+        let mut child = thread(now, ThreadLifecycle::Open);
+        child.supervision.generation = objective.revision;
+        let audit = |child: &ThreadRecord| {
+            audit_scheduler_invariants(SchedulerInvariantInput {
+                objectives: std::slice::from_ref(&objective),
+                threads: std::slice::from_ref(child),
+                activations: &[],
+                outcomes: &[],
+                groups: &[],
+                group_members: &[],
+                dependencies: &[],
+            })
+        };
+        let violations = audit(&child);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(
+            violations[0].code,
+            SchedulerInvariantCode::ObjectiveChildExecutionOwnerMismatch
+        );
+        assert_eq!(violations[0].severity, SchedulerInvariantSeverity::Error);
+        child.supervision.generation = objective.generation;
+        assert!(audit(&child).is_empty());
     }
 
     #[test]

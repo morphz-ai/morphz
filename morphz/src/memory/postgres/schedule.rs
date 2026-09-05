@@ -400,6 +400,22 @@ impl ScheduleStore for PostgresStore {
             )
             .await?;
         }
+        // The transaction later updates Objective waits. Taking shared owner
+        // locks first would allow two writers to deadlock on lock upgrade.
+        // Lock all owners exclusively, in stable ID order, before child writes.
+        let objective_ids = threads
+            .iter()
+            .filter(|thread| thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective)
+            .filter_map(|thread| thread.supervision.supervisor_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !objective_ids.is_empty() {
+            sqlx::query("SELECT id FROM objectives WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+                .bind(&objective_ids)
+                .fetch_all(&mut *tx)
+                .await?;
+        }
         for thread in threads {
             thread.supervision.validate(thread.kind)?;
             sqlx::query(
@@ -434,6 +450,24 @@ impl ScheduleStore for PostgresStore {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
+            if thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective {
+                // Owner locks above remain held until this transaction commits.
+                let generation = sqlx::query_scalar::<_, i64>(
+                    "SELECT generation FROM objectives WHERE id = $1 AND status = 'active' AND agent_id = $2 AND context_id = $3 AND coordinator_session_id = $4",
+                )
+                .bind(&thread.supervision.supervisor_id)
+                .bind(&thread.agent_id)
+                .bind(&thread.context_id)
+                .bind(&thread.session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if generation != Some(i64::try_from(thread.supervision.generation)?) {
+                    return Err(format!(
+                        "Thread '{}' does not match its active Objective owner/generation (requested {}, current {:?})",
+                        thread.id, thread.supervision.generation, generation
+                    ).into());
+                }
+            }
         }
         for plan in groups {
             if plan.group.generation == 0 {
@@ -863,6 +897,9 @@ impl ScheduleStore for PostgresStore {
             })?
         };
         let mut objective = objective_from_row(&objective_row)?;
+        if objective.generation != request.target_group.group.generation {
+            return Err("Promoted Thread must use the target Objective generation, not its revision or the previous supervisor generation".into());
+        }
         let promoted_thread_row = sqlx::query("SELECT * FROM threads WHERE id = $1")
             .bind(&request.thread_id)
             .fetch_one(&mut *tx)

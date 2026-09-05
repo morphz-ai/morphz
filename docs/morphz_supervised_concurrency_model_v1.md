@@ -263,7 +263,7 @@ ThreadSupervision
 ├── ObjectiveBound
 │   ├── objective_id
 │   ├── origin_evaluation_id
-│   └── objective_revision_at_bind
+│   └── objective_generation_at_bind
 └── Disposable
     └── origin_evaluation_id
 ```
@@ -286,7 +286,7 @@ ThreadSupervision
 ```text
 attached Thread
     + existing/new Objective binding
-    + supervision generation increment
+    + adopt target Objective generation (Thread revision CAS fences the transfer)
     + parent Evaluation wait update
     = ObjectiveBound Thread
 ```
@@ -498,7 +498,7 @@ thread/group id
 terminal outcome id
 ```
 
-旧 Evaluation、旧 Objective revision 或旧 Group generation 的迟到 Signal 可以进入 Event History 审计，但不得创建新的有效 Activation。
+失效 Evaluation、旧 Objective generation 或旧 Group generation 的迟到 Signal 可以进入 Event History 审计，但不得创建新的有效 Activation。Objective 的普通 revision 更新不改变有效执行代次。
 
 ## 10. `schedule_tx` 目标接口
 
