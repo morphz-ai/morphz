@@ -91,7 +91,7 @@ import {
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
 import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/modelSelection'
-import { buildOptimisticMessageRequest, isOptimisticMessagePending } from './app/optimisticMessages'
+import { buildOptimisticMessageRequest, reconcileOptimisticMessages } from './app/optimisticMessages'
 import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
 import { SteeringTarget } from './pages/SteeringTarget'
 import { ObjectiveSteeringButton } from './pages/ObjectiveSteeringButton'
@@ -5320,12 +5320,17 @@ export default function App() {
     () => eventsSessionId === selectedSessionId ? events : [],
     [events, eventsSessionId, selectedSessionId],
   )
+  const pendingOptimisticMessages = reconcileOptimisticMessages(optimisticMessages, selectedSessionId, sessionEvents)
+  if (pendingOptimisticMessages !== optimisticMessages) {
+    // An authoritative Event is a permanent acknowledgement, not just a reason
+    // to hide the placeholder while that Event is in the current history page.
+    // Reconcile before rendering children; a late receipt cannot resurrect a
+    // removed message because delivery callbacks only update existing entries.
+    setOptimisticMessages(pendingOptimisticMessages)
+  }
   const visibleOptimisticMessages = useMemo(
-    () => optimisticMessages.filter(message => (
-      message.sessionId === selectedSessionId
-      && isOptimisticMessagePending(message, sessionEvents)
-    )),
-    [optimisticMessages, selectedSessionId, sessionEvents],
+    () => pendingOptimisticMessages.filter(message => message.sessionId === selectedSessionId),
+    [pendingOptimisticMessages, selectedSessionId],
   )
 
   const liveModelAttempts = visibleLiveModelAttempts(liveModelState, selectedSessionId)

@@ -51,3 +51,18 @@ export function isOptimisticMessagePending(
 ): boolean {
   return !events.some(event => matchesAuthoritativeMessage(optimistic, event))
 }
+
+/** Retire acknowledged placeholders permanently, independently of history pagination. */
+export function reconcileOptimisticMessages<T extends OptimisticMessageIdentity & { sessionId: string }>(
+  messages: T[],
+  sessionId: string,
+  events: readonly AuthoritativeMessageEvent[],
+): T[] {
+  if (!sessionId || events.length === 0 || messages.length === 0) return messages
+  const pending = messages.filter(message => (
+    message.sessionId !== sessionId || isOptimisticMessagePending(message, events)
+  ))
+  // Preserve identity at the fixed point so callers can reconcile state without
+  // scheduling another render when no new acknowledgement has arrived.
+  return pending.length === messages.length ? messages : pending
+}
