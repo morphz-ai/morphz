@@ -1,19 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="title">
   <title id="title">Morphz</title>
-  <desc id="description">A geometric letter M held between two tapered teal parentheses.</desc>
-  <rect width="256" height="256" rx="56" fill="#17191d"/>
-
-  <path
-    d="M72 52C45 72 31 99 31 128s14 56 41 76c4 2 5-1 2-5-19-20-28-45-28-71s9-51 28-71c3-4 2-7-2-5Z"
-    fill="#56d0de"
-  />
-  <path
-    d="M184 52c27 20 41 47 41 76s-14 56-41 76c-4 2-5-1-2-5 19-20 28-45 28-71s-9-51-28-71c-3-4-2-7 2-5Z"
-    fill="#56d0de"
-  />
-
-  <path
-    d="M78 174V82h20l30 44 30-44h20v92h-20v-57l-30 43-30-43v57H78Z"
-    fill="#f7f8f8"
-  />
+  <g fill="#56d0de">
+    <path d="M2 1 16 13 12 13 12 24 2 31Z"/>
+    <path d="M30 1 16 13 20 13 20 24 30 31Z"/>
+  </g>
 </svg>

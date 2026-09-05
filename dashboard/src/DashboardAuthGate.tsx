@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Globe, KeyRound, LoaderCircle, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { BrandMark } from './BrandMark'
 
 import { DashboardApiError } from './api/client'
 import { CORE_HTTP_URL } from './api/deployment'
@@ -107,6 +108,7 @@ export function DashboardAuthGate({ children }: { children: ReactNode }) {
       <section className="dashboard-auth-frame">
         <header className="dashboard-auth-header">
           <span className="dashboard-auth-brand">
+            <BrandMark />
             <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
           </span>
           <span className="dashboard-auth-actions">

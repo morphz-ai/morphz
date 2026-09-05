@@ -1,6 +1,7 @@
 import { memo, startTransition, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { CSSProperties, RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
+import { BrandMark } from './BrandMark'
 import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -7699,6 +7700,7 @@ export default function App() {
             title={`${t('header.machineTagline')} · ${t('header.agentLabel', { title: selectedAgent?.title ?? (selectedAgentId || 'default') })}`}
             onClick={() => navigate('/')}
           >
+            <BrandMark />
             <span><strong>Morphz</strong><small>{t('header.machineTagline')}</small></span>
           </button>
 
