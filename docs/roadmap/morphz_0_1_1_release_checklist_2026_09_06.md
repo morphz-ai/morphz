@@ -1,6 +1,71 @@
 # Morphz v0.1.1 candidate and v0.1.2 release checklist
 
-Status: publication resumed; Dashboard correction integrated into v0.1.2.
+Status: v0.1.2 published and independently verified.
+
+## Public delivery
+
+[Morphz v0.1.2](https://github.com/morphz-ai/morphz/releases/tag/v0.1.2)
+was published at `2026-09-05T21:40:56Z` (September 6, 05:40:56 Beijing time).
+GitHub's latest-release API selects this stable, non-draft release. The tag
+remains on `6e45724285e4276406ac0d4b7f8e4f3001c77dfb`; this subsequent
+verification record does not move the tag or rebuild its binaries.
+
+- All eight [formal Release jobs](https://github.com/morphz-ai/morphz/actions/runs/33992371319)
+  completed successfully, including readiness, all five platform bundles, and
+  public asset publication. The continuous watcher exited 0.
+- Independently downloaded all 22 public assets without authentication: ten
+  Morphz/Edge archives, ten checksum files, and both installers. Every asset
+  matched its GitHub SHA-256 digest and size; all ten published archive checksum
+  files matched. Archive contents include the required legal files and, for
+  both Windows bundles, all three sandbox/command/setup helper executables.
+- Fresh copies of `https://morphz.ai/install.sh` and `install.ps1` matched both
+  the source scripts and published release assets byte for byte.
+- The website shell installer used its default latest-release route to install
+  into a temporary directory, with PATH modification disabled. Its `setup
+  --help --no-open` handoff succeeded without relying on the current shell PATH.
+  The installed executable reported
+  `morphz 0.1.2 (git 6e45724285e4276406ac0d4b7f8e4f3001c77dfb)`.
+- The public macOS ARM64 Edge archive was independently extracted and its
+  executable reported the same version and exact source revision.
+- Started the installed Morphz Setup in an empty workspace with an isolated
+  `MORPHZ_HOME` and without inherited provider/database configuration. Health
+  and Dashboard HTTP checks returned 200. The served `/assets/app.js` matched
+  the verified committed Dashboard artifact, SHA-256
+  `0e9678d3b879c1ff80514242063b27f67875491a4cd9a290f04729ec68b8fb02`.
+  The test-owned process was stopped afterward. This was an HTTP smoke check;
+  the 225-test Dashboard suite provides the interaction regression coverage.
+
+Logs and verification scripts are retained under
+`/private/tmp/morphz-0.1.1-candidate.z4Y5MQ`: `public-verification.log`,
+`installation-verification.log`, and `dashboard-verification.log`.
+No user installation, shell configuration, production process, database, or
+historical task was changed; no paid model call was made. Upgrading does not
+automatically repair or rerun previously stuck work. The release notes retain
+the explicit historical-task recovery boundary. The release follow-up is
+closed after this delivery record is committed and pushed.
+
+## Final candidate verification
+
+The exact release source is
+`6e45724285e4276406ac0d4b7f8e4f3001c77dfb`, including the Dashboard
+acknowledgement correction. [Final candidate CI](https://github.com/morphz-ai/morphz/actions/runs/33991414888)
+completed with all nine jobs successful, including full tests, the real
+PostgreSQL store, Dashboard and website checks, release compilation, and native
+Linux, macOS, and Windows sandbox checks. The tag command separately checked
+the successful CI conclusion, exact source SHA, and clean checkout before
+pushing `v0.1.2`.
+
+Independent local integration checks passed: Dashboard lint, 225 tests,
+TypeScript/Vite production build with unchanged committed assets, 61 Rust web
+tests, and strict whole-workspace/all-targets/all-features Clippy. The full
+workspace test command had already exited successfully on `470c410d`; the
+subsequent integration changes only Dashboard code, its embedded assets, and
+documentation. The final exact-SHA CI supplies the integrated full-test gate.
+
+[Formal Release](https://github.com/morphz-ai/morphz/actions/runs/33992371319)
+was triggered by this tag and completed successfully. Public artifact checks
+and isolated installation also passed, as recorded above. There was no
+additional dry-run or duplicate build request for this candidate.
 
 ## Final Dashboard integration
 
@@ -18,13 +83,13 @@ reconciliation preserves array identity once no acknowledgements remain to
 consume. Seven added regressions cover both Event/receipt orders, historical
 paging, Session isolation, pending/failed deliveries, and identity-based rather
 than text-based acknowledgement. Development reported 225 tests, lint, build,
-and reproducible committed Dashboard assets; the release task is independently
-rerunning those checks and checking the embedded web surface and strict Rust
-Clippy. The prior `470c410d` full workspace test completed successfully, but its
-CI result is not a substitute for the final integrated SHA's CI.
+and reproducible committed Dashboard assets; the release task independently
+verified those checks, the Rust web surface, and strict Rust Clippy. The prior
+`470c410d` full workspace test completed successfully; final integrated CI has
+also passed as recorded above.
 
-The final release notes include this fix. No v0.1.2 tag has been pushed yet;
-publication still requires the final candidate checks and exact-SHA CI.
+The tagged release notes include this fix. The formal workflow and subsequent
+public download and installation checks have all completed successfully.
 
 ## Heartbeat test race and corrected candidate
 
@@ -87,8 +152,8 @@ Production processes and data have not been modified by this release task.
   recovery boundary from the moment of publication.
 
 The first formal build's publication was blocked as described above. Public
-asset verification and installation smoke checks remain pending for the
-corrected candidate. Live command logs and verification state are retained under
+asset verification and installation smoke checks passed for the corrected
+v0.1.2 release. Command logs and verification state are retained under
 `/private/tmp/morphz-0.1.1-candidate.z4Y5MQ`.
 
 ## Ownership and scope
