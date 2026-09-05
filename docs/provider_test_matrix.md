@@ -45,6 +45,7 @@ Dashboard
 | CAT-01 | 功能 | 远端目录失败时保留已启用模型，不让选择器变空 | `web::tests` account model catalog 用例 | 完成 |
 | CAT-02 | 功能 | 目录容量字段原样进入模型编辑器；缺失字段保持空值 | `providerWorkflow.test.ts` | 本轮完成 |
 | CAT-03 | 功能 | 启用/禁用模型同步更新路由和 Provider 模型表，移除最后模型时给出明确约束且不改变磁盘或 Runtime | `web::tests::enabled_account_models_remain_visible_without_discovery_cache` | 本轮完成 |
+| CAT-04 | 回归 | 纯新安装重复保存；磁盘先于内存的路由和别名修改在保存后立即可见，重启加载一致 | `web::tests::account_model_hot_reload_*` | 2026-09-05 新增 |
 | ROUTE-01 | 单元 | 别名解析到准确物理模型，路由 ID 不冒充显示名 | `provider::routing::tests` + `runtime::tests` | 完成 |
 | ROUTE-02 | 单元 | 多账户健康状态、冷却、上下文亲和与故障转移 | `provider::routing::tests` | 完成 |
 | ROUTE-03 | 功能 | Runtime 热更新后下一请求立即使用新路由，重启后结果一致 | `web::tests::local_provider_setup_discovery_enablement_switch_probe_capacity_and_restart` | 本轮完成 |

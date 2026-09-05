@@ -11386,6 +11386,294 @@ mod tests {
         assert!(!state.managed_config_path.as_ref().unwrap().exists());
     }
 
+    // All cases start with the current configuration schema and a real router.
+    // No legacy provider normalization or network/model request is involved.
+    async fn account_model_hot_reload_case(scenario: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let database_path = temp.path().join("runtime.db");
+        let config = AppConfig::default();
+        let client = Arc::new(crate::provider::routing::RoutedClient::empty(
+            config.llm.clone(),
+        ));
+        let (state, runtime) = test_state_at_with_config_client_auth_and_secrets(
+            &database_path,
+            false,
+            config,
+            client.clone(),
+            None,
+            None,
+        )
+        .await;
+        let path = state.managed_config_path.as_deref().unwrap();
+        let provider = ProviderInstanceConfig {
+            adapter: "openai-compatible".into(),
+            protocol: crate::config::ModelProtocol::OpenaiResponses,
+            base_url: "https://models.example.test/v1".into(),
+            accounts: vec!["model-account".into()],
+            ..Default::default()
+        };
+        let account = AuthAccountConfig {
+            auth_adapter: "none".into(),
+            provider: Some("model-service".into()),
+            ..Default::default()
+        };
+        let route_for = |model: &str| ModelRouteConfig {
+            candidates: vec![crate::config::ModelRouteCandidateConfig {
+                provider: "model-service".into(),
+                account: Some("model-account".into()),
+                model: model.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        state
+            .sdk
+            .put_provider_catalog_config(
+                path,
+                "model-service",
+                provider,
+                "model-account",
+                account,
+                None,
+                "baseline",
+                route_for("baseline"),
+            )
+            .await
+            .unwrap();
+        assert!(runtime
+            .provider_catalog_config()
+            .unwrap()
+            .providers
+            .is_empty());
+
+        for agent_id in ["agent-test", "agent-unconfigured"] {
+            runtime
+                .ensure_agent(NewAgent {
+                    id: agent_id.into(),
+                    title: agent_id.into(),
+                    root_context_id: format!("context-{agent_id}"),
+                })
+                .await
+                .unwrap();
+            runtime
+                .ensure_context(NewCognitiveContext {
+                    id: format!("context-{agent_id}"),
+                    agent_id: agent_id.into(),
+                    title: agent_id.into(),
+                })
+                .await
+                .unwrap();
+        }
+        let authorized = runtime
+            .bind_agent_provider_account("agent-test", "model-account")
+            .await
+            .unwrap();
+        let unconfigured = runtime
+            .agent_provider_bindings("agent-unconfigured")
+            .await
+            .unwrap();
+
+        let store = SqliteStore::new(database_path.to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .replace_provider_model_catalog(
+                "model-service",
+                "model-account",
+                "openai-compatible",
+                "test",
+                "openai-responses",
+                "remote_provider",
+                &["baseline".into(), "new-model".into()],
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        drop(store);
+        if scenario == "new-route-on-disk" {
+            crate::config::save_managed_model_route_at(path, "new-model", &route_for("new-model"))
+                .unwrap();
+        }
+        assert!(!runtime
+            .provider_control_snapshot()
+            .await
+            .unwrap()
+            .model_routes
+            .contains_key("new-model"));
+
+        for _ in 0..2 {
+            let request = serde_json::from_value::<PutProviderAccountModelsRequest>(json!({
+                "models": [{"id": "baseline"}, {"id": "new-model"}]
+            }))
+            .unwrap();
+            let response = handle_put_provider_account_models(
+                State(Arc::clone(&state)),
+                Path("model-account".into()),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(request),
+            )
+            .await
+            .into_response();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+
+            let reopened = runtime.provider_control_snapshot().await.unwrap();
+            let persisted: AppConfig =
+                toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            assert!(persisted.providers.is_empty());
+            assert_eq!(
+                reopened.model_routes, persisted.model_routes,
+                "reopening model management must reflect every persisted route"
+            );
+            assert!(reopened.model_routes.contains_key("new-model"));
+            let response = handle_status(
+                State(Arc::clone(&state)),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+            )
+            .await
+            .into_response();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(status["model_options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option["id"] == "new-model"));
+            // Exercise the actual request router, not only the Dashboard projection.
+            runtime.set_model("new-model").await.unwrap();
+            let request_for = |agent_id: &str| ModelRequestContext {
+                context_id: format!("context-{agent_id}"),
+                session_id: format!("session-{agent_id}"),
+                attempt_id: format!("attempt-{agent_id}"),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            };
+            let binding = client
+                .bind_model_attempt(&request_for("agent-test"))
+                .await
+                .unwrap();
+            assert_eq!(binding.physical_model, "new-model");
+            assert_eq!(binding.auth_account_id, "model-account");
+            assert!(client
+                .bind_model_attempt(&request_for("agent-unconfigured"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("has no Provider Account binding"));
+            assert_eq!(
+                runtime.agent_provider_bindings("agent-test").await.unwrap(),
+                authorized
+            );
+            assert_eq!(
+                runtime
+                    .agent_provider_bindings("agent-unconfigured")
+                    .await
+                    .unwrap(),
+                unconfigured
+            );
+            runtime.set_model("baseline").await.unwrap();
+        }
+
+        if scenario == "alias-on-disk" {
+            // A disk-side alias edit must also be applied by an otherwise identical save.
+            let mut renamed = route_for("new-model");
+            renamed.display_alias = Some("New model label".into());
+            renamed.aliases = vec!["New model label".into()];
+            crate::config::save_managed_model_route_at(path, "new-model", &renamed).unwrap();
+            let request = serde_json::from_value::<PutProviderAccountModelsRequest>(json!({
+                "models": [{"id": "baseline"}, {"id": "new-model", "alias": "New model label"}]
+            }))
+            .unwrap();
+            let response = handle_put_provider_account_models(
+                State(Arc::clone(&state)),
+                Path("model-account".into()),
+                HeaderMap::new(),
+                Query(AuthQuery::default()),
+                Json(request),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                runtime
+                    .inference_model_options()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find(|option| option.id == "new-model")
+                    .unwrap()
+                    .label,
+                "New model label"
+            );
+        }
+
+        let persisted: AppConfig = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let client = Arc::new(
+            crate::provider::routing::RoutedClient::new(&persisted, "baseline".into()).unwrap(),
+        );
+        let (_, restarted) = test_state_at_with_config_client_auth_and_secrets(
+            &database_path,
+            false,
+            persisted,
+            client,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            restarted
+                .agent_provider_bindings("agent-test")
+                .await
+                .unwrap(),
+            authorized
+        );
+        assert_eq!(
+            restarted
+                .agent_provider_bindings("agent-unconfigured")
+                .await
+                .unwrap(),
+            unconfigured
+        );
+        assert_eq!(
+            runtime
+                .inference_model_options()
+                .await
+                .unwrap()
+                .iter()
+                .map(|o| (&o.id, &o.label))
+                .collect::<Vec<_>>(),
+            restarted
+                .inference_model_options()
+                .await
+                .unwrap()
+                .iter()
+                .map(|o| (&o.id, &o.label))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn account_model_hot_reload_fresh_install_and_repeat_save() {
+        account_model_hot_reload_case("fresh").await;
+    }
+
+    #[tokio::test]
+    async fn account_model_hot_reload_applies_routes_already_on_disk() {
+        account_model_hot_reload_case("new-route-on-disk").await;
+    }
+
+    #[tokio::test]
+    async fn account_model_hot_reload_applies_alias_already_on_disk() {
+        account_model_hot_reload_case("alias-on-disk").await;
+    }
+
     #[tokio::test]
     async fn enabled_account_models_remain_visible_without_discovery_cache() {
         let tmp = NamedTempFile::new().unwrap();

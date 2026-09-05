@@ -2115,10 +2115,11 @@ impl MorphzSdk {
             .provider_catalog_config()
             .map_err(SdkError::internal)?;
         live.provider_instances.insert(provider_id, provider);
-        for route_id in &removed_route_ids {
-            live.model_routes.remove(route_id);
-        }
-        live.model_routes.extend(changed_routes);
+        // `changed_routes` is a disk delta, computed after merging the managed
+        // file. It cannot describe what this running instance is missing.
+        // Publish the validated result, including routes/aliases already saved
+        // by another writer, rather than silently treating them as live.
+        live.model_routes = snapshot.model_routes;
         if let Some(model) = fallback_model {
             live.llm.model = model;
         }
