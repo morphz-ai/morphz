@@ -122,5 +122,8 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",
 ] }
 
+[dev-dependencies]
+tokio = { version = "1.35", features = ["test-util"] }
+
 [lints]
 workspace = true

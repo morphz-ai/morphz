@@ -1167,6 +1167,51 @@ pub struct ActiveObjectiveEvaluation {
     pub pending_dependency_id: Option<String>,
 }
 
+impl ActiveObjectiveEvaluation {
+    /// Persist the complete continuation route, including the exact wait that
+    /// admitted a directed interrupt. This is a fence, not permission to skip
+    /// arbitrary waits; every successor validates it against durable state.
+    pub(crate) fn stamp_route(&self, payload: &mut serde_json::Map<String, serde_json::Value>) {
+        payload.insert("objective_id".into(), json!(self.objective_id));
+        payload.insert("objective_evaluation_id".into(), json!(self.evaluation_id));
+        payload.insert("objective_revision".into(), json!(self.revision));
+        payload.insert(
+            "objective_evaluation_started_at".into(),
+            json!(self.started_at),
+        );
+        payload.insert(
+            "objective_pending_dependency_id".into(),
+            json!(self.pending_dependency_id),
+        );
+    }
+
+    pub(crate) fn from_event(event: &Event) -> Option<Self> {
+        Some(Self {
+            objective_id: event.payload.get("objective_id")?.as_str()?.to_string(),
+            evaluation_id: event
+                .payload
+                .get("objective_evaluation_id")?
+                .as_str()?
+                .to_string(),
+            revision: event
+                .payload
+                .get("objective_revision")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
+            started_at: event
+                .payload
+                .get("objective_evaluation_started_at")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(event.timestamp),
+            pending_dependency_id: event
+                .payload
+                .get("objective_pending_dependency_id")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned),
+        })
+    }
+}
+
 /// Runtime-local routing metadata. The persistent lease in ObjectiveStore is
 /// authoritative; this registry only lets Orchestrator stamp terminal IO with
 /// the Objective Evaluation that caused it.
@@ -2617,6 +2662,13 @@ impl ObjectiveSupervisor {
             return Ok(true);
         }
 
+        // Check the exact wait on every admission, even before the renewal
+        // threshold. A fresh lease is not authority to cross a replacement
+        // dependency or resume an obsolete interrupt.
+        if !self.activation_fence_is_current(activation_id).await? {
+            return Ok(false);
+        }
+
         // An Objective Evaluation spans a chain of Activations. Tool outputs
         // and no-reply continuations can make every individual Activation
         // shorter than one heartbeat interval. Treat admission of each exact
@@ -2671,7 +2723,9 @@ impl ObjectiveSupervisor {
                 let exact_pending = dependencies.iter().any(|dependency| {
                     dependency.id == pending_dependency_id
                         && dependency.required
-                        && dependency.status == SchedulerDependencyStatus::Pending
+                        && (dependency.status == SchedulerDependencyStatus::Pending
+                            || (dependency.status == SchedulerDependencyStatus::Satisfied
+                                && objective.wait_condition.is_none()))
                 });
                 let competing_pending = dependencies.iter().any(|dependency| {
                     dependency.id != pending_dependency_id
@@ -2680,14 +2734,158 @@ impl ObjectiveSupervisor {
                 });
                 return Ok(exact_pending && !competing_pending);
             }
-            return Ok(!matches!(
-                derive_objective_readiness(&objective, &dependencies, Utc::now()),
-                ObjectiveReadiness::Waiting { .. }
-            ));
+            // Readiness prioritizes a live lease for display; it cannot prove
+            // that an Evaluation without an interrupt binding may cross a wait.
+            return Ok(objective.wait_condition.is_none()
+                && !dependencies.iter().any(|dependency| {
+                    dependency.required && dependency.status == SchedulerDependencyStatus::Pending
+                }));
         }
         // Isolated compatibility fixtures without Scheduler v2 still use the
         // legacy display field as their readiness authority.
         Ok(objective.wait_condition.is_none())
+    }
+
+    /// A successful schedule receipt may explain the wait it installed, but
+    /// cannot acquire ordinary work authority over that replacement wait.
+    /// Reconstruct this narrow permission from durable facts, including after
+    /// restart; neither a tool name nor a model-supplied Group ID grants it.
+    pub(crate) async fn schedule_receipt_dependency(
+        &self,
+        event: &Event,
+    ) -> Result<Option<String>, DynError> {
+        use serde_json::Value;
+        if event.topic != "chat/tool_output"
+            || event.payload.get("tool_name").and_then(Value::as_str) != Some("schedule_tx")
+            || event.payload.get("tool_status").and_then(Value::as_str) != Some("success")
+        {
+            return Ok(None);
+        }
+        let (Some(source_attempt), Some(source_thread)) = (
+            event.payload.get("attempt_id").and_then(Value::as_str),
+            event.payload.get("thread_id").and_then(Value::as_str),
+        ) else {
+            return Ok(None);
+        };
+        let Some(binding) = ActiveObjectiveEvaluation::from_event(event) else {
+            return Ok(None);
+        };
+        let Some(objective) = self.store.get_objective(&binding.objective_id).await? else {
+            return Ok(None);
+        };
+        if objective.status != ObjectiveStatus::Active
+            || event.payload.get("context_id").and_then(Value::as_str)
+                != Some(objective.context_id.as_str())
+            || objective.active_evaluation_id.as_deref() != Some(&binding.evaluation_id)
+            || !objective
+                .evaluation_lease_expires_at
+                .is_some_and(|until| until > Utc::now())
+            || self.evaluations.evaluation_is_cancelled(&binding)
+        {
+            return Ok(None);
+        }
+        let Some(ObjectiveWaitCondition::ThreadGroup { group_id }) =
+            objective.wait_condition.as_ref()
+        else {
+            return Ok(None);
+        };
+        let Some(groups) = self.thread_groups.as_ref() else {
+            return Ok(None);
+        };
+        let Some(group) = groups.get_thread_group(group_id).await? else {
+            return Ok(None);
+        };
+        if group.generation != objective.generation
+            || group.supervisor_kind != crate::memory::ThreadSupervisorKind::Objective
+            || group.supervisor_id != objective.id
+            || group.context_id != objective.context_id
+        {
+            return Ok(None);
+        }
+        let Some(text) = event.payload.get("text").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let Ok(receipt) = serde_json::from_str::<Value>(text) else {
+            return Ok(None);
+        };
+        if receipt["status"] != "committed"
+            || !receipt["thread_groups"].as_array().is_some_and(|groups| {
+                groups
+                    .iter()
+                    .any(|item| item["group_id"].as_str() == Some(group_id))
+            })
+        {
+            return Ok(None);
+        }
+        let persisted = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                context_id: Some(objective.context_id.clone()),
+                topic: Some("chat/tool_output".into()),
+                through_sequence: event.sequence,
+                ..Default::default()
+            })
+            .await?;
+        if !persisted
+            .iter()
+            .any(|stored| stored.id == event.id && stored.payload == event.payload)
+        {
+            return Ok(None);
+        }
+        let bounds = self
+            .audit_store
+            .query(QueryFilter {
+                context_id: Some(objective.context_id.clone()),
+                objective_id: Some(objective.id.clone()),
+                topic: Some("objective/thread_group_bound".into()),
+                through_sequence: event.sequence,
+                ..Default::default()
+            })
+            .await?;
+        if !bounds.iter().any(|bound| {
+            bound.payload.get("objective_id").and_then(Value::as_str) == Some(objective.id.as_str())
+                && bound.payload.get("thread_group_id").and_then(Value::as_str)
+                    == Some(group_id.as_str())
+                && bound
+                    .payload
+                    .get("source_evaluation_id")
+                    .and_then(Value::as_str)
+                    == Some(source_attempt)
+                && bound
+                    .payload
+                    .get("source_thread_id")
+                    .and_then(Value::as_str)
+                    == Some(source_thread)
+        }) {
+            return Ok(None);
+        }
+        let (kind, key) = objective_wait_dependency_key(objective.wait_condition.as_ref().unwrap());
+        let pending: Vec<_> = self
+            .current_scheduler_dependencies(&objective)
+            .await?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|dep| dep.required && dep.status == SchedulerDependencyStatus::Pending)
+            .collect();
+        let [dependency] = pending.as_slice() else {
+            return Ok(None);
+        };
+        if dependency.dependency_kind != kind || dependency.dependency_id != key {
+            return Ok(None);
+        }
+        Ok(matches!(
+            self.renew_objective_evaluation(
+                &objective.id,
+                &binding.evaluation_id,
+                Utc::now() + self.lease_duration,
+                Some(&dependency.id),
+                &event.id,
+            )
+            .await?,
+            ObjectiveMutation::Updated(_)
+        )
+        .then(|| dependency.id.clone()))
     }
 
     /// Keep one exact Evaluation lease alive while its Activation is running.
@@ -2697,6 +2895,15 @@ impl ObjectiveSupervisor {
     pub async fn maintain_activation_lease(
         &self,
         activation_id: &str,
+    ) -> Result<ActiveObjectiveEvaluation, DynError> {
+        self.maintain_activation_lease_with_receipt(activation_id, None)
+            .await
+    }
+
+    pub(crate) async fn maintain_activation_lease_with_receipt(
+        &self,
+        activation_id: &str,
+        receipt_dependency_id: Option<&str>,
     ) -> Result<ActiveObjectiveEvaluation, DynError> {
         let binding = self
             .evaluations
@@ -2720,7 +2927,7 @@ impl ObjectiveSupervisor {
                     &binding.objective_id,
                     &binding.evaluation_id,
                     lease_expires_at,
-                    binding.pending_dependency_id.as_deref(),
+                    receipt_dependency_id.or(binding.pending_dependency_id.as_deref()),
                     activation_id,
                 )
                 .await?
@@ -4993,6 +5200,10 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "objective/continuation_tests.rs"]
+mod continuation_tests;
 
 #[cfg(test)]
 mod tests {

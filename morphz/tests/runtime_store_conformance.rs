@@ -61,6 +61,8 @@ use tempfile::{NamedTempFile, TempDir};
 use tokio::sync::Barrier;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
+#[path = "support/interrupt_frontier.rs"]
+mod interrupt_frontier;
 type AttentionFuture<'a> = Pin<
     Box<
         dyn Future<Output = Result<Option<(SessionAttentionState, u64, Option<String>)>, TestError>>
@@ -5977,6 +5979,7 @@ where
         + Sync
         + 'static,
 {
+    interrupt_frontier::assert_interrupt_frontier(store.as_ref()).await;
     let created = store
         .create_objective(NewObjective {
             id: "conformance-objective".to_string(),

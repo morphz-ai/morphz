@@ -19,6 +19,7 @@ import {
   schedulerScheduleInventory,
   schedulerSchedules,
   threadCarriesExecution,
+  threadNeedsControlVisibility,
   retryableDialogueThread,
 } from '../src/scheduler/model.ts'
 import type { SchedulerSnapshot } from '../src/scheduler/types.ts'
@@ -228,6 +229,9 @@ test('open lifecycle does not make an idle Thread physically active', () => {
 
   assert.deepEqual(activeSchedulerThreads(snapshot), [])
   assert.deepEqual(activeSchedulerActivations(snapshot), [])
+  assert.equal(threadNeedsControlVisibility(snapshot.threads[0]), true)
+  snapshot.threads[0].thread.lifecycle = 'cancelled'
+  assert.equal(threadNeedsControlVisibility(snapshot.threads[0]), false)
 })
 
 test('terminal Thread history cannot keep composer activity alive', () => {

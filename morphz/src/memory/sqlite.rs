@@ -20754,7 +20754,10 @@ impl ObjectiveStore for SqliteStore {
                      AND dependency.owner_kind = 'objective'
                      AND dependency.owner_id = objectives.id
                      AND dependency.owner_generation = ?
-                     AND dependency.required = 1 AND dependency.status = 'pending'
+                     AND dependency.owner_generation = objectives.generation
+                     AND dependency.required = 1
+                     AND (dependency.status = 'pending'
+                          OR (dependency.status = 'satisfied' AND objectives.wait_condition_json IS NULL))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM scheduler_dependencies dependency

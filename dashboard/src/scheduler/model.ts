@@ -109,6 +109,11 @@ export function activeSchedulerThreads(snapshot: SchedulerSnapshot | null): Sche
   return snapshot.threads.filter(thread => thread.phase !== 'idle')
 }
 
+/** Keep unfinished work actionable without pretending an idle Thread is running. */
+export function threadNeedsControlVisibility(thread: SchedulerThreadSnapshot): boolean {
+  return thread.thread.lifecycle === 'open' || thread.phase !== 'idle'
+}
+
 /**
  * Activations shown as current work must belong to a Thread whose projected
  * phase is still active. Terminal history can retain an older `running`

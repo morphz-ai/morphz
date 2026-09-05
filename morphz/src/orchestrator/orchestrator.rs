@@ -563,7 +563,7 @@ Every response must explicitly choose one primary mode from `protocol.response-c
 - no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
-- schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
+- schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
 
 Each model request has exactly one kernel.active-session, and ordinary text routes only there. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
 
@@ -1158,8 +1158,14 @@ fn stable_harness_entry_call_id(binding: &HarnessBinding, evaluation_id: &str) -
 }
 
 fn should_dispatch_runtime_harness_entry(executor_kind: &str, phase: &str) -> bool {
-    executor_kind != "plan_infer" && !matches!(phase, "critical-maintenance" | "final-reply")
+    executor_kind != "plan_infer"
+        && !matches!(
+            phase,
+            "critical-maintenance" | "final-reply" | "objective-finalization" | "schedule-receipt"
+        )
 }
+
+const SCHEDULE_RECEIPT_PROMPT: &str = "The scheduling wait is already committed. This is a receipt-only response: explain the arrangement and pending results with ordinary text, or call no_reply(mode=silent). Do not perform more work, change the Objective, or install another wait. This response ends only the current Evaluation; the Objective and scheduled children remain pending.";
 
 fn plan_infer_tool_scope(event: &Event) -> Result<Option<HashSet<String>>, String> {
     let Some(value) = event.payload.get("tools") else {
@@ -1324,7 +1330,7 @@ fn provider_tools_for_phase(
 ) -> Vec<ToolDefinition> {
     if matches!(
         phase,
-        "critical-maintenance" | "final-reply" | "objective-finalization"
+        "critical-maintenance" | "final-reply" | "objective-finalization" | "schedule-receipt"
     ) {
         allowed_tools.to_vec()
     } else {
@@ -2624,6 +2630,13 @@ fn validate_final_reply_response(
     response: &crate::llm::Response,
     decision: Option<TerminalDecision>,
 ) -> Result<Option<TerminalDecision>, String> {
+    if effective_phase == "schedule-receipt" {
+        return match decision {
+            Some(TerminalDecision::Deliver(_))
+            | Some(TerminalDecision::NoReply(NoReplyMode::Silent)) => Ok(decision),
+            _ => Err("The scheduling wait is committed. Explain the arrangement with ordinary text, or exclusively call no_reply(mode=silent). No further tools or new waits are permitted in this receipt-only response.".into()),
+        };
+    }
     if effective_phase == "objective-finalization" {
         return match decision {
             Some(TerminalDecision::Deliver(_))
@@ -7787,7 +7800,26 @@ impl Orchestrator {
         // Bind an Objective continuation before any await in the Evaluation
         // body. A concurrent pause/cancel can therefore target this exact
         // Activation instead of falling back to the enclosing Session.
-        self.bind_embedded_objective_route(&activation.id, &event);
+        if event.event_type == TYPE_INFER_REQUEST && event.payload.contains_key("objective_id") {
+            match self.infer_objective_route(&activation, &event).await {
+                Ok(route) => self
+                    .objective_evaluations
+                    .bind_activation(&activation.id, route),
+                Err(error) => {
+                    tracing::warn!(event_code = "orchestrator.infer.objective_route_rejected", activation_id = %activation.id, %error, "Rejected an infer child without its exact durable Objective authority");
+                    self.finish_thread_activation(&activation, ThreadActivationStatus::Cancelled)
+                        .await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            self.bind_embedded_objective_route(&activation.id, &event);
+        }
+        let schedule_receipt_dependency = if let Some(supervisor) = &self.objective_supervisor {
+            supervisor.schedule_receipt_dependency(&event).await?
+        } else {
+            None
+        };
         if let (Some(supervisor), Some(objective_id), Some(evaluation_id)) = (
             self.objective_supervisor.as_ref(),
             event
@@ -7812,6 +7844,7 @@ impl Orchestrator {
                     &activation.id,
                 )
                 .await?
+                && schedule_receipt_dependency.is_none()
             {
                 tracing::info!(
                     session_id,
@@ -7871,7 +7904,12 @@ impl Orchestrator {
             {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            supervisor.maintain_activation_lease(&activation.id).await
+            supervisor
+                .maintain_activation_lease_with_receipt(
+                    &activation.id,
+                    schedule_receipt_dependency.as_deref(),
+                )
+                .await
         };
         let attempt = tokio::select! {
             biased;
@@ -7914,7 +7952,7 @@ impl Orchestrator {
                     }
                 }
             }
-            self.run_attempt(&session_id, &activation, fresh_activation).await
+            self.run_attempt(&session_id, &activation, fresh_activation, schedule_receipt_dependency.is_some()).await
             } => (Some(result), None, None),
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
@@ -7929,7 +7967,7 @@ impl Orchestrator {
             }
             (None, Some(cancelled), _) => {
                 let reason = format!(
-                    "Objective '{}' Evaluation '{}' has been paused or cancelled",
+                    "Objective '{}' Evaluation '{}' was cancelled or lost its durable execution fence (lease, Evaluation ownership, or wait dependency)",
                     cancelled.objective_id, cancelled.evaluation_id
                 );
                 tracing::info!(
@@ -11049,6 +11087,7 @@ impl Orchestrator {
         session_id: &'a str,
         activation: &'a ThreadActivationRecord,
         fresh_activation: bool,
+        schedule_receipt: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DynError>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -11060,6 +11099,7 @@ impl Orchestrator {
                         activation,
                         refresh_context_snapshot,
                         fresh_activation,
+                        schedule_receipt,
                     )
                     .await
                 {
@@ -11109,6 +11149,7 @@ impl Orchestrator {
         activation: &ThreadActivationRecord,
         refresh_context_snapshot: bool,
         fresh_activation: bool,
+        schedule_receipt: bool,
     ) -> Result<(), DynError> {
         let recovery_scan_started = Instant::now();
         let attempt_id = activation.id.clone();
@@ -11789,6 +11830,9 @@ impl Orchestrator {
         if recovering_completion_intent {
             effective_phase = "objective-finalization".to_string();
         }
+        if schedule_receipt {
+            effective_phase = "schedule-receipt".to_string();
+        }
         let mut bounded_critical_projection =
             context.pressure.level == "critical" && !safety_refusal_recovery_active;
         let mut recovery_observation_limit = 1usize;
@@ -11835,6 +11879,7 @@ impl Orchestrator {
             Some(("safety-refusal-recovery", SAFETY_REFUSAL_RECOVERY_PROMPT))
         } else {
             match effective_phase.as_str() {
+                "schedule-receipt" => Some(("schedule-receipt", SCHEDULE_RECEIPT_PROMPT)),
                 "final-reply" if maintenance_budget_exhausted => Some((
                     effective_phase.as_str(),
                     MAINTENANCE_BUDGET_EXHAUSTED_PROMPT,
@@ -11987,6 +12032,9 @@ impl Orchestrator {
                 tool_call_id: None,
                 tool_calls: None,
             });
+            allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+        }
+        if schedule_receipt {
             allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
         }
         let mut tools =
@@ -12711,7 +12759,12 @@ impl Orchestrator {
                             CRITICAL_MAINTENANCE_PREVIEW_CHARS,
                         );
                     context = recovery_context;
-                    effective_phase = "critical-maintenance".to_string();
+                    effective_phase = if schedule_receipt {
+                        "schedule-receipt"
+                    } else {
+                        "critical-maintenance"
+                    }
+                    .to_string();
                     let recovery_overlay = EvaluationContextOverlay {
                         evaluation_profile: harness_context
                             .as_ref()
@@ -12719,7 +12772,11 @@ impl Orchestrator {
                         harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
                         runtime_directive: Some((
                             effective_phase.as_str(),
-                            CRITICAL_MAINTENANCE_PROMPT,
+                            if schedule_receipt {
+                                SCHEDULE_RECEIPT_PROMPT
+                            } else {
+                                CRITICAL_MAINTENANCE_PROMPT
+                            },
                         )),
                     };
                     base_protocol_messages = vec![
@@ -12756,6 +12813,9 @@ impl Orchestrator {
                     );
                     restrict_tools_to_scope(&mut recovery_allowed_tools, plan_infer_tools.as_ref());
                     recovery_allowed_tools.push(no_reply_tool_definition());
+                    if schedule_receipt {
+                        recovery_allowed_tools.retain(|tool| tool.name == NO_REPLY_TOOL_NAME);
+                    }
                     allowed_tool_names = recovery_allowed_tools
                         .iter()
                         .map(|tool| tool.name.clone())
@@ -15262,45 +15322,132 @@ impl Orchestrator {
         let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) else {
             return;
         };
-        payload.extend([
-            ("objective_id".to_string(), json!(active.objective_id)),
-            (
-                "objective_evaluation_id".to_string(),
-                json!(active.evaluation_id),
-            ),
-            ("objective_revision".to_string(), json!(active.revision)),
-        ]);
+        let mut route = serde_json::Map::new();
+        active.stamp_route(&mut route);
+        payload.extend(route);
     }
 
     fn bind_embedded_objective_route(&self, activation_id: &str, event: &Event) {
-        let Some(objective_id) = event
+        if let Some(route) = crate::objective::ActiveObjectiveEvaluation::from_event(event) {
+            self.objective_evaluations
+                .bind_activation(activation_id, route);
+        }
+    }
+
+    /// An infer Event describes a new child, not a copy of its parent's
+    /// continuation. Resolve authority through the durable Plan graph without
+    /// rewriting that immutable Event or guessing from today's Objective wait.
+    async fn infer_objective_route(
+        &self,
+        activation: &ThreadActivationRecord,
+        event: &Event,
+    ) -> Result<crate::objective::ActiveObjectiveEvaluation, DynError> {
+        let store = self
+            .plan_store
+            .as_ref()
+            .ok_or("infer requires RuntimeStore")?;
+        let plan_id = event
             .payload
-            .get("objective_id")
-            .and_then(|value| value.as_str())
-        else {
-            return;
+            .get("plan_execution_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("infer is missing its Plan identity")?;
+        let plan = store
+            .get_plan_execution(plan_id)
+            .await?
+            .ok_or("infer Plan does not exist")?;
+        let child = store
+            .get_thread_by_root(&activation.root_turn_id)
+            .await?
+            .ok_or("infer Thread does not exist")?;
+        let parent = store
+            .get_thread(&plan.thread_id)
+            .await?
+            .ok_or("infer parent Thread does not exist")?;
+        let parent_activation = store
+            .get_thread_activation(&plan.activation_id)
+            .await?
+            .ok_or("infer parent Activation does not exist")?;
+        let signals = store.list_activation_signals(&activation.id).await?;
+        let [signal] = signals.as_slice() else {
+            return Err("infer must have one exact Signal".into());
         };
-        let Some(evaluation_id) = event
-            .payload
-            .get("objective_evaluation_id")
-            .and_then(|value| value.as_str())
-        else {
-            return;
-        };
-        self.objective_evaluations.bind_activation(
-            activation_id,
-            crate::objective::ActiveObjectiveEvaluation {
-                objective_id: objective_id.to_string(),
-                evaluation_id: evaluation_id.to_string(),
-                revision: event
+        let persisted = self
+            .context_engine
+            .find_event(&plan.context_id, &event.id)
+            .await?
+            .ok_or("infer Event is not durable")?;
+        crate::memory::validate_plan_evaluation_activation_route(
+            &plan,
+            &persisted,
+            &child,
+            signal,
+            activation,
+            &parent,
+            &parent_activation,
+        )?;
+        if persisted.payload != event.payload
+            || event
+                .payload
+                .get("objective_id")
+                .and_then(serde_json::Value::as_str)
+                != plan.objective_id.as_deref()
+            || event
+                .payload
+                .get("objective_evaluation_id")
+                .and_then(serde_json::Value::as_str)
+                != plan.objective_evaluation_id.as_deref()
+        {
+            return Err("infer Objective route differs from its durable Plan".into());
+        }
+        let selected = store
+            .query(QueryFilter {
+                context_id: Some(plan.context_id.clone()),
+                activation_id: Some(plan.activation_id.clone()),
+                topic: Some("runtime/tool_calls_selected".into()),
+                through_sequence: persisted.sequence,
+                ..Default::default()
+            })
+            .await?;
+        let mut binding: Option<crate::objective::ActiveObjectiveEvaluation> = None;
+        for selected in selected {
+            let Some(route) = crate::objective::ActiveObjectiveEvaluation::from_event(&selected)
+            else {
+                // Selection can precede an objective_create prelude. The
+                // validated Plan graph still carries ordinary authority, but
+                // grants no exception to a pending wait.
+                continue;
+            };
+            if Some(route.objective_id.as_str()) != plan.objective_id.as_deref()
+                || Some(route.evaluation_id.as_str()) != plan.objective_evaluation_id.as_deref()
+                || selected
                     .payload
-                    .get("objective_revision")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or_default(),
-                started_at: event.timestamp,
-                pending_dependency_id: None,
-            },
-        );
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(plan.session_id.as_str())
+                || selected
+                    .payload
+                    .get("thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(plan.thread_id.as_str())
+                || selected
+                    .payload
+                    .get("principal_id")
+                    .and_then(serde_json::Value::as_str)
+                    != plan.initiating_principal_id.as_deref()
+            {
+                return Err("infer parent tool selection has a mismatched Objective route".into());
+            }
+            if binding.as_ref().is_some_and(|existing| {
+                existing.pending_dependency_id != route.pending_dependency_id
+                    || existing.started_at != route.started_at
+            }) {
+                return Err("infer parent has conflicting continuation authority".into());
+            }
+            binding = Some(route);
+        }
+        binding
+            .or_else(|| crate::objective::ActiveObjectiveEvaluation::from_event(&persisted))
+            .ok_or_else(|| "infer Plan has no durable Objective authority".into())
     }
 
     async fn publish_progress(
@@ -17453,16 +17600,7 @@ impl Orchestrator {
                     .objective_evaluations
                     .get_for_activation(&route.activation_id)
                 {
-                    output
-                        .payload
-                        .insert("objective_id".to_string(), json!(active.objective_id));
-                    output.payload.insert(
-                        "objective_evaluation_id".to_string(),
-                        json!(active.evaluation_id),
-                    );
-                    output
-                        .payload
-                        .insert("objective_revision".to_string(), json!(active.revision));
+                    active.stamp_route(&mut output.payload);
                 }
                 let claimed = ClaimedExecutionJob {
                     id: job.id.clone(),
@@ -18674,18 +18812,7 @@ impl Orchestrator {
                                                             payload,
                                                         );
                                                         if let Some(active) = objective_evaluation {
-                                                            output.payload.insert(
-                                                                "objective_id".to_string(),
-                                                                json!(active.objective_id),
-                                                            );
-                                                            output.payload.insert(
-                                                                "objective_evaluation_id".to_string(),
-                                                                json!(active.evaluation_id),
-                                                            );
-                                                            output.payload.insert(
-                                                                "objective_revision".to_string(),
-                                                                json!(active.revision),
-                                                            );
+                                                            active.stamp_route(&mut output.payload);
                                                         }
                                                         let already_persisted = match (
                                                             execution_jobs,
@@ -19222,18 +19349,11 @@ impl Orchestrator {
         }
         if let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) {
             let elapsed_seconds = (Utc::now() - active.started_at).num_seconds().max(0) as u64;
-            payload.extend([
-                ("objective_id".to_string(), json!(active.objective_id)),
-                (
-                    "objective_evaluation_id".to_string(),
-                    json!(active.evaluation_id),
-                ),
-                ("objective_revision".to_string(), json!(active.revision)),
-                (
-                    "objective_evaluation_elapsed_seconds".to_string(),
-                    json!(elapsed_seconds),
-                ),
-            ]);
+            self.append_objective_activation_route(attempt_id, payload);
+            payload.push((
+                "objective_evaluation_elapsed_seconds".to_string(),
+                json!(elapsed_seconds),
+            ));
         }
     }
 
@@ -19245,12 +19365,7 @@ impl Orchestrator {
         let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) else {
             return;
         };
-        payload.insert("objective_id".to_string(), json!(active.objective_id));
-        payload.insert(
-            "objective_evaluation_id".to_string(),
-            json!(active.evaluation_id),
-        );
-        payload.insert("objective_revision".to_string(), json!(active.revision));
+        active.stamp_route(payload);
     }
 
     async fn harness_mount_for_activation(
@@ -19680,10 +19795,76 @@ impl Orchestrator {
         self.dispatch_next_pending_thread_signal(root_turn_id).await
     }
 
+    /// Shared model/API lifecycle control: commit the authoritative transition
+    /// before dispatching recoverable live handoffs.
+    pub async fn control_thread(
+        self: &Arc<Self>,
+        context_id: &str,
+        thread_id: &str,
+        expected_revision: u64,
+        action: ThreadControlAction,
+        reason: &str,
+        actor: &str,
+    ) -> Result<ThreadMutation, DynError> {
+        let store = self
+            .plan_store
+            .as_ref()
+            .ok_or("Thread control requires RuntimeStore")?;
+        let Some(current) = store.get_thread(thread_id).await? else {
+            return Ok(ThreadMutation::NotFound);
+        };
+        if current.context_id != context_id {
+            return Ok(ThreadMutation::NotFound);
+        }
+        if current.revision != expected_revision {
+            return Ok(ThreadMutation::Conflict { current });
+        }
+        let kernel = self
+            .scheduler_kernel
+            .as_ref()
+            .ok_or("Thread control requires Scheduler Kernel")?;
+        let mutation = match kernel
+            .execute(crate::controllers::DialogueController::control_thread(
+                &current, context_id, action, reason, actor,
+            ))
+            .await?
+        {
+            crate::scheduler::KernelResult::ThreadControlled(mutation) => mutation,
+            _ => return Err("Scheduler Kernel returned an invalid Thread control result".into()),
+        };
+        if let ThreadMutation::Updated(updated) = &mutation {
+            if action == ThreadControlAction::Cancel {
+                self.cancel_thread_activations(&current, reason).await?;
+            }
+            // The caller may be the parent Thread executing this control as
+            // a tool. Dispatching its own barrier under that Thread's gate
+            // would deadlock. State/outcome/barrier are already durable;
+            // dispatch is only a recoverable latency optimization.
+            let orchestrator = Arc::clone(self);
+            let updated = updated.clone();
+            tokio::spawn(async move {
+                let result = match action {
+                    ThreadControlAction::Cancel => {
+                        orchestrator.wake_terminal_thread_supervisor(&current).await
+                    }
+                    ThreadControlAction::Resume => {
+                        orchestrator
+                            .wake_resumed_thread(&updated.root_turn_id)
+                            .await
+                    }
+                    ThreadControlAction::Pause => Ok(()),
+                };
+                if let Err(error) = result {
+                    tracing::warn!(event_code = "orchestrator.thread_control.dispatch_deferred", thread_id = %updated.id, %error, "Thread control is durable; supervisor dispatch deferred to recovery");
+                }
+            });
+        }
+        Ok(mutation)
+    }
+
     /// Replays the live half of a terminal Thread/Group handoff whose Event
-    /// and optional direct Signal are already durable. This is safe after an
-    /// operator cancellation and after an idempotent outcome retry: EventBus and
-    /// Thread Signal claims both de-duplicate the exact persisted fact.
+    /// and optional direct Signal are already durable. EventBus and Thread
+    /// Signal claims de-duplicate the exact persisted fact.
     pub async fn wake_terminal_thread_supervisor(
         &self,
         thread: &ThreadRecord,
@@ -21525,12 +21706,7 @@ fn action_group_settled_event(
         ),
     ]);
     if let Some(objective) = objective {
-        payload.insert("objective_id".to_string(), json!(objective.objective_id));
-        payload.insert(
-            "objective_evaluation_id".to_string(),
-            json!(objective.evaluation_id),
-        );
-        payload.insert("objective_revision".to_string(), json!(objective.revision));
+        objective.stamp_route(&mut payload);
     }
     if let Some(principal_id) = &route.initiating_principal_id {
         payload.insert("principal_id".to_string(), json!(principal_id));
@@ -21625,6 +21801,14 @@ fn recovered_action_group_settled_event(
     }
     if let Some(revision) = group.objective_revision {
         payload.insert("objective_revision".to_string(), json!(revision));
+    }
+    if let Some(route) = crate::objective::ActiveObjectiveEvaluation::from_event(selected) {
+        if group.objective_id.as_deref() != Some(route.objective_id.as_str())
+            || group.objective_evaluation_id.as_deref() != Some(route.evaluation_id.as_str())
+        {
+            return Err("Action Group recovery has a mismatched Objective route".into());
+        }
+        route.stamp_route(&mut payload);
     }
     Ok(Event::new(
         format!("action_group_settled_{}", group.id),
@@ -23761,6 +23945,9 @@ mod tests {
 
     #[test]
     fn runtime_harness_entry_only_dispatches_at_root_evaluation_boundary() {
+        for phase in ["schedule-receipt", "objective-finalization"] {
+            assert!(!should_dispatch_runtime_harness_entry("self", phase));
+        }
         assert!(should_dispatch_runtime_harness_entry("self", "work"));
         assert!(should_dispatch_runtime_harness_entry(
             "objective",
@@ -24689,6 +24876,69 @@ mod tests {
     }
 
     #[test]
+    fn schedule_receipt_allows_delivery_or_silence_but_no_work_or_new_wait() {
+        let text = crate::llm::Response {
+            content: "Scheduled; results pending".into(),
+            tool_calls: vec![],
+        };
+        assert!(validate_final_reply_response(
+            "schedule-receipt",
+            true,
+            &text,
+            Some(TerminalDecision::Deliver(text.content.clone()))
+        )
+        .is_ok());
+        assert!(validate_final_reply_response(
+            "schedule-receipt",
+            true,
+            &text,
+            Some(TerminalDecision::NoReply(NoReplyMode::Silent))
+        )
+        .is_ok());
+        assert!(validate_final_reply_response(
+            "schedule-receipt",
+            true,
+            &text,
+            Some(TerminalDecision::NoReply(NoReplyMode::Wait {
+                wait_secs: 1,
+                explicitly_requested: true
+            }))
+        )
+        .is_err());
+        for name in [
+            "exec",
+            "eval",
+            "context_tx",
+            "thread_control",
+            "schedule_tx",
+            "objective_update",
+        ] {
+            let response = crate::llm::Response {
+                content: String::new(),
+                tool_calls: vec![crate::llm::ToolCallRepr {
+                    id: "forbidden".into(),
+                    r#type: "function".into(),
+                    func_name: name.into(),
+                    arguments: "{}".into(),
+                }],
+            };
+            assert!(
+                validate_final_reply_response("schedule-receipt", true, &response, None).is_err(),
+                "{name}"
+            );
+        }
+        let stable = named_tools(&["exec", "context_tx", "no_reply"]);
+        let allowed = named_tools(&["no_reply"]);
+        assert_eq!(
+            provider_tools_for_phase(&stable, &allowed, "schedule-receipt")
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["no_reply"]
+        );
+    }
+
+    #[test]
     fn critical_pressure_with_exhausted_maintenance_budget_forces_final_reply() {
         assert!(should_force_final_for_maintenance(
             "work", "critical", false
@@ -24951,6 +25201,25 @@ mod tests {
         assert_eq!(settled.payload["thread_id"], group.thread_id);
         assert_eq!(settled.payload["wake_policy"], "direct_signal");
         assert_eq!(settled.payload["objective_revision"], 7);
+        let mut selected = selected;
+        let binding = crate::objective::ActiveObjectiveEvaluation {
+            objective_id: "objective-recovery".into(),
+            evaluation_id: "evaluation-recovery".into(),
+            revision: 7,
+            started_at: now,
+            pending_dependency_id: Some("exact-interrupted-wait".into()),
+        };
+        binding.stamp_route(&mut selected.payload);
+        let recovered =
+            recovered_action_group_settled_event(&group, &selected, "direct_signal").unwrap();
+        assert_eq!(
+            crate::objective::ActiveObjectiveEvaluation::from_event(&recovered),
+            Some(binding)
+        );
+        selected
+            .payload
+            .insert("objective_evaluation_id".into(), json!("stale-evaluation"));
+        assert!(recovered_action_group_settled_event(&group, &selected, "direct_signal").is_err());
     }
 
     #[tokio::test]

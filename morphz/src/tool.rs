@@ -3634,6 +3634,10 @@ impl ScheduleTxTool {
             results.push(serde_json::json!({
                 "schedule_id": schedule_id,
                 "status": if schedule.is_some() { "ok" } else { "not_found" },
+                "thread": match schedule.as_ref() {
+                    Some(schedule) => self.sessions.get_thread(&schedule.thread_id).await?,
+                    None => None,
+                },
                 "schedule": schedule,
             }));
         }
@@ -3682,6 +3686,10 @@ impl ScheduleTxTool {
                 return Ok(crate::local_time::localized_runtime_json(serde_json::json!({
                     "status": if inspected.is_some() { "ok" } else { "not_found" },
                     "operation": "inspect",
+                    "thread": match inspected.as_ref() {
+                        Some(schedule) => self.sessions.get_thread(&schedule.thread_id).await?,
+                        None => None,
+                    },
                     "schedule": inspected,
                     "guidance": "Subsequent mutations must submit the current revision returned here; the Runtime rejects stale revisions."
                 }))
@@ -3736,7 +3744,12 @@ impl ScheduleTxTool {
             | ScheduleOperation::Spawn { .. }
             | ScheduleOperation::Promote { .. } => unreachable!(),
         };
-        Ok(schedule_mutation_receipt(operation_name, mutation).to_string())
+        let mut receipt = schedule_mutation_receipt(operation_name, mutation);
+        if let Some(schedule) = &inspected {
+            receipt["thread"] =
+                serde_json::to_value(self.sessions.get_thread(&schedule.thread_id).await?)?;
+        }
+        Ok(receipt.to_string())
     }
 
     async fn execute_promotion(
@@ -4024,7 +4037,12 @@ fn schedule_mutation_receipt(operation: &str, mutation: ScheduleMutation) -> ser
             "status": "updated",
             "operation": operation,
             "schedule": schedule,
-            "guidance": "The Schedule and its matching Timer generation were finalized under the same revision."
+            "scope": "schedule",
+            "guidance": if operation == "cancel" {
+                "Only this Schedule wake source was cancelled. The Thread and its group are NOT cancelled. To abandon the work, use thread_control(action=cancel) with the returned Thread ID and revision; do not report the task cancelled until that terminal transition succeeds."
+            } else {
+                "Only the Schedule wake source was changed. Thread lifecycle is unchanged."
+            }
         }),
         ScheduleMutation::Conflict { current } => serde_json::json!({
             "status": "conflict",
@@ -4330,7 +4348,7 @@ impl Tool for ScheduleTxTool {
         });
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn may select an Agent-authorized model route; omit model to inherit the Session model or Runtime primary model. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. Multiple inspect operations may be batched together. promote and pause/resume/reschedule/cancel must be submitted alone; mutations use expected_revision to prevent stale writes. inspect cannot be mixed with create or mutating operations. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. schedule_tx must be the only tool call in the response.".to_string(),
+            description: "Create or control supervised Thread schedules. One call may atomically create multiple sibling tasks: operations without `after` are independent and may run concurrently; array order does not serialize them. For two or more spawns, every spawn must provide a unique client_id so receipts and dependencies remain stable. spawn requires a lifetime: attached is checked by the current parent Thread generation; durable must bind a current, existing, or newly created Objective; disposable is best effort with no recovery or delivery guarantee. Multiple siblings may form one authoritative group(all|any) barrier. enqueue/spawn may select an Agent-authorized model route; omit model to inherit the Session model or Runtime primary model. Explicit invalid or unauthorized models fail the whole transaction without fallback. promote atomically transfers an already started attached Thread from the current parent to a current/existing/create Objective without restarting work. objective.mode=create atomically commits an independent Objective, initial wait, Thread, Group, and Schedule. Multiple inspect operations may be batched together. promote and pause/resume/reschedule/cancel must be submitted alone; mutations use expected_revision to prevent stale writes. inspect cannot be mixed with create or mutating operations. not_before or delay_seconds sets timing, every_seconds sets recurrence, and after declares Thread dependencies. Cancelling a Schedule stops only that wake source; to cancel the actual work use thread_control(action=cancel), which closes the Thread and settles its group. schedule_tx must be the only tool call in the response.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

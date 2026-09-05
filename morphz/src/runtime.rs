@@ -1484,6 +1484,8 @@ impl MorphzRuntimeBuilder {
         } else {
             self.config.orchestrator.eval_callable_tools.clone()
         };
+        let thread_control = Arc::new(crate::thread_control::ThreadControlTool::default());
+        registry.register(thread_control.clone());
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
             context_engine: &context_engine,
@@ -1746,6 +1748,7 @@ impl MorphzRuntimeBuilder {
             Some(Arc::clone(&harness_registry)),
             message_attachment_root,
         )?;
+        thread_control.bind(&orchestrator);
         Ok(MorphzRuntime {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
@@ -9023,53 +9026,17 @@ impl MorphzRuntime {
         action: ThreadControlAction,
         reason: &str,
     ) -> Result<ThreadMutation, RuntimeError> {
-        let Some(current) = self.inner.store.get_thread(thread_id).await? else {
-            return Ok(ThreadMutation::NotFound);
-        };
-        if current.context_id != context_id {
-            return Ok(ThreadMutation::NotFound);
-        }
-
-        if current.revision != expected_revision {
-            return Ok(ThreadMutation::Conflict { current });
-        }
-        let mutation = match self
-            .inner
-            .scheduler_kernel
-            .execute(crate::controllers::DialogueController::control_thread(
-                &current,
+        self.inner
+            .orchestrator
+            .control_thread(
                 context_id,
+                thread_id,
+                expected_revision,
                 action,
                 reason,
                 "Runtime-Operator",
-            ))
-            .await?
-        {
-            KernelResult::ThreadControlled(mutation) => mutation,
-            _ => return Err("Scheduler Kernel returned an invalid Thread control result".into()),
-        };
-        if let ThreadMutation::Updated(updated) = &mutation {
-            match action {
-                ThreadControlAction::Pause => {}
-                ThreadControlAction::Resume => {
-                    self.inner
-                        .orchestrator
-                        .wake_resumed_thread(&updated.root_turn_id)
-                        .await?;
-                }
-                ThreadControlAction::Cancel => {
-                    self.inner
-                        .orchestrator
-                        .cancel_thread_activations(&current, reason)
-                        .await?;
-                    self.inner
-                        .orchestrator
-                        .wake_terminal_thread_supervisor(&current)
-                        .await?;
-                }
-            }
-        }
-        Ok(mutation)
+            )
+            .await
     }
 
     /// Replaces the current physical generation of one logical Thread with a
@@ -10898,6 +10865,10 @@ fn env_flag_enabled(name: &str) -> bool {
         })
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+#[path = "runtime/scheduler_lifecycle_tests.rs"]
+mod scheduler_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

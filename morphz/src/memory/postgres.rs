@@ -7312,7 +7312,10 @@ impl ObjectiveStore for PostgresStore {
                      AND dependency.owner_kind = 'objective'
                      AND dependency.owner_id = objectives.id
                      AND dependency.owner_generation = $6
-                     AND dependency.required = TRUE AND dependency.status = 'pending'
+                     AND dependency.owner_generation = objectives.generation
+                     AND dependency.required = TRUE
+                     AND (dependency.status = 'pending'
+                          OR (dependency.status = 'satisfied' AND objectives.wait_condition_json IS NULL))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM scheduler_dependencies dependency

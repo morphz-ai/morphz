@@ -86,6 +86,7 @@ import {
   schedulerDetailsTruncated,
   schedulerScheduleInventory,
   threadCarriesExecution,
+  threadNeedsControlVisibility,
   retryableDialogueThread,
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
@@ -2022,7 +2023,7 @@ export function DialogueActivityDock({
                         aria-expanded={expanded}
                         onClick={() => onThreadToggle(effective.thread.id)}
                       >
-                        <span className={`activity-status ${displayState}`}><i />{statusLabel(displayState, t)}</span>
+                        <span className={`activity-status ${displayState}`} title={effective.phase === 'idle' && effective.thread.lifecycle === 'open' ? t('conversation.activity.idleThreadHint') : undefined}><i />{statusLabel(displayState, t)}</span>
                         <span className="dialogue-thread-identity">
                           <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
                           <span className="thread-assignment" title={threadAssignment(effective)}>{threadAssignment(effective) ?? t('steering.intentUnknown')}</span>
@@ -5689,9 +5690,9 @@ export default function App() {
       return !selectedObjectiveFilterId
         || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId)
     })
-    // Thread lifecycle and Scheduler phase are deliberately orthogonal. An
-    // open+idle Thread may accept future Signals, but it is not executing now.
-    const active = executionBearingThreads.filter(snapshot => snapshot.phase !== 'idle')
+    // Unfinished idle work still needs an inspect/cancel surface. Its phase
+    // remains idle; physical running counts continue to use scheduler phase.
+    const active = executionBearingThreads.filter(threadNeedsControlVisibility)
     const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
     const history = executionBearingThreads
       .filter(snapshot => !activeIds.has(snapshot.thread.id))
@@ -5803,7 +5804,7 @@ export default function App() {
       && (!selectedThreadGroupFilterId || selectedThreadGroupMemberIds.has(snapshot.thread.id))
       && (!selectedSupervisorFilterId || snapshot.thread.supervision.supervisor_id === selectedSupervisorFilterId)
     ))
-    const active = filtered.filter(snapshot => snapshot.phase !== 'idle')
+    const active = filtered.filter(threadNeedsControlVisibility)
     const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
     const recentHistory = filtered
       .filter(snapshot => !activeIds.has(snapshot.thread.id))

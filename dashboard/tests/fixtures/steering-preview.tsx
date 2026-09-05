@@ -13,7 +13,7 @@ import type { SchedulerThreadSnapshot } from '../../src/scheduler/types'
 import { objectiveReplyDestination, threadDestination, type InputSelection } from '../../src/app/steering'
 
 const snapshot: SchedulerThreadSnapshot = {
-  intent: '你再起一个线程去分析一下，我现在要测试一下，对线程干预的功能。随后检查并发写入与中文路径，并补齐所有相关回归。', phase: 'running',
+  intent: '你再起一个线程去分析一下，我现在要测试一下，对线程干预的功能。随后检查并发写入与中文路径，并补齐所有相关回归。', phase: new URLSearchParams(window.location.search).has('idle') ? 'idle' : 'running',
   thread: { id: 'thread_0123456789abcdef0123456789abcdef', revision: 1, generation: 1,
     agent_id: 'fixture', context_id: 'fixture', session_id: 'fixture', root_turn_id: 'fixture-root',
     kind: 'execution', lifecycle: 'open', control_state: 'active', executor_kind: 'self', delivery_status: 'none',

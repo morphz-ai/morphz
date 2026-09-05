@@ -249,7 +249,7 @@ export function ThreadCausalCard({
     if (signal) return t('work.causal.nextWakeValues.signal', { kind: signal.kind })
     const schedule = snapshot.schedules.find(item => item.status === 'queued' || item.status === 'paused')
     if (schedule) return t('work.causal.nextWakeValues.schedule', { intent: schedule.intent })
-    if (thread.supervision.thread_group_id) return t('work.causal.nextWakeValues.group')
+    if (displayPhase !== 'idle' && thread.supervision.thread_group_id) return t('work.causal.nextWakeValues.group')
     return t(`work.causal.nextWakeValues.${displayPhase}`)
   })()
   const activationIds = new Set(snapshot.activations.map(item => item.activation.id))

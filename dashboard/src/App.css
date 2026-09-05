@@ -681,7 +681,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .message-thread-objective { display: block; overflow: hidden; margin-top: 2px; color: var(--objective-color, var(--accent)); font: 600 8px/1.3 var(--mono); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .message-thread-capsule code { overflow: hidden; max-width: 150px; text-overflow: ellipsis; white-space: nowrap; }
 .thread-state-dot { width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px color-mix(in srgb, var(--muted) 10%, transparent); }
-.thread-state-dot.running, .thread-state-dot.runnable, .thread-state-dot.open, .thread-state-dot.completed, .thread-state-dot.succeeded { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.thread-state-dot.running, .thread-state-dot.runnable, .thread-state-dot.completed, .thread-state-dot.succeeded { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .thread-state-dot.waiting { background: var(--yellow); box-shadow: 0 0 0 3px var(--yellow-soft); }
 .thread-state-dot.failed, .thread-state-dot.cancelled { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
 .message-thread-open { color: var(--faint); transition: color .15s ease, transform .15s ease; }
@@ -1382,6 +1382,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .dialogue-objective-wait.is-executing { border-left-color: var(--green); background: var(--green-soft); color: var(--green); }
 .activity-status { display: inline-flex; min-width: 0; align-items: center; gap: 5px; color: var(--muted); font-family: var(--mono); font-size: 8px; font-weight: 700; text-transform: uppercase; }
 .activity-status i { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.activity-status.open i, .activity-status.idle i { background: var(--muted); box-shadow: none; }
 .activity-status.running, .activity-status.active, .activity-status.runnable, .activity-status.succeeded { color: var(--green); }
 .activity-status.running i, .activity-status.active i, .activity-status.runnable i, .activity-status.succeeded i { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .activity-status.waiting, .activity-status.queued, .activity-status.paused, .activity-status.blocked, .activity-status.waiting_approval { color: var(--yellow); }
