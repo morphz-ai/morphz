@@ -20,7 +20,7 @@ const copy = {
     maintained: "Created and maintained by Newvar.",
     technical: "Product and research",
     ecosystem: "Open source",
-    essay: "Technical essay",
+    essay: "Technical articles",
     paper: "Research paper",
     standards: "Open standards",
     docs: "Documentation",
@@ -49,7 +49,7 @@ export function SiteFooter({ locale }: { locale: Locale }) {
         <section>
           <span>{t.technical}</span>
           <div className="site-footer__links">
-            <Link href={sitePath(locale, "/blog/from-chat-completion-to-structured-context-evaluation")}>{t.essay}</Link>
+            <Link href={sitePath(locale, "/blog")}>{t.essay}</Link>
             <Link href={sitePath(locale, "/paper")}>{t.paper}</Link>
             <Link href={sitePath(locale, "/standards")}>{t.standards}</Link>
             <Link href={sitePath(locale, "/docs")}>{t.docs}</Link>

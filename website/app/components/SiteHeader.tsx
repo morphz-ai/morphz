@@ -20,7 +20,7 @@ const copy = {
     theme: "切换明暗主题",
   },
   en: {
-    essay: "Essay",
+    essay: "Articles",
     paper: "Paper",
     standards: "Standards",
     docs: "Docs",
@@ -46,7 +46,7 @@ export function SiteHeader({
 }) {
   const t = copy[locale];
   const home = sitePath(locale, "/");
-  const essay = sitePath(locale, "/blog/from-chat-completion-to-structured-context-evaluation");
+  const essay = sitePath(locale, "/blog");
   const paper = sitePath(locale, "/paper");
   const standards = sitePath(locale, "/standards");
   const docs = sitePath(locale, "/docs");

@@ -13,6 +13,13 @@ async function render(path = "/") {
   );
 }
 
+test("uses Vinext's supported hostname option for LAN previews", async () => {
+  const { scripts } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.match(scripts.dev, /\bvinext\s+dev\b/);
+  assert.match(scripts.dev, /--hostname\s+0\.0\.0\.0(?:\s|$)/);
+  assert.doesNotMatch(scripts.dev, /(?:^|\s)--host(?:\s|=|$)/);
+});
+
 test("renders the finished Chinese and English home pages", async () => {
   const [zhResponse, enResponse] = await Promise.all([render("/"), render("/en")]);
   assert.equal(zhResponse.status, 200);
@@ -169,7 +176,7 @@ test("uses one site header across landing and content pages", async () => {
 
   for (const html of pages.slice(zhRoutes.length)) {
     const header = html.match(/<header class="site-header">[\s\S]*?<\/header>/)?.[0] ?? "";
-    assert.match(header, /Essay[\s\S]*?Paper[\s\S]*?Docs[\s\S]*?Download[\s\S]*?Source[\s\S]*?class="language-switch"[^>]*>CN<\/a>/);
+    assert.match(header, /Articles[\s\S]*?Paper[\s\S]*?Docs[\s\S]*?Download[\s\S]*?Source[\s\S]*?class="language-switch"[^>]*>CN<\/a>/);
     assert.match(header, /class="theme-toggle"[\s\S]*?aria-label="Toggle color theme"/);
     assert.doesNotMatch(header, /Shared-Mind Agent|Live agent|>Chinese<|Menu[\s\S]*?\+/);
   }
@@ -303,6 +310,44 @@ test("renders the bilingual journal and its first essay", async () => {
   }
   assert.doesNotMatch(html[2], /我叫 Morphz|一台认知机，也应当拥有自己的声音/);
   assert.doesNotMatch(html[3], /I am Morphz|A cognitive machine should have a voice of its own/);
+});
+
+test("context-maintenance articles are discoverable, bilingual, and readable without JavaScript", async () => {
+  const slug = "maintaining-context-without-compaction";
+  const previous = "from-chat-completion-to-structured-context-evaluation";
+  for (const [prefix, otherPrefix, label, title] of [
+    ["", "/en", "文章", "不用 Compaction，Morphz 如何维护有限的上下文？"],
+    ["/en", "", "Articles", "How Morphz Maintains a Finite Context Without Compaction"],
+  ]) {
+    const root = `${prefix}/blog`;
+    const indexResponse = await render(root);
+    assert.equal(indexResponse.status, 200);
+    const index = await indexResponse.text();
+    const cards = index.match(/<div class="blog-index__list">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    const newerPosition = cards.indexOf(`href="${root}/${slug}"`);
+    const olderPosition = cards.indexOf(`href="${root}/${previous}"`);
+    assert.ok(newerPosition >= 0 && olderPosition > newerPosition, "new article appears before the inaugural essay");
+
+    const response = await render(`${root}/${slug}`);
+    assert.equal(response.status, 200);
+    const article = await response.text();
+    assert.ok(article.includes(`<h1>${title}</h1>`));
+    const prose = article.match(/<div class="doc-prose blog-prose">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.match(prose, /<p>/);
+    assert.match(prose, /<table>/);
+    assert.match(prose, /<pre>/);
+    assert.match(prose, /deployment\/target-v2/);
+    assert.match(prose, /href="https:\/\/github\.com\/morphz-ai\/morphz"/);
+    assert.ok(prose.includes(`href="${prefix}/paper"`));
+    assert.ok(article.includes(`rel="canonical" href="https://morphz.ai${root}/${slug}"`));
+    const languageSwitch = article.match(/<a\b[^>]*class="language-switch"[^>]*>/)?.[0] ?? "";
+    assert.ok(languageSwitch.includes(`href="${otherPrefix}/blog/${slug}"`));
+    const header = article.match(/<header class="site-header">([\s\S]*?)<\/header>/)?.[1] ?? "";
+    assert.ok(header.includes(`href="${root}">${label}</a>`));
+  }
+  const sitemap = await (await render("/sitemap.xml")).text();
+  assert.ok(sitemap.includes(`https://morphz.ai/blog/${slug}`));
+  assert.ok(sitemap.includes(`https://morphz.ai/en/blog/${slug}`));
 });
 
 test("renders the bilingual paper and native distribution pages", async () => {
