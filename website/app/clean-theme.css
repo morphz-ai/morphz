@@ -70,6 +70,7 @@ body { background: var(--paper); }
 }
 
 .brand { gap: 12px; color: var(--ink); }
+.brand__mark { display: block; flex: none; width: 28px; height: 28px; }
 .brand__name { font-size: 19px; letter-spacing: -.04em; }
 .brand__paren { display: none; }
 .brand small,

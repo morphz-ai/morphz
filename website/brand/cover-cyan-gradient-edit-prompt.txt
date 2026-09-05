@@ -1,0 +1,16 @@
+Use case: precise-object-edit.
+Asset type: Morphz electric-cyan Open Graph sharing cover.
+Image 1 is the EDIT TARGET: the completed cyan sharing cover.
+
+Make ONE localized change: replace the flat cyan fill of the geometric M / butterfly logo to the left of "Morphz" with a tasteful electric-cyan color gradient.
+Keep the exact existing logo silhouette, outer edges, center notch, negative space, placement and size unchanged. The left wing should flow smoothly from luminous ice cyan near its upper edge through the brand electric cyan #56D0DE into a richer cyan/teal near its lower inner edge. The right wing should have a complementary subtle variation, flowing from bright electric cyan into deeper turquoise / cyan-blue toward its lower edge. Suggested coherent palette: ice cyan #A1F2F0, brand electric cyan #56D0DE, vivid turquoise #19BDD0, deeper cyan #0A899F.
+The result should have clearly visible yet elegant tonal depth at this large cover scale, like the polished gradient treatment of a premium technical brand. Use continuous smooth gradients, no color bands or blotches. Keep every part of the wings visible, including the central folds. No purple, violet, royal-blue, orange or unrelated accent hues. No new outline, metallic bevel, extrusion, added halo or 3D geometry.
+
+Everything outside the logo stays unchanged: near-black background, white Morphz wordmark, outlined badge, its cyan text, exact description lines, branching trajectories, circles, grid, existing lighting, spacing and composition.
+Preserve all text verbatim:
+"Morphz"
+"Open-source agent"
+"Autonomous context maintenance."
+"Concurrent scheduling. Governed execution."
+Do not edit, move, rescale or reflow the text.
+Output one finished high-quality PNG, same 1730 x 909 size and landscape framing as the input, without cropping.

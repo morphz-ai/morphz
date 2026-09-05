@@ -22,18 +22,29 @@ export const metadata: Metadata = {
   metadataBase: canonicalOrigin,
   title: { default: "Morphz — One Agent. Many Objectives. Advancing in Parallel.", template: "%s · Morphz" },
   description: "Morphz is an open-source agent for long-running, concurrent work, built on persistent cognitive state, multiplexed Session I/O, durable scheduling, and governed execution.",
+  icons: {
+    icon: [
+      { url: "/brand/morphz-favicon-cyan-32.png", type: "image/png", sizes: "32x32" },
+      { url: "/brand/morphz-favicon-cyan.svg", type: "image/svg+xml", sizes: "any" },
+    ],
+  },
   openGraph: {
     type: "website",
     siteName: "Morphz",
     title: "Morphz — One Agent. Many Objectives. Advancing in Parallel.",
     description: "An open-source agent for long-running, concurrent work, built on persistent cognitive state, multiplexed Session I/O, durable scheduling, and governed execution.",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Morphz — One Agent. Many Objectives. Advancing in Parallel." }],
+    images: [{
+      url: "/brand/og-cyan-v2.png",
+      width: 1731,
+      height: 909,
+      alt: "Morphz — Autonomous context maintenance. Concurrent scheduling. Governed execution.",
+    }],
   },
   twitter: {
     card: "summary_large_image",
     title: "Morphz — One Agent. Many Objectives. Advancing in Parallel.",
     description: "An open-source agent for long-running, concurrent work, built on persistent cognitive state, multiplexed Session I/O, durable scheduling, and governed execution.",
-    images: ["/og.png"],
+    images: ["/brand/og-cyan-v2.png"],
   },
 };
 

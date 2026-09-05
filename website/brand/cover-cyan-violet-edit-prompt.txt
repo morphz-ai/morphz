@@ -1,0 +1,17 @@
+Use case: precise-object-edit.
+Asset type: Morphz Open Graph cover, cyan-dominant multicolor-logo variant.
+Image 1 is the EDIT TARGET. Create a NEW variant; preserve the source unchanged.
+
+Edit ONLY the fill colors inside the existing M / butterfly logo to the left of "Morphz". Preserve its exact silhouette, center notch, negative space, dimensions, and placement.
+
+Primary request: a genuine MULTICOLOR HUE GRADIENT with electric cyan as the dominant brand color, transitioning through blue into VIOLET as a visible secondary accent. The prior version only changed cyan brightness and saturation; this version must visibly shift hue.
+Keep the left wing predominantly electric cyan (#56D0DE / #21C8DE), with restrained icy-cyan highlights. On the right wing, start with cyan near the top, smoothly transition through luminous blue (#5595EC) in the middle, and reach a clearly violet-purple (#9066EB / #7954D9) lower portion. Purple should be recognizable, not so subtle that it reads as darker cyan. Cyan still dominates the overall mark and the overall card. Use smooth polished gradients, no separate stripes or hard color boundaries, no blotchy texture. Preserve the clean geometric mark without extrusion, bevels, outline or added glow.
+
+Keep everything OUTSIDE the logo unchanged: all background graphics remain in their existing electric-cyan/teal palette, the concentrated glow, trajectory lines, rings, grid, near-black backdrop, badge, white typography, placement, whitespace, and image framing.
+Preserve all text verbatim, without resizing or reflow:
+"Morphz"
+"Open-source agent"
+"Autonomous context maintenance."
+"Concurrent scheduling. Governed execution."
+
+Output one high-quality landscape PNG in the same approximately 1731 x 909 framing. Do not crop. This is a localized logo-color experiment, not a redesign of the card.

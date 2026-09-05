@@ -106,6 +106,40 @@ test("renders the finished Chinese and English home pages", async () => {
   }
 });
 
+test("home sharing cards reference the versioned cover at its actual dimensions", async () => {
+  const png = await readFile(new URL("../public/brand/og-cyan-v2.png", import.meta.url));
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  for (const path of ["/", "/en"]) {
+    const response = await render(path);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /property="og:image" content="https:\/\/morphz\.ai\/brand\/og-cyan-v2\.png"/);
+    assert.match(html, /name="twitter:image" content="https:\/\/morphz\.ai\/brand\/og-cyan-v2\.png"/);
+    assert.match(html, /name="twitter:card" content="summary_large_image"/);
+    assert.match(html, new RegExp(`property="og:image:width" content="${width}"`));
+    assert.match(html, new RegExp(`property="og:image:height" content="${height}"`));
+    assert.match(html, /property="og:image:alt" content="Morphz — Autonomous context maintenance\. Concurrent scheduling\. Governed execution\."/);
+  }
+});
+
+test("site pages share the new SVG favicon and a PNG fallback", async () => {
+  const routes = ["/", "/en", "/docs/core-concepts", "/en/blog/from-chat-completion-to-structured-context-evaluation"];
+  for (const path of routes) {
+    const response = await render(path);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<link[^>]+rel="icon"[^>]+href="\/brand\/morphz-favicon-cyan-32\.png"[^>]+type="image\/png"[^>]+sizes="32x32"/);
+    assert.match(html, /<link[^>]+rel="icon"[^>]+href="\/brand\/morphz-favicon-cyan\.svg"[^>]+type="image\/svg\+xml"[^>]+sizes="any"/);
+    const header = html.match(/<header class="site-header">[\s\S]*?<\/header>/)?.[0] ?? "";
+    const mark = header.match(/<img[^>]*class="brand__mark"[^>]*>/)?.[0] ?? "";
+    assert.match(mark, /src="\/brand\/morphz-mark-cyan\.svg"/);
+    assert.match(mark, /alt=""/);
+    assert.match(mark, /width="28"/);
+    assert.match(mark, /height="28"/);
+  }
+});
+
 test("uses one site header across landing and content pages", async () => {
   const zhRoutes = ["/", "/paper", "/download", "/docs", "/blog"];
   const enRoutes = ["/en", "/en/paper", "/en/download", "/en/docs", "/en/blog"];

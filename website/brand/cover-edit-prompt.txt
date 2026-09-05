@@ -1,0 +1,10 @@
+Use case: text-localization / precise text edit.
+Image 1 is the EDIT TARGET: the existing Morphz social-sharing cover. Preserve the entire original image, especially the exact abstract blue/cyan/purple M/butterfly logo on the left, the Morphz wordmark, typography, background, thin blue/purple branching lines and concentric circles, composition, colors and wide approximately 1.905:1 aspect ratio. Do not redesign or reinterpret the logo. Do not crop or move anything.
+Change ONLY the small text below the Morphz wordmark:
+1. Replace the outlined badge text "Agent Runtime" with the exact text "Open-source agent". Fit it comfortably in the existing badge; modestly widen the badge only if necessary.
+2. Replace the old tagline "Durable cognition. Recoverable execution." with these TWO exact lines in crisp white sans-serif, left-aligned at the original tagline left edge, retaining a readable size:
+"Autonomous context maintenance."
+"Concurrent scheduling. Governed execution."
+Use the existing empty area below the first line for the second line. Keep both lines on the left side, clear of the bright branching origin on the right.
+All other image pixels and design elements should remain as close to the source as possible. No added text, slogans, icons, borders, watermarks or effects.
+Output a finished high-quality PNG cover at 1200 x 630, or the same original aspect ratio at higher resolution.

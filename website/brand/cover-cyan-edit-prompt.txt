@@ -1,0 +1,18 @@
+Use case: precise-object-edit.
+Asset type: Morphz Open Graph / social-sharing cover, electric-cyan brand-color variant.
+Input images: Image 1 is the EDIT TARGET, the existing Morphz sharing cover. Image 2 is the approved electric-cyan logo, a supporting identity and exact-color reference.
+Primary request: keep Image 1's composition and typography, and bring its accent palette into the website's electric-cyan identity.
+
+Logo: use the exact flat geometric M / butterfly silhouette from Image 2 in the existing logo position and at the same apparent dimensions as Image 1. Both wings and the central folds are one uniform, opaque electric cyan (#56D0DE). Keep the negative space open. No gradient, dark triangular folds, texture, bevel, or glow inside the logo itself. Do not reinterpret its geometry.
+
+Background and accents: retain the near-black background, generous negative space, fine concentric circles, grid, branching trajectories and their exact placement. Recolor the violet and royal-blue accents to a restrained cyan/teal tonal family based on #56D0DE. Fainter lines may be deeper teal (#168997); luminous highlights may approach ice cyan (#8ADFE7). Preserve the original concentrated glow and fine linework without flooding the whole image with bright cyan. The outlined badge and its text also use electric cyan.
+
+Text (verbatim, unchanged):
+"Morphz"
+"Open-source agent"
+"Autonomous context maintenance."
+"Concurrent scheduling. Governed execution."
+Keep the Morphz wordmark and both description lines white, with the same font shapes, scale, spacing, placement, line breaks, and excellent legibility as Image 1.
+
+Constraints: change only the accent palette and replace the logo with the approved monochrome reference. Keep the framing, proportions, composition and all copy unchanged. No added slogans, labels, symbols, ornamental shapes, watermarks or borders. No purple or royal-blue accent remnants.
+Output: one finished high-quality landscape PNG at the same approximately 1.903:1 aspect ratio as Image 1 (1730 x 909), without cropping.

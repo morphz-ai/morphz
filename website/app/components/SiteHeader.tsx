@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import type { Locale } from "@/lib/docs";
 import { sitePath, SITE_LINKS } from "@/lib/site";
 import { ThemeToggle } from "./ThemeToggle";
@@ -63,11 +64,8 @@ export function SiteHeader({
     <header className={`site-header${immersive ? " site-header--immersive" : ""}`}>
       <div className="site-header__inner">
         <Link className="brand" href={home} aria-label={t.home}>
-          <span className="brand__name">
-            <span className="brand__paren" aria-hidden="true">(</span>
-            <span>Morphz</span>
-            <span className="brand__paren" aria-hidden="true">)</span>
-          </span>
+          <Image className="brand__mark" src="/brand/morphz-mark-cyan.svg" width={28} height={28} alt="" unoptimized />
+          <span className="brand__name">Morphz</span>
         </Link>
 
         <nav className="site-nav" aria-label={t.navigation}>

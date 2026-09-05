@@ -1,0 +1,6 @@
+Use case: precise-object-edit.
+Image 1 is the EDIT TARGET: the already finished electric-cyan Morphz social card. Image 2 is the EXACT approved flat logo to insert.
+Make ONE LOCALIZED CORRECTION ONLY, inside the logo bounding box at the left of "Morphz" (roughly x=93..256, y=291..469 in Image 1). Replace that logo with the flat silhouette from Image 2, at the same position and apparent size. Copy the contour from Image 2 faithfully. The entire logo, including both small triangular folds meeting in the center, must have ONE completely uniform fill #56D0DE (RGB 86,208,222). Those central triangles are CYAN, not dark or black. All painted pixels inside the solid shape use the same color, with only antialiased edge pixels. No shading, gradient, texture, dimensional edges, rim light or logo glow.
+Preserve the central negative space below the meeting point exactly as Image 2 shows. Keep that negative space transparent to the existing dark background.
+Keep ALL OTHER PARTS of Image 1 unchanged: the Morphz wordmark, badge and all text, the cyan trajectory graphics and their brightness, near-black background, circles, grid, spacing, composition, exact image size and aspect ratio. No redesign, no text edits, no extra elements.
+This is precise logo compositing into an otherwise finished card, not a new design. Output a high-quality PNG.

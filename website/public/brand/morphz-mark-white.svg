@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-labelledby="title">
+  <title id="title">Morphz</title>
+  <g fill="#ffffff">
+    <path d="M8 4 38 31 38 70 8 92Z"/>
+    <path d="M88 4 58 31 58 70 88 92Z"/>
+    <path d="M38 31 48 40 38 40Z"/>
+    <path d="M58 31 48 40 58 40Z"/>
+  </g>
+</svg>
