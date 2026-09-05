@@ -4,7 +4,7 @@
 - 类型：Process
 - 作者：新变元（Newvar）
 - 创建日期：2026-08-21
-- 自举文档集：宪法 v1 Draft、Governance Draft、规范 v1 Draft、测试套件 v1 Draft
+- 自举文档集：宪章 v1 Draft、Governance Draft、规范 v1 Draft、测试套件 v1 Draft
 - 规范文本语言：英文
 - 规范文本：[English](../MEP-0001-specification-governance.md)
 
@@ -20,7 +20,7 @@ MEP 允许社区成员参与塑造 Morphz，同时避免核心语义演进沦为
 
 ## 2. 初始自举
 
-首版宪法、Governance 文档、MEP-0001、Draft 规范和 Draft 一致性测试套件，由新变元作为
+首版宪章、Governance 文档、MEP-0001、Draft 规范和 Draft 一致性测试套件，由新变元作为
 创始维护者同时通过。这样解决“流程必须先存在，才能通过流程自身”的循环依赖。
 
 自举通过不会让 Draft 规范进入 Final，不会建立兼容性声明，也不会授予知识产权。
@@ -30,7 +30,7 @@ MEP 允许社区成员参与塑造 Morphz，同时避免核心语义演进沦为
 
 以下变更需要 MEP：
 
-- 宪法修正；
+- 宪章修正；
 - 新增或修改规范性结构化上下文行为；
 - 破坏兼容性的公共 API、线协议、持久化或兼容性变更；
 - 新的一致性 Profile 或兼容性声明规则；
@@ -47,7 +47,7 @@ MEP 允许社区成员参与塑造 Morphz，同时避免核心语义演进沦为
 
 ## 4. MEP 类型
 
-- **Constitutional**：修改宪法原则。
+- **Constitutional**：修改宪章原则。
 - **Standards Track**：修改规范性行为、兼容性或一致性 Profile。
 - **Architecture**：建立稳定的跨模块设计或扩展边界。
 - **Process**：修改治理、贡献、发布或 MEP 流程。
@@ -92,7 +92,7 @@ Final ──────────────────────→ Supe
 - **Superseded**：被更新的 Final MEP 取代。
 
 Draft 或 Accepted 文本即使已经合入，也不会自动成为规范要求。只有最终形成的带版本
-宪法或规范发布才能确立规范行为。
+宪章或规范发布才能确立规范行为。
 
 ## 7. 提交与评审
 
@@ -105,7 +105,7 @@ Draft 或 Accepted 文本即使已经合入，也不会自动成为规范要求�
 6. 责任 Maintainer 汇总反对意见、替代方案和必要变更。
 7. 对应批准主体更新状态并记录决定。
 
-评审依据技术价值、宪法一致性、兼容成本、证据、安全、知识产权影响和生态影响，不由
+评审依据技术价值、宪章一致性、兼容成本、证据、安全、知识产权影响和生态影响，不由
 评论数量或简单多数票决定。
 
 ## 8. 批准权力
@@ -118,7 +118,7 @@ Draft 或 Accepted 文本即使已经合入，也不会自动成为规范要求�
 | Process | Core Maintainer 评审加 Project Lead 批准 |
 | Constitutional | Core Maintainer 评审加 Project Lead 显式批准 |
 
-Project Lead 可以委托常规 Architecture 决策，但不能静默委托宪法、官方兼容标识或官方
+Project Lead 可以委托常规 Architecture 决策，但不能静默委托宪章、官方兼容标识或官方
 发布身份的所有权。
 
 ## 9. 勘误与权威解释

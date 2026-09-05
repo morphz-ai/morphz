@@ -33,7 +33,7 @@
 - 发布签名密钥与兼容标识；
 - 发布和维护源代码、规范文本、专利、贡献与商标政策；
 - 任命 Project Lead 和初始 Core Maintainer；
-- 最终维护结构化上下文宪法和公开规范。
+- 最终维护结构化上下文宪章和公开规范。
 
 ### Project Lead
 
@@ -69,7 +69,7 @@ Project Lead 应当寻求粗略共识（rough consensus）。如果最终决定�
 
 承担上一节所定义架构和发布责任的最终权力主体。
 
-角色通过持续展现判断力、评审质量、可靠性和对公开宪法的遵守而获得。受雇于新变元既不会自动满足要求，也并非所有角色的必要条件；但新变元继续保留第二节所列的项目维护权。
+角色通过持续展现判断力、评审质量、可靠性和对公开宪章的遵守而获得。受雇于新变元既不会自动满足要求，也并非所有角色的必要条件；但新变元继续保留第二节所列的项目维护权。
 
 ## 4. 按变更类型划分的权力
 
@@ -80,7 +80,7 @@ Project Lead 应当寻求粗略共识（rough consensus）。如果最终决定�
 | Provider、Target、Harness、UI、SDK 或 Adapter 扩展 | 相应 Module Maintainer |
 | 新的公开扩展点 | Core Maintainer；影响全生态时需要 MEP |
 | 结构化上下文规范行为 | 已接受 MEP 加 Core Maintainer 评审 |
-| 宪法或治理 | 专项 MEP 加 Project Lead 批准 |
+| 宪章或治理 | 专项 MEP 加 Project Lead 批准 |
 | 官方发布与兼容标识 | Project Lead 或获得委托的 Release Maintainer |
 | 处于保密期的安全响应 | Security Team 依据紧急流程处理 |
 
@@ -90,7 +90,7 @@ Project Lead 应当寻求粗略共识（rough consensus）。如果最终决定�
 
 影响以下内容的变更需要 MEP：
 
-- 宪法原则；
+- 宪章原则；
 - 公开的结构化上下文语义；
 - 兼容性或版本协商；
 - 跨模块架构和稳定扩展边界；
@@ -102,7 +102,7 @@ Project Lead 应当寻求粗略共识（rough consensus）。如果最终决定�
 
 ## 6. 解释与勘误
 
-宪法定义规范权威顺序。疑似错误和歧义遵循
+宪章定义规范权威顺序。疑似错误和歧义遵循
 [MEP-0001](docs/meps/zh-CN/MEP-0001-specification-governance.md) 中的公开流程。
 
 只有在不改变一致实现行为时，责任 Maintainer 才可以批准编辑性修正。可能影响行为或
@@ -124,7 +124,7 @@ Morphz 希望让参与上游协作比维护一个分裂的 Fork 更有价值。�
 
 ## 8. 核心与扩展边界
 
-核心包括宪法、规范性的结构化上下文语义、Context Transaction、Event/Projection 权威、因果路由、兼容性，以及验证这些内容所需的最小参考 Runtime。
+核心包括宪章、规范性的结构化上下文语义、Context Transaction、Event/Projection 权威、因果路由、兼容性，以及验证这些内容所需的最小参考 Runtime。
 
 Provider、Execution Target、Harness、领域包、存储 Adapter、SDK、UI、部署和 Eval 属于扩展面，除非一份处于 Final 状态的 MEP 将其中某项具体语义要求纳入核心。
 

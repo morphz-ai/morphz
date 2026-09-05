@@ -39,7 +39,7 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 
 ## 结构化上下文交付物
 
-1. [《结构化上下文宪法 v1》](structured_context_constitution_v1.md)
+1. [《结构化上下文宪章 v1》](structured_context_constitution_v1.md)
    定义这一技术类别保持其身份所需的稳定原则。
 2. [《Morphz 结构化上下文规范 v1》](morphz_structured_context_specification_v1.md)
    定义规范性的对象模型、权责边界、事务与可观察语义。
@@ -93,16 +93,16 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 
 ## 权威顺序
 
-结构化上下文的规范权威顺序由宪法第 4 节定义。以下仅作非规范性的索引摘要：
+结构化上下文的规范权威顺序由宪章第 4 节定义。以下仅作非规范性的索引摘要：
 
-1. 宪法；
+1. 宪章；
 2. 当前处于 Final 状态的结构化上下文规范；
 3. 与规范版本对应的一致性测试套件；测试套件可以验证规范，但不能重新定义规范；
 4. 已接受的 Standards Track MEP，但仅限已纳入带版本规范发布的部分；
 5. 官方参考实现 Morphz Runtime；
 6. 解释性设计文档与示例。
 
-在 Harness 宪法或等价治理文件被采纳前，Harness 标准族中的冲突按以下顺序解决：
+在 Harness 宪章或等价治理文件被采纳前，Harness 标准族中的冲突按以下顺序解决：
 
 1. 当前处于 Final 状态的 Morphz Harness 规范；
 2. 对于 `.hns` Package 主张，与其匹配且处于 Final 状态的 HNS 包格式规范；
@@ -111,7 +111,7 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 5. 官方参考实现 Morphz Runtime；
 6. 解释性架构文档与示例。
 
-在专门的 Agent Trajectory 宪法或等价治理文件被采纳前，其标准族中的冲突按以下顺序
+在专门的 Agent Trajectory 宪章或等价治理文件被采纳前，其标准族中的冲突按以下顺序
 解决：
 
 1. 当前处于 Final 状态的 Morphz Agent Trajectory 规范；
@@ -121,7 +121,7 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 4. Morphz Runtime 及其官方 Exporter，作为参考实现；
 5. 解释性架构文档、Dataset 与示例。
 
-在专门的 Mind Frame Exchange 宪法或等价治理文件被采纳前，其标准族中的冲突按以下顺序
+在专门的 Mind Frame Exchange 宪章或等价治理文件被采纳前，其标准族中的冲突按以下顺序
 解决：
 
 1. 当前处于 Final 状态的 Morphz Mind Frame Exchange 协议；
@@ -131,7 +131,7 @@ Cognitive Application、可移植 Harness 执行、Yao 与 Mind Frame Exchange �
 4. Morphz Runtime 及其官方 Exporter、Verifier、Importer 与 Resolver，作为参考实现；
 5. 解释性架构文档与 Union Mind Federation 愿景文档。
 
-MEP 用于记录和批准变更，但只有当变更写入带版本的宪法或规范版本后，才成为规范性要求。
+MEP 用于记录和批准变更，但只有当变更写入带版本的宪章或规范版本后，才成为规范性要求。
 
 在这些文档退出 Draft 状态之前，源码、数据库契约测试和
 [Runtime 实现状态总览](../../morphz_runtime_core_implementation_status_v1.md)仍然是判断 Morphz Runtime 当前已实现能力的权威依据。它们不会覆盖 Draft 的评审目标，也不会让实现细节自动成为规范要求。草案中的要求不能证明实现已经满足该要求。

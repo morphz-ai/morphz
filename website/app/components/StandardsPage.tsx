@@ -30,7 +30,7 @@ const copy = {
         title: "Structured Context",
         description: "定义智能体如何拥有带身份和版本的认知上下文，以及观察、认知、会话、事务与运行时事实之间的权责边界。",
         links: [
-          ["结构化上下文宪法", "structured_context_constitution_v1.md"],
+          ["结构化上下文宪章", "structured_context_constitution_v1.md"],
           ["结构化上下文规范", "morphz_structured_context_specification_v1.md"],
           ["一致性测试套件", "morphz_conformance_suite_v1.md"],
         ],

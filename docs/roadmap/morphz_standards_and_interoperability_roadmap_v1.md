@@ -73,7 +73,7 @@ Agent Trajectory 上传、评测贡献或训练用途都需要明确的范围、
 
 当前标准工作区已经包含：
 
-1. [《结构化上下文宪法 v1》](../standards/zh-CN/structured_context_constitution_v1.md)：定义技术类别的稳定原则；
+1. [《结构化上下文宪章 v1》](../standards/zh-CN/structured_context_constitution_v1.md)：定义技术类别的稳定原则；
 2. [《Morphz 结构化上下文规范 v1》](../standards/zh-CN/morphz_structured_context_specification_v1.md)：定义对象模型、权责边界、事务和可观察语义；
 3. [《Morphz 一致性测试套件 v1》](../standards/zh-CN/morphz_conformance_suite_v1.md)：定义独立实现如何证明兼容；
 4. [《Morphz Agent Trajectory 规范 v0.1》](../standards/zh-CN/morphz_agent_trajectory_specification_v0_1.md)：
