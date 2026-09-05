@@ -1,16 +1,71 @@
-# Morphz v0.1.1 release checklist
+# Morphz v0.1.1 candidate and v0.1.2 release checklist
 
-Status: autonomous publication reauthorized, pending completed fixes and gates.
-The user's latest instruction is: "我先去睡了，你确定相关问题都修复后，就发布下一个版本。
-自主完成。" This supersedes the earlier request not to rush a tag. Obtain a fresh
-development handoff and pass candidate review, regression tests and exact-SHA
-CI before autonomously publishing v0.1.1; no further publication confirmation is
-needed. This is not permission to skip unresolved defects or modify production
-data. No tag, Release, push, or deployment has yet been made by the release task
-during this preparation. The prepared release body is
-`docs/releases/v0.1.1.md`. The tag workflow
-will use it instead of generated notes, so the upgrade boundary is present at
-publication, not added afterward.
+Status: v0.1.1 publication blocked; corrected v0.1.2 candidate prepared.
+
+## Heartbeat test race and corrected candidate
+
+The v0.1.1 Release readiness gate failed in
+`interrupt_tool_continuations_preserve_exact_wait_across_admission_and_heartbeats`:
+the assertion `heartbeat must write a renewal` used up 120 manually polled
+virtual-clock advances before SQLite's real worker completed its write. No
+release was published. All five platform package jobs succeeded; readiness
+reported 1264 passed, one failed, seven ignored, and correctly blocked publishing.
+
+A predeclared 100-case reproduction stopped at case 69 with the same failure
+after only 0.10 seconds, confirming the virtual poll count was not a real I/O
+deadline. The corrected test advances virtual time only to fire the actual
+heartbeat timer, restores the real clock for I/O, and concurrently drives the
+heartbeat while awaiting its successful post-write notification. A subscriber
+scoped to this future cannot consume another test's completion. The same three
+renewals, persisted lease progression, and exact pending dependency assertions
+remain. Production scheduling code is unchanged.
+
+Both continuation tests and all 100 fixed stress cases passed. Development
+independently reviewed the diff without editing or running competing builds.
+The correction is carried in a new v0.1.2 candidate; the failed v0.1.1 tag is
+retained, not moved or overwritten. Full candidate checks and exact-SHA CI are
+required again before the v0.1.2 tag. Release notes are prepared in
+`docs/releases/v0.1.2.md`. Logs remain in the candidate directory below.
+
+## Earlier v0.1.1 candidate evidence
+
+The first candidate was `971d93a9fe44509dcecc93ac9b63b0c6a9ffa5c4`, pushed to
+`main` and tagged `v0.1.1`. The existing `v0.1.0` is unchanged. The user's latest
+authorization permits autonomous publication after verifying the fixes and
+explicitly asks for continuous progress rather than ten-minute work intervals.
+The heartbeat is only an interruption fallback, not the release execution loop.
+Production processes and data have not been modified by this release task.
+
+### First candidate verification and release tracking
+
+- [Candidate CI](https://github.com/morphz-ai/morphz/actions/runs/33988052355):
+  all nine jobs succeeded on the exact candidate SHA, including real PostgreSQL
+  and native macOS, Linux, and Windows sandbox checks. The Windows tests and
+  bundle upload had already passed when the tag was pushed; its remaining
+  cache-save cleanup completed successfully alongside release startup.
+- Local `cargo test --locked --workspace -- --test-threads=1`: complete command
+  exited 0. This includes 1273 Morphz library tests (7 ignored), 76 attempt-loop
+  tests, the CLI, Edge, other workspace crates, integration suites, and doctests.
+  Local PostgreSQL was not configured for this whole-workspace command; the
+  explicit development PostgreSQL run and candidate CI provide that coverage.
+- Local `cargo clippy --locked --workspace --all-targets --all-features -- -D
+  warnings`, formatting, source/protocol/diagnostic contracts, main and Edge
+  installer tests, and locked dependency/license checks all passed. The
+  dependency audit reports only the existing documented allowed advisories.
+- Dashboard: lint, 218 tests, and production build passed. Website: lint,
+  build/typecheck, and 66 tests passed. Regenerated committed assets stayed
+  unchanged. The existing Dashboard chunk-size advisory is not a build failure.
+- Both installation scripts currently served by `morphz.ai` are byte-identical
+  to the candidate's scripts and use GitHub's latest-release download route.
+- [Formal Release run](https://github.com/morphz-ai/morphz/actions/runs/33989321009)
+  was triggered once by the tag. No duplicate dry-run was requested. It will use
+  `docs/releases/v0.1.1.md` for release notes, preserving the historical-task
+  recovery boundary from the moment of publication.
+
+The first formal build's publication was blocked as described above. Public
+asset verification and installation smoke checks remain pending for the
+corrected candidate. Live command logs and verification state are retained under
+`/private/tmp/morphz-0.1.1-candidate.z4Y5MQ`.
 
 ## Ownership and scope
 
@@ -24,11 +79,10 @@ publication, not added afterward.
   publication after the required gates.
 - The user delegated the development follow-up, pair review, and release to the
   `开源` task (`01a0200f-af5f-7a52-a9a1-435f9bfc5a15`).
-- The `开发` task (`019fc54e-24ff-7b13-b358-c0f0cac3e746`) handed off its completed
-  scheduler fix as `245cab7bda503ede0d0edd552e3b00aa397831e1`. A subsequent
-  steering-continuation issue is under diagnosis; that earlier handoff does not
-  establish current release readiness. Production instance/data recovery still
-  requires separate authorization.
+- The `开发` task (`019fc54e-24ff-7b13-b358-c0f0cac3e746`) initially handed off
+  `245cab7bda503ede0d0edd552e3b00aa397831e1`, then completed the cancellation and
+  steering-continuation corrections in `0e0aefd3`, as detailed below.
+  Production instance/data recovery still requires separate authorization.
 - The release task owns version preparation, candidate review, CI, the tag,
   public artifacts, and post-publication verification. Preserve v0.1.0 and
   include both Morphz and morphz-edge in the normal release bundles.
@@ -63,12 +117,10 @@ permission failures); `lib-verified.log` is the complete run with the required
 test permissions. Neither such permission failures nor the old partial gates
 are represented as candidate success.
 
-Candidate-wide local verification is now running with native-test permission.
+Candidate-wide local verification completed with native-test permission.
 Logs: `/private/tmp/morphz-0.1.1-candidate.z4Y5MQ`; the full workspace test run
-uses the existing cache and serial test execution, matching the CI test order.
-Website lint/build/typecheck/66 tests and source/protocol/diagnostic, installer
-and locked-license checks have passed on this working tree. Generated assets
-remain unchanged. No new tag or workflow has been triggered yet.
+reused the existing cache and serial test execution, matching the CI test order.
+Final candidate and release tracking are recorded at the top of this document.
 
 ## Investigation history (resolved in latest handoff)
 
@@ -96,8 +148,10 @@ Development reports from a read-only inspection of mini-m4:8809:
 - The rejection audit reportedly says the Objective was paused/cancelled; that
   explanation must be checked against the actual rejection predicate.
 
-This is not covered by `245cab7b`. Deterministic regression coverage and a fresh
-handoff are pending; do not advertise it as fixed or modify production data.
+These issues were not covered by `245cab7b`; deterministic regression coverage
+and the final `0e0aefd3` handoff resolved them. The investigation below records
+the earlier findings chronologically, not additional current blockers. It does
+not authorize changes to production data.
 
 Development has now received explicit user authorization to implement the
 cancellation closure, exact pending-dependency continuation and open/idle
