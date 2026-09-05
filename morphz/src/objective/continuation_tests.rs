@@ -1,6 +1,40 @@
 use super::*;
 use crate::memory::{sqlite::SqliteStore, *};
 use crate::scheduler::{NewSchedulerDependency, SchedulerDependencyKind};
+use tracing::instrument::WithSubscriber;
+use tracing_subscriber::prelude::*;
+
+struct RenewalCommitNotification(tokio::sync::mpsc::UnboundedSender<()>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RenewalCommitNotification {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        #[derive(Default)]
+        struct RenewalEvent(bool);
+        impl tracing::field::Visit for RenewalEvent {
+            fn record_debug(
+                &mut self,
+                _field: &tracing::field::Field,
+                _value: &dyn std::fmt::Debug,
+            ) {
+            }
+
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "event_code" && value == "objective.evaluation.lease_renewed" {
+                    self.0 = true;
+                }
+            }
+        }
+        let mut renewal = RenewalEvent::default();
+        event.record(&mut renewal);
+        if renewal.0 {
+            let _ = self.0.send(());
+        }
+    }
+}
 
 async fn fixture() -> (
     tempfile::NamedTempFile,
@@ -161,20 +195,14 @@ async fn interrupt_tool_continuations_preserve_exact_wait_across_admission_and_h
         admitted.evaluation_lease_expires_at.unwrap() > initial_lease + Duration::seconds(60),
         "short continuation must renew below half-lease before model work"
     );
-    // Advance the actual heartbeat driver's clock, not random sleeps. Poll
-    // it explicitly so SQLite IO cannot auto-advance virtual time indefinitely.
-    tokio::time::pause();
-    // SQLx connection acquisition also uses Tokio deadlines. Keep virtual
-    // time under explicit test control while the SQLite worker performs IO.
-    let mut clock_guard = tokio::task::JoinSet::new();
-    clock_guard.spawn(async {
-        loop {
-            tokio::task::yield_now().await;
-        }
-    });
-    let heartbeat = supervisor.maintain_activation_lease("activation-3");
+    // Observe the successful renewal event emitted only after the Store write
+    // completes. The subscriber belongs to this future, not the test process.
+    let (committed, mut renewals) = tokio::sync::mpsc::unbounded_channel();
+    let subscriber = tracing_subscriber::registry().with(RenewalCommitNotification(committed));
+    let heartbeat = supervisor
+        .maintain_activation_lease("activation-3")
+        .with_subscriber(subscriber);
     tokio::pin!(heartbeat);
-    assert!(futures_util::poll!(heartbeat.as_mut()).is_pending());
     for _ in 0..3 {
         let before = store
             .get_objective(&binding.objective_id)
@@ -182,22 +210,21 @@ async fn interrupt_tool_continuations_preserve_exact_wait_across_admission_and_h
             .unwrap()
             .unwrap()
             .evaluation_lease_expires_at;
-        for _ in 0..120 {
-            tokio::time::advance(std::time::Duration::from_secs(1)).await;
-            assert!(
-                futures_util::poll!(heartbeat.as_mut()).is_pending(),
-                "valid interrupt must not lose its lease"
-            );
-            let after = store
-                .get_objective(&binding.objective_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .evaluation_lease_expires_at;
-            if after > before {
-                break;
+        // Virtual time triggers the real heartbeat timer; SQLite IO then runs
+        // with the real clock and wake-driven polling. A count of virtual-time
+        // advances is not a deadline for work on SQLite's separate OS thread.
+        tokio::time::pause();
+        assert!(futures_util::poll!(heartbeat.as_mut()).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        tokio::time::resume();
+        tokio::select! {
+            result = heartbeat.as_mut() => {
+                panic!("valid interrupt heartbeat stopped before renewal: {result:?}");
             }
-            tokio::task::yield_now().await;
+            result = tokio::time::timeout(std::time::Duration::from_secs(5), renewals.recv()) => {
+                result.expect("heartbeat renewal did not complete")
+                    .expect("heartbeat renewal notification was closed");
+            }
         }
         assert!(
             store
@@ -210,8 +237,6 @@ async fn interrupt_tool_continuations_preserve_exact_wait_across_admission_and_h
             "heartbeat must write a renewal"
         );
     }
-    tokio::time::resume();
-    clock_guard.abort_all();
     assert_eq!(
         store
             .get_scheduler_dependency(binding.pending_dependency_id.as_deref().unwrap())
