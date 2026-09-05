@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="740" viewBox="0 0 1120 740" role="img" aria-labelledby="title">
+  <title id="title">Morphz M and Newvar N — right wing vertically flipped</title>
+  <defs>
+    <g id="m">
+      <path d="M8 4 48 40 38 40 38 70 8 92Z"/>
+      <path d="M88 4 48 40 58 40 58 70 88 92Z"/>
+    </g>
+    <g id="n">
+      <path d="M8 4 48 40 38 40 38 70 8 92Z"/>
+      <path d="M88 4 48 40 58 40 58 70 88 92Z" transform="translate(0 96) scale(1 -1)"/>
+    </g>
+  </defs>
+  <rect width="1120" height="740" fill="#111719"/>
+  <g font-family="Helvetica Neue, Arial, sans-serif">
+    <text x="64" y="68" font-size="23" font-weight="500" fill="#eef3f4">Newvar</text>
+    <text x="1056" y="66" text-anchor="end" font-size="12" letter-spacing="2" fill="#829397">N / FORM STUDY</text>
+    <path d="M64 100H1056" stroke="#2a363a"/>
+    <text x="300" y="157" text-anchor="middle" font-size="13" letter-spacing="2" fill="#829397">MORPHZ / M</text>
+    <text x="820" y="157" text-anchor="middle" font-size="13" letter-spacing="2" fill="#56d0de">NEWVAR / N</text>
+    <use href="#m" transform="translate(180 210) scale(2.5)" fill="#56d0de"/>
+    <use href="#n" transform="translate(700 210) scale(2.5)" fill="#56d0de"/>
+    <path d="M530 330H590M581 321L590 330 581 339" fill="none" stroke="#597074" stroke-width="1.5"/>
+    <path d="M64 516H1056" stroke="#2a363a"/>
+    <use href="#n" transform="translate(340 580)" fill="#56d0de"/>
+    <text x="460" y="651" font-size="72" font-weight="500" letter-spacing="-2.5" fill="#eef3f4">Newvar</text>
+  </g>
+</svg>

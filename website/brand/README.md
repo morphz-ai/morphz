@@ -69,3 +69,7 @@ MORPHZ_BRAND_SHARP=/absolute/path/to/sharp/dist/index.cjs node scripts/render-br
 飞行、变形与落位由 `lib/butterfly-motion.ts` 的确定性时间函数驱动，SVG 终点与原 M 轮廓一致。`BrandMark.tsx` 保留原始静态图标，在支持鼠标悬停的设备上增加一次短暂的双翼开合。尺寸、文案、favicon 与分享封面均保持不变。
 
 装饰层不接收鼠标或触摸事件，不改变内容和链接的可见性。滚动、点击、键盘操作、窗口变化和减少动态效果设置都会结束开场，并释放定时器与事件监听。关闭动画、JavaScript 未加载或开场失败时，原图标照常显示。本次仅供本地预览，尚未部署。
+
+## 品牌探索归档
+
+2026-09-05 认可继续探索的几何蝴蝶 OPEN 形态与 Newvar N 草案保存在 [studies](studies/README.md)。这些源文件独立于 `public`，供后续设计迭代使用；官网仍采用现有 M 标识和蝴蝶开场。
