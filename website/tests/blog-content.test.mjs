@@ -25,6 +25,29 @@ test("requires publication metadata for every blog post", async () => {
   }
 });
 
+test("concurrency articles keep mechanism names, source links, and related reading aligned", async () => {
+  const slug = "one-agent-multiple-threads.md";
+  const sources = await Promise.all(["zh", "en"].map((locale) =>
+    readFile(new URL(`${locale}/${slug}`, contentRoot), "utf8"),
+  ));
+  const sourceLinks = sources.map((source) => [...source.matchAll(/\]\((https:\/\/github\.com\/morphz-ai\/morphz\/blob\/v0\.1\.2\/[^)]+)\)/g)].map((match) => match[1]));
+  assert.equal(sourceLinks[0].length, 3);
+  assert.deepEqual(sourceLinks[0], sourceLinks[1]);
+  for (const url of sourceLinks[0]) {
+    const relative = url.split("/blob/v0.1.2/")[1];
+    assert.ok((await readFile(new URL(`../../${relative}`, import.meta.url), "utf8")).length > 0);
+  }
+  for (const [index, prefix] of ["", "/en"].entries()) {
+    const source = sources[index];
+    for (const tool of ["schedule_tx", "context_tx", "thread_control"]) {
+      assert.ok(source.includes(`\`${tool}\``));
+    }
+    for (const related of ["/blog/maintaining-context-without-compaction", "/docs/execution-lifecycle", "/docs/sessions-and-concurrency"]) {
+      assert.ok(source.includes(`](${prefix}${related})`));
+    }
+  }
+});
+
 test("the inaugural essay names and distinguishes the new computational model", async () => {
   const slug = "from-chat-completion-to-structured-context-evaluation.md";
   const [zh, en] = await Promise.all([

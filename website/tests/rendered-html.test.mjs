@@ -350,6 +350,40 @@ test("context-maintenance articles are discoverable, bilingual, and readable wit
   assert.ok(sitemap.includes(`https://morphz.ai/en/blog/${slug}`));
 });
 
+test("concurrency articles are listed first and serve their complete bilingual body without JavaScript", async () => {
+  const slug = "one-agent-multiple-threads";
+  for (const [prefix, otherPrefix, title, finalHeading] of [
+    ["", "/en", "一个 Agent，多条线程：Morphz 的并发调度", "成本与边界"],
+    ["/en", "", "One Agent, Multiple Threads: Concurrent Work in Morphz", "costs-and-limits"],
+  ]) {
+    const root = `${prefix}/blog`;
+    const index = await (await render(root)).text();
+    const cards = index.match(/<div class="blog-index__list">([\s\S]*?)<\/section>/)?.[1] ?? "";
+    const current = cards.indexOf(`href="${root}/${slug}"`);
+    const previous = cards.indexOf(`href="${root}/maintaining-context-without-compaction"`);
+    assert.ok(current >= 0 && previous > current);
+    const response = await render(`${root}/${slug}`);
+    assert.equal(response.status, 200);
+    const article = await response.text();
+    assert.ok(article.includes(`<h1>${title}</h1>`));
+    const prose = article.match(/<div class="doc-prose blog-prose">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.match(prose, /<p>/);
+    assert.match(prose, /<pre>/);
+    assert.match(prose, /<code>context_tx<\/code>/);
+    assert.match(prose, /<code>schedule_tx<\/code>/);
+    assert.match(prose, /<code>thread_control<\/code>/);
+    assert.ok(prose.includes(`<h2 id="${finalHeading}">`));
+    assert.ok(prose.includes(`href="${prefix}/docs/execution-lifecycle"`));
+    assert.ok(article.includes(`rel="canonical" href="https://morphz.ai${root}/${slug}"`));
+    const languageSwitch = article.match(/<a\b[^>]*class="language-switch"[^>]*>/)?.[0] ?? "";
+    assert.ok(languageSwitch.includes(`href="${otherPrefix}/blog/${slug}"`));
+  }
+  const sitemap = await (await render("/sitemap.xml")).text();
+  for (const prefix of ["", "/en"]) {
+    assert.ok(sitemap.includes(`https://morphz.ai${prefix}/blog/${slug}`));
+  }
+});
+
 test("renders the bilingual paper and native distribution pages", async () => {
   const routes = ["/paper", "/en/paper", "/download", "/en/download"];
   const responses = await Promise.all(routes.map(render));
