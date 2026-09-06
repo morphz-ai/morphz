@@ -84,7 +84,10 @@ export function conversationEventKind(
   }
   if (topic === 'chat/outbound_message') return 'agent'
   if (topic === 'chat/session_signal') return 'coordination'
-  if (topic === 'chat/progress') return 'progress'
+  // Infrastructure failures are durable notices, not ephemeral model progress.
+  // Keep them in the dialogue lane even while a later Attempt is retrying.
+  if (topic === 'chat/progress') return typeof payload.runtime_failure_error === 'string'
+    && payload.runtime_failure_error.trim() ? 'system' : 'progress'
   if (topic === 'chat/assistant_call' && payload.terminal_outcome !== true) return 'reasoning'
   if (topic === 'chat/cancelled') return 'system'
   return null

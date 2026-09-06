@@ -1547,6 +1547,17 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .stream-control-line .turn-stop-button { flex: 0 0 auto; padding: 3px 6px; font: 600 8px/1 var(--mono); white-space: nowrap; }
 .stream-status { display: inline-flex; width: fit-content; align-items: center; gap: 8px; min-height: 22px; color: var(--faint); font-family: var(--mono); font-size: 9px; }
 .stream-status.is-failed, .stream-error { color: var(--red); }
+
+.runtime-failure-details {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--red);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--red) 7%, transparent);
+  font-size: 12px;
+}
+.runtime-failure-details summary { cursor: pointer; font-weight: 600; }
+.runtime-failure-details pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .turn-stop-button { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: inherit; transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .turn-stop-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--red) 46%, var(--line)); background: var(--red-soft); color: var(--red); }
 .turn-stop-button:disabled { cursor: wait; opacity: .55; }

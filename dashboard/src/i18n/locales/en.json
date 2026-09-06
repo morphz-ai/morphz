@@ -943,6 +943,7 @@
     "emptyTitle": "No messages in this Session yet",
     "loadFailed": "Could not load this conversation",
     "retryLoading": "Retry loading",
+    "failureDetails": "Error details · saved",
     "emptyDescription": "Messages enter the shared cognitive Context, but replies are always routed back to the current Session.<br />Send the first message below to start.",
     "startChat": "Start chat",
     "roleYou": "You",

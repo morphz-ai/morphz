@@ -142,6 +142,7 @@ import { EventHistoryPage } from './pages/EventHistoryPage'
 import type { EventHistoryFilters } from './pages/EventHistoryPage'
 import { CredentialsPage } from './pages/CredentialsPage'
 import { ProvidersPage } from './pages/ProvidersPage'
+import { RuntimeFailureDetails } from './components/RuntimeFailureDetails'
 import { OverviewPage } from './pages/OverviewPage'
 import {
   RuntimeOverviewPage,
@@ -8531,6 +8532,7 @@ export default function App() {
                         {typeof event.payload.text === 'string' && event.payload.text.trim()
                           ? <MarkdownBody text={event.payload.text} />
                           : event.payload.attachments?.length ? null : t('conversation.noText')}
+                        <RuntimeFailureDetails payload={event.payload} />
                       </div>
                       <MessageAttachments
                         attachments={event.payload.attachments}
@@ -8808,6 +8810,7 @@ export default function App() {
                               {typeof event.payload.text === 'string' && event.payload.text.trim()
                                 ? <MarkdownBody text={event.payload.text} />
                                 : t('conversation.noText')}
+                              <RuntimeFailureDetails payload={event.payload} />
                             </div>
                             {derivedThreads.length > 0 && (
                               <div className="message-thread-capsules" aria-label={t('conversation.derivedThreads')}>

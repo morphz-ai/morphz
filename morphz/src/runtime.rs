@@ -2750,7 +2750,9 @@ impl MorphzRuntime {
         }
         // Adopt Agent-scoped Provider authority without breaking databases
         // created before that authority existed.  Only Agents without a
-        // policy row receive the current Runtime accounts.  An intentionally
+        // policy row receive the current Runtime accounts. An empty catalog
+        // cannot establish operator intent: defer adoption until configuration
+        // is available (for example after correcting MORPHZ_HOME). An intentionally
         // empty policy already has a row and therefore remains empty across
         // restarts.
         let existing_account_ids = self
@@ -2759,11 +2761,13 @@ impl MorphzRuntime {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        for agent in self.inner.store.list_agents(true).await? {
-            self.inner
-                .store
-                .initialize_agent_provider_bindings(&agent.id, &existing_account_ids)
-                .await?;
+        if !existing_account_ids.is_empty() {
+            for agent in self.inner.store.list_agents(true).await? {
+                self.inner
+                    .store
+                    .initialize_agent_provider_bindings(&agent.id, &existing_account_ids)
+                    .await?;
+            }
         }
         self.inner
             .store
@@ -4467,10 +4471,21 @@ impl MorphzRuntime {
         {
             return Err(format!("Auth Account '{account_id}' does not exist").into());
         }
-        self.inner
+        let previous = self
+            .inner
+            .store
+            .get_agent_provider_bindings(agent_id)
+            .await?;
+        let bindings = self
+            .inner
             .store
             .bind_agent_provider_account(agent_id, account_id)
-            .await
+            .await?;
+        if previous.as_ref().map(|policy| policy.revision) != Some(bindings.revision) {
+            self.publish_model_configuration_changed("agent_provider_account_bound")
+                .await?;
+        }
+        Ok(bindings)
     }
 
     pub async fn unbind_agent_provider_account(
@@ -4486,10 +4501,21 @@ impl MorphzRuntime {
         if self.inner.store.get_agent(agent_id).await?.is_none() {
             return Err(format!("Agent '{agent_id}' does not exist").into());
         }
-        self.inner
+        let previous = self
+            .inner
+            .store
+            .get_agent_provider_bindings(agent_id)
+            .await?;
+        let bindings = self
+            .inner
             .store
             .unbind_agent_provider_account(agent_id, account_id)
-            .await
+            .await?;
+        if previous.as_ref().map(|policy| policy.revision) != Some(bindings.revision) {
+            self.publish_model_configuration_changed("agent_provider_account_unbound")
+                .await?;
+        }
+        Ok(bindings)
     }
 
     pub async fn provider_account_agent_bindings(
@@ -11030,6 +11056,121 @@ mod tests {
         assert_eq!(created.agent.id, "new-agent");
         assert!(runtime
             .agent_provider_bindings("new-agent")
+            .await
+            .unwrap()
+            .bindings
+            .is_empty());
+
+        // Explicit policy edits publish the same durable configuration epoch
+        // as route edits, so waiting Objectives can resume without probing an
+        // unrelated healthy account. Idempotent saves do not create new epochs.
+        for _ in 0..2 {
+            runtime
+                .bind_agent_provider_account("new-agent", "legacy-account")
+                .await
+                .unwrap();
+        }
+        for _ in 0..2 {
+            runtime
+                .unbind_agent_provider_account("new-agent", "legacy-account")
+                .await
+                .unwrap();
+        }
+        let changes = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                topic: Some(TYPE_MODEL_CONFIGURATION_CHANGED.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        for reason in [
+            "agent_provider_account_bound",
+            "agent_provider_account_unbound",
+        ] {
+            assert_eq!(
+                changes
+                    .iter()
+                    .filter(
+                        |event| event.payload.get("reason").and_then(Value::as_str) == Some(reason)
+                    )
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_startup_defers_provider_adoption_without_overriding_explicit_empty_policy() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let agent_id = runtime.inner.identity.agent_id.clone();
+        assert!(runtime
+            .inner
+            .store
+            .get_agent_provider_bindings(&agent_id)
+            .await
+            .unwrap()
+            .is_none());
+        runtime
+            .inner
+            .store
+            .ensure_agent(NewAgent {
+                id: "explicit-empty-agent".into(),
+                title: "Explicit empty policy".into(),
+                root_context_id: "explicit-empty-context".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .initialize_agent_provider_bindings("explicit-empty-agent", &[])
+            .await
+            .unwrap();
+
+        let mut config = AppConfig::default();
+        config.auth_accounts.insert(
+            "restored-account".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                ..AuthAccountConfig::default()
+            },
+        );
+        let restored = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        restored.start().await.unwrap();
+        let adopted = restored.agent_provider_bindings(&agent_id).await.unwrap();
+        assert_eq!(adopted.bindings.len(), 1);
+        assert_eq!(adopted.bindings[0].account_id, "restored-account");
+        assert!(restored
+            .agent_provider_bindings("explicit-empty-agent")
+            .await
+            .unwrap()
+            .bindings
+            .is_empty());
+        // Removing the last granted account remains an explicit decision.
+        restored
+            .unbind_agent_provider_account(&agent_id, "restored-account")
+            .await
+            .unwrap();
+        restored
+            .inner
+            .store
+            .initialize_agent_provider_bindings(&agent_id, &["restored-account".into()])
+            .await
+            .unwrap();
+        assert!(restored
+            .agent_provider_bindings(&agent_id)
             .await
             .unwrap()
             .bindings

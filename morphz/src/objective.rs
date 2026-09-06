@@ -3690,11 +3690,14 @@ impl ObjectiveSupervisor {
             .get("runtime_failure_stage")
             .and_then(|value| value.as_str())
             == Some("critical_maintenance_minimum_projection");
-        let invalid_request = failure_kind == "invalid_model_or_request";
+        let configuration_failure = matches!(
+            failure_kind,
+            "invalid_model_or_request" | "provider_configuration"
+        );
         let provider_recoverable = provider_failure_is_recoverable(failure_kind);
         let recoverable = !maintenance_exhausted
-            && (failure_kind == "context_limit" || provider_recoverable || invalid_request);
-        let configuration_already_changed = invalid_request
+            && (failure_kind == "context_limit" || provider_recoverable || configuration_failure);
+        let configuration_already_changed = configuration_failure
             && self
                 .model_configuration_changed_since_attempt(event)
                 .await?;
@@ -3707,7 +3710,7 @@ impl ObjectiveSupervisor {
             )
         } else if recoverable {
             let resource = wait_resource.map(ToOwned::to_owned).unwrap_or_else(|| {
-                if invalid_request {
+                if configuration_failure {
                     MODEL_CONFIGURATION_RESOURCE.to_string()
                 } else {
                     format!("runtime-recovery:{failure_kind}")
@@ -3748,7 +3751,7 @@ impl ObjectiveSupervisor {
                 // second read after the wait is durable either observes the
                 // epoch and clears the stale wait itself, or establishes that
                 // any later publisher must observe the pending dependency.
-                if invalid_request
+                if configuration_failure
                     && updated.wait_condition.as_ref().is_some_and(|wait| {
                         matches!(
                             wait,
@@ -6812,6 +6815,15 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_model_request_waits_for_an_explicit_configuration_change() {
+        assert_failure_waits_for_configuration_change("invalid_model_or_request").await;
+    }
+
+    #[tokio::test]
+    async fn missing_agent_account_waits_for_configuration_not_provider_health() {
+        assert_failure_waits_for_configuration_change("provider_configuration").await;
+    }
+
+    async fn assert_failure_waits_for_configuration_change(failure_kind: &str) {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
@@ -6841,12 +6853,15 @@ mod tests {
             Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
             std::time::Duration::from_secs(600),
         ));
-        let terminal = invalid_model_failure_event(
+        let mut terminal = invalid_model_failure_event(
             &claimed,
             evaluation_id,
             "invalid-model-terminal",
             Utc::now() - Duration::seconds(1),
         );
+        terminal
+            .payload
+            .insert("runtime_failure_kind".to_string(), json!(failure_kind));
         supervisor.terminal_outcome(&terminal).await.unwrap();
 
         let waiting = store.get_objective(&objective.id).await.unwrap().unwrap();

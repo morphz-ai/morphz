@@ -8,6 +8,7 @@ import '../../src/App.css'
 import { DashboardApiClient } from '../../src/api/client'
 import { ConversationReadError } from '../../src/App'
 import { ProvidersPage } from '../../src/pages/ProvidersPage'
+import { RuntimeFailureDetails } from '../../src/components/RuntimeFailureDetails'
 
 void i18n.changeLanguage(new URLSearchParams(location.search).get('language') ?? 'zh')
 let enabled = true
@@ -48,9 +49,16 @@ const api = new DashboardApiClient({
 
 export function Preview() {
   const [failed, setFailed] = useState(true)
+  const [retries, setRetries] = useState(0)
   return (
     <main className="page-shell" data-accent="cyan" data-color-mode="dark" style={{ height: '100vh', overflow: 'auto', padding: 24, color: 'var(--text)' }}>
       <h2>隔离回归：不连接真实服务</h2>
+      <section aria-label="持久化模型错误">
+        <p>模型请求失败，正在等待配置恢复。</p>
+        <RuntimeFailureDetails payload={{ runtime_failure_error: "Agent 'default-agent' has no Provider Account binding; configure an account before evaluation" }} />
+        <button type="button" onClick={() => setRetries(value => value + 1)}>模拟重试</button>
+        <p>后续尝试：{retries}</p>
+      </section>
       <section aria-label="会话读取回归">
         {failed ? <ConversationReadError message="HTTP 403 · 无权读取此会话，不是空会话。" onRetry={() => setFailed(false)} />
           : <p role="status">已重新加载：子任务的历史消息。</p>}

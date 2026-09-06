@@ -21,6 +21,9 @@ pub enum ModelFailureKind {
     TransientNetwork,
     ServerUnavailable,
     Authentication,
+    /// Local route or Agent account policy requires operator configuration.
+    /// Endpoint health cannot resolve this pre-request admission failure.
+    ProviderConfiguration,
     InvalidModelOrRequest,
     /// HTTP response headers were accepted, but the Provider emitted no body
     /// bytes before the first-byte deadline. This is request-local latency,
@@ -72,6 +75,7 @@ impl ModelFailureKind {
             Self::TransientNetwork => "transient_network",
             Self::ServerUnavailable => "server_unavailable",
             Self::Authentication => "authentication",
+            Self::ProviderConfiguration => "provider_configuration",
             Self::InvalidModelOrRequest => "invalid_model_or_request",
             Self::FirstByteTimeout => "first_byte_timeout",
             Self::StreamStalled => "stream_stalled",
@@ -129,6 +133,7 @@ impl ModelFailureKind {
         !matches!(
             self,
             Self::ContextLimit
+                | Self::ProviderConfiguration
                 | Self::InvalidModelOrRequest
                 | Self::QuotaExhausted
                 | Self::HardDeadlineExceeded
@@ -142,7 +147,10 @@ impl ModelFailureKind {
     }
 
     pub const fn requires_configuration(self) -> bool {
-        matches!(self, Self::Authentication | Self::InvalidModelOrRequest)
+        matches!(
+            self,
+            Self::Authentication | Self::ProviderConfiguration | Self::InvalidModelOrRequest
+        )
     }
 }
 
@@ -685,6 +693,8 @@ mod tests {
 
     #[test]
     fn deterministic_invalid_requests_do_not_enter_provider_health_recovery() {
+        assert!(!ModelFailureKind::ProviderConfiguration.uses_provider_recovery());
+        assert!(ModelFailureKind::ProviderConfiguration.requires_configuration());
         assert!(!ModelFailureKind::InvalidModelOrRequest.uses_provider_recovery());
         assert!(!ModelFailureKind::QuotaExhausted.uses_provider_recovery());
         assert!(!ModelFailureKind::ContextLimit.uses_provider_recovery());

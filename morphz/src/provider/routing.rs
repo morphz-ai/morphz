@@ -869,7 +869,7 @@ impl RoutedClient {
                 ))
             })?;
         if binding_set.bindings.is_empty() {
-            return Err(ModelAttemptBindingError::account_unavailable(format!(
+            return Err(ModelAttemptBindingError::configuration(format!(
                 "Agent '{}' has no Provider Account binding; its operator must configure one before model evaluation",
                 binding_set.agent_id
             )));
@@ -1614,6 +1614,22 @@ impl RoutedClient {
             .resolve_route(&alias)
             .map_err(ModelAttemptBindingError::configuration)?;
         let allowed_accounts = self.agent_allowed_accounts(request).await?;
+        if let Some(allowed) = allowed_accounts.as_ref() {
+            let candidates = Self::eligible_route_candidates(route_id, route, request)?;
+            let mut has_authorized_candidate = false;
+            for candidate in &candidates {
+                has_authorized_candidate |= Self::candidate_accounts(&catalog, candidate)
+                    .map_err(ModelAttemptBindingError::configuration)?
+                    .iter()
+                    .any(|account_id| allowed.contains_key(*account_id));
+            }
+            if !has_authorized_candidate {
+                return Err(ModelAttemptBindingError::configuration(format!(
+                    "Model Route '{route_id}' has no Provider Account authorized for the Agent owning Context '{}'; bind an account for this route or select an authorized model",
+                    request.context_id
+                )));
+            }
+        }
         let (candidate, account_id) = self
             .select_candidate_and_account(
                 &catalog,
@@ -2823,7 +2839,7 @@ mod tests {
 
         let client = RoutedClient::new(&routed_config(), "coding".to_string()).unwrap();
         client.attach_provider_account_state_store(store.clone());
-        client.attach_agent_provider_binding_store(store);
+        client.attach_agent_provider_binding_store(store.clone());
 
         let unbound_error = client
             .create_completion(Vec::new(), Vec::new())
@@ -2855,13 +2871,29 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(
-            error,
-            ModelAttemptBindingError::AccountUnavailable(_)
-        ));
+        assert!(matches!(error, ModelAttemptBindingError::Configuration(_)));
         assert!(error
             .to_string()
             .contains("has no Provider Account binding"));
+
+        // A nonempty policy for another route is still a configuration issue,
+        // not an outage that a globally healthy account can fix by probing.
+        store
+            .bind_agent_provider_account("agent-provider-empty", "unrelated-account")
+            .await
+            .unwrap();
+        let error = client
+            .bind_model_attempt(&ModelRequestContext {
+                context_id: "context-provider-empty".into(),
+                session_id: "session-provider-empty".into(),
+                attempt_id: "attempt-provider-wrong-route".into(),
+                objective_id: None,
+                required_capabilities: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ModelAttemptBindingError::Configuration(_)));
+        assert!(error.to_string().contains("no Provider Account authorized"));
 
         let error = client
             .bind_model_attempt(&ModelRequestContext {

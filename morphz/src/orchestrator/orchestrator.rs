@@ -2300,7 +2300,7 @@ fn model_binding_completion_error(error: ModelAttemptBindingError) -> ModelCompl
         ),
         ModelAttemptBindingError::Configuration(message) => {
             ModelCompletionError::provider(Box::new(ModelFailure::new(
-                ModelFailureKind::InvalidModelOrRequest,
+                ModelFailureKind::ProviderConfiguration,
                 message,
             )) as DynError)
         }
@@ -15597,7 +15597,8 @@ impl Orchestrator {
         let should_notify_user = incident.should_notify_user
             || matches!(
                 failure.kind,
-                ModelFailureKind::InvalidModelOrRequest
+                ModelFailureKind::ProviderConfiguration
+                    | ModelFailureKind::InvalidModelOrRequest
                     | ModelFailureKind::QuotaExhausted
                     | ModelFailureKind::OutputLimit
                     | ModelFailureKind::IncompleteResponse
@@ -15696,6 +15697,11 @@ impl Orchestrator {
             }
             ModelFailureKind::Authentication => {
                 "Model Provider authentication is invalid. The Runtime preserved the current task and entered low-frequency Provider retry; it will continue automatically after credentials are fixed.".to_string()
+            }
+            ModelFailureKind::ProviderConfiguration => {
+                format!(
+                    "Model Provider configuration is incomplete. The Runtime stopped this turn and preserved the Session; health probes cannot repair Agent account bindings or model routes. Configure the Agent's Provider accounts or model route, then send a new message.\n\nOriginal error: {error_text}"
+                )
             }
             ModelFailureKind::InvalidModelOrRequest => {
                 format!(
@@ -22236,8 +22242,10 @@ mod tests {
         assert_eq!(configuration.origin, ModelCompletionErrorOrigin::Provider);
         assert_eq!(
             configuration.failure().kind,
-            ModelFailureKind::InvalidModelOrRequest
+            ModelFailureKind::ProviderConfiguration
         );
+        assert!(!configuration.failure().kind.uses_provider_recovery());
+        assert!(configuration.failure().kind.requires_configuration());
 
         let runtime =
             model_binding_completion_error(ModelAttemptBindingError::runtime("store unavailable"));

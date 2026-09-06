@@ -63,6 +63,11 @@ struct FailingClient;
 
 struct BindingFailureClient;
 
+struct UnconfiguredAgentClient {
+    binding_calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
+}
+
 struct InvalidRequestClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
@@ -405,6 +410,32 @@ impl Client for BindingFailureClient {
         _tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         panic!("binding failure must prevent the Provider request")
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for UnconfiguredAgentClient {
+    async fn bind_model_attempt(
+        &self,
+        _request: &morphz::llm::ModelRequestContext,
+    ) -> Result<morphz::llm::ModelAttemptBinding, ModelAttemptBindingError> {
+        self.binding_calls.fetch_add(1, Ordering::SeqCst);
+        Err(ModelAttemptBindingError::configuration(
+            "Agent has no Provider Account binding; configure an account before evaluation",
+        ))
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        panic!("unconfigured Agent must not send a model request")
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -3959,6 +3990,81 @@ async fn runtime_activation_failure_is_visible_and_does_not_leave_open_thread() 
     assert!(threads
         .iter()
         .all(|thread| thread.lifecycle != ThreadLifecycle::Open));
+}
+
+#[tokio::test]
+async fn missing_agent_account_stops_each_turn_with_durable_notice_and_no_health_probe() {
+    let session_id = "missing-agent-provider-policy";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("missing-agent-provider-policy.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(UnconfiguredAgentClient {
+        binding_calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+    for expected in 1..=2 {
+        publish_user(&bus, session_id, "please continue").await;
+        let replies = wait_for_topic_count(&store, "chat/reply", session_id, expected).await;
+        let terminals =
+            wait_for_topic_count(&store, "runtime/thread_terminal", session_id, expected).await;
+        assert_eq!(terminals.len(), expected);
+        assert!(terminals
+            .iter()
+            .all(|event| event.payload["terminal_kind"] == "failed"));
+        assert_eq!(replies.len(), expected);
+        for reply in &replies {
+            assert_eq!(
+                reply.payload["runtime_failure_kind"],
+                "provider_configuration"
+            );
+            assert!(reply.payload["text"]
+                .as_str()
+                .unwrap()
+                .contains("Provider Account binding"));
+        }
+    }
+    assert_eq!(client.binding_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(client.health_probe_calls.load(Ordering::SeqCst), 0);
+    let events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|event| event.topic != "runtime/provider_wait"
+            && event.topic != "runtime/provider_recovered"));
+    let threads = store.list_context_threads(session_id, true).await.unwrap();
+    assert_eq!(threads.len(), 2);
+    assert!(threads
+        .iter()
+        .all(|thread| thread.lifecycle == ThreadLifecycle::Failed));
+    let dependencies = store
+        .list_scheduler_dependencies(SchedulerDependencyFilter {
+            status: Some(SchedulerDependencyStatus::Pending),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(dependencies.is_empty());
 }
 
 #[tokio::test]
