@@ -38,6 +38,7 @@ import {
   buildEnabledModelSelections,
   buildProviderCatalogSetupPayload,
   filterAccountModelOptions,
+  isProviderAccountVisible,
   ProviderWorkflowValidationError,
   resolveAccountDiagnosticPresentation,
   type AccountModelOption,
@@ -513,10 +514,8 @@ export function ProvidersPage({ api, startInSetup = false, onModelCatalogChanged
   }, [api, busyAccount, challenge, challengePollingSuspended, refresh])
 
   const instances = useMemo(() => Object.entries(snapshot.provider_instances), [snapshot.provider_instances])
-  // OAuth setup attempts are never accounts. Old runtimes may still return
-  // unfinished rows during migration, so keep them out of the product UI.
   const accounts = useMemo(
-    () => Object.entries(snapshot.auth_accounts).filter(([, record]) => !record.oauth || record.authenticated),
+    () => Object.entries(snapshot.auth_accounts).filter(([, record]) => isProviderAccountVisible(record)),
     [snapshot.auth_accounts],
   )
   const routes = useMemo(() => Object.entries(snapshot.model_routes), [snapshot.model_routes])

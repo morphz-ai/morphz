@@ -941,6 +941,8 @@
   "conversation": {
     "heading": "会话 · {{title}}",
     "emptyTitle": "这个会话还没有对话",
+    "loadFailed": "无法加载此会话的消息",
+    "retryLoading": "重新加载",
     "emptyDescription": "消息会进入共享认知上下文，但回复始终路由回当前会话。<br />在下方输入框发送第一条消息即可开始。",
     "startChat": "开始对话",
     "roleYou": "你",

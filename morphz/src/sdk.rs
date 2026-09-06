@@ -435,6 +435,34 @@ pub struct SessionEventsQuery {
     pub limit: usize,
 }
 
+impl SessionEventsQuery {
+    /// Shared pagination for participant and authenticated Operator reads.
+    /// Authorization is performed by the caller before constructing this filter.
+    pub(crate) fn into_filter(self) -> SdkResult<QueryFilter> {
+        if self.after_sequence.is_some() && self.before_sequence.is_some() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "after_sequence and before_sequence cannot be used together",
+            ));
+        }
+        let limit = self.limit.clamp(1, 1_000);
+        Ok(QueryFilter {
+            session_id: Some(self.session_id),
+            after_sequence: self.after_sequence,
+            before_sequence: self.before_sequence,
+            top_k: self.after_sequence.map(|_| limit),
+            latest_k: self.after_sequence.is_none().then_some(limit),
+            topics: self
+                .conversation_only
+                .then(conversation_event_topics)
+                .map(|topics| topics.iter().map(|topic| (*topic).to_string()).collect())
+                .unwrap_or_default(),
+            excluded_topics: vec!["chat/context_inspect".to_string()],
+            ..QueryFilter::default()
+        })
+    }
+}
+
 fn conversation_event_topics() -> &'static [&'static str] {
     &[
         "chat/steering",
@@ -4216,42 +4244,8 @@ impl MorphzSdk {
     ) -> SdkResult<Vec<Event>> {
         self.authorize_session(principal_id, &query.session_id)
             .await?;
-        let limit = query.limit.clamp(1, 1_000);
-        if query.after_sequence.is_some() && query.before_sequence.is_some() {
-            return Err(SdkError::new(
-                SdkErrorCode::InvalidArgument,
-                "after_sequence and before_sequence cannot be used together",
-            ));
-        }
-        let filter = if let Some(after_sequence) = query.after_sequence {
-            QueryFilter {
-                session_id: Some(query.session_id),
-                after_sequence: Some(after_sequence),
-                top_k: Some(limit),
-                topics: query
-                    .conversation_only
-                    .then(conversation_event_topics)
-                    .map(|topics| topics.iter().map(|topic| (*topic).to_string()).collect())
-                    .unwrap_or_default(),
-                excluded_topics: vec!["chat/context_inspect".to_string()],
-                ..QueryFilter::default()
-            }
-        } else {
-            QueryFilter {
-                session_id: Some(query.session_id),
-                before_sequence: query.before_sequence,
-                latest_k: Some(limit),
-                topics: query
-                    .conversation_only
-                    .then(conversation_event_topics)
-                    .map(|topics| topics.iter().map(|topic| (*topic).to_string()).collect())
-                    .unwrap_or_default(),
-                excluded_topics: vec!["chat/context_inspect".to_string()],
-                ..QueryFilter::default()
-            }
-        };
         self.runtime
-            .query_events(filter)
+            .query_events(query.into_filter()?)
             .await
             .map_err(SdkError::internal)
     }

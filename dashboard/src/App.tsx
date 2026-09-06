@@ -1015,6 +1015,19 @@ function scopedSessionReadPath(path: string, principalId?: string): string {
   return `${path}${path.includes('?') ? '&' : '?'}principal_id=${encodeURIComponent(principalId)}`
 }
 
+export function ConversationReadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <div className="empty-state conversation-empty" role="alert">
+      <strong>{t('conversation.loadFailed')}</strong>
+      <span>{message}</span>
+      <button className="empty-action" type="button" onClick={onRetry}>
+        <RefreshCw size={13} /> {t('conversation.retryLoading')}
+      </button>
+    </div>
+  )
+}
+
 type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
 type SandboxModeSetting = 'workspace-write' | 'danger-full-access'
 type PermissionModeSetting = 'request_approval' | 'auto_review' | 'full_access' | 'custom'
@@ -3471,6 +3484,7 @@ export default function App() {
   const [retryingTurnEventId, setRetryingTurnEventId] = useState('')
   const [pendingTurn, setPendingTurn] = useState<PendingTurnState | null>(null)
   const [error, setError] = useState('')
+  const [sessionEventsError, setSessionEventsError] = useState<{ sessionId: string; message: string } | null>(null)
   const [quotes, setQuotes] = useState<QuoteItem[]>([])
   const [selectionRequest, setSelectionRequest] = useState<InputSelection | null>(null)
   const consumeSelectionRequest = useCallback(() => setSelectionRequest(null), [])
@@ -4028,7 +4042,7 @@ export default function App() {
             }
           }
         }),
-        DASHBOARD_API.tryGet<SessionEventsPage>(scopedSessionReadPath((() => {
+        DASHBOARD_API.get<SessionEventsPage>(scopedSessionReadPath((() => {
           const delta = eventDeltaCursorRef.current
           const base = `/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=250`
           return delta.sessionId === sessionId && delta.initialized
@@ -4037,6 +4051,7 @@ export default function App() {
         })(), principalScopeRef.current?.principal.id))
           .then(eventsResult => {
             if (!eventsResult || !isCurrentScope()) return
+            setSessionEventsError(null)
             const nextEvents = eventsResult.events ?? []
             const hasLoadedHistory = eventHistoryCursorRef.current.sessionId === sessionId
             setEvents(previous => hasLoadedHistory
@@ -4061,6 +4076,11 @@ export default function App() {
             for (const summary of selectDurableReasoningSummaries(nextEvents)) {
               dispatchModelStream({ type: 'persisted', sessionId, causalId: summary.attemptId })
             }
+          }).catch(reason => {
+            if (isCurrentScope()) {
+              setSessionEventsError({ sessionId, message: reason instanceof Error ? reason.message : String(reason) })
+            }
+            throw reason
           }),
         DASHBOARD_API.tryGet<ModelUsagePage>(
           `/api/contexts/${encodeURIComponent(contextId)}/model-usage?session_id=${encodeURIComponent(sessionId)}&limit=100`,
@@ -8377,7 +8397,10 @@ export default function App() {
                   }}
                 >
               <div className="message-list" ref={conversationMessageListRef}>
-                {visibleDialogueEvents.length === 0 && visibleOptimisticMessages.length === 0 && dialogueStreamingAttempts.length === 0 && (
+                {sessionEventsError?.sessionId === selectedSessionId && (
+                  <ConversationReadError message={sessionEventsError.message} onRetry={() => void loadSession(selectedSessionId, selectedContextId)} />
+                )}
+                {eventsSessionId === selectedSessionId && sessionEventsError?.sessionId !== selectedSessionId && visibleDialogueEvents.length === 0 && visibleOptimisticMessages.length === 0 && dialogueStreamingAttempts.length === 0 && (
                   <div className="empty-state conversation-empty">
                     <div className="empty-icon"><MessageSquare size={28} /></div>
                     <strong>{t('conversation.emptyTitle')}</strong>

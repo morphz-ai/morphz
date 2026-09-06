@@ -2998,7 +2998,18 @@ async fn handle_search_dialogue_history(
         return error_response(StatusCode::BAD_REQUEST, "query must not be empty");
     }
     let limit = query.limit.unwrap_or(30).clamp(1, 100);
-    let visible_session_ids = match state.sdk.list_sessions(&principal.principal_id, true).await {
+    let visible_sessions = if is_operator_authorized(&state, &headers, query.token.as_deref())
+        && query.principal_id.is_none()
+    {
+        state
+            .runtime
+            .list_context_sessions(&context_id, true)
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::Internal, error.to_string()))
+    } else {
+        state.sdk.list_sessions(&principal.principal_id, true).await
+    };
+    let visible_session_ids = match visible_sessions {
         Ok(sessions) => sessions
             .into_iter()
             .filter(|session| session.context_id == context_id)
@@ -3682,6 +3693,36 @@ fn request_read_principal(
         }
     }
     request_principal(state, headers, query_principal_id)
+}
+
+/// Administrative reads use Operator authority, not a fabricated participant.
+/// An explicit Principal observation scope still narrows access to that identity.
+/// This helper must only be used by read-only Session endpoints.
+async fn authorize_session_read(
+    state: &AppState,
+    headers: &HeaderMap,
+    token: Option<&str>,
+    principal_id: Option<&str>,
+    session_id: &str,
+) -> Result<crate::memory::SessionRecord, SdkError> {
+    if is_operator_authorized(state, headers, token) && principal_id.is_none() {
+        return state
+            .runtime
+            .get_session(session_id)
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::Internal, error.to_string()))?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Session '{session_id}' does not exist"),
+                )
+            });
+    }
+    let principal = request_read_principal(state, headers, token, principal_id)?;
+    state
+        .sdk
+        .get_session(&principal.principal_id, session_id)
+        .await
 }
 
 async fn authorize_objective_request(
@@ -6897,19 +6938,14 @@ async fn handle_get_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_read_principal(
+    match authorize_session_read(
         &state,
         &headers,
         query.token.as_deref(),
         query.principal_id.as_deref(),
-    ) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
-    match state
-        .sdk
-        .get_session(&principal.principal_id, &session_id)
-        .await
+        &session_id,
+    )
+    .await
     {
         Ok(session) => Json(session).into_response(),
         Err(error) => sdk_error_response(error),
@@ -6937,10 +6973,14 @@ async fn handle_get_session_execution_targets(
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
-    let session = match state
-        .sdk
-        .get_session(&principal.principal_id, &session_id)
-        .await
+    let session = match authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
     {
         Ok(session) => session,
         Err(error) => return sdk_error_response(error),
@@ -7640,15 +7680,17 @@ async fn handle_get_session_events(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_read_principal(
+    if let Err(error) = authorize_session_read(
         &state,
         &headers,
         query.token.as_deref(),
         query.principal_id.as_deref(),
-    ) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
     let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
     if query.after_sequence.is_some() && query.before_sequence.is_some() {
         return error_response(
@@ -7656,20 +7698,19 @@ async fn handle_get_session_events(
             "after_sequence and before_sequence cannot be used together",
         );
     }
-    match state
-        .sdk
-        .session_events(
-            &principal.principal_id,
-            SessionEventsQuery {
-                session_id,
-                after_sequence: query.after_sequence,
-                before_sequence: query.before_sequence,
-                conversation_only: query.conversation_only,
-                limit,
-            },
-        )
-        .await
+    let filter = match (SessionEventsQuery {
+        session_id,
+        after_sequence: query.after_sequence,
+        before_sequence: query.before_sequence,
+        conversation_only: query.conversation_only,
+        limit,
+    })
+    .into_filter()
     {
+        Ok(filter) => filter,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state.runtime.query_events(filter).await {
         Ok(events) => {
             let next_before_sequence = (events.len() == limit)
                 .then(|| events.first().and_then(|event| event.sequence))
@@ -7682,7 +7723,7 @@ async fn handle_get_session_events(
             }))
             .into_response()
         }
-        Err(error) => sdk_error_response(error),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -7695,19 +7736,14 @@ async fn handle_get_session_event_attachment(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_read_principal(
+    let session = match authorize_session_read(
         &state,
         &headers,
         query.token.as_deref(),
         query.principal_id.as_deref(),
-    ) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
-    let session = match state
-        .sdk
-        .get_session(&principal.principal_id, &session_id)
-        .await
+        &session_id,
+    )
+    .await
     {
         Ok(session) => session,
         Err(error) => return sdk_error_response(error),
@@ -7790,19 +7826,14 @@ async fn handle_get_session_context(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_read_principal(
+    let session = match authorize_session_read(
         &state,
         &headers,
         query.token.as_deref(),
         query.principal_id.as_deref(),
-    ) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
-    let session = match state
-        .sdk
-        .get_session(&principal.principal_id, &session_id)
-        .await
+        &session_id,
+    )
+    .await
     {
         Ok(session) => session,
         Err(error) => return sdk_error_response(error),
@@ -7826,19 +7857,14 @@ async fn handle_get_session_context_projection(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_read_principal(
+    let session = match authorize_session_read(
         &state,
         &headers,
         query.token.as_deref(),
         query.principal_id.as_deref(),
-    ) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
-    let session = match state
-        .sdk
-        .get_session(&principal.principal_id, &session_id)
-        .await
+        &session_id,
+    )
+    .await
     {
         Ok(session) => session,
         Err(error) => return sdk_error_response(error),
@@ -7862,19 +7888,14 @@ async fn handle_get_session_context_encoding(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let principal = match request_read_principal(
+    let session = match authorize_session_read(
         &state,
         &headers,
         query.token.as_deref(),
         query.principal_id.as_deref(),
-    ) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
-    };
-    let session = match state
-        .sdk
-        .get_session(&principal.principal_id, &session_id)
-        .await
+        &session_id,
+    )
+    .await
     {
         Ok(session) => session,
         Err(error) => return sdk_error_response(error),
@@ -10513,6 +10534,126 @@ mod tests {
         .into_response();
         assert_eq!(operator_read.status(), StatusCode::OK);
 
+        // Listing a foreign/ delegated Session as Operator must also allow
+        // reading it without silently adding the default Principal to it.
+        let bindings_before = runtime
+            .list_session_principals("gateway-session-a")
+            .await
+            .unwrap();
+        runtime
+            .publish(Event::new(
+                "operator-read-progress".to_string(),
+                "test".to_string(),
+                "test".to_string(),
+                "chat/progress".to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), json!("context-test")),
+                    ("session_id".to_string(), json!("gateway-session-a")),
+                    ("text".to_string(), json!("Child task is running")),
+                ]),
+            ))
+            .await
+            .unwrap();
+        for (headers, token, principal_id, expected) in [
+            (dashboard_headers(), None, None, StatusCode::OK),
+            (
+                HeaderMap::new(),
+                Some("dashboard-secret".to_string()),
+                None,
+                StatusCode::OK,
+            ),
+            (
+                gateway_headers(Some("site-user-1")),
+                None,
+                None,
+                StatusCode::OK,
+            ),
+            (
+                gateway_headers(Some("site-user-2")),
+                None,
+                None,
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                dashboard_headers(),
+                None,
+                Some("site-user-2".to_string()),
+                StatusCode::FORBIDDEN,
+            ),
+            (HeaderMap::new(), None, None, StatusCode::UNAUTHORIZED),
+        ] {
+            let response = handle_get_session_events(
+                State(Arc::clone(&state)),
+                Path("gateway-session-a".to_string()),
+                headers,
+                Query(EventQuery {
+                    token,
+                    principal_id,
+                    conversation_only: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert!(body["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|event| event["id"] == "operator-read-progress"));
+            }
+        }
+        let operator_session = handle_get_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_session.status(), StatusCode::OK);
+        let projection = handle_get_session_context_projection(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(projection.status(), StatusCode::OK);
+        let missing = handle_get_session_events(
+            State(Arc::clone(&state)),
+            Path("nonexistent-session".to_string()),
+            dashboard_headers(),
+            Query(EventQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serde_json::to_value(
+                runtime
+                    .list_session_principals("gateway-session-a")
+                    .await
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_value(bindings_before).unwrap()
+        );
+        assert!(state
+            .sdk
+            .authorize_session(
+                &state.sdk.default_principal().principal_id,
+                "gateway-session-a"
+            )
+            .await
+            .is_err());
+
         // A Dashboard Operator may change the Session's Evaluation model as
         // control-plane policy without impersonating its participant.
         let operator_model_update = handle_update_session(
@@ -12521,6 +12662,39 @@ mod tests {
         );
         assert!(snapshot.provider_instances.contains_key("oauth-provider"));
         assert!(snapshot.model_routes.contains_key("oauth-model"));
+
+        // An operator routing switch preserves the established OAuth login.
+        let disabled = runtime
+            .control_provider_account(
+                "oauth-account",
+                account.state.as_ref().map(|state| state.revision),
+                ProviderAccountControlAction::Disable,
+            )
+            .await
+            .unwrap();
+        let snapshot = runtime.provider_control_snapshot().await.unwrap();
+        let account = &snapshot.auth_accounts["oauth-account"];
+        assert!(!account.effective_enabled);
+        assert!(account.authenticated);
+        assert_eq!(
+            account.oauth_metadata.as_ref().unwrap().email.as_deref(),
+            Some("oauth@example.test")
+        );
+        assert_eq!(
+            account.state.as_ref().unwrap().status,
+            crate::memory::ProviderAccountStatus::Disabled
+        );
+        runtime
+            .control_provider_account(
+                "oauth-account",
+                Some(disabled.revision),
+                ProviderAccountControlAction::Enable,
+            )
+            .await
+            .unwrap();
+        let enabled = runtime.provider_control_snapshot().await.unwrap();
+        assert!(enabled.auth_accounts["oauth-account"].effective_enabled);
+        assert!(enabled.auth_accounts["oauth-account"].authenticated);
 
         let logout = handle_logout_provider_oauth_account(
             State(Arc::clone(&state)),

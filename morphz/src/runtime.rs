@@ -3392,11 +3392,9 @@ impl MorphzRuntime {
                 .unwrap_or(config.enabled);
             let oauth = config.auth_adapter.ends_with("-oauth");
             let credential_may_authenticate = state.as_ref().is_none_or(|state| {
-                !matches!(
-                    state.status,
-                    crate::memory::ProviderAccountStatus::Disabled
-                        | crate::memory::ProviderAccountStatus::Revoked
-                )
+                // Routing eligibility is independent of stored login state.
+                // Disabling an account does not log it out or erase its identity.
+                state.status != crate::memory::ProviderAccountStatus::Revoked
             });
             let oauth_metadata = if oauth && credential_may_authenticate {
                 self.inner

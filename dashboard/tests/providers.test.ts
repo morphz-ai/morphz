@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { groupModelUsageByAlias, groupPhysicalEvaluations, type ModelUsageRecord } from '../src/app/providerEvaluations.ts'
+import { isProviderAccountVisible } from '../src/app/providerWorkflow.ts'
 
 const providersSource = readFileSync(
   new URL('../src/pages/ProvidersPage.tsx', import.meta.url),
@@ -99,8 +100,19 @@ test('API-key accounts expose a complete named lifecycle', () => {
 })
 
 test('unfinished OAuth attempts are not rendered as accounts', () => {
-  assert.match(providersSource, /!record\.oauth \|\| record\.authenticated/)
+  assert.match(providersSource, /filter\(\(\[, record\]\) => isProviderAccountVisible\(record\)\)/)
+  assert.equal(isProviderAccountVisible({ oauth: true, authenticated: false }), false)
+  assert.equal(isProviderAccountVisible({ oauth: true, authenticated: false, state: { status: 'revoked' } }), false)
   assert.doesNotMatch(providersSource, /unfinishedLogin|groupProviderAccounts/)
+})
+
+test('disabled OAuth accounts remain visible and can be re-enabled without logging in again', () => {
+  for (const authenticated of [true, false]) {
+    assert.equal(isProviderAccountVisible({ oauth: true, authenticated, state: { status: 'disabled' } }), true)
+  }
+  assert.equal(isProviderAccountVisible({ oauth: true, authenticated: true, state: { status: 'ready' } }), true)
+  assert.equal(isProviderAccountVisible({ oauth: false, authenticated: false, state: { status: 'disabled' } }), true)
+  assert.match(providersSource, /record\.effective_enabled \? 'disable' : 'enable'/)
 })
 
 test('account tests report progress and results beside the account that started them', () => {

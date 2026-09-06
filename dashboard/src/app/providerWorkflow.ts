@@ -122,6 +122,16 @@ export interface AccountDiagnosticLike {
   health_verified: boolean
 }
 
+export function isProviderAccountVisible(record: {
+  oauth: boolean
+  authenticated: boolean
+  state?: { status: string } | null
+}): boolean {
+  // Disabling routing must retain the account and its re-enable action.
+  // Pending OAuth setup and logged-out accounts are not active logins.
+  return !record.oauth || record.authenticated || record.state?.status === 'disabled'
+}
+
 export type AccountDiagnosticPresentation<T extends AccountDiagnosticLike> =
   | { visible: false; state: 'hidden' }
   | { visible: true; state: 'pending' }
