@@ -10,6 +10,13 @@ category: 工程机制
 
 这些事情有关联，却不需要排成一条长队。Morphz 的并发调度让同一个智能体拥有多条执行线程：每条线程推进自己的工作，共享同一份认知，并在需要时等待、协作和汇合。模型决定怎样组织工作，运行时保存这些安排，并在条件满足时启动对应的工作。
 
+<figure class="article-figure">
+  <a href="/images/articles/concurrent-threads-zh-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="点击查看原图（新窗口）">
+    <img src="/images/articles/concurrent-threads-zh-v1.svg" width="1200" height="725" loading="lazy" decoding="async" alt="同一个智能体并发推进测试、兼容性检查与发布说明。测试等待工具结果时，其他线程继续工作；所需结果汇合后再检查并继续。线程共享已提交的认知状态，时间长度仅作示意。" />
+  </a>
+  <figcaption>等待测试结果只暂停相关线程，兼容性检查与文档工作可以继续；需要汇合时，再按依赖协调。 <span class="article-figure__hint">点击图片可放大查看。</span></figcaption>
+</figure>
+
 ## 并发的是工作线程
 
 在 Morphz 中，线程（Thread）是一条有独立身份的逻辑执行流程。它可以经历多次模型调用、工具执行和等待，始终保留这项工作从哪里开始、已经做了什么、下一步在等什么。这里的线程不是操作系统线程，也不要求持续占用一个模型请求。

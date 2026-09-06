@@ -34,6 +34,21 @@ npm run lint
 
 Every public page must keep its Chinese and English slug in parity. Update both languages when a product contract changes.
 
+## Article diagrams
+
+The bilingual article figures live in `public/images/articles/` as self-contained
+SVGs. Markdown uses semantic figures, localized alternative text and captions,
+explicit dimensions, and links to the full-size assets. They do not require
+JavaScript or a reveal animation.
+
+To regenerate them, run `node scripts/render-article-diagrams.mjs` in an authoring
+environment with `sharp` installed (or set `MORPHZ_BRAND_SHARP` to its module
+path). The generator checks text widths before writing assets and saves PNG
+proofs under `docs/brand/article-diagrams-20260907/` for visual inspection.
+Rendering the figures is not a build or production dependency. Verify both
+languages after changing diagram text or geometry, and bump asset filenames
+when replacing published figures.
+
 ## Production deployment
 
 Build and deploy the generated Worker from `website/`:

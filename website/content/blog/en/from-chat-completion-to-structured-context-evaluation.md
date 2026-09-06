@@ -57,6 +57,13 @@ The model can interpret Runtime facts but cannot forge them. It decides what has
 
 Context therefore stops being an input assembled for one request. It becomes a first-class object that persists, projects, changes, and recovers.
 
+<figure class="article-figure">
+  <a href="/images/articles/structured-context-evaluation-en-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="Open full-size diagram (new tab)">
+    <img src="/images/articles/structured-context-evaluation-en-v1.svg" width="1200" height="800" loading="lazy" decoding="async" alt="The model evaluates a bounded view of structured context and proposes transactions and actions. The runtime validates commits and execution requests. Tool results become observations; later evaluations read the updated context." />
+  </a>
+  <figcaption>Context persists across evaluations. The model proposes changes, the runtime validates and commits them, and tool results return as observations. <span class="article-figure__hint">Click the image to view it full-size.</span></figcaption>
+</figure>
+
 ## Structure is not a serialization format
 
 Merely wrapping messages in JSON, or placing XML tags around text, does not automatically create structured cognition.

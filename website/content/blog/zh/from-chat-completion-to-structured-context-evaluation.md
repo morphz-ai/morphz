@@ -57,6 +57,13 @@ Morphz 要改变的不是提示词写法，而是模型面对的计算对象。
 
 这使“上下文”从一次请求的输入，变成了可以持续存在、被投影、被修改、被恢复的第一等对象。
 
+<figure class="article-figure">
+  <a href="/images/articles/structured-context-evaluation-zh-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="点击查看原图（新窗口）">
+    <img src="/images/articles/structured-context-evaluation-zh-v1.svg" width="1200" height="800" loading="lazy" decoding="async" alt="模型读取结构化上下文的有界视图并提出事务与动作。运行时验证后提交认知变更、调度工具与线程。工具结果成为新的观察，后续求值从更新后的上下文继续。" />
+  </a>
+  <figcaption>上下文是持续存在的对象。模型提出变更，运行时验证并提交；工具执行产生的结果再进入上下文。 <span class="article-figure__hint">点击图片可放大查看。</span></figcaption>
+</figure>
+
 ## 结构不是一种序列化格式
 
 仅仅把消息装进 JSON，或者给文本增加若干 XML 标签，并不会自然得到结构化认知。

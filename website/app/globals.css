@@ -323,6 +323,12 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 .blog-prose > p:first-child { margin-top: 0; color: var(--ink); font-size: 22px; line-height: 1.72; }
 .blog-prose h2 { margin-top: 76px; font-family: var(--font-editorial); font-size: 38px; font-weight: 500; }
 .blog-prose blockquote { margin: 36px 0; padding: 24px 28px; color: var(--ink); border-left-color: var(--red); font-size: 21px; line-height: 1.65; }
+.blog-prose .article-figure { margin: 40px 0; }
+.blog-prose .article-figure > a { display: block; border: 1px solid var(--line-strong); border-radius: 14px; background: #0c1419; overflow: hidden; }
+.blog-prose .article-figure > a:focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
+.blog-prose .article-figure img { display: block; width: 100%; max-width: 100%; height: auto; }
+.blog-prose .article-figure figcaption { margin-top: 14px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+.blog-prose .article-figure__hint { color: var(--faint); }
 
 @keyframes traceFlow { to { stroke-dashoffset: -278; } }
 @keyframes statusPulse { 0%, 100% { opacity: .45; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }

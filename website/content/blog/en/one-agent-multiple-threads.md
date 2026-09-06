@@ -10,6 +10,13 @@ Preparing a release involves several kinds of work: running regression tests, ch
 
 These activities are related, but they do not all need to form one long queue. Morphz gives a single agent multiple execution threads. Each advances its own work while sharing the same cognition, waiting, coordinating, and joining results where necessary. The model decides how to organize the work; the runtime records those decisions and starts the corresponding work when its conditions are met.
 
+<figure class="article-figure">
+  <a href="/images/articles/concurrent-threads-en-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="Open full-size diagram (new tab)">
+    <img src="/images/articles/concurrent-threads-en-v1.svg" width="1200" height="725" loading="lazy" decoding="async" alt="One agent runs tests, compatibility checks and release notes concurrently. Waiting for tests does not block other threads. Required results join before review, and threads share committed cognition. Durations are illustrative." />
+  </a>
+  <figcaption>Waiting for tests pauses only the relevant thread. Compatibility checks and documentation can continue, with dependencies coordinating the eventual join. <span class="article-figure__hint">Click the image to view it full-size.</span></figcaption>
+</figure>
+
 ## Concurrency across work threads
 
 In Morphz, a thread is a logical execution flow with its own identity. It can span multiple model calls, tool executions, and waits while retaining where the work began, what has happened, and what it needs next. It is not an operating-system thread and does not require a model request to remain open throughout its lifetime.

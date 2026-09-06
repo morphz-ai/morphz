@@ -24,6 +24,13 @@ category: 工程机制
 
 假设智能体正在准备一次部署。它之前把部署地区记为杭州，保存在认知帧 `deployment/target-v1` 中；读到最新的生产配置后，却发现地区应该是上海。这次配置检查的结果作为观察记录 `@e42` 进入上下文。
 
+<figure class="article-figure">
+  <a href="/images/articles/context-transactions-zh-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="点击查看原图（新窗口）">
+    <img src="/images/articles/context-transactions-zh-v1.svg" width="1200" height="735" loading="lazy" decoding="async" alt="智能体根据配置观察 @e42 提交上下文事务，把部署地区从杭州更新为上海，同时创建新判断、关联来源并退役已处理内容。其他认知不变，历史仍可召回。" />
+  </a>
+  <figcaption>一笔事务更新部署判断及其来源关系，已处理的内容退出活动上下文，原始记录仍可追溯。 <span class="article-figure__hint">点击图片可放大查看。</span></figcaption>
+</figure>
+
 智能体可以提交下面这笔事务，更新部署判断，同时让已经处理的配置记录退出活动上下文：
 
 ```lisp
@@ -98,6 +105,13 @@ category: 工程机制
 | Morphz | 122/150 | **81.33%** |
 | Letta 0.16.8 | 93/150 | 62.00% |
 | Mem0 2.0.19 向量检索参考智能体 | 96/150 | 64.00% |
+
+<figure class="article-figure">
+  <a href="/images/articles/cross-task-memory-zh-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="点击查看原图（新窗口）">
+    <img src="/images/articles/cross-task-memory-zh-v1.svg" width="1200" height="825" loading="lazy" decoding="async" alt="智能体通过上下文事务把历史经验组织为认知图，用于后续任务。ME-07 每个系统测试 150 项任务，每题尝试一次：Morphz 完成率 81.33%，Letta 62.00%，Mem0 参考智能体 64.00%。" />
+  </a>
+  <figcaption>跨任务经验复用的机制与 ME-07 实验结果。三个系统使用相同的历史任务与模型，完整配置和报告见本节链接。 <span class="article-figure__hint">点击图片可放大查看。</span></figcaption>
+</figure>
 
 对 Morphz 的记录复核确认，训练阶段通过上下文事务形成的认知帧实际参与了全部 150 项测试。智能体在历史任务中形成的认知，确实被带到了后续工作中。
 

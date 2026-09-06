@@ -24,6 +24,13 @@ The protocol defines what the agent can change. It can update cognitive frames, 
 
 Suppose an agent is preparing a deployment. It has recorded Hangzhou as the deployment region in `deployment/target-v1`. On reading the latest production configuration, it discovers that the region should be Shanghai. The configuration check enters its context as observation `@e42`.
 
+<figure class="article-figure">
+  <a href="/images/articles/context-transactions-en-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="Open full-size diagram (new tab)">
+    <img src="/images/articles/context-transactions-en-v1.svg" width="1200" height="735" loading="lazy" decoding="async" alt="The agent uses observation @e42 to submit a context transaction, changing the deployment region from Hangzhou to Shanghai, linking sources and retiring processed material. Other cognition stays unchanged; history remains retrievable." />
+  </a>
+  <figcaption>One transaction updates the deployment judgment and its source links. Processed material leaves active context, while the original records remain retrievable. <span class="article-figure__hint">Click the image to view it full-size.</span></figcaption>
+</figure>
+
 The agent can submit this transaction to update the deployment decision and retire the processed configuration observation from active context:
 
 ```lisp
@@ -98,6 +105,13 @@ Completion required passing both final-state checks and task-requirement scoring
 | Morphz | 122/150 | **81.33%** |
 | Letta 0.16.8 | 93/150 | 62.00% |
 | Mem0 2.0.19-backed vector reference agent | 96/150 | 64.00% |
+
+<figure class="article-figure">
+  <a href="/images/articles/cross-task-memory-en-v1.svg" target="_blank" rel="noopener noreferrer" aria-label="Open full-size diagram (new tab)">
+    <img src="/images/articles/cross-task-memory-en-v1.svg" width="1200" height="825" loading="lazy" decoding="async" alt="The agent maintains past experience through context transactions and reuses it in new tasks. ME-07 task completion over 150 held-out tasks per system, one attempt each: Morphz 81.33%, Letta 62.00%, Mem0-backed reference agent 64.00%." />
+  </a>
+  <figcaption>Cross-task experience reuse and ME-07 results. All three systems used the same historical tasks and model; the full setup and report are linked in this section. <span class="article-figure__hint">Click the image to view it full-size.</span></figcaption>
+</figure>
 
 A trace audit confirmed that the cognitive frames Morphz formed through context transactions during training were present in all 150 held-out tasks. Cognition developed from past tasks was carried into subsequent work.
 
