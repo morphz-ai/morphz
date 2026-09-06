@@ -10,11 +10,11 @@ English · [简体中文](README.zh-CN.md)
 
 <p align="center">
   <a href="https://morphz.ai/en/#demo">
-    <img src="website/public/video/morphz-concept-demo-poster.jpg" alt="See Morphz in 74 seconds" width="960">
+    <img src="website/public/video/morphz-live-demo-poster-v1.jpg" alt="Morphz live demo: one agent builds miniature Beijing across four concurrent threads" width="960">
   </a>
 </p>
 
-<p align="center"><a href="https://morphz.ai/en/#demo"><strong>See Morphz in 74 seconds →</strong></a></p>
+<p align="center"><a href="https://morphz.ai/en/#demo"><strong>Watch the live demo · 2:40 →</strong></a></p>
 
 Morphz is an **S-Expression Cognitive Machine** built for durable agents. It makes structured
 Context—not a growing chat transcript—the object a language model evaluates directly. The model
