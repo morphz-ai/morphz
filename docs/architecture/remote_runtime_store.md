@@ -102,9 +102,60 @@ using an operator-supplied HTTPS URL and credential, then call
 `store.complete_recovery()` only after `runtime.start().await` succeeds.
 
 The Cloud implementation exposes a **private gateway primitive**, not a public
-unauthenticated Worker route. A future production compute adapter must resolve its
-Cell from verified deployment authority before calling that primitive. The test
+unauthenticated Worker route. Its hosted compute adapter resolves the Cell from
+verified platform Container identity before calling that primitive. The test
 HTTP bridge and its fixed credential are test fixtures only.
+
+## Opt-in hosted executable and uploaded files
+
+`morphz-runtime-host`, built only with `remote-store`, is an explicit embedding
+entrypoint. It requires `MORPHZ_REMOTE_STORE_URL`, `MORPHZ_HOST_FILES_URL`,
+`MORPHZ_REMOTE_STORE_TOKEN`, a dedicated empty `MORPHZ_HOME`, `MORPHZ_BIND`,
+separate API/Dashboard tokens, an identity provider ID, and the control plane's
+`MORPHZ_AGENT_ID`, `MORPHZ_CONTEXT_ID`, and `MORPHZ_SESSION_ID`. Only an operator may
+set `MORPHZ_HOST_PRIVATE_GATEWAY=1` for platform-intercepted private HTTP;
+ordinary remote endpoints still require HTTPS (except loopback tests).
+
+It claims a fresh fence, restores Store and file pointers, starts Runtime
+recovery, acknowledges recovery and only then opens HTTP. It exits on ownership
+loss. It provisions exactly that Agent and primary Session; the verified gateway
+binds the user's Principal, rather than a bootstrap-local operator claiming the
+Session. Cloud local execution is disabled; uploaded files remain available for
+transfer to a selected Edge target through the existing tool/API contract.
+
+The `host_files` materialization service has no directory upload/scanning API.
+Callers supply immutable uploaded bytes at specific generated file paths.
+Stage content and offset/manifest publish atomically before HTTP acknowledgement;
+Event files, workspace attachment copies and pending marker publish before
+message admission. Cancellation removes manifest pointers. Plain text and native
+attachment parsing behavior are unchanged: no PDF/DOCX parser was introduced.
+The Cloud implementation encrypts immutable blobs in R2 and commits pointers in
+the same fenced Cell; responses are bounded and digest/length verified.
+
+Synchronous file callers yield their Tokio scheduler worker while awaiting the
+dedicated bounded I/O worker, so slow object storage cannot starve the independent
+compute lease. A failed local materialization after a remote acknowledgement
+invalidates ownership and stops the hosted process; it cannot keep using stale
+cache contents.
+
+Only this executable installs the optional file backend. Desktop, TUI and
+ordinary CLI startup neither uploads nor migrates existing files. Configuration
+and SecretStore write-through integration points are present, but their complete
+Cloud data authorization and end-to-end credential/audit recovery gate must be
+completed before deployment; attachment-only tests do not validate that gate.
+
+Keep the materialization root's absolute location stable across replacements:
+existing Runtime attachment metadata contains absolute paths. The Cloud image
+uses `/run/morphz-home` and clears only its own disposable cache. The constructor
+refuses nonempty directories, rather than deleting an existing user HOME.
+Automatic compute parking is not implemented by this host yet. Do not stop it
+based solely on HTTP inactivity, and do not claim scale-to-zero behavior.
+
+Hosted file limits are explicit: at most 24 MiB per object, 34 MiB per upload
+transaction, 100 pointers. This executable caps ingress at 8 MiB per attachment,
+12 MiB per import and 32 attachments so both Event/workspace copies fit atomically.
+Other Runtime builds retain their existing limits. Over-capacity fails, never
+truncates or silently acknowledges local-only data.
 
 ## Explicit capacity and rollout boundaries
 

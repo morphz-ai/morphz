@@ -1107,6 +1107,10 @@ fn validate_scope(scope_kind: &SecretScopeKind, scope_id: Option<&str>) -> Resul
 }
 
 fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(feature = "remote-store")]
+    crate::memory::remote::host_files::publish(path, Some(bytes))?;
+    #[cfg(feature = "remote-store")]
+    let mut cache_update = crate::memory::remote::host_files::CacheUpdate::default();
     let parent = path
         .parent()
         .ok_or("credential metadata path has no parent directory")?;
@@ -1125,7 +1129,10 @@ fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
             .map_err(|error| error.to_string())?;
     }
-    fs::rename(temporary, path).map_err(|error| error.to_string())
+    fs::rename(temporary, path).map_err(|error| error.to_string())?;
+    #[cfg(feature = "remote-store")]
+    cache_update.complete();
+    Ok(())
 }
 
 #[cfg(test)]

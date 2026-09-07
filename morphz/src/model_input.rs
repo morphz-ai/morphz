@@ -238,8 +238,8 @@ impl MessageAttachmentStageStore {
         let _guard = lock.lock().await;
         if let Some(existing) = self.read_record(&stage.session_id, &stage.stage_id).await? {
             if existing.expires_at <= Utc::now() {
-                tokio::fs::remove_dir_all(
-                    self.stage_directory(&stage.session_id, &stage.stage_id)?,
+                remove_attachment_directory(
+                    &self.stage_directory(&stage.session_id, &stage.stage_id)?,
                 )
                 .await
                 .map_err(MessageAttachmentStageError::internal)?;
@@ -462,7 +462,7 @@ impl MessageAttachmentStageStore {
                 "an attachment stage already bound to a message cannot be cancelled",
             ));
         }
-        tokio::fs::remove_dir_all(self.stage_directory(session_id, stage_id)?)
+        remove_attachment_directory(&self.stage_directory(session_id, stage_id)?)
             .await
             .map_err(MessageAttachmentStageError::internal)
     }
@@ -595,8 +595,8 @@ impl MessageAttachmentStageStore {
                     continue;
                 };
                 if current.expires_at <= Utc::now()
-                    && tokio::fs::remove_dir_all(
-                        self.stage_directory(&current.session_id, &current.stage_id)?,
+                    && remove_attachment_directory(
+                        &self.stage_directory(&current.session_id, &current.stage_id)?,
                     )
                     .await
                     .is_ok()
@@ -645,9 +645,10 @@ impl MessageAttachmentStageStore {
         if record.expires_at > Utc::now() {
             return Ok(());
         }
-        let _ =
-            tokio::fs::remove_dir_all(self.stage_directory(&record.session_id, &record.stage_id)?)
-                .await;
+        let _ = remove_attachment_directory(
+            &self.stage_directory(&record.session_id, &record.stage_id)?,
+        )
+        .await;
         Err(MessageAttachmentStageError::new(
             MessageAttachmentStageErrorKind::NotFound,
             format!("attachment stage '{}' has expired", record.stage_id),
@@ -714,6 +715,25 @@ impl MessageAttachmentStageStore {
         let path = directory.join("manifest.json");
         let temporary = directory.join("manifest.json.partial");
         let document = serde_json::to_vec(record).map_err(MessageAttachmentStageError::internal)?;
+        #[cfg(feature = "remote-store")]
+        if crate::memory::remote::host_files::is_active() {
+            // These two generated paths contain only this stage's user upload.
+            // Publish its bytes, offset and digest in one fenced manifest commit.
+            let mut changes = vec![(path.clone(), Some(document.clone()))];
+            for name in ["content", "content.partial"] {
+                let upload = directory.join(name);
+                let bytes = match tokio::fs::read(&upload).await {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(MessageAttachmentStageError::internal(error)),
+                };
+                changes.push((upload, bytes));
+            }
+            crate::memory::remote::host_files::publish_batch(changes)
+                .map_err(MessageAttachmentStageError::internal)?;
+        }
+        #[cfg(feature = "remote-store")]
+        let mut cache_update = crate::memory::remote::host_files::CacheUpdate::default();
         let mut file = tokio::fs::File::create(&temporary)
             .await
             .map_err(MessageAttachmentStageError::internal)?;
@@ -725,7 +745,11 @@ impl MessageAttachmentStageStore {
             .map_err(MessageAttachmentStageError::internal)?;
         drop(file);
         let rename_error = match tokio::fs::rename(&temporary, &path).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                #[cfg(feature = "remote-store")]
+                cache_update.complete();
+                return Ok(());
+            }
             Err(error) => error,
         };
         #[cfg(windows)]
@@ -739,9 +763,12 @@ impl MessageAttachmentStageStore {
             tokio::fs::remove_file(&path)
                 .await
                 .map_err(MessageAttachmentStageError::internal)?;
-            return tokio::fs::rename(&temporary, &path)
+            tokio::fs::rename(&temporary, &path)
                 .await
-                .map_err(MessageAttachmentStageError::internal);
+                .map_err(MessageAttachmentStageError::internal)?;
+            #[cfg(feature = "remote-store")]
+            cache_update.complete();
+            return Ok(());
         }
         let _ = tokio::fs::remove_file(&temporary).await;
         Err(MessageAttachmentStageError::internal(rename_error))
@@ -1124,6 +1151,34 @@ pub async fn prepare_message_input_imports_for_workspace(
             );
         }
         return Err(error);
+    }
+    #[cfg(feature = "remote-store")]
+    if crate::memory::remote::host_files::is_active() {
+        // The deployment explicitly enables its private object backend. Only
+        // this user upload's immutable, Runtime-generated file IDs are sent;
+        // never enumerate a workspace or read arbitrary project/user files.
+        use crate::memory::remote::host_files::publish_batch;
+        let marker = pending_manifest_path(&prepared.root, &prepared.event_id);
+        let marker_bytes = tokio::fs::read(&marker).await?;
+        let mut changes = vec![(marker, Some(marker_bytes))];
+        for (index, digest) in prepared.digests.iter().enumerate() {
+            let path = prepared
+                .root
+                .join("events")
+                .join(&prepared.scope_key)
+                .join(&prepared.event_id)
+                .join(digest);
+            let bytes = tokio::fs::read(&path).await?;
+            changes.push((path, Some(bytes.clone())));
+            // Persist the uploaded bytes, not the mutable workspace copy.
+            if let Some(path) = prepared.metadata[index]
+                .get("workspace_path")
+                .and_then(Value::as_str)
+            {
+                changes.push((PathBuf::from(path), Some(bytes)));
+            }
+        }
+        publish_batch(changes)?;
     }
     Ok(prepared)
 }
@@ -1652,12 +1707,12 @@ async fn discard_prepared_message_attachments(
 ) -> Result<(), ModelInputError> {
     if let Some(workspace_directory) = workspace_directory {
         if tokio::fs::try_exists(workspace_directory).await? {
-            tokio::fs::remove_dir_all(workspace_directory).await?;
+            remove_attachment_directory(workspace_directory).await?;
         }
     }
     let event_directory = root.join("events").join(scope_key).join(event_id);
     if tokio::fs::try_exists(&event_directory).await? {
-        tokio::fs::remove_dir_all(&event_directory).await?;
+        remove_attachment_directory(&event_directory).await?;
     }
     for digest in digests {
         let blob_path = root.join("blobs").join(scope_key).join(digest);
@@ -1678,12 +1733,32 @@ fn pending_manifest_path(root: &Path, event_id: &str) -> PathBuf {
     root.join("pending").join(format!("{event_id}.json"))
 }
 
+async fn remove_attachment_directory(path: &Path) -> Result<(), ModelInputError> {
+    #[cfg(feature = "remote-store")]
+    crate::memory::remote::host_files::delete_prefix(path)?;
+    #[cfg(feature = "remote-store")]
+    let mut cache_update = crate::memory::remote::host_files::CacheUpdate::default();
+    tokio::fs::remove_dir_all(path).await?;
+    #[cfg(feature = "remote-store")]
+    cache_update.complete();
+    Ok(())
+}
+
 async fn remove_file_if_exists(path: &Path) -> Result<(), ModelInputError> {
-    match tokio::fs::remove_file(path).await {
+    #[cfg(feature = "remote-store")]
+    crate::memory::remote::host_files::publish(path, None)?;
+    #[cfg(feature = "remote-store")]
+    let mut cache_update = crate::memory::remote::host_files::CacheUpdate::default();
+    let result = match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
+    };
+    #[cfg(feature = "remote-store")]
+    if result.is_ok() {
+        cache_update.complete();
     }
+    result
 }
 
 #[cfg(unix)]

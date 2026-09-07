@@ -15,12 +15,17 @@ experimental-cognitive-coordination = ["dep:morphz-cognitive-coordination"]
 # lets deliberately minimal binaries omit the backend without presenting it as
 # an experimental Runtime capability.
 context-db = []
-remote-store = ["context-db"]
+remote-store = ["context-db", "reqwest/blocking"]
 # Keep one canonical Structured Context seed and append ordered, structured
 # ContextDelta blocks inside one User message. Provider adapters preserve the
 # same block boundaries in their native content representation. The experiment
 # remains compile-time opt-in so default Context semantics stay untouched.
 experimental-structured-context-delta-cache = []
+
+[[bin]]
+name = "morphz-runtime-host"
+path = "src/bin/morphz-runtime-host.rs"
+required-features = ["remote-store"]
 
 [[example]]
 name = "context_db_sqlite_benchmark"

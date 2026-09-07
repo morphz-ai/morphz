@@ -8,6 +8,7 @@ mod replica;
 use super::*;
 use crate::event::Event;
 use crate::scheduler::*;
+pub mod host_files;
 pub mod http;
 use protocol::{Commit, Fence, Head, RemoteStoreTransport, StoreError, PROTOCOL};
 use replica::Replica;
@@ -88,6 +89,14 @@ impl RemoteRuntimeStore {
 
     pub fn ownership_lost(&self) -> bool {
         self.lost.load(Ordering::Acquire)
+    }
+
+    pub fn compute_fence(&self) -> Fence {
+        self.fence.clone()
+    }
+
+    pub fn ownership_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.lost)
     }
 
     fn ensure_owned(&self) -> Result<(), StoreError> {

@@ -1,0 +1,157 @@
+//! Explicit hosted embedding. Ordinary `morphz` startup never selects this
+//! backend, uploads a HOME, or adopts hosted credentials implicitly.
+use morphz::config::{self, ServerIdentityMode};
+use morphz::llm::Client;
+use morphz::memory::remote::{
+    host_files::HostFiles, http::HttpRemoteStoreTransport, protocol::StoreError, RemoteRuntimeStore,
+};
+use morphz::memory::{NewSession, SessionDirectoryStore, SessionMountKind};
+use morphz::provider::{build_configured_client, routing::RoutedClient};
+use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
+use morphz::secret_store::{HostEnvFileSecretBackend, SecretStore};
+use morphz::web::{Server, ServerDefaults};
+use std::{path::PathBuf, sync::Arc, time::Duration};
+
+fn required(name: &str) -> Result<String, StoreError> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            format!("{name} must be explicitly configured for the hosted Runtime").into()
+        })
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+    match run().await {
+        Ok(()) => std::process::exit(0),
+        Err(error) => {
+            tracing::error!(event_code = "host.startup_or_ownership_failed", error = %error, "Hosted Runtime stopped; no local fallback is permitted");
+            // Do not wait on blocking workers holding obsolete physical effects.
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run() -> Result<(), StoreError> {
+    let home = PathBuf::from(required("MORPHZ_HOME")?);
+    if !home.is_absolute() {
+        return Err("hosted MORPHZ_HOME must be an absolute, empty cache directory".into());
+    }
+    if std::fs::symlink_metadata(&home)?.file_type().is_symlink() {
+        return Err("hosted cache cannot be a symlink".into());
+    }
+    let home = std::fs::canonicalize(home)?;
+    std::env::set_var("MORPHZ_HOME", &home);
+    let endpoint = required("MORPHZ_REMOTE_STORE_URL")?;
+    let files_endpoint = required("MORPHZ_HOST_FILES_URL")?;
+    let token = required("MORPHZ_REMOTE_STORE_TOKEN")?;
+    let private = std::env::var("MORPHZ_HOST_PRIVATE_GATEWAY").as_deref() == Ok("1");
+    let transport = Arc::new(if private {
+        HttpRemoteStoreTransport::private_gateway(&endpoint, &token)?
+    } else {
+        HttpRemoteStoreTransport::new(&endpoint, &token)?
+    });
+    // File endpoint has the same deployment transport policy as the Store.
+    if !private {
+        HttpRemoteStoreTransport::new(&files_endpoint, &token)?;
+    }
+    required("MORPHZ_API_TOKEN")?;
+    required("MORPHZ_DASHBOARD_TOKEN")?;
+    let provider_id = required("MORPHZ_SERVER_IDENTITY_PROVIDER_ID")?;
+    let store = Arc::new(RemoteRuntimeStore::connect_owned(transport).await?);
+    let fence = store.compute_fence();
+    let lost = store.ownership_flag();
+    let file_root = home.clone();
+    tokio::task::spawn_blocking(move || {
+        HostFiles::restore(file_root, &files_endpoint, &token, fence, lost)
+    })
+    .await??
+    .install()?;
+    if let Some(path) = home
+        .join(".env")
+        .to_str()
+        .filter(|_| home.join(".env").exists())
+    {
+        config::load_env(path)?;
+    }
+    let mut app = config::resolve_config(&home, None, None)?.config;
+    app.apply_runtime_env_overrides()?;
+    // The Cloud compute instance is not the user's execution target.
+    app.execution_targets.local_enabled = false;
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace)?;
+    app.permissions.workspace_root = workspace.to_string_lossy().into_owned();
+    app.background_task.artifact_dir = home.join("artifacts").to_string_lossy().into_owned();
+    // Explicit hosted admission limits, also advertised by the Runtime API.
+    // An import publishes event/workspace links together within one 34 MiB RPC.
+    app.model_input.max_artifacts_per_import = app.model_input.max_artifacts_per_import.min(32);
+    app.model_input.max_artifact_bytes = app.model_input.max_artifact_bytes.min(8 * 1024 * 1024);
+    app.model_input.max_import_bytes = app.model_input.max_import_bytes.min(12 * 1024 * 1024);
+    app.server.identity.mode = ServerIdentityMode::TrustedGateway;
+    app.server.identity.provider_id = provider_id;
+    app.server.identity.service_token_env = "MORPHZ_API_TOKEN".into();
+    let client: Arc<dyn Client> = if app.provider_instances.is_empty()
+        && app.model_routes.is_empty()
+        && app.providers.is_empty()
+        && app.llm.provider.is_none()
+    {
+        Arc::new(RoutedClient::empty(app.llm.clone()))
+    } else {
+        build_configured_client(&app, None, None)?.0
+    };
+    let secrets = Arc::new(SecretStore::new(
+        home.join("managed-secrets.json"),
+        Arc::new(HostEnvFileSecretBackend::new(home.join(".env"))),
+    )?);
+    let identity = RuntimeIdentity {
+        agent_id: required("MORPHZ_AGENT_ID")?,
+        context_id: required("MORPHZ_CONTEXT_ID")?,
+        principal_id: "host-local-operator".into(),
+    };
+    let initial_session = NewSession {
+        id: required("MORPHZ_SESSION_ID")?,
+        agent_id: identity.agent_id.clone(),
+        context_id: identity.context_id.clone(),
+        parent_session_id: None,
+        title: "Main".into(),
+        mount_kind: SessionMountKind::ExistingContext,
+    };
+    let defaults = ServerDefaults {
+        agent_id: identity.agent_id.clone(),
+        context_id: identity.context_id.clone(),
+    };
+    let gateway_identity = app.server.identity.clone();
+    let runtime = MorphzRuntime::builder(app, client)
+        .identity(identity)
+        .secret_store(secrets)
+        .store("remote:agent-cell", store.clone())
+        .principal_first_seen_cues(true)
+        .build()
+        .await?;
+    runtime.start().await?;
+    // Provision the one Agent's primary Session without claiming it for the
+    // local operator. The verified user gateway binds its Principal separately.
+    store.ensure_session(initial_session).await?;
+    store.complete_recovery().await?;
+    let bind = required("MORPHZ_BIND")?;
+    Server::new(runtime, defaults)
+        .with_identity(gateway_identity)
+        .start(&bind)
+        .await?;
+    tracing::info!(
+        event_code = "host.ready",
+        "Hosted Runtime restored and ready"
+    );
+    loop {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => { result?; return Ok(()); },
+            () = tokio::time::sleep(Duration::from_millis(100)) => {
+                if store.ownership_lost() { return Err("compute ownership lost; process must be replaced".into()); }
+            }
+        }
+    }
+}

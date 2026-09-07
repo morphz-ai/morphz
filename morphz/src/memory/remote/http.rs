@@ -13,6 +13,17 @@ pub struct HttpRemoteStoreTransport {
 
 impl HttpRemoteStoreTransport {
     pub fn new(endpoint: &str, token: &str) -> Result<Self, StoreError> {
+        Self::build(endpoint, token, false)
+    }
+
+    /// Deployment-only transport over a platform-intercepted private HTTP
+    /// binding. The embedding host, never a model, attests this network boundary.
+    /// Ordinary remote endpoints continue to require HTTPS.
+    pub fn private_gateway(endpoint: &str, token: &str) -> Result<Self, StoreError> {
+        Self::build(endpoint, token, true)
+    }
+
+    fn build(endpoint: &str, token: &str, private: bool) -> Result<Self, StoreError> {
         let endpoint = reqwest::Url::parse(endpoint)?;
         if !endpoint.username().is_empty()
             || endpoint.password().is_some()
@@ -23,7 +34,7 @@ impl HttpRemoteStoreTransport {
         let loopback = endpoint
             .host_str()
             .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]"));
-        if endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback) {
+        if endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && (loopback || private)) {
             return Err("remote Store requires HTTPS (HTTP is allowed only on loopback)".into());
         }
         if token.trim().is_empty() {
@@ -43,7 +54,7 @@ impl HttpRemoteStoreTransport {
         })
     }
 
-    async fn rpc<T: DeserializeOwned>(
+    pub(crate) async fn rpc<T: DeserializeOwned>(
         &self,
         operation: &str,
         fence: &Fence,

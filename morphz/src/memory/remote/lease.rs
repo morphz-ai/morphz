@@ -40,6 +40,9 @@ impl LeaseGuard {
                 loop {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     tokio::time::sleep((remaining / 3).min(Duration::from_secs(10))).await;
+                    if lost.load(Ordering::Acquire) {
+                        break;
+                    }
                     let started = Instant::now();
                     let result = tokio::time::timeout_at(deadline, transport.renew(&fence)).await;
                     match result {
