@@ -8,6 +8,8 @@ mod replica;
 use super::*;
 use crate::event::Event;
 use crate::scheduler::*;
+pub mod host_configuration;
+pub mod host_credentials;
 pub mod host_files;
 pub mod http;
 use protocol::{Commit, Fence, Head, RemoteStoreTransport, StoreError, PROTOCOL};

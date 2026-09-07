@@ -3185,7 +3185,7 @@ fn write_managed_value(path: &Path, value: &toml::Value) -> Result<(), String> {
     let content = toml::to_string_pretty(&canonical)
         .map_err(|error| format!("failed to encode Morphz configuration: {error}"))?;
     #[cfg(feature = "remote-store")]
-    crate::memory::remote::host_files::publish(path, Some(content.as_bytes()))?;
+    crate::memory::remote::host_configuration::publish(path, &content)?;
     #[cfg(feature = "remote-store")]
     let mut cache_update = crate::memory::remote::host_files::CacheUpdate::default();
     std::fs::write(&temporary, content).map_err(|error| {

@@ -110,6 +110,7 @@ HTTP bridge and its fixed credential are test fixtures only.
 
 `morphz-runtime-host`, built only with `remote-store`, is an explicit embedding
 entrypoint. It requires `MORPHZ_REMOTE_STORE_URL`, `MORPHZ_HOST_FILES_URL`,
+`MORPHZ_HOST_CREDENTIALS_URL`, `MORPHZ_HOST_CONFIGURATION_URL`,
 `MORPHZ_REMOTE_STORE_TOKEN`, a dedicated empty `MORPHZ_HOME`, `MORPHZ_BIND`,
 separate API/Dashboard tokens, an identity provider ID, and the control plane's
 `MORPHZ_AGENT_ID`, `MORPHZ_CONTEXT_ID`, and `MORPHZ_SESSION_ID`. Only an operator may
@@ -139,10 +140,36 @@ invalidates ownership and stops the hosted process; it cannot keep using stale
 cache contents.
 
 Only this executable installs the optional file backend. Desktop, TUI and
-ordinary CLI startup neither uploads nor migrates existing files. Configuration
-and SecretStore write-through integration points are present, but their complete
-Cloud data authorization and end-to-end credential/audit recovery gate must be
-completed before deployment; attachment-only tests do not validate that gate.
+ordinary CLI startup neither uploads nor migrates existing files. The hosted
+executable restores exactly two primary configuration documents (`morphz` and
+`models`) from the fenced Cell database. TOML files in its private HOME are only
+disposable parser caches. Configuration writes acknowledge the database CAS
+before replacing that cache; ambiguous publication stops the owner. Cloud stores
+encrypted configuration bytes, including any inline sensitive values, rather
+than interpreting TOML or publishing configuration files into R2.
+
+`SecretStore::managed` registers one metadata-owning value backend. The Cell
+atomically stores encrypted values with the native managed-credential catalog;
+scope is authenticated with the ciphertext. Resolution checks the current fence,
+revision and usage scope and persists audit before returning plaintext. The host
+has no credential catalog/audit file or `.env` fallback and never receives a root
+encryption key. Missing aliases do not resolve from the host process environment.
+The existing local SecretStore constructors retain their local backend behavior.
+
+The private configuration and credential endpoints use the same live compute
+fence as RuntimeStore and files. Their keys are domain-separated. Root HOME
+configuration and credential filenames are rejected by the R2 file interface,
+including on restore, so it cannot become an alternate source of authority.
+Synchronous authority I/O yields the Tokio worker; a single-worker regression
+checks that credential waits do not starve lease tasks.
+
+The cross-repository native host gate creates a synthetic Provider via the real
+Runtime API, resolves its managed credential against a local HTTP fixture, kills
+the host, removes only its test cache, and repeats the Provider call after recovery.
+It checks both configuration/catalog restoration and durable usage audit, with
+no `.env` or credential files in the restored HOME. This is not a real Provider
+OAuth refresh/rotation test or a Cloud deployment. Refresh version propagation,
+audit retention, key recovery and real platform gates remain required.
 
 Keep the materialization root's absolute location stable across replacements:
 existing Runtime attachment metadata contains absolute paths. The Cloud image
@@ -210,6 +237,19 @@ precision, bounded pagination and capacity errors.
 - Clippy `--all-targets -D warnings`, formatting and diff checks passed. Cloud
   type checking, isolated Agent Cell dry-run and existing control-plane dry-run
   (`--containers-rollout=none`) passed. No Docker image build or deployment ran.
+
+### Verified on 2026-09-08 (hosted configuration/credentials)
+
+- Rebuilt native `morphz-runtime-host` with `remote-store`.
+- Full Rust library: **1,283 passed, 7 existing ignored**.
+- Clippy `--all-targets -D warnings`, fmt and diff checks passed.
+- Cloud full suite: **114 passed / 19 files**, with the latest native host supplied;
+  its cross-repository test executed rather than being skipped. It includes local
+  D1/workerd and isolated PostgreSQL, credential scope/audit, encrypted configuration,
+  Provider setup/probe, SIGKILL/empty-cache recovery and stale-owner rejection.
+- TypeScript and hosted Worker dry-run passed. Provider HTTP calls used only a
+  synthetic loopback service. No real model spend, cloud deployment, Linux image
+  build, existing Agent migration or production data access occurred.
 
 Builds used a separate temporary target with incremental/debug artifacts disabled;
 the verification cache was about 1.8 GiB, not another full-size development target.

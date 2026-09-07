@@ -2,13 +2,15 @@
 //! backend, uploads a HOME, or adopts hosted credentials implicitly.
 use morphz::config::{self, ServerIdentityMode};
 use morphz::llm::Client;
+use morphz::memory::remote::host_configuration::HostConfiguration;
+use morphz::memory::remote::host_credentials::HostCredentialBackend;
 use morphz::memory::remote::{
     host_files::HostFiles, http::HttpRemoteStoreTransport, protocol::StoreError, RemoteRuntimeStore,
 };
 use morphz::memory::{NewSession, SessionDirectoryStore, SessionMountKind};
 use morphz::provider::{build_configured_client, routing::RoutedClient};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
-use morphz::secret_store::{HostEnvFileSecretBackend, SecretStore};
+use morphz::secret_store::SecretStore;
 use morphz::web::{Server, ServerDefaults};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -48,6 +50,8 @@ async fn run() -> Result<(), StoreError> {
     std::env::set_var("MORPHZ_HOME", &home);
     let endpoint = required("MORPHZ_REMOTE_STORE_URL")?;
     let files_endpoint = required("MORPHZ_HOST_FILES_URL")?;
+    let credentials_endpoint = required("MORPHZ_HOST_CREDENTIALS_URL")?;
+    let configuration_endpoint = required("MORPHZ_HOST_CONFIGURATION_URL")?;
     let token = required("MORPHZ_REMOTE_STORE_TOKEN")?;
     let private = std::env::var("MORPHZ_HOST_PRIVATE_GATEWAY").as_deref() == Ok("1");
     let transport = Arc::new(if private {
@@ -66,18 +70,36 @@ async fn run() -> Result<(), StoreError> {
     let fence = store.compute_fence();
     let lost = store.ownership_flag();
     let file_root = home.clone();
+    let credentials = HostCredentialBackend::new(
+        &credentials_endpoint,
+        &token,
+        fence.clone(),
+        lost.clone(),
+        private,
+    )?;
+    let config_root = home.clone();
+    let config_fence = fence.clone();
+    let config_lost = lost.clone();
+    let config_token = token.clone();
     tokio::task::spawn_blocking(move || {
         HostFiles::restore(file_root, &files_endpoint, &token, fence, lost)
     })
     .await??
     .install()?;
-    if let Some(path) = home
-        .join(".env")
-        .to_str()
-        .filter(|_| home.join(".env").exists())
-    {
-        config::load_env(path)?;
-    }
+    tokio::task::spawn_blocking(move || {
+        HostConfiguration::restore(
+            config_root,
+            &configuration_endpoint,
+            &config_token,
+            config_fence,
+            config_lost,
+            private,
+        )
+    })
+    .await??
+    .install()?;
+    let secrets =
+        tokio::task::spawn_blocking(move || SecretStore::managed(Arc::new(credentials))).await??;
     let mut app = config::resolve_config(&home, None, None)?.config;
     app.apply_runtime_env_overrides()?;
     // The Cloud compute instance is not the user's execution target.
@@ -103,10 +125,7 @@ async fn run() -> Result<(), StoreError> {
     } else {
         build_configured_client(&app, None, None)?.0
     };
-    let secrets = Arc::new(SecretStore::new(
-        home.join("managed-secrets.json"),
-        Arc::new(HostEnvFileSecretBackend::new(home.join(".env"))),
-    )?);
+    let secrets = Arc::new(secrets);
     let identity = RuntimeIdentity {
         agent_id: required("MORPHZ_AGENT_ID")?,
         context_id: required("MORPHZ_CONTEXT_ID")?,

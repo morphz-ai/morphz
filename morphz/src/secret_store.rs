@@ -103,6 +103,27 @@ pub trait SecretValueBackend: Send + Sync {
     fn put(&self, locator: &str, value: &str) -> Result<(), String>;
     fn get(&self, locator: &str) -> Result<Option<String>, String>;
     fn delete(&self, locator: &str) -> Result<bool, String>;
+    /// An authoritative backend can commit value, metadata and audit together.
+    /// Such a store is registered alone and never mirrors its catalog to disk.
+    fn manages_metadata(&self) -> bool {
+        false
+    }
+    fn load_metadata(&self) -> Result<Vec<ManagedSecret>, String> {
+        Err("this credential backend does not own metadata".into())
+    }
+    fn put_managed(&self, entry: &ManagedSecret, value: &str) -> Result<(), String> {
+        self.put(&secret_locator(&entry.name), value)
+    }
+    fn get_managed(
+        &self,
+        entry: &ManagedSecret,
+        _audit: &SecretUseAuditRecord,
+    ) -> Result<Option<String>, String> {
+        self.get(&secret_locator(&entry.name))
+    }
+    fn recent_usage(&self, _limit: usize) -> Result<Vec<SecretUseAuditRecord>, String> {
+        Err("this credential backend does not own audit".into())
+    }
     fn list_aliases(&self) -> Result<Vec<String>, String> {
         Ok(Vec::new())
     }
@@ -334,8 +355,8 @@ impl SecretValueBackend for HostEnvFileSecretBackend {
 /// Metadata catalog plus explicitly selected value backends. One Runtime owns
 /// one store.
 pub struct SecretStore {
-    catalog_path: PathBuf,
-    audit_path: PathBuf,
+    catalog_path: Option<PathBuf>,
+    audit_path: Option<PathBuf>,
     default_backend_id: String,
     backends: BTreeMap<String, Arc<dyn SecretValueBackend>>,
     backend_operation_states: BTreeMap<String, Arc<AtomicU8>>,
@@ -377,6 +398,45 @@ impl SecretStore {
     ) -> Result<Self, String> {
         let default_backend_id = backend.backend_id().to_string();
         Self::with_backends(catalog_path, default_backend_id, vec![backend])
+    }
+
+    pub fn managed(backend: Arc<dyn SecretValueBackend>) -> Result<Self, String> {
+        if !backend.manages_metadata() {
+            return Err("managed credential backend must own metadata and audit".into());
+        }
+        let entries = backend.load_metadata()?;
+        let id = backend.backend_id().to_owned();
+        for entry in &entries {
+            validate_name(&entry.name)?;
+            validate_scope(&entry.scope_kind, entry.scope_id.as_deref())?;
+            if entry.value_backend != id
+                || entry.secret_ref != format!("secret://runtime/{}", entry.name)
+            {
+                return Err("managed credential catalog authority mismatch".into());
+            }
+        }
+        let count = entries.len();
+        let catalog: BTreeMap<_, _> = entries
+            .into_iter()
+            .map(|entry| (entry.name.clone(), entry))
+            .collect();
+        if catalog.len() != count {
+            return Err("duplicate managed credential metadata".into());
+        }
+        Ok(Self {
+            catalog_path: None,
+            audit_path: None,
+            default_backend_id: id.clone(),
+            backends: BTreeMap::from([(id.clone(), backend)]),
+            backend_operation_states: BTreeMap::from([(
+                id,
+                Arc::new(AtomicU8::new(BACKEND_OPERATION_IDLE)),
+            )]),
+            backend_operation_timeout: BACKEND_OPERATION_TIMEOUT,
+            native_keyring_operation_timeout: NATIVE_KEYRING_OPERATION_TIMEOUT,
+            catalog: RwLock::new(catalog),
+            audit_lock: Mutex::new(()),
+        })
     }
 
     pub fn with_backends(
@@ -438,14 +498,17 @@ impl SecretStore {
                 "default Secret Value Backend '{default_backend_id}' is not registered"
             ));
         }
+        if backends.values().any(|backend| backend.manages_metadata()) {
+            return Err("authoritative credential metadata requires SecretStore::managed".into());
+        }
         let backend_operation_states = backends
             .keys()
             .cloned()
             .map(|backend_id| (backend_id, Arc::new(AtomicU8::new(BACKEND_OPERATION_IDLE))))
             .collect();
         Ok(Self {
-            catalog_path,
-            audit_path,
+            catalog_path: Some(catalog_path),
+            audit_path: Some(audit_path),
             default_backend_id,
             backends,
             backend_operation_states,
@@ -596,16 +659,6 @@ impl SecretStore {
 
         let backend = self.backend(value_backend)?;
         let backend_id = backend.backend_id().to_string();
-        let locator = secret_locator(name);
-        // Persist the value first. The catalog never contains the value and a
-        // catalog failure can at worst leave an unreachable credential.
-        let backend_for_put = Arc::clone(&backend);
-        let locator_for_put = locator.clone();
-        let value_for_put = zeroize::Zeroizing::new(value.to_string());
-        self.run_backend_operation(&backend_id, "write", move || {
-            backend_for_put.put(&locator_for_put, value_for_put.as_str())
-        })?;
-
         let now = chrono::Utc::now();
         let mut guard = self
             .catalog
@@ -625,6 +678,13 @@ impl SecretStore {
             created_at,
             updated_at: now,
         };
+        let locator = secret_locator(name);
+        let backend_for_put = Arc::clone(&backend);
+        let entry_for_put = entry.clone();
+        let value_for_put = zeroize::Zeroizing::new(value.to_string());
+        self.run_backend_operation(&backend_id, "write", move || {
+            backend_for_put.put_managed(&entry_for_put, value_for_put.as_str())
+        })?;
         let mut next = guard.clone();
         next.insert(name.to_string(), entry.clone());
         self.persist_catalog(next.values())?;
@@ -737,6 +797,9 @@ impl SecretStore {
             .get(name)
             .cloned();
         let Some(entry) = entry else {
+            if self.catalog_path.is_none() {
+                return Ok(None);
+            }
             return std::env::var(name).map(Some).or_else(|error| match error {
                 std::env::VarError::NotPresent => Ok(None),
                 std::env::VarError::NotUnicode(_) => Err(format!(
@@ -747,9 +810,10 @@ impl SecretStore {
         authorize_entry(&entry, usage.clone())?;
         let backend = self.backend(&entry.value_backend)?;
         let backend_id = backend.backend_id().to_string();
-        let locator = secret_locator(name);
+        let entry_for_read = entry.clone();
+        let audit = usage_record(&entry, usage.clone());
         let value = self
-            .run_backend_operation(&backend_id, "read", move || backend.get(&locator))?
+            .run_backend_operation(&backend_id, "read", move || backend.get_managed(&entry_for_read, &audit))?
             .ok_or_else(|| {
                 format!(
                     "managed credential '{}' has metadata but no corresponding value in backend '{}'",
@@ -762,7 +826,9 @@ impl SecretStore {
                 entry.secret_ref
             ));
         }
-        let _ = self.append_usage_audit(&entry, usage);
+        if self.audit_path.is_some() {
+            let _ = self.append_usage_audit(&entry, usage);
+        }
         Ok(Some(value))
     }
 
@@ -776,15 +842,21 @@ impl SecretStore {
         {
             return Ok(true);
         }
-        Ok(std::env::var_os(name).is_some())
+        Ok(self.catalog_path.is_some() && std::env::var_os(name).is_some())
     }
 
     pub fn recent_usage(&self, limit: usize) -> Result<Vec<SecretUseAuditRecord>, String> {
+        let Some(audit_path) = &self.audit_path else {
+            let backend = self.backend(&self.default_backend_id)?;
+            return self.run_backend_operation(&self.default_backend_id, "read audit", move || {
+                backend.recent_usage(limit)
+            });
+        };
         let _guard = self
             .audit_lock
             .lock()
             .map_err(|_| "Secret usage audit lock is poisoned".to_string())?;
-        let contents = match fs::read_to_string(&self.audit_path) {
+        let contents = match fs::read_to_string(audit_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(format!("failed to read Secret usage audit: {error}")),
@@ -801,7 +873,7 @@ impl SecretStore {
         self.backends
             .get(value_backend)
             .or_else(|| {
-                (value_backend == "native_keyring")
+                (value_backend == "native_keyring" && self.catalog_path.is_some())
                     .then(|| self.backends.get(&self.default_backend_id))
                     .flatten()
             })
@@ -826,6 +898,27 @@ impl SecretStore {
     /// gate also prevents one stalled OS credential request from accumulating more
     /// permanently blocked threads.
     fn run_backend_operation<T, F>(
+        &self,
+        backend_id: &str,
+        operation: &str,
+        callback: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+    {
+        let run = || self.run_backend_operation_blocking(backend_id, operation, callback);
+        if self.catalog_path.is_none() {
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => return tokio::task::block_in_place(run),
+                Ok(_) => return Err("authoritative credential I/O requires a blocking worker or multi-thread Runtime".into()),
+                Err(_) => {}
+            }
+        }
+        run()
+    }
+
+    fn run_backend_operation_blocking<T, F>(
         &self,
         backend_id: &str,
         operation: &str,
@@ -953,34 +1046,28 @@ impl SecretStore {
         entry: &ManagedSecret,
         usage: SecretUseContext<'_>,
     ) -> Result<(), String> {
-        let record = SecretUseAuditRecord {
-            name: entry.name.clone(),
-            secret_ref: entry.secret_ref.clone(),
-            value_backend: entry.value_backend.clone(),
-            context_id: usage.context_id.map(ToString::to_string),
-            session_id: usage.session_id.map(ToString::to_string),
-            objective_id: usage.objective_id.map(ToString::to_string),
-            target_id: usage.target_id.map(ToString::to_string),
-            used_at: chrono::Utc::now(),
-        };
+        let record = usage_record(entry, usage);
+        let audit_path = self
+            .audit_path
+            .as_ref()
+            .ok_or("audit is owned by credential authority")?;
         let _guard = self
             .audit_lock
             .lock()
             .map_err(|_| "Secret usage audit lock is poisoned".to_string())?;
-        let parent = self
-            .audit_path
+        let parent = audit_path
             .parent()
             .ok_or("Secret usage audit path has no parent directory")?;
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.audit_path)
+            .open(audit_path)
             .map_err(|error| error.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.audit_path, fs::Permissions::from_mode(0o600))
+            fs::set_permissions(audit_path, fs::Permissions::from_mode(0o600))
                 .map_err(|error| error.to_string())?;
         }
         serde_json::to_writer(&mut file, &record).map_err(|error| error.to_string())?;
@@ -994,7 +1081,11 @@ impl SecretStore {
     }
 
     fn compact_usage_audit(&self) -> Result<(), String> {
-        let contents = fs::read_to_string(&self.audit_path).map_err(|error| error.to_string())?;
+        let audit_path = self
+            .audit_path
+            .as_ref()
+            .ok_or("audit is owned by credential authority")?;
+        let contents = fs::read_to_string(audit_path).map_err(|error| error.to_string())?;
         let mut lines = contents
             .lines()
             .rev()
@@ -1005,18 +1096,34 @@ impl SecretStore {
         if !compacted.is_empty() {
             compacted.push('\n');
         }
-        atomic_private_write(&self.audit_path, compacted.as_bytes())
+        atomic_private_write(audit_path, compacted.as_bytes())
     }
 
     fn persist_catalog<'a>(
         &self,
         entries: impl Iterator<Item = &'a ManagedSecret>,
     ) -> Result<(), String> {
+        let Some(catalog_path) = &self.catalog_path else {
+            return Ok(());
+        };
         let values = entries.cloned().collect::<Vec<_>>();
         atomic_private_write(
-            &self.catalog_path,
+            catalog_path,
             &serde_json::to_vec_pretty(&values).map_err(|error| error.to_string())?,
         )
+    }
+}
+
+fn usage_record(entry: &ManagedSecret, usage: SecretUseContext<'_>) -> SecretUseAuditRecord {
+    SecretUseAuditRecord {
+        name: entry.name.clone(),
+        secret_ref: entry.secret_ref.clone(),
+        value_backend: entry.value_backend.clone(),
+        context_id: usage.context_id.map(ToString::to_string),
+        session_id: usage.session_id.map(ToString::to_string),
+        objective_id: usage.objective_id.map(ToString::to_string),
+        target_id: usage.target_id.map(ToString::to_string),
+        used_at: chrono::Utc::now(),
     }
 }
 
@@ -1107,10 +1214,6 @@ fn validate_scope(scope_kind: &SecretScopeKind, scope_id: Option<&str>) -> Resul
 }
 
 fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    #[cfg(feature = "remote-store")]
-    crate::memory::remote::host_files::publish(path, Some(bytes))?;
-    #[cfg(feature = "remote-store")]
-    let mut cache_update = crate::memory::remote::host_files::CacheUpdate::default();
     let parent = path
         .parent()
         .ok_or("credential metadata path has no parent directory")?;
@@ -1130,8 +1233,6 @@ fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     fs::rename(temporary, path).map_err(|error| error.to_string())?;
-    #[cfg(feature = "remote-store")]
-    cache_update.complete();
     Ok(())
 }
 
@@ -1140,6 +1241,204 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct AtomicManagedBackend {
+        entries: Mutex<BTreeMap<String, (ManagedSecret, String)>>,
+        audit: Mutex<Vec<SecretUseAuditRecord>>,
+        fail: AtomicBool,
+        read_delay_ms: AtomicUsize,
+    }
+    use std::sync::atomic::AtomicBool;
+    impl SecretValueBackend for AtomicManagedBackend {
+        fn backend_id(&self) -> &'static str {
+            "managed-test"
+        }
+        fn storage_kind(&self) -> &'static str {
+            "test-transaction"
+        }
+        fn manages_metadata(&self) -> bool {
+            true
+        }
+        fn load_metadata(&self) -> Result<Vec<ManagedSecret>, String> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err("synthetic authority failure".into());
+            }
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .values()
+                .map(|(entry, _)| entry.clone())
+                .collect())
+        }
+        fn put(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("metadata is required".into())
+        }
+        fn put_managed(&self, entry: &ManagedSecret, value: &str) -> Result<(), String> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err("synthetic authority failure".into());
+            }
+            self.entries
+                .lock()
+                .unwrap()
+                .insert(entry.name.clone(), (entry.clone(), value.to_string()));
+            Ok(())
+        }
+        fn get(&self, locator: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .get(locator_name(locator)?)
+                .map(|(_, value)| value.clone()))
+        }
+        fn get_managed(
+            &self,
+            entry: &ManagedSecret,
+            audit: &SecretUseAuditRecord,
+        ) -> Result<Option<String>, String> {
+            std::thread::sleep(Duration::from_millis(
+                self.read_delay_ms.load(Ordering::Acquire) as u64,
+            ));
+            if self.fail.load(Ordering::Acquire) {
+                return Err("synthetic audit failure".into());
+            }
+            self.audit.lock().unwrap().push(audit.clone());
+            self.get(&secret_locator(&entry.name))
+        }
+        fn delete(&self, locator: &str) -> Result<bool, String> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .remove(locator_name(locator)?)
+                .is_some())
+        }
+        fn recent_usage(&self, limit: usize) -> Result<Vec<SecretUseAuditRecord>, String> {
+            Ok(self
+                .audit
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+    }
+
+    #[test]
+    fn authoritative_backend_recovers_metadata_and_audit_without_files_or_env_fallback() {
+        let backend = Arc::new(AtomicManagedBackend::default());
+        let store = SecretStore::managed(backend.clone()).unwrap();
+        assert!(!store.has_backend("native_keyring"));
+        let entry = store
+            .put(
+                "MANAGED_TEST",
+                "synthetic-only",
+                SecretScopeKind::Session,
+                Some("one".into()),
+            )
+            .unwrap();
+        assert!(store.catalog_path.is_none());
+        assert!(store.audit_path.is_none());
+        assert!(!store.contains_alias("PATH").unwrap());
+        assert!(store
+            .resolve("PATH", SecretUseContext::default())
+            .unwrap()
+            .is_none());
+        assert!(store
+            .resolve("MANAGED_TEST", SecretUseContext::default())
+            .is_err());
+        assert!(backend.audit.lock().unwrap().is_empty());
+        assert_eq!(
+            store
+                .resolve(
+                    "MANAGED_TEST",
+                    SecretUseContext {
+                        session_id: Some("one"),
+                        ..Default::default()
+                    }
+                )
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-only")
+        );
+        drop(store);
+        let recovered = SecretStore::managed(backend.clone()).unwrap();
+        assert_eq!(recovered.list().unwrap(), vec![entry]);
+        assert_eq!(
+            recovered.recent_usage(10).unwrap()[0].session_id.as_deref(),
+            Some("one")
+        );
+        assert!(recovered.delete("MANAGED_TEST").unwrap());
+        assert!(SecretStore::managed(backend)
+            .unwrap()
+            .list()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn authoritative_backend_failure_never_publishes_new_scope_or_falls_back_to_disk() {
+        let backend = Arc::new(AtomicManagedBackend::default());
+        let store = SecretStore::managed(backend.clone()).unwrap();
+        let before = store
+            .put(
+                "MANAGED_TEST",
+                "one",
+                SecretScopeKind::Session,
+                Some("one".into()),
+            )
+            .unwrap();
+        backend.fail.store(true, Ordering::Release);
+        assert!(store
+            .put("MANAGED_TEST", "two", SecretScopeKind::Runtime, None)
+            .is_err());
+        assert_eq!(store.list().unwrap(), vec![before]);
+        assert_eq!(backend.entries.lock().unwrap()["MANAGED_TEST"].1, "one");
+        assert!(store
+            .resolve(
+                "MANAGED_TEST",
+                SecretUseContext {
+                    session_id: Some("one"),
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        assert!(SecretStore::managed(backend.clone()).is_err());
+        let directory = tempfile::tempdir().unwrap();
+        assert!(SecretStore::new(directory.path().join("unused.json"), backend).is_err());
+        assert!(std::fs::read_dir(directory.path())
+            .unwrap()
+            .next()
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn authoritative_credential_wait_does_not_starve_single_worker_lease_tasks() {
+        let backend = Arc::new(AtomicManagedBackend::default());
+        let store = SecretStore::managed(backend.clone()).unwrap();
+        store
+            .put("TEST_LEASE", "synthetic", SecretScopeKind::Runtime, None)
+            .unwrap();
+        backend.read_delay_ms.store(100, Ordering::Release);
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let observed = ticks.clone();
+        let heartbeat = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                observed.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        assert!(store
+            .resolve("TEST_LEASE", SecretUseContext::default())
+            .unwrap()
+            .is_some());
+        assert!(ticks.load(Ordering::Acquire) > 0);
+        heartbeat.abort();
+    }
 
     #[derive(Default)]
     struct MemorySecretBackend {

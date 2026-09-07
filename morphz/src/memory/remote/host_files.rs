@@ -67,6 +67,22 @@ fn relative(root: &Path, path: &Path) -> Result<String, String> {
         return Err("invalid hosted file path".into());
     }
     let key = path.to_str().ok_or("hosted file path is not UTF-8")?;
+    if matches!(
+        key.split('/')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        ".env"
+            | "morphz.toml"
+            | "models.toml"
+            | "config.toml"
+            | "managed.toml"
+            | "managed-secrets.json"
+            | "managed-secret-usage.jsonl"
+    ) {
+        return Err("host configuration and credentials require the database authority".into());
+    }
     if key.len() > 1024
         || key.contains('\\')
         || key.chars().any(char::is_control)
@@ -455,6 +471,11 @@ mod tests {
             "/cache/a//b",
             "/cache/a\\b",
             "/cache/a\nfile",
+            "/cache/.env",
+            "/cache/.ENV",
+            "/cache/models.toml",
+            "/cache/managed-secrets.json",
+            "/cache/managed-secret-usage.jsonl",
         ] {
             assert!(
                 relative(root, Path::new(path)).is_err(),
