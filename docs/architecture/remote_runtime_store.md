@@ -184,6 +184,21 @@ ingress and retry no more often than every five seconds. Health probes do not
 reset the activity clock. Requests during a park attempt receive an explicit
 retryable `runtime_parking` 503 before reaching business handlers.
 
+The hosted gateway closes the readiness/park race with a private admission
+reservation. `POST /_morphz/host/admission` requires Operator authentication;
+it returns a random 256-bit process-local reservation, valid for 30 seconds.
+At most 64 reservations can be outstanding. They pin idle compute, are consumed
+once through `x-morphz-host-reservation`, and expire without creating durable
+work. They are not message receipts or permission grants: the business request
+still needs its original Principal/Node authority. The route exists only on the
+opt-in hosted server. An expired/reused reservation returns 409 before dispatch.
+
+Only the payload-free handshake is retried. The gateway never buffers, clones
+or replays a business body, never accepts a caller-selected container port, and
+does not use the container SDK's implicit restart with missing per-Agent env.
+A lost business response has an unknown outcome; recovery uses the native
+idempotency receipt instead of an automatic transport replay.
+
 The native check rejects active Activations, Jobs, Plans, Signals, deliveries,
 runnable Objectives, assignments/delegations, claimed/due timers, projection
 work and live Provider refresh leases. It exports the earliest future native
@@ -195,9 +210,13 @@ nonzero and recover; they never reopen admission with a potentially stale fence.
 Local workerd/native-process gates cover drain, orderly idle exit, cache-free
 replacement, and a real `schedule_tx` durable Objective/Thread whose native
 deadline fires a DO alarm and starts replacement compute without another user
-request. This is not a deployed Linux Container gate. Open WebSockets and active
-approval waits currently retain compute; frontend/Edge hibernation, approval-wait
-parking, and transparent request-versus-park recovery remain required before
+request. A further native-process gate holds a real park commit, observes native
+503 admission, restores a replacement host from an empty cache, reserves across
+the idle timeout, and sends the original business message once. Duplicate message
+IDs return the same receipt; reservations cannot be reused or bypass business
+authorization. This is not a deployed Linux Container gate. Open WebSockets and
+active approval waits currently retain compute; frontend/Edge hibernation and
+approval-wait parking remain required before
 claiming the complete scale-to-zero product experience.
 
 Hosted file limits are explicit: at most 24 MiB per object, 34 MiB per upload

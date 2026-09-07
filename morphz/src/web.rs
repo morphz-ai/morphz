@@ -1443,10 +1443,17 @@ impl Server {
 
         #[cfg(feature = "remote-store")]
         let app = if let Some(gate) = &self.host_request_gate {
-            app.layer(middleware::from_fn(
-                crate::memory::remote::host_lifecycle::gate_request,
-            ))
-            .layer(axum::Extension(gate.clone()))
+            let admission = Router::new()
+                .route(
+                    crate::memory::remote::host_lifecycle::RESERVATION_PATH,
+                    post(handle_host_admission),
+                )
+                .with_state(Arc::clone(&state));
+            app.merge(admission)
+                .layer(middleware::from_fn(
+                    crate::memory::remote::host_lifecycle::gate_request,
+                ))
+                .layer(axum::Extension(gate.clone()))
         } else {
             app
         };
@@ -1465,6 +1472,40 @@ impl Server {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(feature = "remote-store")]
+async fn handle_host_admission(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(gate): axum::Extension<
+        Arc<crate::memory::remote::host_lifecycle::HostRequestGate>,
+    >,
+    headers: HeaderMap,
+) -> Response {
+    // A reservation is not a business permission. Only the private hosted
+    // gateway may mint one; the forwarded request still uses normal auth.
+    if !is_operator_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    match gate.reserve() {
+        Ok(Some(id)) => {
+            let mut response = Json(
+                json!({"protocol":"morphz-host-ingress/1", "reservation_id":id,
+                "expires_in_ms":crate::memory::remote::host_lifecycle::RESERVATION_TTL_MS}),
+            )
+            .into_response();
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+            response
+        }
+        Ok(None) => crate::memory::remote::host_lifecycle::parking_response(),
+        Err(_) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "host admission unavailable",
+        ),
     }
 }
 
